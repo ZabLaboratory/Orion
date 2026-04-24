@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run ruff check .
+
+  typecheck:
+    name: Typecheck (mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run mypy src
+
+  test:
+    name: Test (pytest)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --frozen
+      - name: Run pytest (tolerate empty test suite, fail on errors)
+        run: |
+          set +e
+          uv run pytest --color=yes
+          code=$?
+          if [ $code -eq 0 ] || [ $code -eq 5 ]; then
+            exit 0
+          fi
+          exit $code
+
+  deps-audit:
+    name: Dependency audit (pip-audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run pip-audit --skip-editable
+
+  secret-scan:
+    name: Secret scan (trufflehog)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: ""
+          head: HEAD
+          extra_args: --results=verified,unknown
+
+  lockfile-check:
+    name: Lockfile check (uv lock --check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.11"
+      - run: uv lock --check
+
+  codeowners-check:
+    name: CODEOWNERS present
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check CODEOWNERS exists
+        run: |
+          if [ ! -f .github/CODEOWNERS ] && [ ! -f CODEOWNERS ] && [ ! -f docs/CODEOWNERS ]; then
+            echo "::error::CODEOWNERS file missing"
+            exit 1
+          fi
+          echo "CODEOWNERS found"

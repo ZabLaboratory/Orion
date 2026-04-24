@@ -1,0 +1,69 @@
+services:
+  orion:
+    build: .
+    container_name: orion-api
+    restart: unless-stopped
+    ports:
+      - "4007:4007"
+    env_file: ../.env.orion
+    depends_on:
+      orion-db:
+        condition: service_healthy
+      orion-mediamtx:
+        condition: service_started
+    networks:
+      zab_network:
+        aliases:
+          - orion
+          - orion-api
+
+  orion-db:
+    image: postgres:16-alpine
+    container_name: orion-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-orion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-orion_dev}
+      POSTGRES_DB: ${POSTGRES_DB:-orion}
+    ports:
+      - "5447:5432"
+    volumes:
+      - orion_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orion -d orion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      zab_network:
+        aliases:
+          - orion-postgres
+
+  orion-mediamtx:
+    image: bluenviron/mediamtx:latest
+    container_name: orion-mediamtx
+    restart: unless-stopped
+    ports:
+      # Control API — consumed by orion-api over the internal network, but also
+      # exposed locally for debugging via curl localhost:9997/v3/paths/list.
+      - "9997:9997"
+      # Protocols — these are what the browser/twitch reach.
+      - "8554:8554"   # RTSP (internal relay source for ffmpeg)
+      - "8889:8889"   # WebRTC/WHIP
+      - "1935:1935"   # RTMP (optional ingress path)
+      - "8888:8888"   # HLS (optional playback)
+    volumes:
+      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+    networks:
+      zab_network:
+        aliases:
+          - orion-mediamtx
+
+volumes:
+  orion_pg_data:
+    name: orion_pg_data
+
+networks:
+  zab_network:
+    name: zab_network
+    external: true

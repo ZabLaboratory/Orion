@@ -1,0 +1,10 @@
+# Default owner for the whole Orion repo.
+* @ClodoCapeo
+
+# Lockfile change-by-anyone is fine but still needs review.
+uv.lock @ClodoCapeo
+
+# Governance files — maintainer only.
+CLAUDE.md @ClodoCapeo
+.github/workflows/ @ClodoCapeo
+.github/CODEOWNERS @ClodoCapeo
