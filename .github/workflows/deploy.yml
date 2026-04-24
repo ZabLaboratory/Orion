@@ -67,7 +67,8 @@ jobs:
 
       - name: Write remote .env
         env:
-          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USERNAME: ${{ secrets.VPS_USERNAME }}
           APP_PATH: ${{ secrets.VPS_APP_PATH }}
           ORION_PG_PASSWORD: ${{ secrets.ORION_PG_PASSWORD }}
           ORION_ENCRYPTION_KEY: ${{ secrets.ORION_ENCRYPTION_KEY }}
@@ -77,22 +78,28 @@ jobs:
           MEDIAMTX_PUBLIC_WHIP_BASE: ${{ secrets.ORION_PUBLIC_WHIP_BASE }}
           TWITCH_OAUTH_REDIRECT_URI: ${{ secrets.ORION_TWITCH_OAUTH_REDIRECT_URI }}
         run: |
-          $SSH_CMD "cat > $APP_PATH/.env && chmod 600 $APP_PATH/.env" << EOF
+          # Build locally (cleaner than indented heredocs over SSH) then scp over.
+          umask 077
+          cat > .env.remote <<ENV
           DEBUG=false
-          DATABASE_URL=postgresql+asyncpg://orion:$ORION_PG_PASSWORD@orion-postgres:5432/orion
+          DATABASE_URL=postgresql+asyncpg://orion:${ORION_PG_PASSWORD}@orion-postgres:5432/orion
           ORION_PG_USER=orion
-          ORION_PG_PASSWORD=$ORION_PG_PASSWORD
+          ORION_PG_PASSWORD=${ORION_PG_PASSWORD}
           ORION_PG_DB=orion
-          ENCRYPTION_KEY=$ORION_ENCRYPTION_KEY
+          ENCRYPTION_KEY=${ORION_ENCRYPTION_KEY}
           MEDIAMTX_API_URL=http://orion-mediamtx:9997
           MEDIAMTX_WHIP_BASE=http://orion-mediamtx:8889
-          MEDIAMTX_PUBLIC_WHIP_BASE=$MEDIAMTX_PUBLIC_WHIP_BASE
+          MEDIAMTX_PUBLIC_WHIP_BASE=${MEDIAMTX_PUBLIC_WHIP_BASE}
           TWITCH_RTMP_BASE=rtmp://live.twitch.tv/app
-          TWITCH_CLIENT_ID=$TWITCH_CLIENT_ID
-          TWITCH_CLIENT_SECRET=$TWITCH_CLIENT_SECRET
-          TWITCH_OAUTH_REDIRECT_URI=$TWITCH_OAUTH_REDIRECT_URI
-          PUBLIC_BASE_URL=$PUBLIC_BASE_URL
-          EOF
+          TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID}
+          TWITCH_CLIENT_SECRET=${TWITCH_CLIENT_SECRET}
+          TWITCH_OAUTH_REDIRECT_URI=${TWITCH_OAUTH_REDIRECT_URI}
+          PUBLIC_BASE_URL=${PUBLIC_BASE_URL}
+          ENV
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            .env.remote "${VPS_USERNAME}@${VPS_HOST}:${APP_PATH}/.env"
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "${VPS_USERNAME}@${VPS_HOST}" "chmod 600 ${APP_PATH}/.env"
 
       - name: Build, migrate, restart
         env:
