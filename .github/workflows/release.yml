@@ -1,0 +1,226 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # Orion ships as a container, not a desktop installer — build once on
+  # linux/amd64 (what the VPS runs) and push it to GHCR tagged with the
+  # release version + `latest`. The VPS deploy keeps its own build-from-
+  # source path for now; GHCR gives us audit + rollback without making
+  # the deploy workflow depend on the registry.
+  image:
+    name: Build & push Docker image
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Derive image metadata
+        id: meta
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          IMAGE="ghcr.io/${{ github.repository_owner }}/orion"
+          IMAGE_LC="$(echo "${IMAGE}" | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "image=${IMAGE_LC}"
+            echo "version=${VERSION}"
+            echo "tag=${TAG}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build & push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64
+          tags: |
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.version }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.tag }}
+            ${{ steps.meta.outputs.image }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.title=Orion
+            org.opencontainers.image.description=Streaming control plane — browser-composed scenes relayed to Twitch
+
+  # Create the GitHub Release and overwrite its body with the CHANGELOG
+  # section matching the tag, plus an auto-generated commit log since the
+  # previous tag (same pattern as Prism's release workflow).
+  release:
+    name: Create GitHub Release
+    needs: image
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Build release notes
+        id: notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          chmod +x scripts/extract-changelog.sh
+
+          NARRATIVE="$(scripts/extract-changelog.sh "${TAG}" || true)"
+          if [ -z "$NARRATIVE" ]; then
+            echo "::warning::no CHANGELOG.md section for ${TAG} — release will ship with empty narrative"
+          fi
+
+          # Commit range: honour `<!-- commits-since: vX.Y.Z -->` override if
+          # present, else fall back to the previous reachable tag.
+          BASE="$(printf '%s' "$NARRATIVE" \
+            | awk 'match($0, /<!--[[:space:]]*commits-since:[[:space:]]*v[0-9][^ ]*[[:space:]]*-->/) {
+                     s = substr($0, RSTART, RLENGTH);
+                     gsub(/.*commits-since:[[:space:]]*/, "", s);
+                     gsub(/[[:space:]]*-->.*/, "", s);
+                     print s;
+                     exit;
+                   }')"
+          if [ -z "$BASE" ]; then
+            BASE="$(git describe --tags --abbrev=0 "${TAG}^" 2>/dev/null || echo '')"
+          fi
+
+          COMMITS=""
+          if [ -n "$BASE" ]; then
+            COMMITS="$(git log --no-merges --format='- %s (%h)' "${BASE}..${TAG}" || true)"
+          fi
+
+          {
+            printf '%s' "$NARRATIVE"
+            if [ -n "$COMMITS" ]; then
+              echo ""
+              echo ""
+              echo "---"
+              echo ""
+              echo "### Commits since ${BASE}"
+              echo ""
+              echo "$COMMITS"
+            fi
+          } > .release-notes.md
+
+          echo "---- release notes ----"
+          cat .release-notes.md
+          echo "-----------------------"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          # Idempotent: edit if the release already exists, create otherwise.
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" --notes-file .release-notes.md
+          else
+            gh release create "${TAG}" \
+              --title "${TAG#v}" \
+              --notes-file .release-notes.md
+          fi
+
+  # Post a single summary embed to the configured webhook once the image
+  # has published and the release body is in place.
+  notify:
+    name: Notify Discord
+    needs: [image, release]
+    if: always() && needs.image.result != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Collect release info
+        id: rel
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          NOTES="$(gh release view "${TAG}" --json body -q .body 2>/dev/null || echo '')"
+          if [ "${#NOTES}" -gt 1800 ]; then
+            NOTES="${NOTES:0:1800}…"
+          fi
+          {
+            echo "notes<<NOTES_EOF"
+            echo "${NOTES}"
+            echo "NOTES_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Post to Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          TAG: ${{ steps.rel.outputs.tag }}
+          NOTES: ${{ steps.rel.outputs.notes }}
+          IMAGE_RESULT: ${{ needs.image.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_RELEASE_WEBHOOK not set — skipping"
+            exit 0
+          fi
+
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          IMAGE_URL="https://github.com/${{ github.repository_owner }}/orion/pkgs/container/orion"
+          SHA_SHORT="$(git rev-parse --short "${TAG}")"
+
+          if [ "$IMAGE_RESULT" = "success" ] && [ "$RELEASE_RESULT" = "success" ]; then
+            COLOR=3866399   # green
+            TITLE="Orion ${TAG} published"
+          else
+            COLOR=15745359  # amber
+            TITLE="Orion ${TAG} — partial release"
+          fi
+
+          jq -n \
+            --arg title "${TITLE}" \
+            --arg url "${RELEASE_URL}" \
+            --arg desc "${NOTES}" \
+            --arg image_url "${IMAGE_URL}" \
+            --arg sha "${SHA_SHORT}" \
+            --argjson color "${COLOR}" \
+            '{
+               username: "Orion Releases",
+               embeds: [{
+                 title: $title,
+                 url: $url,
+                 description: (if $desc == "" then "No release notes." else $desc end),
+                 color: $color,
+                 fields: [
+                   { name: "Container image", value: $image_url, inline: false },
+                   { name: "Commit",          value: $sha,       inline: true },
+                   { name: "Tag",             value: $url,       inline: true }
+                 ],
+                 timestamp: (now | todateiso8601)
+               }]
+             }' > payload.json
+
+          if [ -f CHANGELOG.md ]; then
+            curl -sS -X POST \
+              -F "payload_json=<payload.json;type=application/json" \
+              -F "files[0]=@CHANGELOG.md;filename=CHANGELOG-${TAG}.md" \
+              "$WEBHOOK"
+          else
+            curl -sS -X POST -H "Content-Type: application/json" \
+                 --data @payload.json "$WEBHOOK"
+          fi
