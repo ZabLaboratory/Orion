@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orion.config import settings
 from orion.database import get_session
 from orion.models.credential import TwitchCredential
-from orion.routes._deps import require_authenticated_user
+from orion.routes._deps import authenticated_user
 from orion.services import credential_service, twitch_helix
 
 router = APIRouter(prefix="/twitch", tags=["twitch"])
@@ -85,7 +85,7 @@ def _verify_state(state_token: str) -> dict[str, Any]:
 @router.post("/oauth/authorize", response_model=AuthorizeResponse)
 async def authorize(
     credential_id: uuid.UUID,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> AuthorizeResponse:
     cred = await db.get(TwitchCredential, credential_id)
@@ -101,7 +101,7 @@ async def authorize(
 @router.post("/oauth/callback", status_code=status.HTTP_204_NO_CONTENT)
 async def oauth_callback(
     payload: CallbackPayload,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> None:
     state = _verify_state(payload.state)
