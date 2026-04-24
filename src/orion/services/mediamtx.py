@@ -81,17 +81,31 @@ class MediaMTXClient:
 def build_twitch_relay_config(stream_key: str, path_name: str) -> dict[str, Any]:
     """Build a MediaMTX path config that accepts WHIP and pushes RTMP to Twitch.
 
-    The ``runOnReady`` hook runs when the path has an active publisher. It launches
-    ffmpeg to pull the MediaMTX RTSP source and push it to Twitch. ``runOnNotReady``
-    is a courtesy cleanup — MediaMTX kills the child process automatically.
+    The browser publisher sends WebRTC's default codecs (VP8 + Opus). Twitch's
+    RTMP ingest only accepts H264 + AAC, so we can't ``-c copy`` — ffmpeg has
+    to transcode on the VPS:
+
+    - ``libx264 -preset veryfast`` : CPU-only (VPS has no GPU); veryfast gives
+      a reasonable quality/CPU trade-off for 1080p30 at 6 Mbps.
+    - ``-g 60 -keyint_min 60 -sc_threshold 0`` : 2-second keyframe interval at
+      30 fps (Twitch's requirement; they drop the stream otherwise).
+    - ``-b:v 6000k -maxrate 6000k -bufsize 12000k`` : Twitch Partner tier bitrate
+      cap; drop to 4500/9000 if we ever add a sub-Partner profile.
+    - Audio transcoded to AAC 160 kbps stereo 48 kHz — universal Twitch baseline.
+
+    ``runOnReadyRestart`` keeps the child alive across a brief publisher drop
+    (ICE restart, WiFi blip) — MediaMTX respawns ffmpeg as soon as the path is
+    ready again.
     """
     twitch_url = f"{settings.twitch_rtmp_base}/{stream_key}"
-    # MediaMTX provides `MTX_PATH` in the child env. We read from the local RTSP gateway.
     ffmpeg_cmd = (
         "ffmpeg -hide_banner -loglevel warning "
         "-fflags nobuffer -rtsp_transport tcp "
         f"-i rtsp://localhost:8554/{path_name} "
-        "-c:v copy -c:a aac -b:a 160k -ar 48000 -ac 2 "
+        "-c:v libx264 -preset veryfast -pix_fmt yuv420p "
+        "-b:v 6000k -maxrate 6000k -bufsize 12000k "
+        "-g 60 -keyint_min 60 -sc_threshold 0 "
+        "-c:a aac -b:a 160k -ar 48000 -ac 2 "
         f"-f flv {twitch_url}"
     )
     return {

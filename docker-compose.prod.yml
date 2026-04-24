@@ -51,7 +51,10 @@ services:
           - orion-db
 
   orion-mediamtx:
-    image: bluenviron/mediamtx:latest
+    # `latest-ffmpeg` bundles an ffmpeg binary next to MediaMTX — required
+    # because Orion's runOnReady transcodes the browser's WebRTC VP8/Opus
+    # stream into H264/AAC before pushing it to Twitch's RTMP ingress.
+    image: bluenviron/mediamtx:latest-ffmpeg
     container_name: orion-mediamtx
     restart: unless-stopped
     # WebRTC + RTMP + HLS endpoints must be reachable by browsers and by Twitch's
