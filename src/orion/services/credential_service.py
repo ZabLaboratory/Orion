@@ -14,7 +14,7 @@ from orion.services import encryption
 
 
 async def create(
-    db: AsyncSession, owner_id: uuid.UUID, payload: CredentialCreate
+    db: AsyncSession, owner_id: uuid.UUID | None, payload: CredentialCreate
 ) -> TwitchCredential:
     sk_ct, sk_nonce = encryption.encrypt(payload.stream_key)
     cred = TwitchCredential(
@@ -49,10 +49,14 @@ async def update(
     return cred
 
 
-async def list_for_owner(db: AsyncSession, owner_id: uuid.UUID) -> list[TwitchCredential]:
-    q = select(TwitchCredential).where(TwitchCredential.owner_id == owner_id).order_by(
-        TwitchCredential.created_at.desc()
-    )
+async def list_for_owner(
+    db: AsyncSession, owner_id: uuid.UUID | None
+) -> list[TwitchCredential]:
+    q = select(TwitchCredential).order_by(TwitchCredential.created_at.desc())
+    if owner_id is not None:
+        q = q.where(TwitchCredential.owner_id == owner_id)
+    else:
+        q = q.where(TwitchCredential.owner_id.is_(None))
     result = await db.execute(q)
     return list(result.scalars().all())
 

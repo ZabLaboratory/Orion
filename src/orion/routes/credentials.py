@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from orion.database import get_session
 from orion.models.credential import TwitchCredential
-from orion.routes._deps import require_authenticated_user
+from orion.routes._deps import authenticated_user
 from orion.schemas.credential import CredentialCreate, CredentialRead, CredentialUpdate
 from orion.services import credential_service
 
@@ -33,7 +33,7 @@ def _project(cred: TwitchCredential) -> dict[str, object]:
 
 @router.get("", response_model=list[CredentialRead])
 async def list_credentials(
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> list[dict[str, object]]:
     creds = await credential_service.list_for_owner(db, user_id)
@@ -43,7 +43,7 @@ async def list_credentials(
 @router.post("", response_model=CredentialRead, status_code=status.HTTP_201_CREATED)
 async def create_credential(
     payload: CredentialCreate,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     cred = await credential_service.create(db, user_id, payload)
@@ -55,7 +55,7 @@ async def create_credential(
 async def update_credential(
     credential_id: uuid.UUID,
     payload: CredentialUpdate,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, object]:
     cred = await db.get(TwitchCredential, credential_id)
@@ -69,7 +69,7 @@ async def update_credential(
 @router.delete("/{credential_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_credential(
     credential_id: uuid.UUID,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> Response:
     cred = await db.get(TwitchCredential, credential_id)

@@ -24,7 +24,7 @@ class TwitchCredential(Base):
     __tablename__ = "twitch_credentials"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    owner_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False, index=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     label: Mapped[str] = mapped_column(String(255), nullable=False)
 

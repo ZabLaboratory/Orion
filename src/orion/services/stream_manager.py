@@ -123,6 +123,7 @@ async def start_stream(
     )
     stream.whip_endpoint = _build_whip_url(stream.mediamtx_path, new_token)
     await db.flush()
+    await db.refresh(stream)
     return stream
 
 
@@ -155,6 +156,7 @@ async def stop_stream(
     stream.state = StreamState.ENDED
     stream.ended_at = datetime.now(tz=UTC)
     await db.flush()
+    await db.refresh(stream)
     return stream
 
 

@@ -56,7 +56,11 @@ class Stream(Base):
     )
 
     state: Mapped[StreamState] = mapped_column(
-        Enum(StreamState, name="stream_state"),
+        Enum(
+            StreamState,
+            name="stream_state",
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+        ),
         nullable=False,
         default=StreamState.PENDING,
         index=True,

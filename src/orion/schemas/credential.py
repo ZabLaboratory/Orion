@@ -30,7 +30,7 @@ class CredentialRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
-    owner_id: uuid.UUID
+    owner_id: uuid.UUID | None
     label: str
     channel_login: str | None
     channel_id: str | None

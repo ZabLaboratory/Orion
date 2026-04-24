@@ -54,7 +54,7 @@ class MediaMTXClient:
 
     async def delete_path(self, name: str) -> None:
         """Remove a MediaMTX path. No-op if it does not exist."""
-        r = await self._client.post(f"/v3/config/paths/delete/{name}")
+        r = await self._client.delete(f"/v3/config/paths/delete/{name}")
         if r.status_code == 404:
             return
         if r.status_code >= 300:

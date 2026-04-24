@@ -27,8 +27,8 @@ def upgrade() -> None:
     # Postgres gen_random_uuid() lives in pgcrypto (Postgres 13+).
     op.execute('CREATE EXTENSION IF NOT EXISTS "pgcrypto"')
 
-    stream_state = postgresql.ENUM(*STREAM_STATE_VALUES, name="stream_state")
-    stream_state.create(op.get_bind(), checkfirst=True)
+    stream_state_type = postgresql.ENUM(*STREAM_STATE_VALUES, name="stream_state", create_type=False)
+    stream_state_type.create(op.get_bind(), checkfirst=True)
 
     op.create_table(
         "scenes",
@@ -55,7 +55,7 @@ def upgrade() -> None:
     op.create_table(
         "twitch_credentials",
         sa.Column("id", postgresql.UUID(as_uuid=True), nullable=False, server_default=sa.text("gen_random_uuid()")),
-        sa.Column("owner_id", postgresql.UUID(as_uuid=True), nullable=False),
+        sa.Column("owner_id", postgresql.UUID(as_uuid=True), nullable=True),
         sa.Column("label", sa.String(length=255), nullable=False),
         sa.Column("channel_login", sa.String(length=255), nullable=True),
         sa.Column("channel_id", sa.String(length=64), nullable=True),
@@ -81,7 +81,7 @@ def upgrade() -> None:
         sa.Column("credential_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column(
             "state",
-            sa.Enum(*STREAM_STATE_VALUES, name="stream_state", create_type=False),
+            postgresql.ENUM(*STREAM_STATE_VALUES, name="stream_state", create_type=False),
             nullable=False,
             server_default=sa.text("'pending'::stream_state"),
         ),
@@ -223,5 +223,5 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_scenes_owner_id"), table_name="scenes")
     op.drop_table("scenes")
 
-    stream_state = postgresql.ENUM(*STREAM_STATE_VALUES, name="stream_state")
-    stream_state.drop(op.get_bind(), checkfirst=True)
+    stream_state_type = postgresql.ENUM(*STREAM_STATE_VALUES, name="stream_state", create_type=False)
+    stream_state_type.drop(op.get_bind(), checkfirst=True)

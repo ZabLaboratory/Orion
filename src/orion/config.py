@@ -2,7 +2,6 @@
 
 from pathlib import Path
 
-from pydantic import Field
 from pydantic_settings import BaseSettings
 
 _ENV_FILE = Path(__file__).resolve().parents[3] / ".env.orion"
@@ -38,8 +37,6 @@ class Settings(BaseSettings):
 
     # Ingress token TTL (seconds) — short-lived single-use token embedded in WHIP URL
     ingress_token_ttl_seconds: int = 300
-
-    cors_origins: list[str] = Field(default_factory=list)
 
     model_config = {
         "env_file": str(_ENV_FILE) if _ENV_FILE.exists() else None,

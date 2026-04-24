@@ -16,6 +16,18 @@ apiAddress: :9997
 apiEncryption: no
 apiAllowOrigin: '*'
 
+# --- External authentication ---------------------------------------------
+# Orion validates the ingress token that the browser appends as
+#   ?token=<ingress_token>
+# to the WHIP URL. We only gate publish — read paths stay permissive to keep
+# the HLS preview (and debug via the control API) usable.
+authMethod: http
+authHTTPAddress: http://orion-api:4007/mediamtx/auth
+authHTTPExclude:
+  - action: api
+  - action: metrics
+  - action: pprof
+
 # --- Protocol endpoints ---------------------------------------------------
 rtsp: yes
 rtspAddress: :8554
