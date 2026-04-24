@@ -46,14 +46,21 @@ class CallbackPayload(BaseModel):
     state: str
 
 
-def _state_envelope(credential_id: uuid.UUID) -> tuple[str, str]:
+def _state_envelope(
+    credential_id: uuid.UUID, redirect_uri: str
+) -> tuple[str, str]:
     """Build the ``state`` carried through the OAuth round-trip.
 
-    Returns ``(state_token, raw_state)``. The state token is HMAC-signed against the
-    encryption key so the callback cannot be spoofed.
+    The redirect_uri is signed into the state so the callback can reuse the
+    exact same URI during the token exchange — Twitch (and RFC 6749 §4.1.3)
+    require redirect_uri to match byte-for-byte between authorize and exchange.
+
+    Returns ``(state_token, raw_state)``. The state token is HMAC-signed against
+    the encryption key so the callback cannot be spoofed.
     """
     payload = {
         "credential_id": str(credential_id),
+        "redirect_uri": redirect_uri,
         "nonce": secrets.token_urlsafe(12),
         "ts": int(time.time()),
     }
@@ -62,6 +69,18 @@ def _state_envelope(credential_id: uuid.UUID) -> tuple[str, str]:
     mac = hmac.new(key, raw.encode(), hashlib.sha256).digest()
     token = base64.urlsafe_b64encode(raw.encode() + b"." + mac).decode()
     return token, raw
+
+
+def _is_allowed_redirect_uri(uri: str) -> bool:
+    """Accept the configured web URI or any http loopback (desktop pattern)."""
+    if uri == settings.twitch_oauth_redirect_uri:
+        return True
+    from urllib.parse import urlparse
+
+    parsed = urlparse(uri)
+    if parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1"):
+        return True
+    return False
 
 
 def _verify_state(state_token: str) -> dict[str, Any]:
@@ -85,15 +104,29 @@ def _verify_state(state_token: str) -> dict[str, Any]:
 @router.post("/oauth/authorize", response_model=AuthorizeResponse)
 async def authorize(
     credential_id: uuid.UUID,
+    redirect_uri: str | None = None,
     user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> AuthorizeResponse:
     cred = await db.get(TwitchCredential, credential_id)
     if cred is None or cred.owner_id != user_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Credential not found.")
-    state_token, _ = _state_envelope(credential_id)
+
+    effective_redirect = redirect_uri or settings.twitch_oauth_redirect_uri
+    if not _is_allowed_redirect_uri(effective_redirect):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "redirect_uri not allowed. Use the configured web URI or an "
+                "http://localhost:* loopback."
+            ),
+        )
+
+    state_token, _ = _state_envelope(credential_id, effective_redirect)
     return AuthorizeResponse(
-        redirect_url=twitch_helix.authorize_url(state_token),
+        redirect_url=twitch_helix.authorize_url(
+            state_token, redirect_uri=effective_redirect
+        ),
         state=state_token,
     )
 
@@ -110,7 +143,10 @@ async def oauth_callback(
     if cred is None or cred.owner_id != user_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Credential not found.")
 
-    tokens = await twitch_helix.exchange_code(payload.code)
+    # The redirect_uri used during the authorize step is pinned in the signed
+    # state and must be echoed byte-for-byte to Twitch during the exchange.
+    redirect_uri = state.get("redirect_uri") or settings.twitch_oauth_redirect_uri
+    tokens = await twitch_helix.exchange_code(payload.code, redirect_uri=redirect_uri)
     access_token = tokens["access_token"]
     channel_id: str | None = None
     channel_login: str | None = None

@@ -36,13 +36,17 @@ class TwitchAPIError(RuntimeError):
     """Non-2xx response from the Twitch API."""
 
 
-def authorize_url(state: str, scopes: tuple[str, ...] = REQUIRED_SCOPES) -> str:
+def authorize_url(
+    state: str,
+    scopes: tuple[str, ...] = REQUIRED_SCOPES,
+    redirect_uri: str | None = None,
+) -> str:
     """Build the authorization redirect URL for the user."""
     if not settings.twitch_client_id:
         raise TwitchAPIError("TWITCH_CLIENT_ID not configured.")
     params = {
         "client_id": settings.twitch_client_id,
-        "redirect_uri": settings.twitch_oauth_redirect_uri,
+        "redirect_uri": redirect_uri or settings.twitch_oauth_redirect_uri,
         "response_type": "code",
         "scope": " ".join(scopes),
         "state": state,
@@ -53,8 +57,12 @@ def authorize_url(state: str, scopes: tuple[str, ...] = REQUIRED_SCOPES) -> str:
     return f"{_AUTH_BASE}/oauth2/authorize?{urlencode(params)}"
 
 
-async def exchange_code(code: str) -> dict[str, Any]:
-    """Exchange an OAuth ``code`` for tokens. Returns the raw Twitch payload."""
+async def exchange_code(code: str, redirect_uri: str | None = None) -> dict[str, Any]:
+    """Exchange an OAuth ``code`` for tokens. Returns the raw Twitch payload.
+
+    ``redirect_uri`` MUST be identical to the one used during the authorize
+    step — Twitch (per RFC 6749 §4.1.3) rejects the exchange otherwise.
+    """
     if not (settings.twitch_client_id and settings.twitch_client_secret):
         raise TwitchAPIError("Twitch client credentials not configured.")
 
@@ -66,7 +74,7 @@ async def exchange_code(code: str) -> dict[str, Any]:
                 "client_secret": settings.twitch_client_secret,
                 "code": code,
                 "grant_type": "authorization_code",
-                "redirect_uri": settings.twitch_oauth_redirect_uri,
+                "redirect_uri": redirect_uri or settings.twitch_oauth_redirect_uri,
             },
         )
     if r.status_code >= 300:
