@@ -99,42 +99,38 @@ def build_twitch_relay_config(
     *,
     record: bool = False,
     stream_id: str | None = None,
+    extra_destinations: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Build a MediaMTX path config that accepts WHIP and pushes RTMP to Twitch.
+    """Build a MediaMTX path config that accepts WHIP and fans out via ffmpeg.
 
     The browser publisher sends WebRTC's default codecs (VP8 + Opus). Twitch's
     RTMP ingest only accepts H264 + AAC, so we can't ``-c copy`` — ffmpeg has
     to transcode on the VPS. ``StreamingParams`` (set on the Stream row by
-    Orion's API) drives every encoder knob:
+    Orion's API) drives every encoder knob.
 
-    - ``-c:v libx264 -preset <encoder_preset>`` : CPU-only (VPS has no GPU);
-      ``veryfast`` is a reasonable default for 1080p30 at 6 Mbps.
-    - ``-s WIDTHxHEIGHT -r FPS`` : ffmpeg downscales / drops frames if the
-      ingest sends something larger; matches Twitch's recommended ladder.
-    - ``-g <keyframe_interval_s * fps>`` : Twitch enforces a hard 2 s
-      keyframe interval; default is 60 (= 2 s @ 30 fps).
-    - ``-b:v / -maxrate / -bufsize`` : capped at the configured bitrate;
-      Twitch Partner tier caps at 6000 kbps, Affiliate at 8000 kbps.
-    - ``-c:a aac -b:a <audio_bitrate_kbps> -ar 48000 -ac 2`` : universal
-      Twitch baseline (160 kbps stereo 48 kHz default).
+    The legacy single-Twitch path is preserved: when ``record=False`` and
+    ``extra_destinations`` is empty, ffmpeg uses a plain ``-f flv <twitch_url>``
+    output. Otherwise we switch to the ``tee`` pseudo-muxer with one branch
+    per output (Twitch + extras + optional MP4 recording). Each tee branch
+    carries ``onfail=ignore`` so a single output's failure (Twitch flap,
+    YouTube reject, disk full) doesn't kill the others.
 
     ``runOnReadyRestart`` keeps the child alive across a brief publisher drop
     (ICE restart, WiFi blip) — MediaMTX respawns ffmpeg as soon as the path is
-    ready again.
+    ready again. Each respawn opens a fresh recording file (timestamped at
+    spawn time) so the previous segment is preserved intact.
 
-    When ``record=True``, ffmpeg writes a second MP4 output to
-    ``/recordings/<stream_id>/<timestamp>.mp4`` via the ``tee`` pseudo-muxer
-    so we get both Twitch RTMP push and an on-disk recording from a single
-    transcode pass. The ``onfail=ignore`` flag on each tee branch keeps the
-    other branch alive if one fails (e.g. a brief Twitch ingress flap leaves
-    recording untouched). Requires ``stream_id`` so we can scope the path.
+    ``extra_destinations`` is a list of fully-qualified RTMP URLs *with the
+    stream key already appended* (e.g. ``rtmp://a.rtmp.youtube.com/live2/<key>``).
+    The caller is responsible for joining url + key — Orion's
+    ``stream_manager`` does this from decrypted ``StreamDestination`` rows.
     """
     p = params or StreamingParams()
     twitch_url = f"{settings.twitch_rtmp_base}/{stream_key}"
     keyint = max(1, p.keyframe_interval_s * p.fps)
     bufsize_kbps = p.video_bitrate_kbps * 2
 
-    # Common encoder block — emitted once whether we record or not.
+    # Common encoder block — emitted once regardless of output count.
     encoder_args = (
         f"-c:v libx264 -preset {p.encoder_preset} -pix_fmt yuv420p "
         f"-s {p.width}x{p.height} -r {p.fps} "
@@ -143,40 +139,56 @@ def build_twitch_relay_config(
         f"-c:a aac -b:a {p.audio_bitrate_kbps}k -ar 48000 -ac 2 "
     )
 
-    if record and stream_id:
-        # Tee pseudo-muxer: single encode, two outputs. ``onfail=ignore`` so a
-        # Twitch ingress flap doesn't kill the recording, and vice versa. The
-        # ``%Y-%m-%d_%H-%M-%S`` timestamp is interpolated by ffmpeg's strftime
-        # support; ``-strftime 1`` enables it on the segment muxer side, but
-        # for ``tee`` we have to bake the timestamp at command-build time
-        # since ``-y`` doesn't reach the tee branch options. The MediaMTX
-        # restart loop will write a fresh file each time ffmpeg respawns,
-        # which is the correct behaviour — every "broadcast restart" gets its
-        # own MP4.
-        from datetime import UTC, datetime
-        ts = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S")
-        record_path = f"/recordings/{stream_id}/{ts}.mp4"
-        # Ensure the per-stream directory exists before tee opens the file.
-        # `mkdir -p` is idempotent and cheap enough to invoke on every spawn.
-        output_args = (
-            f"-flags +global_header "
-            f'-f tee "[f=flv:onfail=ignore]{twitch_url}|'
-            f'[f=mp4:onfail=ignore:movflags=+faststart]{record_path}"'
-        )
-        ffmpeg_cmd = (
-            f"sh -c 'mkdir -p /recordings/{stream_id} && "
-            f"exec ffmpeg -hide_banner -loglevel warning "
-            f"-fflags nobuffer -rtsp_transport tcp "
-            f"-i rtsp://localhost:8554/{path_name} "
-            f"{encoder_args}{output_args}'"
-        )
-    else:
+    extras = list(extra_destinations or [])
+    needs_tee = record or bool(extras)
+
+    if not needs_tee:
+        # Single output — keep the legacy code path. Smaller blast radius.
         ffmpeg_cmd = (
             "ffmpeg -hide_banner -loglevel warning "
             "-fflags nobuffer -rtsp_transport tcp "
             f"-i rtsp://localhost:8554/{path_name} "
             f"{encoder_args}-f flv {twitch_url}"
         )
+    else:
+        # Tee pseudo-muxer: single encode, N outputs. ``onfail=ignore`` so any
+        # one branch dying doesn't take the others with it.
+        branches: list[str] = [f"[f=flv:onfail=ignore]{twitch_url}"]
+        for url in extras:
+            branches.append(f"[f=flv:onfail=ignore]{url}")
+
+        record_path: str | None = None
+        if record and stream_id:
+            from datetime import UTC, datetime
+            ts = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S")
+            record_path = f"/recordings/{stream_id}/{ts}.mp4"
+            branches.append(
+                f"[f=mp4:onfail=ignore:movflags=+faststart]{record_path}"
+            )
+
+        tee_arg = "|".join(branches)
+        # ``-flags +global_header`` is required by tee'd MP4 + flv branches —
+        # the MP4 muxer needs SPS/PPS in extradata, not inline.
+        output_args = f'-flags +global_header -f tee "{tee_arg}"'
+
+        if record_path:
+            ffmpeg_cmd = (
+                f"sh -c 'mkdir -p /recordings/{stream_id} && "
+                f"exec ffmpeg -hide_banner -loglevel warning "
+                f"-fflags nobuffer -rtsp_transport tcp "
+                f"-i rtsp://localhost:8554/{path_name} "
+                f"{encoder_args}{output_args}'"
+            )
+        else:
+            # No recording → skip the mkdir, run ffmpeg directly. Same
+            # tee command, just no MP4 branch.
+            ffmpeg_cmd = (
+                f"ffmpeg -hide_banner -loglevel warning "
+                f"-fflags nobuffer -rtsp_transport tcp "
+                f"-i rtsp://localhost:8554/{path_name} "
+                f"{encoder_args}{output_args}"
+            )
+
     return {
         "source": "publisher",
         "sourceOnDemand": False,
