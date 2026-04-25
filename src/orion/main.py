@@ -15,7 +15,16 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from orion.database import engine
-from orion.routes import chat, credentials, health, mediamtx_auth, metrics, streams, twitch
+from orion.routes import (
+    chat,
+    credentials,
+    destinations,
+    health,
+    mediamtx_auth,
+    metrics,
+    streams,
+    twitch,
+)
 from orion.services.chat_supervisor import supervisor as chat_supervisor
 
 
@@ -45,6 +54,7 @@ app.include_router(health.router)
 # not an API consumer. This path is on the internal network only.
 app.include_router(mediamtx_auth.router)
 app.include_router(streams.router, prefix="/api/v1")
+app.include_router(destinations.router, prefix="/api/v1")
 app.include_router(credentials.router, prefix="/api/v1")
 app.include_router(twitch.router, prefix="/api/v1")
 app.include_router(chat.router, prefix="/api/v1")

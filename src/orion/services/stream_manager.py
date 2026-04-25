@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from orion.config import settings
 from orion.models.credential import TwitchCredential
+from orion.models.destination import StreamDestination
 from orion.models.stream import Stream, StreamState
 from orion.services import encryption
 from orion.services.mediamtx import (
@@ -40,6 +41,33 @@ def _path_name_for(stream_id: uuid.UUID) -> str:
 def _build_whip_url(path_name: str, ingress_token: str) -> str:
     base = settings.mediamtx_public_whip_base.rstrip("/")
     return f"{base}/{path_name}/whip?token={ingress_token}"
+
+
+async def _build_extra_destination_urls(
+    db: AsyncSession, stream_id: uuid.UUID,
+) -> list[str]:
+    """Decrypt every enabled StreamDestination for the stream and return the
+    fully-qualified RTMP URLs (server URL + stream key joined with ``/``).
+
+    The legacy Twitch credential is NOT included here — ``start_stream``
+    handles that separately. This helper only adds extras (Twitch
+    co-streaming, YouTube Live, Facebook Live, custom RTMP) on top.
+    """
+    rows = await db.execute(
+        select(StreamDestination)
+        .where(
+            StreamDestination.stream_id == stream_id,
+            StreamDestination.enabled.is_(True),
+        )
+        .order_by(StreamDestination.ordering, StreamDestination.created_at),
+    )
+    urls: list[str] = []
+    for dest in rows.scalars().all():
+        url = encryption.decrypt(dest.rtmp_url_ciphertext, dest.rtmp_url_nonce)
+        key = encryption.decrypt(dest.stream_key_ciphertext, dest.stream_key_nonce)
+        # Strip a single trailing slash so we don't end up with `//<key>`.
+        urls.append(f"{url.rstrip('/')}/{key}")
+    return urls
 
 
 def _streaming_params_from(stream: Stream) -> StreamingParams:
@@ -136,12 +164,14 @@ async def start_stream(
         raise StreamManagerError("Credential was deleted")
 
     stream_key = encryption.decrypt(credential.stream_key_ciphertext, credential.stream_key_nonce)
+    extra_urls = await _build_extra_destination_urls(db, stream.id)
     config = build_twitch_relay_config(
         stream_key,
         stream.mediamtx_path,
         _streaming_params_from(stream),
         record=stream.record,
         stream_id=str(stream.id),
+        extra_destinations=extra_urls,
     )
 
     try:
