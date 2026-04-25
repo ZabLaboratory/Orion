@@ -20,6 +20,7 @@ class StreamCreate(BaseModel):
     """
 
     overlay_id: uuid.UUID | None = None
+    overlay_playlist: list[uuid.UUID] = Field(default_factory=list)
     credential_id: uuid.UUID
 
     # Streaming parameters consumed by ffmpeg at start_stream time. All
@@ -48,6 +49,7 @@ class StreamUpdate(BaseModel):
     """
 
     overlay_id: uuid.UUID | None = None
+    overlay_playlist: list[uuid.UUID] | None = None
     target_width: int | None = Field(default=None, ge=320, le=3840)
     target_height: int | None = Field(default=None, ge=240, le=2160)
     target_fps: int | None = Field(default=None, ge=1, le=120)
@@ -64,6 +66,7 @@ class StreamRead(BaseModel):
     id: uuid.UUID
     owner_id: uuid.UUID | None
     overlay_id: uuid.UUID | None
+    overlay_playlist: list[uuid.UUID] = Field(default_factory=list)
     credential_id: uuid.UUID
     state: StreamState
     mediamtx_path: str
@@ -90,6 +93,7 @@ class StreamSummary(BaseModel):
 
     id: uuid.UUID
     overlay_id: uuid.UUID | None
+    overlay_playlist: list[uuid.UUID] = Field(default_factory=list)
     credential_id: uuid.UUID
     state: StreamState
     target_width: int
@@ -107,3 +111,13 @@ class StreamStartResponse(BaseModel):
     stream: StreamRead
     whip_url: str  # full URL the browser sends its SDP offer to
     ice_servers: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class ActivateOverlayRequest(BaseModel):
+    """``POST /streams/{id}/active-overlay`` body — switch the live
+    overlay to one already in the stream's ``overlay_playlist``. The
+    server-side check refuses ids outside the playlist so a stale or
+    rogue request can't blank the broadcast. ``None`` clears the
+    active overlay (raw camera fallback)."""
+
+    overlay_id: uuid.UUID | None = None

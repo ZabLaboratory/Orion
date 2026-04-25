@@ -13,6 +13,60 @@ If a section is missing, the release publishes with empty notes.
 
 _Nothing staged yet._
 
+## [0.3.0] - 2026-04-25
+
+Phase 4 — scene-switcher. Streams gain a curated overlay playlist + a
+dedicated endpoint to swap the active overlay live, plus a state
+WebSocket that fans the change out to every subscribed client (the
+broadcaster, mobile companion, Stream Deck plugin via Companion). The
+piece that turns Orion from "single-overlay broadcast pipe" into "OBS-
+class scene switcher", with WHIP session preserved across switches.
+
+### Added
+
+- **`streams.overlay_playlist`** — JSONB column carrying the list of
+  overlay ids the operator can swap to live. Pre-declared at stream
+  creation (or via `PUT /streams/{id}` while not LIVE), so a stale
+  macro request can't activate an arbitrary overlay and blank the
+  broadcast.
+- **`POST /api/v1/streams/{id}/active-overlay`** — focused endpoint
+  designed to fire mid-broadcast. Validates that the new overlay id
+  is in the stream's playlist (or `None` to clear → raw camera
+  fallback). Unlike `PUT /streams/{id}` which refuses while LIVE,
+  this one is *the* live-edit path. Persists, commits, then publishes
+  an `active_overlay_changed` event.
+- **`WS /api/v1/streams/{id}/state`** — live event stream for one
+  stream. Forwards every JSON frame published on
+  `stream_event_bus`. Today carries `active_overlay_changed` and
+  `state_changed` (lifecycle); new event types are additive — clients
+  ignore unknown `event` strings.
+- **`StreamEventBus`** — in-process pub/sub primitive (mirrors the
+  existing `ChatEventBus`). Per-stream queues with overflow drop-
+  oldest semantics — slow subscribers can't pin RAM. Replace with
+  Redis pub/sub if Orion ever scales beyond one replica.
+
+### Changed
+
+- `start_stream` / `stop_stream` routes now publish `state_changed`
+  events on commit so subscribers see lifecycle transitions on the
+  same channel as overlay switches — one socket, both feeds.
+- `StreamCreate` / `StreamUpdate` / `StreamRead` / `StreamSummary`
+  carry `overlay_playlist`. UUID values are serialised to strings on
+  disk (JSONB-friendly) and coerced back at the schema layer.
+- Reversible alembic migration `0003_playlist` adds the column with
+  server default `'[]'::jsonb` so existing rows pick up the new shape
+  without a backfill step.
+
+### Notes
+
+- Phase 4 unlocks two follow-ons: the **mobile companion app**
+  (Capacitor + the same Orion API) and **macro integrations**
+  (Stream Deck plugin or Bitfocus Companion module). All three
+  surfaces consume the same operator command set —
+  `start`/`stop`/`active-overlay` over HTTP plus the state WS.
+- The renderer-side change (broadcaster re-mounts overlay on switch
+  while preserving the WHIP MediaStream) ships in Prism v0.12.0.
+
 ## [0.2.0] - 2026-04-25
 
 <!-- commits-since: v0.1.0 -->

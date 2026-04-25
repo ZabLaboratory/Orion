@@ -60,6 +60,7 @@ async def create_stream(
     owner_id: uuid.UUID | None,
     overlay_id: uuid.UUID | None,
     credential_id: uuid.UUID,
+    overlay_playlist: list[uuid.UUID] | None = None,
     target_width: int = 1920,
     target_height: int = 1080,
     target_fps: int = 30,
@@ -83,9 +84,15 @@ async def create_stream(
     ingress_token = secrets.token_urlsafe(32)
     expires_at = datetime.now(tz=UTC) + timedelta(seconds=settings.ingress_token_ttl_seconds)
 
+    # Soft-pointer ids on the wire are uuid.UUID; on disk they live in JSONB
+    # as strings, so we serialise here once. The reverse path (read-side) is
+    # handled by the Pydantic schema's UUID coercion.
+    playlist_serialised = [str(o) for o in overlay_playlist or []]
+
     stream = Stream(
         owner_id=owner_id,
         overlay_id=overlay_id,
+        overlay_playlist=playlist_serialised,
         credential_id=credential.id,
         state=StreamState.PENDING,
         mediamtx_path=path_name,
@@ -176,6 +183,33 @@ async def stop_stream(
 
     stream.state = StreamState.ENDED
     stream.ended_at = datetime.now(tz=UTC)
+    await db.flush()
+    await db.refresh(stream)
+    return stream
+
+
+async def activate_overlay(
+    db: AsyncSession,
+    stream: Stream,
+    overlay_id: uuid.UUID | None,
+) -> Stream:
+    """Switch the live overlay on this stream — the scene-switcher.
+
+    Validates that ``overlay_id`` is in the stream's ``overlay_playlist``
+    (or is ``None`` to clear the overlay) before persisting. The
+    broadcaster picks up the change via the ``/streams/{id}/state``
+    WebSocket and re-renders the canvas without tearing down its
+    WHIP MediaStream — switching scenes mid-broadcast doesn't drop a
+    frame on the wire.
+    """
+    if overlay_id is not None:
+        playlist = stream.overlay_playlist or []
+        if str(overlay_id) not in playlist:
+            raise StreamManagerError(
+                f"Overlay {overlay_id} is not in the stream's playlist; add it to "
+                "``overlay_playlist`` before activating",
+            )
+    stream.overlay_id = overlay_id
     await db.flush()
     await db.refresh(stream)
     return stream

@@ -51,10 +51,23 @@ class Stream(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
-    # Soft pointer into ZabCanvas. No FK — Orion mustn't crash if ZabCanvas is
-    # offline or if the overlay is later deleted there. Nullable so a stream
-    # can run without an overlay (raw webcam test, blackhole publish, etc.).
+    # Soft pointer into ZabCanvas — the *currently active* overlay. No FK —
+    # Orion mustn't crash if ZabCanvas is offline or if the overlay is later
+    # deleted there. Nullable so a stream can run without an overlay (raw
+    # webcam test, blackhole publish, etc.). Switching the active overlay
+    # mid-stream is the scene-switcher: the broadcaster re-renders without
+    # tearing down the WHIP session, so latency on the wire is preserved.
     overlay_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+
+    # Playlist of overlay ids the operator can swap to live. Stored as
+    # ``list[str(uuid)]`` in JSONB; soft pointers like ``overlay_id``.
+    # The first call to ``activate_overlay`` will refuse to set an
+    # ``overlay_id`` that isn't in this list, so the macro/mobile clients
+    # only switch between vetted scenes — defending against a stale id
+    # that would blank the broadcast.
+    overlay_playlist: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, default=list,
+    )
 
     credential_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
