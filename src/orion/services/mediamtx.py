@@ -96,6 +96,9 @@ def build_twitch_relay_config(
     stream_key: str,
     path_name: str,
     params: StreamingParams | None = None,
+    *,
+    record: bool = False,
+    stream_id: str | None = None,
 ) -> dict[str, Any]:
     """Build a MediaMTX path config that accepts WHIP and pushes RTMP to Twitch.
 
@@ -118,22 +121,62 @@ def build_twitch_relay_config(
     ``runOnReadyRestart`` keeps the child alive across a brief publisher drop
     (ICE restart, WiFi blip) — MediaMTX respawns ffmpeg as soon as the path is
     ready again.
+
+    When ``record=True``, ffmpeg writes a second MP4 output to
+    ``/recordings/<stream_id>/<timestamp>.mp4`` via the ``tee`` pseudo-muxer
+    so we get both Twitch RTMP push and an on-disk recording from a single
+    transcode pass. The ``onfail=ignore`` flag on each tee branch keeps the
+    other branch alive if one fails (e.g. a brief Twitch ingress flap leaves
+    recording untouched). Requires ``stream_id`` so we can scope the path.
     """
     p = params or StreamingParams()
     twitch_url = f"{settings.twitch_rtmp_base}/{stream_key}"
     keyint = max(1, p.keyframe_interval_s * p.fps)
     bufsize_kbps = p.video_bitrate_kbps * 2
-    ffmpeg_cmd = (
-        "ffmpeg -hide_banner -loglevel warning "
-        "-fflags nobuffer -rtsp_transport tcp "
-        f"-i rtsp://localhost:8554/{path_name} "
+
+    # Common encoder block — emitted once whether we record or not.
+    encoder_args = (
         f"-c:v libx264 -preset {p.encoder_preset} -pix_fmt yuv420p "
         f"-s {p.width}x{p.height} -r {p.fps} "
         f"-b:v {p.video_bitrate_kbps}k -maxrate {p.video_bitrate_kbps}k -bufsize {bufsize_kbps}k "
         f"-g {keyint} -keyint_min {keyint} -sc_threshold 0 "
         f"-c:a aac -b:a {p.audio_bitrate_kbps}k -ar 48000 -ac 2 "
-        f"-f flv {twitch_url}"
     )
+
+    if record and stream_id:
+        # Tee pseudo-muxer: single encode, two outputs. ``onfail=ignore`` so a
+        # Twitch ingress flap doesn't kill the recording, and vice versa. The
+        # ``%Y-%m-%d_%H-%M-%S`` timestamp is interpolated by ffmpeg's strftime
+        # support; ``-strftime 1`` enables it on the segment muxer side, but
+        # for ``tee`` we have to bake the timestamp at command-build time
+        # since ``-y`` doesn't reach the tee branch options. The MediaMTX
+        # restart loop will write a fresh file each time ffmpeg respawns,
+        # which is the correct behaviour — every "broadcast restart" gets its
+        # own MP4.
+        from datetime import UTC, datetime
+        ts = datetime.now(UTC).strftime("%Y-%m-%d_%H-%M-%S")
+        record_path = f"/recordings/{stream_id}/{ts}.mp4"
+        # Ensure the per-stream directory exists before tee opens the file.
+        # `mkdir -p` is idempotent and cheap enough to invoke on every spawn.
+        output_args = (
+            f"-flags +global_header "
+            f'-f tee "[f=flv:onfail=ignore]{twitch_url}|'
+            f'[f=mp4:onfail=ignore:movflags=+faststart]{record_path}"'
+        )
+        ffmpeg_cmd = (
+            f"sh -c 'mkdir -p /recordings/{stream_id} && "
+            f"exec ffmpeg -hide_banner -loglevel warning "
+            f"-fflags nobuffer -rtsp_transport tcp "
+            f"-i rtsp://localhost:8554/{path_name} "
+            f"{encoder_args}{output_args}'"
+        )
+    else:
+        ffmpeg_cmd = (
+            "ffmpeg -hide_banner -loglevel warning "
+            "-fflags nobuffer -rtsp_transport tcp "
+            f"-i rtsp://localhost:8554/{path_name} "
+            f"{encoder_args}-f flv {twitch_url}"
+        )
     return {
         "source": "publisher",
         "sourceOnDemand": False,

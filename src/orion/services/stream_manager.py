@@ -68,6 +68,7 @@ async def create_stream(
     audio_bitrate_kbps: int = 160,
     keyframe_interval_s: int = 2,
     encoder_preset: str = "veryfast",
+    record: bool = False,
     metadata: dict[str, object] | None = None,
 ) -> Stream:
     """Register a new stream in ``pending`` state.
@@ -106,6 +107,7 @@ async def create_stream(
         audio_bitrate_kbps=audio_bitrate_kbps,
         keyframe_interval_s=keyframe_interval_s,
         encoder_preset=encoder_preset,
+        record=record,
         metadata_=metadata or {},
     )
     db.add(stream)
@@ -134,7 +136,13 @@ async def start_stream(
         raise StreamManagerError("Credential was deleted")
 
     stream_key = encryption.decrypt(credential.stream_key_ciphertext, credential.stream_key_nonce)
-    config = build_twitch_relay_config(stream_key, stream.mediamtx_path, _streaming_params_from(stream))
+    config = build_twitch_relay_config(
+        stream_key,
+        stream.mediamtx_path,
+        _streaming_params_from(stream),
+        record=stream.record,
+        stream_id=str(stream.id),
+    )
 
     try:
         await mediamtx.replace_path(stream.mediamtx_path, config)

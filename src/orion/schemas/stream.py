@@ -32,6 +32,12 @@ class StreamCreate(BaseModel):
     audio_bitrate_kbps: int = Field(default=160, ge=64, le=320)
     keyframe_interval_s: int = Field(default=2, ge=1, le=10)
     encoder_preset: str = Field(default="veryfast", max_length=32)
+    # When true, MediaMTX's runOnReady ffmpeg writes a second MP4 output to
+    # the orion_recordings volume alongside the RTMP push to Twitch — single
+    # transcode, two destinations via the ffmpeg ``tee`` muxer. Recording
+    # path: ``/recordings/<stream_id>/<isodate>.mp4``. Read-only mid-stream
+    # — the flag is consumed at the next start_stream call.
+    record: bool = False
 
     # Optional title/game/tags set on Twitch channel via Helix if OAuth is connected.
     title: str | None = Field(default=None, max_length=140)
@@ -57,6 +63,7 @@ class StreamUpdate(BaseModel):
     audio_bitrate_kbps: int | None = Field(default=None, ge=64, le=320)
     keyframe_interval_s: int | None = Field(default=None, ge=1, le=10)
     encoder_preset: str | None = Field(default=None, max_length=32)
+    record: bool | None = None
     metadata: dict[str, Any] | None = None
 
 
@@ -80,6 +87,7 @@ class StreamRead(BaseModel):
     audio_bitrate_kbps: int
     keyframe_interval_s: int
     encoder_preset: str
+    record: bool
     started_at: datetime | None
     ended_at: datetime | None
     error_message: str | None

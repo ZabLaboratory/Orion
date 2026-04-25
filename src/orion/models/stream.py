@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -110,6 +110,14 @@ class Stream(Base):
     audio_bitrate_kbps: Mapped[int] = mapped_column(Integer, nullable=False, default=160)
     keyframe_interval_s: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
     encoder_preset: Mapped[str] = mapped_column(String(32), nullable=False, default="veryfast")
+
+    # When true, the ffmpeg child writes a second output to MP4 alongside
+    # the RTMP push to Twitch — single transcode, two destinations via the
+    # ffmpeg ``tee`` muxer. Recording lands in the ``orion_recordings``
+    # named volume at ``/recordings/<stream_id>/<isodate>.mp4`` (see
+    # services/mediamtx.py::build_twitch_relay_config). Read-only at
+    # mid-stream — toggle only takes effect on the next start.
+    record: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

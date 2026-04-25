@@ -68,6 +68,11 @@ services:
       - "8888"
     volumes:
       - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
+      # Recording target. The runOnReady ffmpeg writes
+      # /recordings/<stream_id>/<timestamp>.mp4 when Stream.record is true.
+      # Read-write inside MediaMTX. orion-api can later mount the same
+      # named volume read-only for download endpoints.
+      - orion_recordings:/recordings
     deploy:
       resources:
         limits:
@@ -85,6 +90,8 @@ services:
 volumes:
   orion_pg_data:
     name: orion_pg_data
+  orion_recordings:
+    name: orion_recordings
 
 networks:
   zab-internal:
