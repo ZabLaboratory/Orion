@@ -111,6 +111,19 @@ jobs:
           APP_PATH="$1"
           cd "$APP_PATH"
 
+          echo "=== Network preflight ==="
+          # Orion uses both networks: zab-internal for the API control
+          # plane and caddy-public for the MediaMTX media endpoint
+          # (orion-media.cyell.dev). Idempotent so re-deploys are no-ops.
+          for net in zab-internal caddy-public; do
+            if ! docker network inspect "$net" >/dev/null 2>&1; then
+              echo "  Creating missing network: $net"
+              docker network create "$net"
+            else
+              echo "  Network present: $net"
+            fi
+          done
+
           echo "=== Build ==="
           docker compose -f docker-compose.prod.yml build --quiet
 
