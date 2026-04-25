@@ -78,6 +78,7 @@ async def create_stream(
             audio_bitrate_kbps=payload.audio_bitrate_kbps,
             keyframe_interval_s=payload.keyframe_interval_s,
             encoder_preset=payload.encoder_preset,
+            record=payload.record,
             metadata=metadata,
         )
     except stream_manager.StreamManagerError as exc:
