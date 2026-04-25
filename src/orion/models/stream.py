@@ -7,7 +7,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Enum, ForeignKey, String
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -30,11 +30,20 @@ class StreamState(enum.StrEnum):
 
 
 class Stream(Base):
-    """One broadcast session binding a Scene to a TwitchCredential.
+    """One broadcast session.
 
-    Orion creates the MediaMTX path, hands a WHIP URL + short-lived ingress token to the
-    browser, and ffmpeg inside MediaMTX pushes the RTMP feed to Twitch using the
-    decrypted stream key.
+    Orion is the streaming control plane — it does NOT author scenes. The visual
+    composition lives in ZabCanvas (`overlays`); blueprint-backed components are
+    hydrated by Blue at render time. ``overlay_id`` is a soft pointer into
+    ZabCanvas (no cross-service FK on purpose — services own their own
+    integrity).
+
+    The streamer's client (Prism today, ZabView fallback) loads the overlay,
+    asks ZabCanvas to resolve blueprints, composes the result onto a canvas,
+    and pushes the canvas as a WebRTC track to the WHIP URL Orion mints. ffmpeg
+    inside MediaMTX transcodes that WebRTC stream to H264/AAC and pushes RTMP
+    to Twitch using the decrypted stream key — with the bitrate/resolution/fps
+    knobs configured here.
     """
 
     __tablename__ = "streams"
@@ -42,12 +51,11 @@ class Stream(Base):
     id: Mapped[uuid.UUID] = uuid_pk()
     owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
-    scene_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("scenes.id", ondelete="RESTRICT"),
-        nullable=False,
-        index=True,
-    )
+    # Soft pointer into ZabCanvas. No FK — Orion mustn't crash if ZabCanvas is
+    # offline or if the overlay is later deleted there. Nullable so a stream
+    # can run without an overlay (raw webcam test, blackhole publish, etc.).
+    overlay_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+
     credential_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("twitch_credentials.id", ondelete="RESTRICT"),
@@ -78,6 +86,17 @@ class Stream(Base):
 
     # Populated by Twitch Helix if OAuth is connected.
     twitch_stream_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    # ---- Streaming parameters -------------------------------------------------
+    # Drive the ffmpeg transcode in build_twitch_relay_config. Tweaking these on
+    # an ENDED stream is fine — they're consumed at the next start_stream.
+    target_width: Mapped[int] = mapped_column(Integer, nullable=False, default=1920)
+    target_height: Mapped[int] = mapped_column(Integer, nullable=False, default=1080)
+    target_fps: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    video_bitrate_kbps: Mapped[int] = mapped_column(Integer, nullable=False, default=6000)
+    audio_bitrate_kbps: Mapped[int] = mapped_column(Integer, nullable=False, default=160)
+    keyframe_interval_s: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    encoder_preset: Mapped[str] = mapped_column(String(32), nullable=False, default="veryfast")
 
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

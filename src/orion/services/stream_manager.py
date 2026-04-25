@@ -17,10 +17,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from orion.config import settings
 from orion.models.credential import TwitchCredential
-from orion.models.scene import Scene
 from orion.models.stream import Stream, StreamState
 from orion.services import encryption
-from orion.services.mediamtx import MediaMTXClient, build_twitch_relay_config
+from orion.services.mediamtx import (
+    MediaMTXClient,
+    StreamingParams,
+    build_twitch_relay_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,46 +42,68 @@ def _build_whip_url(path_name: str, ingress_token: str) -> str:
     return f"{base}/{path_name}/whip?token={ingress_token}"
 
 
+def _streaming_params_from(stream: Stream) -> StreamingParams:
+    return StreamingParams(
+        width=stream.target_width,
+        height=stream.target_height,
+        fps=stream.target_fps,
+        video_bitrate_kbps=stream.video_bitrate_kbps,
+        audio_bitrate_kbps=stream.audio_bitrate_kbps,
+        keyframe_interval_s=stream.keyframe_interval_s,
+        encoder_preset=stream.encoder_preset,
+    )
+
+
 async def create_stream(
     db: AsyncSession,
     *,
     owner_id: uuid.UUID | None,
-    scene_id: uuid.UUID,
+    overlay_id: uuid.UUID | None,
     credential_id: uuid.UUID,
+    target_width: int = 1920,
+    target_height: int = 1080,
+    target_fps: int = 30,
+    video_bitrate_kbps: int = 6000,
+    audio_bitrate_kbps: int = 160,
+    keyframe_interval_s: int = 2,
+    encoder_preset: str = "veryfast",
     metadata: dict[str, object] | None = None,
 ) -> Stream:
     """Register a new stream in ``pending`` state.
 
     Does not talk to MediaMTX — call ``start_stream`` to allocate the path.
+    ``overlay_id`` is a soft pointer into ZabCanvas (no FK is enforced); the
+    stream renderer (Prism / ZabView) is the one that fetches and composes it.
     """
-    scene = await db.get(Scene, scene_id)
     credential = await db.get(TwitchCredential, credential_id)
-    if scene is None:
-        raise StreamManagerError(f"Scene {scene_id} not found")
     if credential is None:
         raise StreamManagerError(f"Credential {credential_id} not found")
 
     path_name = _path_name_for(uuid.uuid4())
     ingress_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(tz=UTC) + timedelta(
-        seconds=settings.ingress_token_ttl_seconds
-    )
+    expires_at = datetime.now(tz=UTC) + timedelta(seconds=settings.ingress_token_ttl_seconds)
 
     stream = Stream(
         owner_id=owner_id,
-        scene_id=scene.id,
+        overlay_id=overlay_id,
         credential_id=credential.id,
         state=StreamState.PENDING,
         mediamtx_path=path_name,
         whip_endpoint=_build_whip_url(path_name, ingress_token),
         ingress_token=ingress_token,
         ingress_token_expires_at=expires_at,
+        target_width=target_width,
+        target_height=target_height,
+        target_fps=target_fps,
+        video_bitrate_kbps=video_bitrate_kbps,
+        audio_bitrate_kbps=audio_bitrate_kbps,
+        keyframe_interval_s=keyframe_interval_s,
+        encoder_preset=encoder_preset,
         metadata_=metadata or {},
     )
     db.add(stream)
     await db.flush()
     await db.refresh(stream)
-    # stream.id generated; path name is already unique because it used a fresh uuid.
     return stream
 
 
@@ -90,20 +115,19 @@ async def start_stream(
     """Provision the MediaMTX path and flip the stream to ``preparing``.
 
     After this returns, the browser has everything it needs (``whip_endpoint``,
-    ``ingress_token``) to POST its WebRTC offer. MediaMTX launches ffmpeg on first
-    publish and the stream transitions to ``live`` on the next successful poll.
+    ``ingress_token``) to POST its WebRTC offer. MediaMTX launches ffmpeg on
+    first publish and the stream transitions to ``live`` on the next successful
+    poll. ffmpeg consumes the streaming parameters stored on the stream row.
     """
     if stream.state not in (StreamState.PENDING, StreamState.ERROR, StreamState.ENDED):
-        raise StreamManagerError(
-            f"Stream {stream.id} cannot be started from state {stream.state.value}"
-        )
+        raise StreamManagerError(f"Stream {stream.id} cannot be started from state {stream.state.value}")
 
     credential = await db.get(TwitchCredential, stream.credential_id)
     if credential is None:
         raise StreamManagerError("Credential was deleted")
 
     stream_key = encryption.decrypt(credential.stream_key_ciphertext, credential.stream_key_nonce)
-    config = build_twitch_relay_config(stream_key, stream.mediamtx_path)
+    config = build_twitch_relay_config(stream_key, stream.mediamtx_path, _streaming_params_from(stream))
 
     try:
         await mediamtx.replace_path(stream.mediamtx_path, config)
@@ -115,12 +139,9 @@ async def start_stream(
 
     stream.state = StreamState.PREPARING
     stream.error_message = None
-    # Refresh the ingress token window — browser has fresh TTL to complete WHIP.
     new_token = secrets.token_urlsafe(32)
     stream.ingress_token = new_token
-    stream.ingress_token_expires_at = datetime.now(tz=UTC) + timedelta(
-        seconds=settings.ingress_token_ttl_seconds
-    )
+    stream.ingress_token_expires_at = datetime.now(tz=UTC) + timedelta(seconds=settings.ingress_token_ttl_seconds)
     stream.whip_endpoint = _build_whip_url(stream.mediamtx_path, new_token)
     await db.flush()
     await db.refresh(stream)

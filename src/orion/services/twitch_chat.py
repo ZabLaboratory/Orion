@@ -119,9 +119,7 @@ class TwitchChatClient:
         self._closed = False
 
     async def connect(self) -> None:
-        self._reader, self._writer = await asyncio.open_connection(
-            _IRC_HOST, _IRC_TLS_PORT, ssl=True
-        )
+        self._reader, self._writer = await asyncio.open_connection(_IRC_HOST, _IRC_TLS_PORT, ssl=True)
         # Request tags + commands + membership capabilities.
         self._send("CAP REQ :twitch.tv/tags twitch.tv/commands twitch.tv/membership")
         self._send(f"PASS oauth:{self._token}")

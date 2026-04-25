@@ -46,9 +46,7 @@ class CallbackPayload(BaseModel):
     state: str
 
 
-def _state_envelope(
-    credential_id: uuid.UUID, redirect_uri: str
-) -> tuple[str, str]:
+def _state_envelope(credential_id: uuid.UUID, redirect_uri: str) -> tuple[str, str]:
     """Build the ``state`` carried through the OAuth round-trip.
 
     The redirect_uri is signed into the state so the callback can reuse the
@@ -116,17 +114,12 @@ async def authorize(
     if not _is_allowed_redirect_uri(effective_redirect):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "redirect_uri not allowed. Use the configured web URI or an "
-                "http://localhost:* loopback."
-            ),
+            detail=("redirect_uri not allowed. Use the configured web URI or an http://localhost:* loopback."),
         )
 
     state_token, _ = _state_envelope(credential_id, effective_redirect)
     return AuthorizeResponse(
-        redirect_url=twitch_helix.authorize_url(
-            state_token, redirect_uri=effective_redirect
-        ),
+        redirect_url=twitch_helix.authorize_url(state_token, redirect_uri=effective_redirect),
         state=state_token,
     )
 

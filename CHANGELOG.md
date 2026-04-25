@@ -13,6 +13,52 @@ If a section is missing, the release publishes with empty notes.
 
 _Nothing staged yet._
 
+## [0.2.0] - 2026-04-25
+
+<!-- commits-since: v0.1.0 -->
+
+### Changed (breaking)
+
+- **Architectural pivot — Orion no longer authors scenes.** Visual
+  composition lives in ZabCanvas (`/canvas/api/v1/overlays`); blueprint
+  components are hydrated by Blue at render time. Orion shrinks down to
+  what's intrinsically a streaming concern: credentials, stream
+  lifecycle, MediaMTX orchestration, Twitch IRC pump.
+  - **Dropped tables**: `scenes`, `chat_components`. Their associated
+    routes, services, and models are gone (`/api/v1/scenes/*`,
+    `/api/v1/chat/components/*`).
+  - **Streams** now point at a ZabCanvas overlay via a soft pointer:
+    `streams.scene_id` (FK) → `streams.overlay_id` (UUID, nullable, no
+    cross-service FK). Orion never dereferences it — the renderer
+    (Prism / ZabView) is the one that fetches and composes.
+  - **Migration `0002_pivot`** drops scenes/chat_components, drops and
+    recreates streams + chat_messages + stream_metrics. Existing
+    streams/scenes/chat data was scaffold and is not preserved.
+
+### Added
+
+- **Streaming parameters on the Stream row** — Orion is now the control
+  panel for every encoder knob. New columns drive the ffmpeg transcode:
+  `target_width`, `target_height`, `target_fps`, `video_bitrate_kbps`,
+  `audio_bitrate_kbps`, `keyframe_interval_s`, `encoder_preset`. Default
+  matches Twitch Partner-tier 1080p30 6 Mbps with a 2 s keyframe
+  interval.
+- **`PUT /api/v1/streams/{id}`** — patch streaming parameters or the
+  overlay reference between sessions. Forbidden while LIVE/PREPARING
+  (would silently drift from the running ffmpeg child).
+- **`build_twitch_relay_config(stream_key, path, params)`** — ffmpeg
+  command line is now templated from a `StreamingParams` dataclass
+  instead of being hardcoded. Tests covering the rendered command stay
+  green.
+
+### Kept
+
+- Twitch credentials (encrypted stream keys + OAuth tokens), MediaMTX
+  external auth webhook, OAuth loopback flow, chat IRC supervisor +
+  `/api/v1/chat/live/{channel}` WS (Blue blueprints subscribe over WS
+  for chat-driven components), `chat_messages` capture for
+  replay/audit.
+
 ## [0.1.0] - 2026-04-24
 
 ### Added

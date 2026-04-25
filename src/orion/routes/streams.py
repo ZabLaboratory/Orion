@@ -11,7 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orion.database import get_session
 from orion.models.stream import Stream, StreamState
 from orion.routes._deps import authenticated_user, mediamtx_client
-from orion.schemas.stream import StreamCreate, StreamRead, StreamStartResponse, StreamSummary
+from orion.schemas.stream import (
+    StreamCreate,
+    StreamRead,
+    StreamStartResponse,
+    StreamSummary,
+    StreamUpdate,
+)
 from orion.services import stream_manager
 from orion.services.mediamtx import MediaMTXClient
 
@@ -46,13 +52,23 @@ async def create_stream(
         "game_id": payload.game_id,
         "tags": payload.tags,
     }
-    stream = await stream_manager.create_stream(
-        db,
-        owner_id=user_id,
-        scene_id=payload.scene_id,
-        credential_id=payload.credential_id,
-        metadata=metadata,
-    )
+    try:
+        stream = await stream_manager.create_stream(
+            db,
+            owner_id=user_id,
+            overlay_id=payload.overlay_id,
+            credential_id=payload.credential_id,
+            target_width=payload.target_width,
+            target_height=payload.target_height,
+            target_fps=payload.target_fps,
+            video_bitrate_kbps=payload.video_bitrate_kbps,
+            audio_bitrate_kbps=payload.audio_bitrate_kbps,
+            keyframe_interval_s=payload.keyframe_interval_s,
+            encoder_preset=payload.encoder_preset,
+            metadata=metadata,
+        )
+    except stream_manager.StreamManagerError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     await db.commit()
     return stream
 
@@ -65,6 +81,38 @@ async def get_stream(
     stream = await db.get(Stream, stream_id)
     if stream is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found.")
+    return stream
+
+
+@router.put("/{stream_id}", response_model=StreamRead)
+async def update_stream(
+    stream_id: uuid.UUID,
+    payload: StreamUpdate,
+    db: AsyncSession = Depends(get_session),
+) -> Stream:
+    """Partial update — only fields present in the body are touched.
+
+    Forbidden while the stream is currently LIVE/PREPARING (would silently
+    drift from what the running ffmpeg session is actually doing). Stop the
+    stream first if you need to swap parameters mid-session.
+    """
+    stream = await db.get(Stream, stream_id)
+    if stream is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stream not found.")
+    if stream.state in (StreamState.PREPARING, StreamState.LIVE):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Stop the stream before editing its parameters.",
+        )
+
+    data = payload.model_dump(exclude_unset=True)
+    if "metadata" in data:
+        stream.metadata_ = data.pop("metadata") or {}
+    for key, value in data.items():
+        setattr(stream, key, value)
+    await db.flush()
+    await db.refresh(stream)
+    await db.commit()
     return stream
 
 

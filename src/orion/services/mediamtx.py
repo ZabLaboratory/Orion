@@ -12,6 +12,7 @@ API reference: https://bluenviron.github.io/mediamtx/ — v3 control API.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -23,6 +24,19 @@ logger = logging.getLogger(__name__)
 
 class MediaMTXError(RuntimeError):
     """Non-2xx response from MediaMTX."""
+
+
+@dataclass(frozen=True)
+class StreamingParams:
+    """Knobs that drive ffmpeg's transcode of the WebRTC ingest into Twitch RTMP."""
+
+    width: int = 1920
+    height: int = 1080
+    fps: int = 30
+    video_bitrate_kbps: int = 6000
+    audio_bitrate_kbps: int = 160
+    keyframe_interval_s: int = 2
+    encoder_preset: str = "veryfast"
 
 
 class MediaMTXClient:
@@ -78,34 +92,46 @@ class MediaMTXClient:
         return data if isinstance(data, dict) else None
 
 
-def build_twitch_relay_config(stream_key: str, path_name: str) -> dict[str, Any]:
+def build_twitch_relay_config(
+    stream_key: str,
+    path_name: str,
+    params: StreamingParams | None = None,
+) -> dict[str, Any]:
     """Build a MediaMTX path config that accepts WHIP and pushes RTMP to Twitch.
 
     The browser publisher sends WebRTC's default codecs (VP8 + Opus). Twitch's
     RTMP ingest only accepts H264 + AAC, so we can't ``-c copy`` — ffmpeg has
-    to transcode on the VPS:
+    to transcode on the VPS. ``StreamingParams`` (set on the Stream row by
+    Orion's API) drives every encoder knob:
 
-    - ``libx264 -preset veryfast`` : CPU-only (VPS has no GPU); veryfast gives
-      a reasonable quality/CPU trade-off for 1080p30 at 6 Mbps.
-    - ``-g 60 -keyint_min 60 -sc_threshold 0`` : 2-second keyframe interval at
-      30 fps (Twitch's requirement; they drop the stream otherwise).
-    - ``-b:v 6000k -maxrate 6000k -bufsize 12000k`` : Twitch Partner tier bitrate
-      cap; drop to 4500/9000 if we ever add a sub-Partner profile.
-    - Audio transcoded to AAC 160 kbps stereo 48 kHz — universal Twitch baseline.
+    - ``-c:v libx264 -preset <encoder_preset>`` : CPU-only (VPS has no GPU);
+      ``veryfast`` is a reasonable default for 1080p30 at 6 Mbps.
+    - ``-s WIDTHxHEIGHT -r FPS`` : ffmpeg downscales / drops frames if the
+      ingest sends something larger; matches Twitch's recommended ladder.
+    - ``-g <keyframe_interval_s * fps>`` : Twitch enforces a hard 2 s
+      keyframe interval; default is 60 (= 2 s @ 30 fps).
+    - ``-b:v / -maxrate / -bufsize`` : capped at the configured bitrate;
+      Twitch Partner tier caps at 6000 kbps, Affiliate at 8000 kbps.
+    - ``-c:a aac -b:a <audio_bitrate_kbps> -ar 48000 -ac 2`` : universal
+      Twitch baseline (160 kbps stereo 48 kHz default).
 
     ``runOnReadyRestart`` keeps the child alive across a brief publisher drop
     (ICE restart, WiFi blip) — MediaMTX respawns ffmpeg as soon as the path is
     ready again.
     """
+    p = params or StreamingParams()
     twitch_url = f"{settings.twitch_rtmp_base}/{stream_key}"
+    keyint = max(1, p.keyframe_interval_s * p.fps)
+    bufsize_kbps = p.video_bitrate_kbps * 2
     ffmpeg_cmd = (
         "ffmpeg -hide_banner -loglevel warning "
         "-fflags nobuffer -rtsp_transport tcp "
         f"-i rtsp://localhost:8554/{path_name} "
-        "-c:v libx264 -preset veryfast -pix_fmt yuv420p "
-        "-b:v 6000k -maxrate 6000k -bufsize 12000k "
-        "-g 60 -keyint_min 60 -sc_threshold 0 "
-        "-c:a aac -b:a 160k -ar 48000 -ac 2 "
+        f"-c:v libx264 -preset {p.encoder_preset} -pix_fmt yuv420p "
+        f"-s {p.width}x{p.height} -r {p.fps} "
+        f"-b:v {p.video_bitrate_kbps}k -maxrate {p.video_bitrate_kbps}k -bufsize {bufsize_kbps}k "
+        f"-g {keyint} -keyint_min {keyint} -sc_threshold 0 "
+        f"-c:a aac -b:a {p.audio_bitrate_kbps}k -ar 48000 -ac 2 "
         f"-f flv {twitch_url}"
     )
     return {

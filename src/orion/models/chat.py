@@ -1,8 +1,9 @@
-"""Chat components + chat messages.
+"""Captured Twitch chat messages — kept for replay / audit / blueprint history.
 
-Chat components reference blueprints from an external system (declared here by string
-reference — ``blueprint_ref``). The blueprint system owns the rendering logic; Orion
-owns the configuration, placement, triggers, and the live chat connection.
+The "chat component" abstraction lives in ZabCanvas now: a chat-driven UI is a
+scene component (`type: "blueprint"`) whose Blue binding subscribes to the
+chat events bus. Orion only owns the IRC pump (it has the OAuth tokens) and
+this lightweight transcript table.
 """
 
 from __future__ import annotations
@@ -11,47 +12,17 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from orion.models.base import Base, created_at_col, updated_at_col, uuid_pk
-
-
-class ChatComponent(Base):
-    """A chat-driven UI component that can be rendered on top of a scene.
-
-    A blueprint-referenced component (e.g. ``chat/ticker``, ``chat/poll``,
-    ``chat/command-reaction``) with owner-authored config + triggers.
-    """
-
-    __tablename__ = "chat_components"
-
-    id: Mapped[uuid.UUID] = uuid_pk()
-    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
-
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
-    blueprint_ref: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
-
-    # Component-specific config (duration, style, etc.) — opaque to Orion.
-    config: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-
-    # Where and how it renders on the scene (anchor, offset, scene slot id, etc.).
-    placement: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-
-    # Event triggers (on_message, on_command, on_mention, on_follow, ...).
-    triggers: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-
-    is_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-
-    created_at: Mapped[datetime] = created_at_col()
-    updated_at: Mapped[datetime] = updated_at_col()
+from orion.models.base import Base, created_at_col
 
 
 class ChatMessage(Base):
     """Captured Twitch chat messages. Used for replay, history, moderation audit.
 
-    Truncated retention is a future concern — no policy enforced at the model level.
+    Retention truncation is a future concern — no policy enforced at the model level.
     """
 
     __tablename__ = "chat_messages"

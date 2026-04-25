@@ -26,13 +26,11 @@ def _load_key() -> bytes:
     if not raw:
         raise EncryptionNotConfigured(
             "ENCRYPTION_KEY is empty. Generate one with: "
-            "python -c \"import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())\""
+            'python -c "import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"'
         )
     key = base64.urlsafe_b64decode(raw.encode())
     if len(key) != 32:
-        raise EncryptionNotConfigured(
-            f"ENCRYPTION_KEY must decode to exactly 32 bytes, got {len(key)} bytes."
-        )
+        raise EncryptionNotConfigured(f"ENCRYPTION_KEY must decode to exactly 32 bytes, got {len(key)} bytes.")
     return key
 
 

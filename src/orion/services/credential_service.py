@@ -13,9 +13,7 @@ from orion.schemas.credential import CredentialCreate, CredentialUpdate
 from orion.services import encryption
 
 
-async def create(
-    db: AsyncSession, owner_id: uuid.UUID | None, payload: CredentialCreate
-) -> TwitchCredential:
+async def create(db: AsyncSession, owner_id: uuid.UUID | None, payload: CredentialCreate) -> TwitchCredential:
     sk_ct, sk_nonce = encryption.encrypt(payload.stream_key)
     cred = TwitchCredential(
         owner_id=owner_id,
@@ -31,9 +29,7 @@ async def create(
     return cred
 
 
-async def update(
-    db: AsyncSession, cred: TwitchCredential, payload: CredentialUpdate
-) -> TwitchCredential:
+async def update(db: AsyncSession, cred: TwitchCredential, payload: CredentialUpdate) -> TwitchCredential:
     if payload.label is not None:
         cred.label = payload.label
     if payload.channel_login is not None:
@@ -49,9 +45,7 @@ async def update(
     return cred
 
 
-async def list_for_owner(
-    db: AsyncSession, owner_id: uuid.UUID | None
-) -> list[TwitchCredential]:
+async def list_for_owner(db: AsyncSession, owner_id: uuid.UUID | None) -> list[TwitchCredential]:
     q = select(TwitchCredential).order_by(TwitchCredential.created_at.desc())
     if owner_id is not None:
         q = q.where(TwitchCredential.owner_id == owner_id)
