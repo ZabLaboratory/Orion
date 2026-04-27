@@ -20,6 +20,7 @@ from orion.routes import (
     credentials,
     destinations,
     health,
+    internal,
     mediamtx_auth,
     metrics,
     streams,
@@ -59,3 +60,4 @@ app.include_router(credentials.router, prefix="/api/v1")
 app.include_router(twitch.router, prefix="/api/v1")
 app.include_router(chat.router, prefix="/api/v1")
 app.include_router(metrics.router, prefix="/api/v1")
+app.include_router(internal.router, prefix="/api/v1")
