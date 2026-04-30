@@ -5,8 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ARRAY, JSON, DateTime, LargeBinary, String
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import ARRAY, JSON, DateTime, LargeBinary, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from orion.models.base import Base, created_at_col, updated_at_col, uuid_pk
@@ -28,7 +27,7 @@ class TwitchCredential(Base):
     __tablename__ = "twitch_credentials"
 
     id: Mapped[uuid.UUID] = uuid_pk()
-    owner_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(Uuid(as_uuid=True), nullable=True, index=True)
 
     label: Mapped[str] = mapped_column(String(255), nullable=False)
 
