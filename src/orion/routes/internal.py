@@ -1,9 +1,8 @@
 """Internal blueprint-facing endpoints — read-only schema + query.
 
-Per ADR 001 §1, Orion ships ``_schema`` + ``_query`` only. Stream
-lifecycle management (``start`` / ``stop``) and credential rotation
-stay on their dedicated routes so the single-writer-on-state rule
-on ``stream_manager`` and the encryption boundaries are preserved.
+Per ADR 001 §1, Orion ships ``_schema`` + ``_query`` only. Credential
+rotation and OAuth flow stay on their dedicated routes so the
+encryption boundaries are preserved.
 """
 
 from __future__ import annotations

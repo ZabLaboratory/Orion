@@ -1,14 +1,11 @@
-"""Shared route helpers — auth header parsing, MediaMTX client dependency."""
+"""Shared route helpers — auth header parsing."""
 
 from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import AsyncIterator
 
 from fastapi import Depends, HTTPException, Request, status
-
-from orion.services.mediamtx import MediaMTXClient
 
 logger = logging.getLogger(__name__)
 
@@ -43,12 +40,3 @@ def require_authenticated_user(
 
 def authenticated_role(request: Request) -> str | None:
     return request.headers.get("x-authenticated-role")
-
-
-async def mediamtx_client() -> AsyncIterator[MediaMTXClient]:
-    """Per-request MediaMTX client. Closes on response teardown."""
-    client = MediaMTXClient()
-    try:
-        yield client
-    finally:
-        await client.aclose()

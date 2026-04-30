@@ -10,19 +10,19 @@
 
 ## Description
 
-Orion is the streaming control plane of the Zablab platform. It replaces OBS by
-delegating scene composition to the browser (GPU of the streamer's PC) and
-relaying the composed feed to Twitch through a MediaMTX container. Orion owns:
+Orion is the Zablab platform's interface to Twitch. It owns :
 
-- Scenes (canvas layouts persisted as JSONB)
-- Twitch credentials (AES-GCM encrypted stream keys + optional Helix OAuth)
-- Stream lifecycle (pending → preparing → live → stopping → ended | error)
-- MediaMTX path orchestration (control API + dynamic `runOnReady` ffmpeg push)
-- Twitch chat prep (IRC client + component registry that references `Blue` blueprints)
+- **Twitch credentials** — AES-GCM encrypted stream keys + optional Helix OAuth tokens.
+- **Helix OAuth flow** — `/api/v1/twitch/oauth/authorize` + `/api/v1/twitch/oauth/callback`.
+- **IRC chat plumbing** — capture (when a future supervisor is wired) + WS fan-out for blueprint consumers.
 
-Prism (native desktop companion) is the sibling client that wraps ZabView's
-broadcaster page with native-GPU conveniences. Orion is indifferent to which
-browser posts to its WHIP endpoint.
+It does **not** own broadcast media. Streaming runs through [Pulsar](https://github.com/ZabLaboratory/Pulsar) (broadcast engine bundled in Prism), which pushes directly to Twitch RTMP. Pulsar is an external module — Orion never reaches into Pulsar's process, and Pulsar never reaches into Orion's infrastructure.
+
+### Future scope (separate PRs)
+
+- **EventSub webhooks** — subs / donations / bits / follows / raids / hype train.
+- **Expanded Helix endpoints** — channel info, schedule, clips, predictions.
+- **Subscriber-driven IRC supervisor** — re-introduces chat capture when a WS client subscribes to `/api/v1/chat/live/{channel}`. The previous supervisor (which reconciled live streams ↔ IRC connections) was removed at the v0.4.0 pivot because Orion no longer knows what a stream is.
 
 ## Stack
 
@@ -30,9 +30,7 @@ browser posts to its WHIP endpoint.
 - **Framework**: FastAPI + uvicorn
 - **ORM**: SQLAlchemy 2 async
 - **Migrations**: Alembic
-- **DB**: PostgreSQL 16 (JSONB for scene configs + placeholders)
-- **Media engine**: MediaMTX (Go, container) — WHIP ingress, RTMP egress, RTSP
-  internal, HLS optional
+- **DB**: PostgreSQL 16
 - **Crypto**: `cryptography` (AES-GCM 256-bit) for stream keys + OAuth tokens
 - **Package manager**: `uv`
 - **Linter / formatter**: `ruff`
@@ -44,7 +42,7 @@ browser posts to its WHIP endpoint.
 uv sync
 uv run uvicorn orion.main:app --reload --port 4007
 
-# Env file lives at etage 1 — ../.env.orion (copy .env.example and fill)
+# Env file lives at etage 1 — ../.env.orion
 # ENCRYPTION_KEY must be a base64-urlsafe 32-byte value:
 #   python -c "import secrets,base64; print(base64.urlsafe_b64encode(secrets.token_bytes(32)).decode())"
 
@@ -54,62 +52,31 @@ docker compose up -d
 
 # DB migration
 uv run alembic upgrade head
-# or, inside the container:
-# docker compose run --rm orion alembic upgrade head
 ```
 
 ## Architecture
 
-Orion is strictly gateway-first: every HTTP client reaches it via ZabGate
-(`/orion/*`). The one exception is the WHIP ingress — browsers send WebRTC
-SDP offers directly to `orion-mediamtx:8889/<path>/whip`, because pushing
-`O(GB/h)` of video through ZabGate would be wasteful and pointless (ZabGate is
-stateless and doesn't need to see bytes). Every *control-plane* call still
-goes through the gateway.
-
-### Flow
-
-```
- Browser (ZabView /broadcast/<streamId>)
-   │  1. GET /orion/api/v1/streams/<id>           via ZabGate
-   │  2. GET /orion/api/v1/scenes/<id>            via ZabGate
-   │  3. POST /orion/api/v1/streams/<id>/start    via ZabGate → Orion API
-   │     Orion provisions MediaMTX path, returns whip_url
-   │  4. POST <whip_url>  (SDP offer)             direct → MediaMTX :8889
-   ▼
- MediaMTX (orion-mediamtx)
-   │  5. runOnReady launches ffmpeg
-   │     ffmpeg -i rtsp://localhost:8554/<path> -c copy -f flv rtmp://live.twitch.tv/app/<key>
-   ▼
- Twitch
-```
+Orion is strictly gateway-first: every HTTP client reaches it via ZabGate (`/orion/*`).
 
 ### Data model
 
 | Table | Role |
 |---|---|
-| `scenes` | User-authored canvas scene (JSONB config: sources, layout, audio) |
 | `twitch_credentials` | Per-user destination: AES-GCM encrypted stream key + optional OAuth |
-| `streams` | Broadcast session (one scene + one credential + lifecycle state + MediaMTX path) |
-| `chat_components` | Blueprint-backed chat overlays (`blueprint_ref` → Blue) |
-| `chat_messages` | Captured Twitch IRC messages for replay/audit |
-| `stream_metrics` | Time-series: bitrate, fps, dropped frames, rtt, viewers |
+| `chat_messages` | Captured Twitch IRC messages for replay / audit (channel-keyed) |
+
+Tables that existed before the v0.4.0 pivot and have been retired : `streams`, `stream_metrics`, `stream_destinations`. The `chat_messages.stream_id` FK was dropped as part of the same migration — chat is channel-keyed only ; analytics group by `channel` and `sent_at`.
 
 ### Endpoints
 
 All under `/api/v1` (gateway strips `/orion`):
 
 - `GET /health` — liveness + DB check
-- `GET /api/v1/scenes` / `POST` / `GET/PUT/DELETE /{id}` — scene CRUD
 - `GET /api/v1/credentials` / `POST` / `PUT/DELETE /{id}` — credentials CRUD (secrets never exposed)
-- `GET /api/v1/streams` / `POST` / `GET /{id}` — stream CRUD
-- `POST /api/v1/streams/{id}/start` — provision MediaMTX path, return WHIP URL
-- `POST /api/v1/streams/{id}/stop` — teardown
 - `POST /api/v1/twitch/oauth/authorize` / `callback` — Helix OAuth flow
-- `GET /api/v1/chat/components` / `POST` / `GET/PUT/DELETE /{id}` — chat component CRUD
-- `WS  /api/v1/chat/live/{channel_login}` — live chat events
-- `GET /api/v1/metrics/streams/{id}` — historical metrics
-- `WS  /api/v1/metrics/streams/{id}/live` — live stream state + MediaMTX snapshot
+- `WS /api/v1/chat/live/{channel_login}` — live chat events (idle until the new supervisor lands)
+- `GET /api/v1/_schema` — QueryMe catalogue (read-only, blueprint-facing — only `chat_messages` exposed)
+- `POST /api/v1/_query` — QueryMe execution (read-only)
 
 ### Folder layout
 
@@ -123,19 +90,23 @@ Orion/
 ├── alembic/
 │   ├── env.py
 │   ├── script.py.mako
-│   └── versions/20260424_0001_init_orion_schema.py
-├── mediamtx/
-│   └── mediamtx.yml         # paths seeded dynamically by Orion
+│   └── versions/
+│       ├── 20260424_0001_init_orion_schema.py
+│       ├── 20260425_0002_pivot_to_overlays.py
+│       ├── 20260425_0003_overlay_playlist.py
+│       ├── 20260426_0004_stream_record_flag.py
+│       ├── 20260426_0005_stream_destinations.py
+│       └── 20260430_0006_drop_streaming_surface.py   ← v0.4.0 pivot
 ├── src/orion/
 │   ├── main.py
 │   ├── config.py
 │   ├── database.py
-│   ├── models/{base,scene,credential,stream,chat,metric}.py
-│   ├── schemas/{scene,credential,stream,chat,metric}.py
-│   ├── services/{encryption,mediamtx,twitch_helix,twitch_chat,
-│   │              stream_manager,scene_service,credential_service,
-│   │              chat_service}.py
-│   └── routes/{health,scenes,credentials,streams,twitch,chat,metrics}.py
+│   ├── models/{base,chat,credential}.py
+│   ├── schemas/credential.py
+│   ├── services/{encryption,twitch_helix,twitch_chat,
+│   │              credential_service,chat_service,
+│   │              db_catalog}.py
+│   └── routes/{health,credentials,twitch,chat,internal}.py
 ├── tests/
 ├── Dockerfile
 ├── docker-compose.yml       # dev
@@ -149,27 +120,14 @@ Orion/
 
 ## Conventions
 
-- **Auth**: no local JWT validation. Trust `X-Authenticated-User` injected by
-  ZabGate. Endpoints that mutate per-user state require the header (401 if absent).
-- **Secrets never exposed.** `CredentialRead` returns `has_oauth: bool`, never
-  the token itself. Stream keys are AES-GCM encrypted; only `stream_manager`
-  decrypts them, and only in-memory while provisioning a MediaMTX path.
-- **Single writer on state.** `stream_manager` is the only module that mutates
-  `Stream.state` and the only module that talks to MediaMTX. Routes delegate.
-- **JSONB opacity.** `scenes.config`, `chat_components.{config,placement,triggers}`,
-  `stream_metrics.raw` are opaque to the DB. Adding a new source or component
-  type never requires a migration.
-- **Blueprint references.** `chat_components.blueprint_ref` is a string key into
-  the Blue blueprint engine (`ZabLaboratory/Blue`). Orion doesn't know the
-  component's shape — Blue renders it.
+- **Auth**: no local JWT validation. Trust `X-Authenticated-User` injected by ZabGate. Endpoints that mutate per-user state require the header (401 if absent).
+- **Secrets never exposed.** `CredentialRead` returns `has_oauth: bool`, never the token itself. Stream keys + OAuth tokens are AES-GCM encrypted ; only the credential and chat services decrypt them, and only in-memory.
+- **Read-only blueprint surface.** `_schema` exposes `chat_messages` only ; `twitch_credentials` is intentionally absent. Adding a new table to the catalogue requires an explicit security review (no automatic exposure).
 
 ## CI/CD
 
-- **Push / PR**: `ci.yml` runs `ruff`, `mypy`, `pytest`, `pip-audit`, TruffleHog
-  secret scan, `uv lock --check`, CODEOWNERS presence.
-- **Merge on main**: `deploy.yml` rsyncs to the VPS, writes `.env`, rebuilds
-  the image, runs `alembic upgrade head`, restarts the container, checks
-  `/health` via the internal network, smoke-tests `/ready` via ZabGate.
+- **Push / PR**: `ci.yml` runs `ruff`, `mypy`, `pytest`, `pip-audit`, TruffleHog secret scan, `uv lock --check`, CODEOWNERS presence.
+- **Merge on main**: `deploy.yml` rsyncs to the VPS, writes `.env`, rebuilds the image, runs `alembic upgrade head`, restarts the container, checks `/health` via the internal network, smoke-tests `/health` via ZabGate.
 
 ### Required GitHub Secrets
 
@@ -179,9 +137,9 @@ Orion/
 | `ORION_PG_PASSWORD` | Postgres password |
 | `ORION_ENCRYPTION_KEY` | AES-GCM key (32 bytes, urlsafe-b64) |
 | `TWITCH_CLIENT_ID`, `TWITCH_CLIENT_SECRET` | Twitch app credentials |
-| `ORION_PUBLIC_BASE_URL` | e.g. `https://orion.cyell.dev` |
-| `ORION_PUBLIC_WHIP_BASE` | e.g. `https://orion-media.cyell.dev` |
-| `ORION_TWITCH_OAUTH_REDIRECT_URI` | e.g. `https://zablab.cyell.dev/settings/twitch/callback` |
+| `ORION_TWITCH_OAUTH_REDIRECT_URI` | e.g. `https://zablab.cyell.dev/orion/credentials` |
+
+Removed at the v0.4.0 pivot : `ORION_PUBLIC_BASE_URL`, `ORION_PUBLIC_WHIP_BASE`, MEDIAMTX_*.
 
 ## Resolution criteria
 
@@ -189,7 +147,7 @@ Conforme à `docs/rules/git.md`. Une branche est **résolue après merge** sur `
 
 1. **Squash merge effectué** sur `main` par le mainteneur.
 2. **Tous les jobs CI verts** sur le commit de merge.
-3. **Déploiement sur le VPS** terminé sans rollback, `/health` répond 200 via l'Intranet Docker et via ZabGate.
+3. **Déploiement sur le VPS** terminé sans rollback, `/health` répond 200 via l'intranet Docker et via ZabGate.
 4. **Migration appliquée** sans erreur (`alembic upgrade head`).
 5. **Aucune régression** `.health.json` niveau `critical` ou `high`.
 6. **Branche supprimée** du remote après le squash.
