@@ -9,8 +9,6 @@ services:
     depends_on:
       orion-db:
         condition: service_healthy
-      orion-mediamtx:
-        condition: service_started
     networks:
       zab_network:
         aliases:
@@ -38,29 +36,6 @@ services:
       zab_network:
         aliases:
           - orion-postgres
-
-  orion-mediamtx:
-    # `latest-ffmpeg` bundles an ffmpeg binary next to MediaMTX — required
-    # because Orion's runOnReady transcodes the browser's WebRTC VP8/Opus
-    # stream into H264/AAC before pushing it to Twitch.
-    image: bluenviron/mediamtx:latest-ffmpeg
-    container_name: orion-mediamtx
-    restart: unless-stopped
-    ports:
-      # Control API — consumed by orion-api over the internal network, but also
-      # exposed locally for debugging via curl localhost:9997/v3/paths/list.
-      - "9997:9997"
-      # Protocols — these are what the browser/twitch reach.
-      - "8554:8554"   # RTSP (internal relay source for ffmpeg)
-      - "8889:8889"   # WebRTC/WHIP
-      - "1935:1935"   # RTMP (optional ingress path)
-      - "8888:8888"   # HLS (optional playback)
-    volumes:
-      - ./mediamtx/mediamtx.yml:/mediamtx.yml:ro
-    networks:
-      zab_network:
-        aliases:
-          - orion-mediamtx
 
 volumes:
   orion_pg_data:

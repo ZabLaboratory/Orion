@@ -1,12 +1,22 @@
-"""Orion — streaming control plane microservice.
+"""Orion — Twitch orchestrator microservice.
 
-Orion does not author scenes. Scenes live in ZabCanvas (visual editor +
-JSONB blob, blueprint-backed components resolved by Blue at render time).
-Orion owns:
-  - Twitch credentials (encrypted stream keys + OAuth tokens)
-  - Stream sessions (lifecycle + streaming parameters that drive ffmpeg)
-  - MediaMTX orchestration (WHIP ingress → RTMP push to Twitch)
-  - Twitch IRC pump + chat events bus (Blue blueprints subscribe over WS)
+Orion is the Zablab platform's interface to Twitch. It owns :
+
+- Twitch credentials (AES-GCM encrypted stream keys + optional Helix OAuth)
+- Helix OAuth flow (authorize / callback)
+- IRC chat plumbing (capture + WS fan-out for blueprint consumers)
+
+It does **not** own broadcast media. Streaming is handled externally by
+Pulsar (broadcast engine bundled in Prism), which pushes directly to
+Twitch RTMP. Pulsar is an external module — Orion never touches it,
+and Pulsar never touches Orion's infrastructure.
+
+Future scope (separate PRs) :
+
+- EventSub webhooks (subs / donations / bits / follows / raids / hype)
+- Expanded Helix endpoints (channel info, schedule, clips, predictions)
+- Subscriber-driven IRC supervisor (re-introduces chat capture when a
+  WS client subscribes to ``/api/v1/chat/live/{channel}``)
 """
 
 from collections.abc import AsyncIterator
@@ -18,46 +28,33 @@ from orion.database import engine
 from orion.routes import (
     chat,
     credentials,
-    destinations,
     health,
     internal,
-    mediamtx_auth,
-    metrics,
-    streams,
     twitch,
 )
-from orion.services.chat_supervisor import supervisor as chat_supervisor
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # pragma: no cover — ASGITransport skips lifespan
-    """Hold the async engine + chat supervisor for the lifetime of the app."""
-    await chat_supervisor.start()
+    """Hold the async engine for the lifetime of the app."""
     try:
         yield
     finally:
-        await chat_supervisor.stop()
         await engine.dispose()
 
 
 app = FastAPI(
     title="Orion",
     description=(
-        "Streaming control plane for Zablab — overlays come from ZabCanvas, "
-        "blueprints from Blue, video relays via MediaMTX to Twitch"
+        "Twitch orchestrator for Zablab — credentials, OAuth, chat. "
+        "Streaming media lives elsewhere (Pulsar in Prism)."
     ),
-    version="0.2.0",
+    version="0.4.0",
     lifespan=lifespan,
 )
 
 app.include_router(health.router)
-# MediaMTX webhook lives OUTSIDE /api/v1 — MediaMTX is an infrastructure peer,
-# not an API consumer. This path is on the internal network only.
-app.include_router(mediamtx_auth.router)
-app.include_router(streams.router, prefix="/api/v1")
-app.include_router(destinations.router, prefix="/api/v1")
 app.include_router(credentials.router, prefix="/api/v1")
 app.include_router(twitch.router, prefix="/api/v1")
 app.include_router(chat.router, prefix="/api/v1")
-app.include_router(metrics.router, prefix="/api/v1")
 app.include_router(internal.router, prefix="/api/v1")

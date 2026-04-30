@@ -15,34 +15,26 @@
 | `TWITCH_CLIENT_ID` | From https://dev.twitch.tv/console/apps | Create an app with type "Server-to-Server" or "Web" |
 | `TWITCH_CLIENT_SECRET` | From https://dev.twitch.tv/console/apps | — |
 | `ORION_TWITCH_OAUTH_REDIRECT_URI` | `https://zablab.cyell.dev/orion/credentials` | Must match the Twitch app's registered redirect URL |
-| `ORION_PUBLIC_BASE_URL` | `https://zabgate.cyell.dev/orion` | Public base used when Orion returns URLs |
-| `ORION_PUBLIC_WHIP_BASE` | `https://orion-media.cyell.dev` | The browser's WHIP target |
+
+> **Removed at the v0.4.0 pivot** : `ORION_PUBLIC_BASE_URL`, `ORION_PUBLIC_WHIP_BASE`. Streaming now runs through Pulsar in Prism — Orion no longer fronts a media plane and the public WHIP subdomain is no longer needed.
 
 ### Shared networks on the VPS
 
-The compose file references two external Docker networks:
+The compose file references one external Docker network:
 
 ```bash
 docker network create zab-internal     # if not already present
-docker network create caddy-public     # if not already present
 ```
 
-`zab-internal` is where all Zablab services talk to each other. `caddy-public`
-is what the Caddy container joins to reach exposed services.
+`zab-internal` is where all Zablab services talk to each other. Orion's API surface is reached through ZabGate (already on `zab-internal`) ; there is no public subdomain dedicated to Orion.
 
 ### Caddy
 
-See [`Caddyfile.snippet`](./Caddyfile.snippet) — drop it into `/etc/caddy/Caddyfile` and reload.
+No dedicated Caddy entry is required for Orion. Routes pass through `zabgate.cyell.dev/orion/*` per the gateway routing in `ZabGate/src/zabgate/config.py`.
 
-You need DNS:
+> **Removed at the v0.4.0 pivot** : the `orion-media.cyell.dev` subdomain that fronted MediaMTX. DNS records for that subdomain can be retired.
 
-- `orion-media.cyell.dev` → VPS IP (new A/AAAA record for MediaMTX)
-
-`zabgate.cyell.dev` already fronts the gateway, so `/orion/*` routes
-work out of the box once ZabGate is redeployed with the new `/orion`
-upstream.
-
-## Local smoke test (already verified during scaffolding)
+## Local smoke test
 
 ```bash
 # From the Orion/ repo root:
@@ -66,5 +58,4 @@ docker run --rm --network zab-internal curlimages/curl:latest \
 curl -sf https://zabgate.cyell.dev/orion/health
 ```
 
-If `/health` returns 200 and the MediaMTX container is up, the stack is ready.
-First streaming attempt will create a path on the fly via the control API.
+If `/health` returns 200 the stack is ready.

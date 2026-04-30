@@ -1,7 +1,7 @@
 # Changelog
 
-All notable changes to Orion (the Zablab streaming control plane) land
-here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
+All notable changes to Orion (the Zablab Twitch orchestrator) land here.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Every release section is written *before* the tag is pushed — the
@@ -9,9 +9,42 @@ Every release section is written *before* the tag is pushed — the
 as the GitHub Release body (which the Discord webhook then picks up).
 If a section is missing, the release publishes with empty notes.
 
-## [Unreleased]
+## [0.4.0] - 2026-04-30
 
-_Nothing staged yet._
+**Architectural pivot.** Orion stops being a streaming control plane and
+becomes a pure Twitch orchestrator. The broadcast media path moves to
+[Pulsar](https://github.com/ZabLaboratory/Pulsar) (bundled in Prism),
+which pushes directly to Twitch RTMP without ever touching Orion.
+
+Orion now owns : Twitch credentials (AES-GCM), OAuth Helix flow, and
+the IRC chat plumbing scaffold. EventSub, expanded Helix endpoints, and
+the new subscriber-driven IRC supervisor land in follow-up PRs.
+
+### Removed
+
+- **`streams`, `stream_metrics`, `stream_destinations`** tables —
+  dropped in migration `0006_drop_streaming`.
+- **`chat_messages.stream_id`** — chat is channel-keyed only ; analytics
+  group by `channel` and `sent_at`.
+- **`stream_state` PostgreSQL enum** — gone with `streams`.
+- **MediaMTX integration** — `services/mediamtx.py`,
+  `services/stream_manager.py`, `services/stream_events.py`,
+  `routes/streams.py`, `routes/destinations.py`, `routes/metrics.py`,
+  `routes/mediamtx_auth.py`. Container `orion-mediamtx` and
+  `mediamtx/mediamtx.yml` retired.
+- **`ChatSupervisor`** — was reconciling live streams ↔ IRC connections.
+  A subscriber-driven replacement lands in a follow-up PR.
+- **Caddy `orion-media.cyell.dev` snippet** — public WHIP/HLS subdomain
+  no longer needed.
+- **Env vars** : `MEDIAMTX_API_URL`, `MEDIAMTX_WHIP_BASE`,
+  `MEDIAMTX_PUBLIC_WHIP_BASE`, `TWITCH_RTMP_BASE`,
+  `INGRESS_TOKEN_TTL_SECONDS`, `PUBLIC_BASE_URL`,
+  `ORION_PUBLIC_BASE_URL`, `ORION_PUBLIC_WHIP_BASE`.
+
+### Changed
+
+- **`_schema` catalogue** — narrowed to `chat_messages` only.
+  `streams`, `stream_destinations`, `stream_metrics` entries gone.
 
 ## [0.3.0] - 2026-04-25
 

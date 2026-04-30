@@ -4,16 +4,19 @@ The "chat component" abstraction lives in ZabCanvas now: a chat-driven UI is a
 scene component (`type: "blueprint"`) whose Blue binding subscribes to the
 chat events bus. Orion only owns the IRC pump (it has the OAuth tokens) and
 this lightweight transcript table.
+
+Messages are channel-keyed only. Streaming sessions are external (Pulsar in
+Prism) so there is no internal stream identity to bind to ; analytics group
+by ``channel`` and ``sent_at`` instead.
 """
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import BigInteger, DateTime, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from orion.models.base import Base, created_at_col
@@ -28,13 +31,6 @@ class ChatMessage(Base):
     __tablename__ = "chat_messages"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-
-    stream_id: Mapped[uuid.UUID | None] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("streams.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
 
     channel: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     author_login: Mapped[str] = mapped_column(String(255), nullable=False)
