@@ -36,6 +36,10 @@ class TwitchAPIError(RuntimeError):
     """Non-2xx response from the Twitch API."""
 
 
+class TwitchAuthError(TwitchAPIError):
+    """The access token is rejected (401). Caller should refresh and retry."""
+
+
 def authorize_url(
     state: str,
     scopes: tuple[str, ...] = REQUIRED_SCOPES,
@@ -144,6 +148,7 @@ class HelixClient:
         title: str | None = None,
         game_id: str | None = None,
         tags: list[str] | None = None,
+        broadcaster_language: str | None = None,
     ) -> None:
         payload: dict[str, Any] = {}
         if title is not None:
@@ -152,6 +157,8 @@ class HelixClient:
             payload["game_id"] = game_id
         if tags is not None:
             payload["tags"] = tags
+        if broadcaster_language is not None:
+            payload["broadcaster_language"] = broadcaster_language
         if not payload:
             return
         r = await self._client.patch(
@@ -161,3 +168,63 @@ class HelixClient:
         )
         if r.status_code >= 300:
             raise TwitchAPIError(f"update_channel -> {r.status_code}: {r.text}")
+
+    async def get_channel(self, broadcaster_id: str) -> dict[str, Any] | None:
+        r = await self._client.get("/channels", params={"broadcaster_id": broadcaster_id})
+        if r.status_code == 401:
+            raise TwitchAuthError("/channels GET 401")
+        if r.status_code >= 300:
+            raise TwitchAPIError(f"get_channel -> {r.status_code}: {r.text}")
+        data = r.json().get("data", [])
+        return data[0] if data else None
+
+    async def get_schedule(
+        self,
+        broadcaster_id: str,
+        *,
+        first: int = 25,
+    ) -> dict[str, Any]:
+        r = await self._client.get(
+            "/schedule",
+            params={"broadcaster_id": broadcaster_id, "first": first},
+        )
+        if r.status_code == 401:
+            raise TwitchAuthError("/schedule GET 401")
+        # 404 = broadcaster has no schedule yet ; surface as empty rather than raising.
+        if r.status_code == 404:
+            return {"data": {"segments": [], "broadcaster_id": broadcaster_id}, "pagination": {}}
+        if r.status_code >= 300:
+            raise TwitchAPIError(f"get_schedule -> {r.status_code}: {r.text}")
+        return r.json()  # type: ignore[no-any-return]
+
+    async def get_clips(
+        self,
+        broadcaster_id: str,
+        *,
+        first: int = 20,
+    ) -> dict[str, Any]:
+        r = await self._client.get(
+            "/clips",
+            params={"broadcaster_id": broadcaster_id, "first": first},
+        )
+        if r.status_code == 401:
+            raise TwitchAuthError("/clips GET 401")
+        if r.status_code >= 300:
+            raise TwitchAPIError(f"get_clips -> {r.status_code}: {r.text}")
+        return r.json()  # type: ignore[no-any-return]
+
+    async def get_predictions(
+        self,
+        broadcaster_id: str,
+        *,
+        first: int = 25,
+    ) -> dict[str, Any]:
+        r = await self._client.get(
+            "/predictions",
+            params={"broadcaster_id": broadcaster_id, "first": first},
+        )
+        if r.status_code == 401:
+            raise TwitchAuthError("/predictions GET 401")
+        if r.status_code >= 300:
+            raise TwitchAPIError(f"get_predictions -> {r.status_code}: {r.text}")
+        return r.json()  # type: ignore[no-any-return]

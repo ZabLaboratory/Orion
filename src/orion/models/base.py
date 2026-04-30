@@ -3,8 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import DateTime, Uuid, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -13,10 +12,14 @@ class Base(DeclarativeBase):
 
 
 def uuid_pk() -> Mapped[uuid.UUID]:
-    """Primary key column: UUID, server-default gen_random_uuid()."""
+    """Primary key column: UUID. Python-side default (``uuid4``) plus a
+    PostgreSQL server-side fallback (``gen_random_uuid()``) for any
+    raw SQL insert that bypasses the ORM. The Python default keeps
+    the SQLite test backend happy — it has no ``gen_random_uuid()``."""
     return mapped_column(
-        UUID(as_uuid=True),
+        Uuid(as_uuid=True),
         primary_key=True,
+        default=uuid.uuid4,
         server_default=func.gen_random_uuid(),
     )
 

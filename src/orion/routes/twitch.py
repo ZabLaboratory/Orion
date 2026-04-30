@@ -30,10 +30,159 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orion.config import settings
 from orion.database import get_session
 from orion.models.credential import TwitchCredential
-from orion.routes._deps import authenticated_user
-from orion.services import credential_service, twitch_helix
+from orion.routes._deps import authenticated_user, require_authenticated_user
+from orion.services import credential_service, helix_session, twitch_helix
 
 router = APIRouter(prefix="/twitch", tags=["twitch"])
+
+
+# ── Helix surface ─────────────────────────────────────────────────────────
+
+
+class ChannelUpdate(BaseModel):
+    """Subset of `/helix/channels` PATCH the operator typically tweaks
+    before going live. ``broadcaster_language`` follows ISO 639-1."""
+
+    title: str | None = None
+    game_id: str | None = None
+    tags: list[str] | None = None
+    broadcaster_language: str | None = None
+
+
+async def _load_owned_credential(
+    db: AsyncSession,
+    credential_id: uuid.UUID,
+    user_id: uuid.UUID,
+) -> TwitchCredential:
+    cred = await db.get(TwitchCredential, credential_id)
+    if cred is None or cred.owner_id != user_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Credential not found.")
+    return cred
+
+
+def _map_helix_errors(exc: Exception) -> HTTPException:
+    if isinstance(exc, helix_session.CredentialMissingOAuth):
+        return HTTPException(
+            status.HTTP_412_PRECONDITION_FAILED,
+            detail="Credential has no OAuth tokens — run the OAuth flow first.",
+        )
+    if isinstance(exc, helix_session.CredentialMissingChannelId):
+        return HTTPException(
+            status.HTTP_412_PRECONDITION_FAILED,
+            detail="Credential has no resolved channel_id — re-run the OAuth flow.",
+        )
+    if isinstance(exc, twitch_helix.TwitchAuthError):
+        return HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            detail="Twitch rejected the access token. Re-authorize the credential.",
+        )
+    if isinstance(exc, twitch_helix.TwitchAPIError):
+        return HTTPException(
+            status.HTTP_502_BAD_GATEWAY,
+            detail=f"Twitch API error: {exc}",
+        )
+    raise exc  # caller didn't expect this — let FastAPI 500 it
+
+
+@router.get("/credentials/{credential_id}/channel")
+async def get_channel(
+    credential_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(require_authenticated_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Channel info for the credential's broadcaster (title, category, tags)."""
+    cred = await _load_owned_credential(db, credential_id, user_id)
+    try:
+        broadcaster_id = helix_session.require_channel_id(cred)
+        result = await helix_session.call_with_credential(
+            db, cred, lambda h: h.get_channel(broadcaster_id)
+        )
+    except Exception as exc:  # noqa: BLE001 — mapped below
+        raise _map_helix_errors(exc) from exc
+    if result is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Twitch returned no channel data.")
+    return result
+
+
+@router.patch("/credentials/{credential_id}/channel", status_code=status.HTTP_204_NO_CONTENT)
+async def patch_channel(
+    credential_id: uuid.UUID,
+    payload: ChannelUpdate,
+    user_id: uuid.UUID = Depends(require_authenticated_user),
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    """Update title / category / language / tags on the broadcaster.
+
+    Requires the credential to carry an OAuth token with the
+    ``channel:manage:broadcast`` scope.
+    """
+    cred = await _load_owned_credential(db, credential_id, user_id)
+    try:
+        broadcaster_id = helix_session.require_channel_id(cred)
+        await helix_session.call_with_credential(
+            db,
+            cred,
+            lambda h: h.update_channel(
+                broadcaster_id,
+                title=payload.title,
+                game_id=payload.game_id,
+                tags=payload.tags,
+                broadcaster_language=payload.broadcaster_language,
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — mapped below
+        raise _map_helix_errors(exc) from exc
+
+
+@router.get("/credentials/{credential_id}/schedule")
+async def get_schedule(
+    credential_id: uuid.UUID,
+    first: int = 25,
+    user_id: uuid.UUID = Depends(require_authenticated_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    cred = await _load_owned_credential(db, credential_id, user_id)
+    try:
+        broadcaster_id = helix_session.require_channel_id(cred)
+        return await helix_session.call_with_credential(
+            db, cred, lambda h: h.get_schedule(broadcaster_id, first=first)
+        )
+    except Exception as exc:  # noqa: BLE001 — mapped below
+        raise _map_helix_errors(exc) from exc
+
+
+@router.get("/credentials/{credential_id}/clips")
+async def get_clips(
+    credential_id: uuid.UUID,
+    first: int = 20,
+    user_id: uuid.UUID = Depends(require_authenticated_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    cred = await _load_owned_credential(db, credential_id, user_id)
+    try:
+        broadcaster_id = helix_session.require_channel_id(cred)
+        return await helix_session.call_with_credential(
+            db, cred, lambda h: h.get_clips(broadcaster_id, first=first)
+        )
+    except Exception as exc:  # noqa: BLE001 — mapped below
+        raise _map_helix_errors(exc) from exc
+
+
+@router.get("/credentials/{credential_id}/predictions")
+async def get_predictions(
+    credential_id: uuid.UUID,
+    first: int = 25,
+    user_id: uuid.UUID = Depends(require_authenticated_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    cred = await _load_owned_credential(db, credential_id, user_id)
+    try:
+        broadcaster_id = helix_session.require_channel_id(cred)
+        return await helix_session.call_with_credential(
+            db, cred, lambda h: h.get_predictions(broadcaster_id, first=first)
+        )
+    except Exception as exc:  # noqa: BLE001 — mapped below
+        raise _map_helix_errors(exc) from exc
 
 
 class AuthorizeResponse(BaseModel):
