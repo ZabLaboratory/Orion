@@ -5,11 +5,15 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ARRAY, DateTime, LargeBinary, String
+from sqlalchemy import ARRAY, JSON, DateTime, LargeBinary, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from orion.models.base import Base, created_at_col, updated_at_col, uuid_pk
+
+# PostgreSQL ARRAY(String) for the live token scopes ; SQLite (used in
+# tests) falls back to a JSON array — same access pattern.
+ScopesColumn = ARRAY(String(64)).with_variant(JSON(), "sqlite")
 
 
 class TwitchCredential(Base):
@@ -39,7 +43,7 @@ class TwitchCredential(Base):
     oauth_refresh_ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     oauth_refresh_nonce: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
     oauth_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    oauth_scopes: Mapped[list[str] | None] = mapped_column(ARRAY(String(64)), nullable=True)
+    oauth_scopes: Mapped[list[str] | None] = mapped_column(ScopesColumn, nullable=True)
 
     created_at: Mapped[datetime] = created_at_col()
     updated_at: Mapped[datetime] = updated_at_col()

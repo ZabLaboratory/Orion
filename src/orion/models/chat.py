@@ -15,11 +15,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, DateTime, String, Text
+from sqlalchemy import JSON, BigInteger, DateTime, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from orion.models.base import Base, created_at_col
+
+# JSONB on PostgreSQL ; falls back to plain JSON on SQLite (used in tests).
+JsonColumn = JSONB().with_variant(JSON(), "sqlite")
 
 
 class ChatMessage(Base):
@@ -37,8 +40,8 @@ class ChatMessage(Base):
     author_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     author_display: Mapped[str | None] = mapped_column(String(255), nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
-    badges: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
-    emotes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    badges: Mapped[dict[str, Any]] = mapped_column(JsonColumn, nullable=False, default=dict)
+    emotes: Mapped[dict[str, Any]] = mapped_column(JsonColumn, nullable=False, default=dict)
 
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     created_at: Mapped[datetime] = created_at_col()
