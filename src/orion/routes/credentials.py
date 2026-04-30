@@ -109,5 +109,17 @@ async def get_stream_key(
     cred = await db.get(TwitchCredential, credential_id)
     if cred is None or cred.owner_id != user_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found.")
-    plaintext = encryption.decrypt(cred.stream_key_ciphertext, cred.stream_key_nonce)
+    try:
+        plaintext = encryption.decrypt(
+            cred.stream_key_ciphertext, cred.stream_key_nonce
+        )
+    except Exception as exc:  # noqa: BLE001 — surface decrypt failure to the caller
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"Stored stream key could not be decrypted ({exc.__class__.__name__}). "
+                "The Orion ENCRYPTION_KEY may have rotated since this credential "
+                "was saved — re-enter a fresh key from your Twitch dashboard."
+            ),
+        ) from exc
     return StreamKeyRead(stream_key=plaintext)
