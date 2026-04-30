@@ -24,6 +24,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,7 +53,7 @@ class ChannelUpdate(BaseModel):
 async def _load_owned_credential(
     db: AsyncSession,
     credential_id: uuid.UUID,
-    user_id: uuid.UUID,
+    user_id: uuid.UUID | None,
 ) -> TwitchCredential:
     cred = await db.get(TwitchCredential, credential_id)
     if cred is None or cred.owner_id != user_id:
@@ -282,29 +283,35 @@ async def authorize(
     )
 
 
-@router.post("/oauth/callback", status_code=status.HTTP_204_NO_CONTENT)
-async def oauth_callback(
-    payload: CallbackPayload,
-    user_id: uuid.UUID | None = Depends(authenticated_user),
-    db: AsyncSession = Depends(get_session),
+async def _exchange_and_store(
+    db: AsyncSession,
+    code: str,
+    state_token: str,
+    caller_user_id: uuid.UUID | None,
+    *,
+    enforce_owner: bool,
 ) -> None:
-    state = _verify_state(payload.state)
+    """Verify state envelope, exchange the OAuth code, persist tokens.
+
+    ``enforce_owner=True`` for the POST flow (renderer is authenticated)
+    ; False for the browser GET flow (the signed state is the only
+    trust anchor — the browser doesn't carry a Zablab session)."""
+    state = _verify_state(state_token)
     credential_id = uuid.UUID(state["credential_id"])
     cred = await db.get(TwitchCredential, credential_id)
-    if cred is None or cred.owner_id != user_id:
+    if cred is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Credential not found.")
+    if enforce_owner and cred.owner_id != caller_user_id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Credential not found.")
 
-    # The redirect_uri used during the authorize step is pinned in the signed
-    # state and must be echoed byte-for-byte to Twitch during the exchange.
     redirect_uri = state.get("redirect_uri") or settings.twitch_oauth_redirect_uri
-    tokens = await twitch_helix.exchange_code(payload.code, redirect_uri=redirect_uri)
+    tokens = await twitch_helix.exchange_code(code, redirect_uri=redirect_uri)
     access_token = tokens["access_token"]
     channel_id: str | None = None
     channel_login: str | None = None
     try:
         helix = twitch_helix.HelixClient(access_token)
         try:
-            # Twitch doesn't return the user in the token response; resolve via /users.
             r = await helix._client.get("/users")  # noqa: SLF001
             if r.status_code < 300:
                 data = r.json().get("data", [])
@@ -327,3 +334,86 @@ async def oauth_callback(
         channel_login=channel_login,
     )
     await db.commit()
+
+
+@router.post("/oauth/callback", status_code=status.HTTP_204_NO_CONTENT)
+async def oauth_callback(
+    payload: CallbackPayload,
+    user_id: uuid.UUID | None = Depends(authenticated_user),
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    """POST flow — kept for backwards compat with the legacy web
+    relay. Renderer is authenticated, ownership is enforced."""
+    await _exchange_and_store(
+        db, payload.code, payload.state, user_id, enforce_owner=True
+    )
+
+
+_CALLBACK_HTML_OK = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8" />
+<title>Twitch connected</title>
+<style>
+  html,body{margin:0;height:100%;background:#0d0d11;color:#e7e7ea;
+    font-family:ui-sans-serif,system-ui,sans-serif;
+    display:flex;align-items:center;justify-content:center;}
+  .card{border:1px solid #26262d;background:#1c1c21;padding:32px 40px;max-width:420px;}
+  h1{font-size:18px;margin:0 0 8px;color:#f19b41;letter-spacing:.02em;}
+  p{font-size:13px;color:#b4b4b9;line-height:1.55;margin:0;}
+</style></head>
+<body><div class="card">
+  <h1>Twitch connected</h1>
+  <p>You can close this tab and return to Prism — the readiness modal will pick up the new credential within a few seconds.</p>
+</div></body></html>"""
+
+
+def _callback_error_html(detail: str) -> str:
+    safe = detail.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return (
+        '<!doctype html><html lang="en"><head><meta charset="utf-8" />'
+        "<title>Twitch connection failed</title>"
+        "<style>html,body{margin:0;height:100%;background:#0d0d11;color:#e7e7ea;"
+        "font-family:ui-sans-serif,system-ui,sans-serif;"
+        "display:flex;align-items:center;justify-content:center;}"
+        ".card{border:1px solid #26262d;background:#1c1c21;padding:32px 40px;max-width:520px;}"
+        "h1{font-size:18px;margin:0 0 8px;color:#f25555;letter-spacing:.02em;}"
+        "p{font-size:13px;color:#b4b4b9;line-height:1.55;margin:0 0 6px;}"
+        "code{background:#141419;padding:2px 6px;border:1px solid #26262d;font-size:11px;}"
+        f'</style></head><body><div class="card"><h1>Twitch connection failed</h1>'
+        "<p>Prism could not finish the OAuth exchange.</p>"
+        f"<p><code>{safe}</code></p></div></body></html>"
+    )
+
+
+@router.get("/oauth/callback", response_class=HTMLResponse)
+async def oauth_callback_redirect(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+    db: AsyncSession = Depends(get_session),
+) -> HTMLResponse:
+    """GET flow — Twitch redirects the browser straight to this URL
+    after the user approves consent. The browser doesn't carry a
+    Zablab JWT (it's not the Prism IPC channel) ; trust is anchored
+    on the HMAC-signed ``state`` envelope. Prism detects completion
+    by polling ``GET /credentials`` and watching ``has_oauth`` flip."""
+    if error:
+        return HTMLResponse(
+            _callback_error_html(error_description or error),
+            status_code=400,
+        )
+    if not code or not state:
+        return HTMLResponse(
+            _callback_error_html("Missing code or state in callback URL."),
+            status_code=400,
+        )
+    try:
+        await _exchange_and_store(db, code, state, None, enforce_owner=False)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        return HTMLResponse(_callback_error_html(detail), status_code=exc.status_code)
+    except Exception as exc:  # noqa: BLE001 — surface anything else to the browser
+        return HTMLResponse(
+            _callback_error_html(f"{exc.__class__.__name__}: {exc}"), status_code=500
+        )
+    return HTMLResponse(_CALLBACK_HTML_OK, status_code=200)
