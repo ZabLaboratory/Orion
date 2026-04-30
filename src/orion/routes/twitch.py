@@ -219,13 +219,22 @@ def _state_envelope(credential_id: uuid.UUID, redirect_uri: str) -> tuple[str, s
 
 
 def _is_allowed_redirect_uri(uri: str) -> bool:
-    """Accept the configured web URI or any http loopback (desktop pattern)."""
+    """Accept the configured web URI, http loopback (desktop pattern,
+    even though Twitch may now refuse it), or a custom-scheme deep
+    link like ``prism://twitch/callback`` registered as the OS
+    protocol handler for Prism."""
     if uri == settings.twitch_oauth_redirect_uri:
         return True
     from urllib.parse import urlparse
 
     parsed = urlparse(uri)
     if parsed.scheme == "http" and parsed.hostname in ("localhost", "127.0.0.1"):
+        return True
+    # Custom protocol schemes used by desktop OAuth flows. We accept
+    # any scheme that's neither http nor https so apps can pick their
+    # own (prism://, streamlabs://, …) — the trust anchor is the
+    # signed `state` envelope, not the scheme.
+    if parsed.scheme and parsed.scheme not in {"http", "https", "file", "javascript"}:
         return True
     return False
 
