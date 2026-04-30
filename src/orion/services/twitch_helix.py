@@ -25,9 +25,18 @@ _AUTH_BASE = "https://id.twitch.tv"
 _API_BASE = "https://api.twitch.tv/helix"
 
 REQUIRED_SCOPES = (
+    # Channel ops surfaced by the Helix expansion.
     "channel:manage:broadcast",
+    "channel:manage:schedule",
+    "channel:read:predictions",
+    "channel:manage:predictions",
+    "channel:read:subscriptions",
+    # IRC chat — covers both the read pump and the (future) outbound
+    # send path the chat WS exposes.
     "chat:read",
     "chat:edit",
+    # Identity — needed at OAuth callback to resolve channel_id /
+    # channel_login via /users.
     "user:read:email",
 )
 
