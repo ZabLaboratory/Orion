@@ -1,17 +1,25 @@
-"""Twitch credential CRUD. Secrets never leave the server."""
+"""Twitch credential CRUD. Secrets never leave the server.
+
+The one exception is :func:`get_stream_key` — Pulsar (broadcast engine
+bundled in Prism) needs the decrypted Twitch stream key to push RTMP
+directly. The endpoint is owner-scoped and auth-required ; trust is
+anchored on the desktop client (Prism is JWT-authenticated, IPC-isolated
+from the web, and the user already controls the credential).
+"""
 
 from __future__ import annotations
 
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orion.database import get_session
 from orion.models.credential import TwitchCredential
-from orion.routes._deps import authenticated_user
+from orion.routes._deps import authenticated_user, require_authenticated_user
 from orion.schemas.credential import CredentialCreate, CredentialRead, CredentialUpdate
-from orion.services import credential_service
+from orion.services import credential_service, encryption
 
 router = APIRouter(prefix="/credentials", tags=["credentials"])
 
@@ -78,3 +86,28 @@ async def delete_credential(
     await db.delete(cred)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+class StreamKeyRead(BaseModel):
+    """Decrypted Twitch stream key. Returned to the credential owner only.
+
+    Pulsar (broadcast engine bundled in Prism) needs the plaintext key
+    to push RTMP directly to ``rtmp://live.twitch.tv/app/<key>``. The
+    key is AES-GCM encrypted at rest and only released to the
+    authenticated owner over a JWT-protected channel.
+    """
+
+    stream_key: str
+
+
+@router.get("/{credential_id}/stream-key", response_model=StreamKeyRead)
+async def get_stream_key(
+    credential_id: uuid.UUID,
+    user_id: uuid.UUID = Depends(require_authenticated_user),
+    db: AsyncSession = Depends(get_session),
+) -> StreamKeyRead:
+    cred = await db.get(TwitchCredential, credential_id)
+    if cred is None or cred.owner_id != user_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Credential not found.")
+    plaintext = encryption.decrypt(cred.stream_key_ciphertext, cred.stream_key_nonce)
+    return StreamKeyRead(stream_key=plaintext)
