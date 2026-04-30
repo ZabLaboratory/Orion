@@ -228,3 +228,64 @@ class HelixClient:
         if r.status_code >= 300:
             raise TwitchAPIError(f"get_predictions -> {r.status_code}: {r.text}")
         return r.json()  # type: ignore[no-any-return]
+
+    # ── EventSub subscription management ────────────────────────────
+
+    async def create_eventsub_subscription(
+        self,
+        *,
+        event_type: str,
+        version: str,
+        condition: dict[str, Any],
+        session_id: str,
+    ) -> dict[str, Any]:
+        """POST /eventsub/subscriptions for the WebSocket transport.
+
+        Returns the Twitch payload, which carries the assigned
+        ``id`` / ``status`` / ``cost`` we mirror in our own row.
+        """
+        payload = {
+            "type": event_type,
+            "version": version,
+            "condition": condition,
+            "transport": {"method": "websocket", "session_id": session_id},
+        }
+        r = await self._client.post("/eventsub/subscriptions", json=payload)
+        if r.status_code == 401:
+            raise TwitchAuthError("/eventsub/subscriptions POST 401")
+        if r.status_code >= 300:
+            raise TwitchAPIError(f"create_eventsub_subscription -> {r.status_code}: {r.text}")
+        body = r.json()
+        data = body.get("data", [])
+        if not data:
+            raise TwitchAPIError(f"create_eventsub_subscription: empty data in {body!r}")
+        return data[0]  # type: ignore[no-any-return]
+
+    async def list_eventsub_subscriptions(
+        self,
+        *,
+        status: str | None = None,
+        event_type: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {}
+        if status is not None:
+            params["status"] = status
+        if event_type is not None:
+            params["type"] = event_type
+        r = await self._client.get("/eventsub/subscriptions", params=params)
+        if r.status_code == 401:
+            raise TwitchAuthError("/eventsub/subscriptions GET 401")
+        if r.status_code >= 300:
+            raise TwitchAPIError(f"list_eventsub_subscriptions -> {r.status_code}: {r.text}")
+        return r.json()  # type: ignore[no-any-return]
+
+    async def delete_eventsub_subscription(self, subscription_id: str) -> None:
+        r = await self._client.delete(
+            "/eventsub/subscriptions", params={"id": subscription_id}
+        )
+        if r.status_code == 401:
+            raise TwitchAuthError("/eventsub/subscriptions DELETE 401")
+        if r.status_code == 404:
+            return  # already gone — idempotent
+        if r.status_code >= 300:
+            raise TwitchAPIError(f"delete_eventsub_subscription -> {r.status_code}: {r.text}")
