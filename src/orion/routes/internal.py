@@ -3,30 +3,61 @@
 Per ADR 001 §1, Orion ships ``_schema`` + ``_query`` only. Credential
 rotation and OAuth flow stay on their dedicated routes so the
 encryption boundaries are preserved.
+
+This module is HTTP-only : auth (``X-Authenticated-User`` enforcement),
+rate limiting (per-user, in-memory per worker), then it hands the
+descriptor over to :func:`orion.services.query_runner.run_query`. The
+runner owns validation, compilation, execution, serialisation and the
+audit log so that internal callers route through the same path.
+``_schema`` stays public — the catalogue itself carries no rows, and
+Orion's catalogue is intentionally narrow (``chat_messages`` only ;
+``twitch_credentials`` is omitted entirely because every column is
+sensitive).
 """
 
 from __future__ import annotations
 
 import time
-from datetime import date, datetime
-from decimal import Decimal
-from typing import Any
+from collections import defaultdict, deque
+from threading import Lock
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from queryme import (
-    CompilationError,
-    QueryDescriptor,
-    SchemaDescriptor,
-    compile_query,
-    validate_against_schema,
-)
+from queryme import CompilationError, QueryDescriptor, SchemaDescriptor
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from orion.database import get_session
+from orion.routes._deps import require_authenticated_user
+from orion.services import query_runner
 from orion.services.db_catalog import CATALOG
 
 router = APIRouter(tags=["internal"])
+
+# Sliding window rate limit — per-user, per-process. Tunable from tests
+# via monkeypatch on these module-level constants.
+RATE_LIMIT_WINDOW_SECONDS: float = 60.0
+RATE_LIMIT_MAX_REQUESTS: int = 120
+
+_rate_buckets: dict[str, deque[float]] = defaultdict(deque)
+_rate_lock = Lock()
+
+
+def _check_rate_limit(user_id: str) -> None:
+    now = time.monotonic()
+    cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+    with _rate_lock:
+        bucket = _rate_buckets[user_id]
+        while bucket and bucket[0] < cutoff:
+            bucket.popleft()
+        if len(bucket) >= RATE_LIMIT_MAX_REQUESTS:
+            retry_in = int(bucket[0] + RATE_LIMIT_WINDOW_SECONDS - now) + 1
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail={"retry_after_seconds": retry_in},
+                headers={"Retry-After": str(retry_in)},
+            )
+        bucket.append(now)
 
 
 @router.get("/_schema", response_model=SchemaDescriptor)
@@ -34,61 +65,22 @@ async def get_schema() -> SchemaDescriptor:
     return CATALOG
 
 
-def _serialise(value: Any) -> Any:  # noqa: ANN401 — opaque DB scalar
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, bytes):
-        # Defensive : binary columns aren't in the catalog but should
-        # something slip through, do not echo raw bytes.
-        return None
-    return value
-
-
 @router.post("/_query", status_code=status.HTTP_200_OK)
 async def execute_query(
     descriptor: QueryDescriptor,
-    db: AsyncSession = Depends(get_session),
+    user_id: Annotated[UUID, Depends(require_authenticated_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
 ) -> dict[str, Any]:
-    issues = validate_against_schema(descriptor, CATALOG)
-    if issues:
+    _check_rate_limit(str(user_id))
+    try:
+        return await query_runner.run_query(descriptor, db, audit_user_id=str(user_id))
+    except query_runner.QueryValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"issues": [i.model_dump() for i in issues]},
-        )
-
-    try:
-        stmt = compile_query(descriptor, CATALOG)
+            detail={"issues": [i.model_dump() for i in exc.issues]},
+        ) from exc
     except CompilationError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"issues": [i.model_dump() for i in exc.issues]},
         ) from exc
-
-    keys: list[str] = list(descriptor.select)
-    for join in descriptor.joins:
-        keys.extend(join.select)
-    if len(keys) != len(set(keys)):
-        seen: set[str] = set()
-        keys = []
-        for col in descriptor.select:
-            keys.append(col)
-            seen.add(col)
-        for join in descriptor.joins:
-            for col in join.select:
-                keys.append(col if col not in seen else f"{join.table}.{col}")
-                seen.add(col)
-
-    start = time.perf_counter()
-    result = await db.execute(stmt)
-    rows = result.all()
-    elapsed_ms = int((time.perf_counter() - start) * 1000)
-
-    out_rows: list[dict[str, Any]] = []
-    for row in rows:
-        out_rows.append({keys[i]: _serialise(v) for i, v in enumerate(row)})
-
-    return {"rows": out_rows, "count": len(out_rows), "elapsed_ms": elapsed_ms}

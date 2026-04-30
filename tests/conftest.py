@@ -15,8 +15,24 @@ os.environ.setdefault(
     "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
 )
 
+from orion.database import engine as _app_engine  # noqa: E402
 from orion.main import app  # noqa: E402
 from orion.models import Base  # noqa: E402
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _setup_app_db() -> AsyncIterator[None]:
+    """Ensure the FastAPI app's global engine has tables.
+
+    The global engine points at the in-memory sqlite database (set via
+    ``DATABASE_URL`` above) ; tests that touch ``get_session`` need
+    those tables to exist. Reset between tests so state never leaks.
+    """
+    async with _app_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    async with _app_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
 
 
 @pytest_asyncio.fixture
@@ -37,6 +53,22 @@ async def client() -> AsyncIterator[AsyncClient]:
         yield c
 
 
+TEST_USER_ID = "11111111-1111-1111-1111-111111111111"
+
+
+@pytest_asyncio.fixture
+async def auth_client() -> AsyncIterator[AsyncClient]:
+    """Client with the gateway-injected identity header pre-set.
+
+    Use for endpoints that require ``X-Authenticated-User`` (currently
+    only the QueryMe ``_query`` surface).
+    """
+    transport = ASGITransport(app=app)
+    headers = {"X-Authenticated-User": TEST_USER_ID}
+    async with AsyncClient(transport=transport, base_url="http://testserver", headers=headers) as c:
+        yield c
+
+
 @pytest.fixture
 def authenticated_headers() -> dict[str, str]:
-    return {"x-authenticated-user": "11111111-1111-1111-1111-111111111111"}
+    return {"x-authenticated-user": TEST_USER_ID}
