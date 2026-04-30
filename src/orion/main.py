@@ -32,14 +32,18 @@ from orion.routes import (
     internal,
     twitch,
 )
+from orion.services.irc_supervisor import supervisor as irc_supervisor
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:  # pragma: no cover — ASGITransport skips lifespan
-    """Hold the async engine for the lifetime of the app."""
+    """Hold the async engine for the lifetime of the app, and tear
+    down any IRC clients the supervisor opened when subscribers
+    requested chat fan-out."""
     try:
         yield
     finally:
+        await irc_supervisor.shutdown()
         await engine.dispose()
 
 
