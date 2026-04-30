@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from orion.database import get_session
 from orion.models.credential import TwitchCredential
-from orion.routes._deps import authenticated_user, require_authenticated_user
+from orion.routes._deps import authenticated_user
 from orion.schemas.credential import CredentialCreate, CredentialRead, CredentialUpdate
 from orion.services import credential_service, encryption
 
@@ -103,7 +103,7 @@ class StreamKeyRead(BaseModel):
 @router.get("/{credential_id}/stream-key", response_model=StreamKeyRead)
 async def get_stream_key(
     credential_id: uuid.UUID,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> StreamKeyRead:
     cred = await db.get(TwitchCredential, credential_id)

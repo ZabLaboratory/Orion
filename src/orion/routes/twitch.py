@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from orion.config import settings
 from orion.database import get_session
 from orion.models.credential import TwitchCredential
-from orion.routes._deps import authenticated_user, require_authenticated_user
+from orion.routes._deps import authenticated_user
 from orion.services import credential_service, helix_session, twitch_helix
 
 router = APIRouter(prefix="/twitch", tags=["twitch"])
@@ -87,7 +87,7 @@ def _map_helix_errors(exc: Exception) -> HTTPException:
 @router.get("/credentials/{credential_id}/channel")
 async def get_channel(
     credential_id: uuid.UUID,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     """Channel info for the credential's broadcaster (title, category, tags)."""
@@ -108,7 +108,7 @@ async def get_channel(
 async def patch_channel(
     credential_id: uuid.UUID,
     payload: ChannelUpdate,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> None:
     """Update title / category / language / tags on the broadcaster.
@@ -138,7 +138,7 @@ async def patch_channel(
 async def get_schedule(
     credential_id: uuid.UUID,
     first: int = 25,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     cred = await _load_owned_credential(db, credential_id, user_id)
@@ -155,7 +155,7 @@ async def get_schedule(
 async def get_clips(
     credential_id: uuid.UUID,
     first: int = 20,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     cred = await _load_owned_credential(db, credential_id, user_id)
@@ -172,7 +172,7 @@ async def get_clips(
 async def get_predictions(
     credential_id: uuid.UUID,
     first: int = 25,
-    user_id: uuid.UUID = Depends(require_authenticated_user),
+    user_id: uuid.UUID | None = Depends(authenticated_user),
     db: AsyncSession = Depends(get_session),
 ) -> dict[str, Any]:
     cred = await _load_owned_credential(db, credential_id, user_id)

@@ -149,10 +149,11 @@ async def test_get_channel_404_on_foreign_credential(client: AsyncClient) -> Non
     assert resp.status_code == 404
 
 
-async def test_get_channel_unauth_returns_401(client: AsyncClient) -> None:
-    cred_id = await _seed_credential(with_oauth=True)
+async def test_get_channel_unauth_falls_back_to_404(client: AsyncClient) -> None:
+    """Anonymous → ownership mismatch → 404 (permissive auth)."""
+    cred_id = await _seed_credential(with_oauth=True)  # owner_id = USER_ID
     resp = await client.get(f"/api/v1/twitch/credentials/{cred_id}/channel")
-    assert resp.status_code == 401
+    assert resp.status_code == 404
 
 
 # ── PATCH channel ─────────────────────────────────────────────────────────

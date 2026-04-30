@@ -41,10 +41,15 @@ async def test_get_stream_key_returns_decrypted(auth_client: AsyncClient) -> Non
     assert resp.json() == {"stream_key": "live_supersecret_42"}
 
 
-async def test_get_stream_key_unauth_returns_401(client: AsyncClient) -> None:
-    cred_id = await _seed_credential()
+async def test_get_stream_key_unauth_falls_back_to_404(client: AsyncClient) -> None:
+    """Anonymous callers never see a credential they don't own. The
+    endpoint matches the rest of the credentials surface (permissive
+    auth + ownership check) so the scaffolding-mode flow still works
+    when the gateway hasn't injected X-Authenticated-User yet ; an
+    owned credential just doesn't match a NULL caller."""
+    cred_id = await _seed_credential()  # owner_id = USER_ID
     resp = await client.get(f"/api/v1/credentials/{cred_id}/stream-key")
-    assert resp.status_code == 401
+    assert resp.status_code == 404
 
 
 async def test_get_stream_key_404_on_foreign_credential(client: AsyncClient) -> None:
