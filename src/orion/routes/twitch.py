@@ -439,7 +439,8 @@ _CALLBACK_HTML_OK = """<!doctype html>
 </style></head>
 <body><div class="card">
   <h1>Twitch connected</h1>
-  <p>You can close this tab and return to Prism — the readiness modal will pick up the new credential within a few seconds.</p>
+  <p>You can close this tab and return to Prism — the readiness
+  modal will pick up the new credential within a few seconds.</p>
 </div></body></html>"""
 
 
