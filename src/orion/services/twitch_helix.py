@@ -31,6 +31,8 @@ REQUIRED_SCOPES = (
     "channel:read:predictions",
     "channel:manage:predictions",
     "channel:read:subscriptions",
+    # Live-stats Dashboard surface.
+    "moderator:read:followers",
     # IRC chat — covers both the read pump and the (future) outbound
     # send path the chat WS exposes.
     "chat:read",
@@ -145,10 +147,58 @@ class HelixClient:
 
     async def get_stream_by_user_id(self, user_id: str) -> dict[str, Any] | None:
         r = await self._client.get("/streams", params={"user_id": user_id})
+        if r.status_code == 401:
+            raise TwitchAuthError("/streams GET 401")
         if r.status_code >= 300:
             raise TwitchAPIError(f"get_stream_by_user_id -> {r.status_code}: {r.text}")
         data = r.json().get("data", [])
         return data[0] if data else None
+
+    async def get_followers_total(self, broadcaster_id: str) -> int:
+        """Number of followers on the broadcaster. Requires the
+        ``moderator:read:followers`` scope and the auth'd user must be
+        the broadcaster (or a moderator of the channel)."""
+        r = await self._client.get(
+            "/channels/followers",
+            params={"broadcaster_id": broadcaster_id, "first": 1},
+        )
+        if r.status_code == 401:
+            raise TwitchAuthError("/channels/followers GET 401")
+        if r.status_code >= 300:
+            raise TwitchAPIError(
+                f"get_followers_total -> {r.status_code}: {r.text}"
+            )
+        return int(r.json().get("total", 0))
+
+    async def get_subscribers_total(self, broadcaster_id: str) -> dict[str, Any]:
+        """Total + tier breakdown for the broadcaster's subscribers.
+        Requires ``channel:read:subscriptions``. Returns
+        ``{total, points, tier_1, tier_2, tier_3}`` so the dashboard
+        can show both raw count and the points-weighted equivalent."""
+        r = await self._client.get(
+            "/subscriptions",
+            params={"broadcaster_id": broadcaster_id, "first": 100},
+        )
+        if r.status_code == 401:
+            raise TwitchAuthError("/subscriptions GET 401")
+        if r.status_code >= 300:
+            raise TwitchAPIError(
+                f"get_subscribers_total -> {r.status_code}: {r.text}"
+            )
+        body = r.json()
+        data = body.get("data", []) or []
+        total = int(body.get("total", 0))
+        points = int(body.get("points", 0))
+        tier_1 = sum(1 for s in data if s.get("tier") == "1000")
+        tier_2 = sum(1 for s in data if s.get("tier") == "2000")
+        tier_3 = sum(1 for s in data if s.get("tier") == "3000")
+        return {
+            "total": total,
+            "points": points,
+            "tier_1": tier_1,
+            "tier_2": tier_2,
+            "tier_3": tier_3,
+        }
 
     async def update_channel(
         self,

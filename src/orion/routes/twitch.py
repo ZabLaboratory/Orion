@@ -186,6 +186,72 @@ async def get_predictions(
         raise _map_helix_errors(exc) from exc
 
 
+@router.get("/credentials/{credential_id}/stream")
+async def get_stream(
+    credential_id: uuid.UUID,
+    user_id: uuid.UUID | None = Depends(authenticated_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, Any]:
+    """Live-stream snapshot for the credential's broadcaster.
+
+    Returns the raw Helix ``streams`` payload when live, or
+    ``{"live": false}`` when offline — saves the dashboard from
+    branching on a 404 vs empty array.
+    """
+    cred = await _load_owned_credential(db, credential_id, user_id)
+    try:
+        broadcaster_id = helix_session.require_channel_id(cred)
+        result = await helix_session.call_with_credential(
+            db, cred, lambda h: h.get_stream_by_user_id(broadcaster_id)
+        )
+    except Exception as exc:  # noqa: BLE001 — mapped below
+        raise _map_helix_errors(exc) from exc
+    if result is None:
+        return {"live": False}
+    return {"live": True, **result}
+
+
+@router.get("/credentials/{credential_id}/followers")
+async def get_followers(
+    credential_id: uuid.UUID,
+    user_id: uuid.UUID | None = Depends(authenticated_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, int]:
+    """Total follower count for the credential's broadcaster."""
+    cred = await _load_owned_credential(db, credential_id, user_id)
+    try:
+        broadcaster_id = helix_session.require_channel_id(cred)
+        total = await helix_session.call_with_credential(
+            db, cred, lambda h: h.get_followers_total(broadcaster_id)
+        )
+    except Exception as exc:  # noqa: BLE001 — mapped below
+        raise _map_helix_errors(exc) from exc
+    return {"total": int(total)}
+
+
+@router.get("/credentials/{credential_id}/subscribers")
+async def get_subscribers(
+    credential_id: uuid.UUID,
+    user_id: uuid.UUID | None = Depends(authenticated_user),
+    db: AsyncSession = Depends(get_session),
+) -> dict[str, int]:
+    """Subscriber total + tier breakdown.
+
+    Twitch caps the page at 100 — the tier breakdown is an
+    approximation when a channel has > 100 subs (the totals from
+    Helix are still authoritative). Good enough for a dashboard
+    glance ; an exact tier ledger would require pagination.
+    """
+    cred = await _load_owned_credential(db, credential_id, user_id)
+    try:
+        broadcaster_id = helix_session.require_channel_id(cred)
+        return await helix_session.call_with_credential(
+            db, cred, lambda h: h.get_subscribers_total(broadcaster_id)
+        )
+    except Exception as exc:  # noqa: BLE001 — mapped below
+        raise _map_helix_errors(exc) from exc
+
+
 class AuthorizeResponse(BaseModel):
     redirect_url: str
     state: str
