@@ -11,6 +11,17 @@ publishes with empty notes.
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-05-02
+
+First release of the Go rewrite per
+[ADR 004 — Orion v2 (reactive runtime)](../docs/adr/004-orion-v2-runtime.md).
+The v0.x Python implementation (Twitch orchestrator + MediaMTX relay) is
+fully retired ; Twitch lives in **Quasar** going forward (ADR 005),
+the streaming media plane lives in **Pulsar** (bundled in Prism), and
+Orion now exclusively owns the scene compiler + reactive runtime + WS
+fan-out. 18/18 chantier resolution criteria covered by tests, deployed
+live via the merged CI/Deploy workflow on `main`.
+
 ### Added — v2 Go scaffold
 
 - **Reactive runtime in Go** scaffolded on `feature/v2-go-scaffold`

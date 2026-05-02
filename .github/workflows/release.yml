@@ -1,0 +1,106 @@
+name: Release
+
+# Orion is a backend service — no cross-platform binaries to ship.
+# This workflow turns a tag push into a documented GitHub Release +
+# a Discord announcement. The actual deployment is orchestrated by
+# the deploy job inside `ci.yml` on pushes to `main`.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: Publish release + notify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract changelog entry
+        id: notes
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          chmod +x scripts/extract-changelog.sh
+          BODY="$(scripts/extract-changelog.sh "${TAG}")"
+          if [ -z "$BODY" ]; then
+            echo "::warning::no CHANGELOG.md section for ${TAG} — release will ship with empty notes"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          # Persist the body to a file — multi-line output via
+          # $GITHUB_OUTPUT is awkward and eats backticks.
+          printf '%s' "$BODY" > .release-notes.md
+
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.notes.outputs.tag }}"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            gh release edit "${TAG}" --notes-file .release-notes.md
+          else
+            gh release create "${TAG}" \
+              --title "${TAG}" \
+              --notes-file .release-notes.md
+          fi
+
+      - name: Post to Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_RELEASE_WEBHOOK }}
+          TAG: ${{ steps.notes.outputs.tag }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then
+            echo "DISCORD_RELEASE_WEBHOOK not set — skipping"
+            exit 0
+          fi
+
+          NOTES="$(cat .release-notes.md)"
+          # Discord embed descriptions cap at 4096 chars — bound here.
+          if [ "${#NOTES}" -gt 1800 ]; then
+            NOTES="${NOTES:0:1800}…"
+          fi
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+          SHA_SHORT="$(git rev-parse --short "${TAG}")"
+
+          # Indigo — #6366f1, Orion's constellation-night palette.
+          jq -n \
+            --arg title "Orion ${TAG} published" \
+            --arg url "${RELEASE_URL}" \
+            --arg desc "${NOTES}" \
+            --arg sha "${SHA_SHORT}" \
+            --argjson color 6513137 \
+            '{
+               username: "Orion Releases",
+               embeds: [{
+                 title: $title,
+                 url: $url,
+                 description: (if $desc == "" then "No release notes." else $desc end),
+                 color: $color,
+                 fields: [
+                   { name: "Commit", value: $sha, inline: true },
+                   { name: "Tag",    value: $url, inline: true }
+                 ],
+                 timestamp: (now | todateiso8601)
+               }]
+             }' > payload.json
+
+          # Multipart post so Discord gets the full CHANGELOG.md as an
+          # attachment alongside the embed. ``payload_json=<file`` reads
+          # the embed json into a form field; ``files[0]=@…`` uploads
+          # the changelog. Attachment is renamed to include the tag so
+          # downloads stay distinguishable when several releases are
+          # pinned in the channel.
+          if [ -f CHANGELOG.md ]; then
+            curl -sS -X POST \
+              -F "payload_json=<payload.json;type=application/json" \
+              -F "files[0]=@CHANGELOG.md;filename=CHANGELOG-${TAG}.md" \
+              "$WEBHOOK"
+          else
+            curl -sS -X POST -H "Content-Type: application/json" \
+                 --data @payload.json "$WEBHOOK"
+          fi
