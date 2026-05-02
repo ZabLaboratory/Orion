@@ -27,7 +27,7 @@ go test ./...
 go build -o ./bin/orion ./cmd/orion
 
 # Boot against the dev DB
-docker compose -f deploy/compose.yaml up -d orion-postgres
+docker compose up -d orion-postgres
 ORION_DATABASE_URL=postgres://orion:CHANGEME@localhost:5447/orion?sslmode=disable \
 ORION_ZABAUTH_VALIDATE_URL=http://zabgate:4000/auth/api/v1/tokens \
 ORION_CANVAS_BASE_URL=http://zabgate:4000/canvas \

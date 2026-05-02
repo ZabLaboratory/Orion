@@ -75,7 +75,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
       - name: build image
-        run: docker buildx build -f deploy/Dockerfile -t orion:ci .
+        run: docker buildx build -t orion:ci .
 
   secret-scan:
     name: secret-scan

@@ -1,0 +1,181 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-orion
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Verify secrets
+        run: |
+          if [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_USERNAME }}" ] || [ -z "${{ secrets.VPS_SSH_KEY }}" ] || [ -z "${{ secrets.VPS_APP_PATH }}" ] || [ -z "${{ secrets.ORION_PG_PASSWORD }}" ] || [ -z "${{ secrets.ORION_SERVICE_TOKEN }}" ]; then
+            echo "::error::Missing required secrets (VPS_HOST, VPS_USERNAME, VPS_SSH_KEY, VPS_APP_PATH, ORION_PG_PASSWORD, ORION_SERVICE_TOKEN)"
+            exit 1
+          fi
+
+  deploy:
+    name: Deploy
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Ensure target dir exists
+        env:
+          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
+          APP_PATH: ${{ secrets.VPS_APP_PATH }}
+        run: |
+          $SSH_CMD "mkdir -p '$APP_PATH' && ls -ld '$APP_PATH'"
+
+      - name: Sync code to VPS
+        env:
+          SSH_OPTS: -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new
+          TARGET: ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}:${{ secrets.VPS_APP_PATH }}
+        run: |
+          rsync -az --delete \
+            --exclude '.git' \
+            --exclude '.github' \
+            --exclude '.env' \
+            --exclude '.env.*' \
+            --exclude 'bin' \
+            --exclude 'dist' \
+            --exclude 'coverage.out' \
+            --exclude 'coverage.html' \
+            -e "ssh $SSH_OPTS" \
+            ./ "$TARGET/"
+
+      - name: Write remote .env
+        env:
+          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
+          APP_PATH: ${{ secrets.VPS_APP_PATH }}
+          ORION_PG_PASSWORD: ${{ secrets.ORION_PG_PASSWORD }}
+          ORION_SERVICE_TOKEN: ${{ secrets.ORION_SERVICE_TOKEN }}
+        run: |
+          $SSH_CMD "cat > $APP_PATH/.env && chmod 600 $APP_PATH/.env" << EOF
+          # Public surface
+          ORION_LISTEN_ADDR=0.0.0.0:4007
+          ORION_INTERNAL_ADDR=0.0.0.0:4017
+          ORION_PUBLIC_BASE_URL=https://zabgate.cyell.dev/orion
+
+          # Database — orion-postgres on zab-internal
+          ORION_DATABASE_URL=postgres://orion:$ORION_PG_PASSWORD@orion-postgres:5432/orion?sslmode=disable
+          ORION_PG_USER=orion
+          ORION_PG_PASSWORD=$ORION_PG_PASSWORD
+          ORION_PG_DB=orion
+
+          # Filesystem roots
+          ORION_ASSET_ROOT=/var/lib/orion/assets
+          ORION_SOLAR_ROOT=/var/lib/orion/solar
+
+          # Auth — Orion validates show-tokens against ZabAuth via the gateway.
+          ORION_ZABAUTH_VALIDATE_URL=http://zabgate:4000/auth/api/v1/tokens
+          ORION_AUTH_CACHE_TTL_S=60
+          ORION_SERVICE_TOKEN=$ORION_SERVICE_TOKEN
+
+          # Upstream services (compile-time fetch through the gateway)
+          ORION_CANVAS_BASE_URL=http://zabgate:4000/canvas
+          ORION_BLUE_BASE_URL=http://zabgate:4000/blue
+
+          # Runtime
+          ORION_TICK_HZ=60
+          ORION_PUSH_TIMEOUT_S=10
+          ORION_HTTP_POLL_USER_AGENT=orion-poller/1.0
+          ORION_LOG_LEVEL=info
+          ORION_LOG_FORMAT=json
+          EOF
+
+      - name: Build, migrate, restart
+        env:
+          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
+          APP_PATH: ${{ secrets.VPS_APP_PATH }}
+        run: |
+          $SSH_CMD bash -s -- "$APP_PATH" << 'DEPLOY_SCRIPT'
+          set -euo pipefail
+          APP_PATH="$1"
+          cd "$APP_PATH"
+
+          echo "=== Network preflight ==="
+          # zab-internal is the shared backend network; caddy-public is
+          # the gateway's outward-facing one. Both must exist before
+          # compose up (idempotent).
+          for net in caddy-public zab-internal; do
+            if ! docker network inspect "$net" >/dev/null 2>&1; then
+              echo "  Creating missing network: $net"
+              docker network create "$net"
+            else
+              echo "  Network present: $net"
+            fi
+          done
+
+          echo "=== Build ==="
+          docker compose -f docker-compose.prod.yml build --quiet
+
+          echo "=== Ensure DB is up ==="
+          docker compose -f docker-compose.prod.yml up -d orion-db
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.prod.yml ps orion-db | grep -q healthy; then break; fi
+            sleep 2
+          done
+
+          echo "=== Migrate (goose) ==="
+          # The runtime image bundles /goose alongside /orion for exactly
+          # this purpose. -T disables the pseudo-tty so the heredoc stdin
+          # doesn't bleed into the compose run.
+          docker compose -f docker-compose.prod.yml run --rm -T \
+            --entrypoint /goose orion \
+            -dir /migrations postgres \
+            "$(grep '^ORION_DATABASE_URL=' .env | cut -d= -f2-)" up < /dev/null
+
+          echo "=== Up all services ==="
+          docker compose -f docker-compose.prod.yml up -d
+          docker compose -f docker-compose.prod.yml up -d --force-recreate orion
+
+          echo "=== Health (internal) ==="
+          sleep 5
+          HEALTHY=0
+          for i in $(seq 1 15); do
+            if docker run --rm --network zab-internal curlimages/curl:latest -sf http://orion:4007/api/v1/health > /dev/null 2>&1; then
+              HEALTHY=1; break
+            fi
+            echo "  Waiting... ($i/15)"; sleep 3
+          done
+          if [ $HEALTHY -eq 0 ]; then
+            echo "::error::Internal health check failed"
+            docker compose -f docker-compose.prod.yml logs --tail=50 orion
+            exit 1
+          fi
+          echo "Orion healthy"
+          DEPLOY_SCRIPT
+
+      - name: Smoke test via gateway
+        env:
+          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
+        run: |
+          # Gateway-first: the deploy must validate the full
+          # Caddy + DNS + TLS path, not just the container. /orion/api/v1/health
+          # is unauthenticated per ADR 004 § 2 so we can probe it directly.
+          $SSH_CMD 'curl -fsS --max-time 5 https://zabgate.cyell.dev/orion/api/v1/health > /dev/null' \
+            || (echo "::error::Public gateway probe failed (Caddy/DNS/TLS or routing)"; \
+                $SSH_CMD 'docker compose -f '"${{ secrets.VPS_APP_PATH }}"'/docker-compose.prod.yml logs --tail=50 orion'; \
+                exit 1)
+          echo "Orion reachable via https://zabgate.cyell.dev/orion/*"

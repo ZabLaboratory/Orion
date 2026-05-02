@@ -1,0 +1,54 @@
+# Local-dev compose. Brings up Orion + its Postgres on the shared
+# zab-internal network so local Orion can talk to a locally-running
+# ZabGate / ZabAuth / Blue / Canvas if they're up alongside.
+
+services:
+  orion:
+    build: .
+    image: orion:dev
+    container_name: orion
+    restart: unless-stopped
+    env_file:
+      - ../.env.orion
+    expose:
+      - "4007"
+      - "4017"
+    depends_on:
+      orion-postgres:
+        condition: service_healthy
+    networks:
+      zab-internal:
+        aliases:
+          - orion
+          - orion-api
+
+  orion-postgres:
+    image: postgres:16-alpine
+    container_name: orion-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${ORION_PG_USER:-orion}
+      POSTGRES_PASSWORD: ${ORION_PG_PASSWORD:-CHANGEME}
+      POSTGRES_DB: ${ORION_PG_DB:-orion}
+    ports:
+      - "5447:5432"  # local-dev access; absent from prod
+    volumes:
+      - orion_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orion -d orion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      zab-internal:
+        aliases:
+          - orion-postgres
+          - orion-db
+
+volumes:
+  orion_pg_data:
+    name: orion_pg_data
+
+networks:
+  zab-internal:
+    external: true

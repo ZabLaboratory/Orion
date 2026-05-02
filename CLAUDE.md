@@ -48,9 +48,12 @@ Orion/
 │   ├── protocol/                        ADR 002 envelope + golden fixtures
 │   └── config/                          env parsing
 ├── migrations/0001_init.sql             scenes / definitions / pushed_versions / assets
-├── deploy/                              Dockerfile (multi-stage distroless), compose.yaml
+├── Dockerfile                           multi-stage distroless (orion + goose + migrations)
+├── docker-compose.yml                   local-dev compose
+├── docker-compose.prod.yml              prod compose (zab-internal, no host ports)
 ├── tests/e2e/                           build-tagged tests against a live PG
 ├── .github/workflows/ci.yml             vet / test / build / docker / staticcheck / golangci / trufflehog
+├── .github/workflows/deploy.yml         VPS deploy (rsync + compose build + goose migrate + gateway smoke)
 ├── .env.template                        every env var documented
 └── go.mod                               go 1.26.2
 ```

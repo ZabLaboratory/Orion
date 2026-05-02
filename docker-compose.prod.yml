@@ -1,0 +1,63 @@
+# Production compose for Orion v2 on the VPS.
+# Mirrors ZabAuth's prod layout: zab-internal as the shared backend
+# network, no host ports exposed (only ZabGate is publicly reachable).
+# Resource limits per docs/rules/security.md and agents/_shared/deploy.md § 10.
+
+services:
+  orion:
+    build: .
+    container_name: orion
+    restart: unless-stopped
+    env_file: .env
+    expose:
+      - "4007"
+      - "4017"
+    depends_on:
+      orion-db:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+    networks:
+      zab-internal:
+        aliases:
+          - orion
+          - orion-api
+
+  orion-db:
+    image: postgres:16-alpine
+    container_name: orion-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${ORION_PG_USER:-orion}
+      POSTGRES_PASSWORD: ${ORION_PG_PASSWORD}
+      POSTGRES_DB: ${ORION_PG_DB:-orion}
+    volumes:
+      - orion_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orion -d orion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 128M
+    networks:
+      zab-internal:
+        aliases:
+          - orion-postgres
+          - orion-db
+
+volumes:
+  orion_pg_data:
+    name: orion_pg_data
+
+networks:
+  zab-internal:
+    external: true
