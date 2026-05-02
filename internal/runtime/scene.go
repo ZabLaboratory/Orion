@@ -33,10 +33,9 @@ type SubscriberMsg = any
 // channel + the per-connection Drop policy implements the
 // backpressure rule from ADR 002 § 9.
 type Subscription struct {
-	Out      chan SubscriberMsg
-	closed   atomic.Bool
-	dropFn   func(*Subscription) // called when Out is full per send
-	scene    *Scene
+	Out    chan SubscriberMsg
+	closed atomic.Bool
+	scene  *Scene
 }
 
 // Close drains the subscriber and removes it from the scene. Idempotent.

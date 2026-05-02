@@ -201,8 +201,7 @@ func writeWSError(w http.ResponseWriter, status int, code, message string) {
 }
 
 // pingInterval is the server-initiated ping cadence per ADR 002 § 4
-// (60 s of silence triggers a server ping).
+// (60 s of silence triggers a server ping). The 10 s pong deadline
+// from the same section is enforced by the standard Read timeout in
+// connection.run; we don't carry a separate constant for it.
 const pingInterval = 60 * time.Second
-
-// pongDeadline is the max wait for a pong reply (ADR 002 § 4).
-const pongDeadline = 10 * time.Second

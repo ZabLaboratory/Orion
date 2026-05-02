@@ -79,9 +79,7 @@ func Compile(
 	//    root is the layout with every component reference replaced by
 	//    its body (parameters substituted, instance-paths prefixed).
 	expanded, hoistedInputs, hoistErrs := expandLayout(layout.Root, components, "")
-	for _, e := range hoistErrs {
-		d.Items = append(d.Items, e)
-	}
+	d.Items = append(d.Items, hoistErrs...)
 	if d.HasErrors() {
 		return nil, nil, "", &CompileError{Diagnostics: *d}
 	}
@@ -97,9 +95,7 @@ func Compile(
 	// 4) Validate Blueprint compute purity (criterion 18) and resolve
 	//    the runtime graph nodes.
 	graphNodes, defaults, validateDiags := validateBlueprint(blueprint, manifest)
-	for _, e := range validateDiags {
-		d.Items = append(d.Items, e)
-	}
+	d.Items = append(d.Items, validateDiags...)
 	if d.HasErrors() {
 		return nil, nil, "", &CompileError{Diagnostics: *d}
 	}
