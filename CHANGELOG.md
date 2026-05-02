@@ -11,6 +11,54 @@ publishes with empty notes.
 
 ## [Unreleased]
 
+### Added — v2 Go scaffold
+
+- **Reactive runtime in Go** scaffolded on `feature/v2-go-scaffold`
+  on 2026-05-02 per
+  [ADR 004 — Orion v2 (reactive runtime)](../docs/adr/004-orion-v2-runtime.md).
+  All 18 chantier resolution criteria (15 from ADR § 12 + 3 chantier-
+  specific) covered by tests; `go test ./...` and
+  `go test -tags e2e ./...` green locally.
+- **Scene compiler** (`internal/compiler/`) — fetches Canvas + Blue +
+  components, validates types/cycles/purity, hoists `operator_inputs`
+  with instance-path prefixing, emits graph + render bundle, hashes
+  to a deterministic `scene_version`. Cycle detection rejects with
+  `CYCLIC_COMPONENT` (criterion 17); impure compute rejects with
+  `IMPURE_COMPUTE` (criterion 18).
+- **Reactive engine** (`internal/runtime/`) — per-scene goroutine,
+  drain-then-compute event loop, topologically-sorted DAG, dirty
+  propagation. Singleton `Show` owns the active-scene authority and
+  migrates live subscribers between scenes on switch (no WS reset).
+  Process-wide `Tick` source for time-based bindings.
+  `TestSessionManager` clones graphs for `__test.*` workflows.
+- **Adapters** (`internal/adapters/`) — unified inbox with scope check
+  + fan-out routing (every scene that declared a binding on the
+  target path), HTTP poller with 429 backoff, PG `LISTEN/NOTIFY`
+  primitive.
+- **WS server** (`internal/ws/`) — `coder/websocket` upgrade,
+  per-connection state, drain-then-write loop, server-driven ping at
+  60 s idle, sends snapshots on backpressure collapse.
+- **HTTP API** (`internal/api/`) — every endpoint from ADR 004 § 2:
+  `/scenes/{id}/push` (compile + rollback), `/render-bundle`,
+  `/operator-inputs`, `/graph`, `/scenes/{id}/status`, `/show`,
+  `/show/active-scene`, `/show/test-sessions`, `/assets/{id}`, the
+  preserved `/credentials/{id}/stream-key` (503 until Quasar lands),
+  and `GET /static/solar/v{N.N.N}/*`.
+- **Persistence** (`internal/store/`) — `pgx/v5` repositories for
+  scenes, definitions (kept forever), pushed versions (purged on
+  archive), and assets. Migrations under `migrations/` (goose
+  format).
+- **Auth** (`internal/auth/`) — trust-headers parser
+  (`X-Authenticated-User`/`-Role`/`-Paths`) plus a cached ZabAuth
+  `/validate` client for show-token revocation checks.
+- **Protocol** (`internal/protocol/`) — typed envelopes + golden
+  fixtures (byte-stable for criterion 16 — Solar mock-orion suite
+  conformance).
+- **Deploy + CI** — multi-stage distroless `Dockerfile`,
+  `compose.yaml` with `orion-postgres`, GitHub Actions running vet /
+  test (race) / build / docker / staticcheck / golangci-lint /
+  trufflehog.
+
 ### Removed
 
 - **Entire v0.x Python implementation deleted** on 2026-05-02 per
@@ -19,8 +67,8 @@ publishes with empty notes.
   `docker-compose.yml`, `docker-compose.prod.yml`, `pyproject.toml`,
   `uv.lock`, `Makefile`, `alembic.ini`, `.github/`, `.env.example` are
   all gone. `CHANGELOG.md`, `README.md`, `CLAUDE.md`, `.gitignore`
-  remain ; v2 will scaffold into the same project repo on a follow-up
-  branch.
+  remain ; v2 scaffolded into the same project repo on
+  `feature/v2-go-scaffold`.
 - The Twitch concerns (OAuth Helix, IRC chat plumbing, encrypted
   credentials) move to **Quasar** per
   [ADR 005 — Quasar (multi-platform integrations)](../docs/adr/005-quasar-platforms.md).

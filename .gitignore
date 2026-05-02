@@ -1,25 +1,26 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-.venv/
-venv/
-env/
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-.coverage
-htmlcov/
-*.egg-info/
-dist/
-build/
+# Go build outputs
+/orion
+/orion.exe
+*.test
+*.test.exe
+*.out
+/bin/
+/dist/
+
+# Coverage
+coverage.out
+coverage.html
+
+# Asset root (per-host data, not in repo)
+/assets-root/
+
+# Static Solar bundles (vendored at deploy time, not committed)
+/static/solar/
 
 # Env — never commit
 .env
 .env.*
-!.env.example
+!.env.template
 
 # IDE
 .vscode/
@@ -33,7 +34,3 @@ Thumbs.db
 
 # Secrets baseline
 .secrets.baseline
-
-# MediaMTX runtime
-mediamtx/recordings/
-mediamtx/hls/
