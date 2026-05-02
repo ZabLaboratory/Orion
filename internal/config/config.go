@@ -32,6 +32,9 @@ type Config struct {
 	ZabAuthValidateURL string
 	AuthCacheTTL       time.Duration
 	ServiceToken       string
+	OperatorToken      string
+	ServicePaths       []string
+	QuasarBaseURL      string
 	CanvasBaseURL      string
 	BlueBaseURL        string
 	TickHz             int
@@ -57,6 +60,9 @@ func Load() (Config, error) {
 		SolarRoot:          getenv("ORION_SOLAR_ROOT", "/var/lib/orion/solar"),
 		ZabAuthValidateURL: strings.TrimRight(getenv("ORION_ZABAUTH_VALIDATE_URL", ""), "/"),
 		ServiceToken:       os.Getenv("ORION_SERVICE_TOKEN"),
+		OperatorToken:      os.Getenv("ORION_OPERATOR_TOKEN"),
+		ServicePaths:       splitCSV(getenv("ORION_SERVICE_PATHS", "quasar.credentials.read")),
+		QuasarBaseURL:      strings.TrimRight(getenv("ORION_QUASAR_BASE_URL", ""), "/"),
 		CanvasBaseURL:      strings.TrimRight(getenv("ORION_CANVAS_BASE_URL", ""), "/"),
 		BlueBaseURL:        strings.TrimRight(getenv("ORION_BLUE_BASE_URL", ""), "/"),
 		HTTPPollUserAgent:  getenv("ORION_HTTP_POLL_USER_AGENT", "orion-poller/1.0"),
@@ -120,6 +126,18 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// splitCSV splits a comma-separated list into trimmed non-empty parts.
+// Used for the service-token `paths` claim ; ZabAuth wants a JSON array.
+func splitCSV(raw string) []string {
+	var out []string
+	for _, p := range strings.Split(raw, ",") {
+		if v := strings.TrimSpace(p); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func getInt(key string, def int) (int, error) {
