@@ -86,7 +86,10 @@ func dialWith(t *testing.T, url string, headers http.Header) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: headers})
+	c, resp, err := websocket.Dial(ctx, url, &websocket.DialOptions{HTTPHeader: headers})
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatalf("dial %s: %v", url, err)
 	}
@@ -225,6 +228,9 @@ func TestWS_RejectsUnauthenticatedUpgrade(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	_, resp, err := websocket.Dial(ctx, rig.wsURL, nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
 	if err == nil {
 		t.Fatal("expected dial to fail")
 	}

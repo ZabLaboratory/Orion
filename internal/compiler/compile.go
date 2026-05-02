@@ -497,11 +497,11 @@ func canonicalJSON(v any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	var any any
-	if err := json.Unmarshal(raw, &any); err != nil {
+	var generic any
+	if err := json.Unmarshal(raw, &generic); err != nil {
 		return nil, err
 	}
-	return marshalCanonical(any)
+	return marshalCanonical(generic)
 }
 
 func marshalCanonical(v any) ([]byte, error) {

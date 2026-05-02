@@ -139,19 +139,19 @@ type AuditEntry struct {
 // Audit is a fixed-size ring of recent writes. Used for /show
 // inspection and for tracing during a live broadcast. Not persisted.
 type Audit struct {
-	mu      sync.Mutex
-	entries []AuditEntry
-	cap     int
-	next    int
-	full    bool
+	mu       sync.Mutex
+	entries  []AuditEntry
+	capacity int
+	next     int
+	full     bool
 }
 
 // NewAudit builds a ring of given capacity.
-func NewAudit(cap int) *Audit {
-	if cap <= 0 {
-		cap = 256
+func NewAudit(capacity int) *Audit {
+	if capacity <= 0 {
+		capacity = 256
 	}
-	return &Audit{entries: make([]AuditEntry, cap), cap: cap}
+	return &Audit{entries: make([]AuditEntry, capacity), capacity: capacity}
 }
 
 // Record appends an entry, evicting the oldest if full.
@@ -159,7 +159,7 @@ func (a *Audit) Record(e AuditEntry) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.entries[a.next] = e
-	a.next = (a.next + 1) % a.cap
+	a.next = (a.next + 1) % a.capacity
 	if a.next == 0 {
 		a.full = true
 	}
@@ -174,7 +174,7 @@ func (a *Audit) Snapshot() []AuditEntry {
 		copy(out, a.entries[:a.next])
 		return out
 	}
-	out := make([]AuditEntry, 0, a.cap)
+	out := make([]AuditEntry, 0, a.capacity)
 	out = append(out, a.entries[a.next:]...)
 	out = append(out, a.entries[:a.next]...)
 	return out

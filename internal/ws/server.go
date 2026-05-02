@@ -129,12 +129,12 @@ func (s *Server) runShowConnection(ctx context.Context, conn *connection) error 
 		return err
 	}
 
-	return conn.run(ctx, sub, func(ctx context.Context, msg *protocol.Input) error {
+	return conn.run(ctx, sub, func(inputCtx context.Context, msg *protocol.Input) error {
 		// Reject __test.* on the live show endpoint (ADR 002 § 8).
 		if strings.HasPrefix(msg.Path, "__test.") {
-			return conn.sendError(ctx, protocol.CodeWriteForbidden, "__test.* not allowed on live", false)
+			return conn.sendError(inputCtx, protocol.CodeWriteForbidden, "__test.* not allowed on live", false)
 		}
-		err := s.Inbox.Write(ctx, adapters.Write{
+		err := s.Inbox.Write(inputCtx, adapters.Write{
 			Identity:    conn.identity,
 			Path:        msg.Path,
 			Value:       msg.Value,
@@ -142,7 +142,7 @@ func (s *Server) runShowConnection(ctx context.Context, conn *connection) error 
 			ClientMsgID: msg.ClientMsgID,
 		})
 		if errors.Is(err, adapters.ErrWriteForbidden) {
-			return conn.sendError(ctx, protocol.CodeWriteForbidden, "scope denied", false)
+			return conn.sendError(inputCtx, protocol.CodeWriteForbidden, "scope denied", false)
 		}
 		return err
 	})
@@ -158,7 +158,7 @@ func (s *Server) runTestConnection(ctx context.Context, conn *connection, scene 
 		return err
 	}
 
-	return conn.run(ctx, sub, func(ctx context.Context, msg *protocol.Input) error {
+	return conn.run(ctx, sub, func(_ context.Context, msg *protocol.Input) error {
 		// Test session accepts __test.* and live-style writes both
 		// — adapters.Inbox would refuse __test.*, so we go direct
 		// to the cloned scene's inbox here.

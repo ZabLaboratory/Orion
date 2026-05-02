@@ -52,18 +52,23 @@ func (s *Subscription) Close() {
 // Scene is one live scene instance — a graph + state + a goroutine
 // that drives the drain-then-compute loop.
 type Scene struct {
-	id      string
-	graph   *compiler.Graph
-	bundle  *compiler.RenderBundle
-	state   *State
-	cmpReg  *ComputeRegistry
-	logger  *slog.Logger
+	id     string
+	graph  *compiler.Graph
+	bundle *compiler.RenderBundle
+	state  *State
+	cmpReg *ComputeRegistry
+	logger *slog.Logger
 
 	inbox chan InputMsg
 
 	subsMu sync.Mutex
 	subs   []*Subscription
 
+	// ctx and cancel are bound at NewScene so Stop can safely fire
+	// before Run has had a chance to start. Running both Run and
+	// Stop concurrently used to race on cancel; pre-binding the
+	// context closes that window.
+	ctx    context.Context
 	cancel context.CancelFunc
 	done   chan struct{}
 
@@ -82,6 +87,7 @@ type computeEntry struct {
 // state from the graph defaults. The goroutine starts only after Run
 // is called by the Show.
 func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, registry *ComputeRegistry, logger *slog.Logger) *Scene {
+	ctx, cancel := context.WithCancel(context.Background())
 	s := &Scene{
 		id:     id,
 		graph:  graph,
@@ -90,6 +96,8 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 		cmpReg: registry,
 		logger: logger.With("scene_id", id),
 		inbox:  make(chan InputMsg, 256),
+		ctx:    ctx,
+		cancel: cancel,
 		done:   make(chan struct{}),
 	}
 	s.state.Seed(graph.Defaults)
@@ -109,16 +117,25 @@ func (s *Scene) Graph() *compiler.Graph { return s.graph }
 // Bundle exposes the render bundle artefact (served by the API).
 func (s *Scene) Bundle() *compiler.RenderBundle { return s.bundle }
 
-// Run starts the scene goroutine. Blocks until ctx is cancelled.
-func (s *Scene) Run(ctx context.Context) {
-	ctx, cancel := context.WithCancel(ctx)
-	s.cancel = cancel
+// Run starts the scene goroutine. Blocks until the scene's context
+// is cancelled (via Stop or via the parent ctx going down).
+//
+// parentCtx links the scene's lifecycle to the show's: when the show
+// is stopped, every scene's parentCtx fires Done and the watcher
+// goroutine below cancels each scene in turn.
+func (s *Scene) Run(parentCtx context.Context) {
 	defer close(s.done)
-	defer cancel()
+	go func() {
+		select {
+		case <-parentCtx.Done():
+			s.cancel()
+		case <-s.ctx.Done():
+		}
+	}()
 
 	for {
 		select {
-		case <-ctx.Done():
+		case <-s.ctx.Done():
 			return
 		case msg := <-s.inbox:
 			s.applyInput(msg)
@@ -129,11 +146,10 @@ func (s *Scene) Run(ctx context.Context) {
 	}
 }
 
-// Stop signals the loop to exit and waits for it to drain.
+// Stop signals the loop to exit and waits for it to drain. Safe to
+// call before Run starts (the context is bound at NewScene time).
 func (s *Scene) Stop() {
-	if s.cancel != nil {
-		s.cancel()
-	}
+	s.cancel()
 	<-s.done
 }
 

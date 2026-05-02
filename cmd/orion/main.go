@@ -29,10 +29,19 @@ import (
 )
 
 func main() {
+	if err := run(); err != nil {
+		_, _ = os.Stderr.WriteString("orion: " + err.Error() + "\n")
+		os.Exit(1)
+	}
+}
+
+// run holds the actual main body so deferred cleanup runs on every
+// exit path. main() only handles the final os.Exit, sidestepping the
+// "exit-after-defer" trap.
+func run() error {
 	cfg, err := config.Load()
 	if err != nil {
-		_, _ = os.Stderr.WriteString("orion: " + err.Error() + "\n")
-		os.Exit(2)
+		return err
 	}
 
 	logger := obs.NewLogger(cfg)
@@ -54,8 +63,7 @@ func main() {
 	st, err := store.Open(dbCtx, cfg.DatabaseURL)
 	dbCancel()
 	if err != nil {
-		logger.Error("store open failed", "err", err)
-		os.Exit(1)
+		return err
 	}
 	defer st.Close()
 
@@ -170,6 +178,7 @@ func main() {
 		logger.Error("internal shutdown error", "err", err)
 	}
 	logger.Info("orion stopped")
+	return nil
 }
 
 // loadActiveScenes brings every active+pushed scene into the runtime
