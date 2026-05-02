@@ -8,72 +8,123 @@
 @../agents/_shared/deploy.md
 @../agents/_shared/projects.md
 
-## Status — v1 deleted, v2 scaffold pending
+## Status — v2 scaffold landed
 
-The Python + FastAPI Orion (v0.x) was deleted on 2026-05-02 per
+Orion v2 (Go) scaffold lives under this repo per
 **[ADR 004 — Orion v2 (reactive runtime)](../docs/adr/004-orion-v2-runtime.md)**.
 
-This directory is intentionally near-empty. v2 (Go) scaffolds in here
-in a follow-up PR. The repository's `.git/` is preserved so v2 lands
-on the same project history.
+The v0.x Python implementation was deleted on 2026-05-02. The v2
+scaffold went onto `feature/v2-go-scaffold` on 2026-05-02, all tests
+green locally (`go test ./...` + `go test -tags e2e ./...`), awaiting
+maintainer push.
 
-## Scope, once v2 lands
-
-Orion v2 is a **reactive runtime** for the platform's compiled scenes :
-scene compiler (Canvas + Blue + components → graph + Solar render
-bundle), per-scene goroutine event loop, WS fan-out to live show
-subscribers (Solar / Prism / mPrism / Companion / Quasar), test
-sessions, and Postgres-backed pushed-version persistence.
-
-Concerns moved out :
-
-- **Twitch** (OAuth Helix + IRC chat + future EventSub) → **Quasar**
-  (ADR 005). The previous `twitch_credentials` + `chat_messages`
-  tables and the Helix OAuth flow are reimplemented from scratch in
-  Quasar. User tokens do **not** migrate — operators re-authorize
-  once after Quasar rolls out.
-- **Streaming media plane** (RTMP/WHIP via MediaMTX) → **Pulsar**
-  (bundled in Prism). Pulsar pushes RTMP directly to Twitch ; Orion
-  v2 never touches the media path.
-
-Concern preserved verbatim :
-
-- The stream-key handover endpoint
-  `GET /orion/api/v1/credentials/{id}/stream-key` — referenced by
-  Prism's main process (`src/main/broadcast-engine.ts`). v2's Go
-  implementation re-exposes it under the same path. Until v2 ships,
-  any Prism broadcast attempt will fail the pre-flight
-  `twitch_credential` check with a clear error — that's intentional.
-
-## Stack (v2, decided in ADR 004 — not yet implemented here)
+## Stack
 
 | Layer | Technology |
 |---|---|
-| Runtime | Go 1.23+ — single statically-linked binary |
+| Runtime | Go 1.26.2 — single statically-linked binary |
 | HTTP / WS | `net/http` (1.22 routing) + `coder/websocket` |
-| DB | `pgx/v5` directly (no ORM), `goose` migrations |
-| Logging | `log/slog` (stdlib) |
+| DB | `pgx/v5` directly (no ORM); `goose` migrations |
+| Logging | `log/slog` |
 | Metrics | `prometheus/client_golang` on internal-only endpoint |
-| Test | stdlib `testing` + `testify/assert` |
+| Test | stdlib `testing`; `httptest` + `coder/websocket` test client |
 
 No web framework. Stdlib + small libs.
 
-## What's still here
+## Layout
 
-- `CHANGELOG.md` — preserved with the deletion entry on top, full
-  v0.x history below for archaeology.
-- `README.md` — short status note pointing at this file and ADR 004.
-- `.gitignore` — preserved as-is for v2.
-- `.git/` — same project repo, v2 commits land on `main` after the
-  rewrite branches.
+```
+Orion/
+├── cmd/orion/main.go                    process entry, wires every dep
+├── internal/
+│   ├── compiler/                        Canvas+Blue+components → graph+bundle
+│   ├── runtime/                         show, scene loop, tick, test sessions
+│   ├── adapters/                        inbox, http poller, pg-listen
+│   ├── ws/                              upgrade, codec, connection
+│   ├── api/                             HTTP handlers (one file per resource)
+│   ├── store/                           pgx repositories
+│   ├── auth/                            ZabGate header parsing + show-token validate
+│   ├── obs/                             slog, prom metrics, panic handler
+│   ├── protocol/                        ADR 002 envelope + golden fixtures
+│   └── config/                          env parsing
+├── migrations/0001_init.sql             scenes / definitions / pushed_versions / assets
+├── deploy/                              Dockerfile (multi-stage distroless), compose.yaml
+├── tests/e2e/                           build-tagged tests against a live PG
+├── .github/workflows/ci.yml             vet / test / build / docker / staticcheck / golangci / trufflehog
+├── .env.template                        every env var documented
+└── go.mod                               go 1.26.2
+```
 
-Anything else (`src/`, `tests/`, `alembic/`, `scripts/`, `deploy/`,
-`Dockerfile`, `pyproject.toml`, `uv.lock`, `docker-compose.yml`,
-`docker-compose.prod.yml`, `Makefile`, `.github/`, `.env.example`)
-was deleted and will be reintroduced by the v2 scaffold.
+## Endpoints (ADR 004 § 2)
 
-## Resolution criteria — N/A until v2 lands
+All routes start at `/api/v1/...` (ZabGate strips its `/orion`
+prefix on the way in).
 
-The deletion branch is resolved when the maintainer squash-merges it.
-Resolution criteria for v2 ship inside ADR 004 § 12 and rewrite this
-section.
+| Method + path | Purpose |
+|---|---|
+| `GET /api/v1/health` | liveness |
+| `GET /api/v1/ready` | readiness (DB ping + scene roster) |
+| `POST /api/v1/scenes/{id}/push` | compile + persist + activate |
+| `GET /api/v1/scenes/{id}/render-bundle?v={hash}` | Solar fetch |
+| `GET /api/v1/scenes/{id}/operator-inputs?v={hash}` | non-Solar surface |
+| `GET /api/v1/scenes/{id}/graph?v={hash}` | internal debug |
+| `POST /api/v1/scenes/{id}/status` | archive / reactivate |
+| `GET /api/v1/show` | show summary |
+| `POST /api/v1/show/active-scene` | switch active scene |
+| `POST /api/v1/show/test-sessions` | open isolated test session |
+| `GET /api/v1/assets/{id}` | content-addressed binary |
+| `GET /api/v1/credentials/{id}/stream-key` | preserved verbatim — currently 503 until Quasar wires it |
+| WS `/api/v1/show/stream` | live show |
+| WS `/api/v1/scenes/{id}/test?session={uuid}` | isolated scene preview |
+| `GET /static/solar/v{N.N.N}/*` | static Solar bundle (immutable) |
+
+## Resolution criteria — coverage
+
+The 18 criteria from the chantier brief (15 from ADR 004 § 12 + 3
+chantier-specific). Status as of the v2 scaffold landing:
+
+| # | Criterion | Coverage |
+|---|---|---|
+| 1 | `POST /push` accepts envelope, advances `latest_pushed_version`; malformed leaves it unchanged. | `internal/api/scenes_push.go` + `tests/e2e/push_test.go` |
+| 2 | `POST /show/active-scene` rejects scenes never pushed (`SCENE_NOT_PUSHED`). | `internal/api/show.go` |
+| 3 | `GET /render-bundle?v=` byte-for-byte match + immutable cache header. | `internal/api/scenes_get.go` |
+| 4 | WS `/show/stream` input-to-delta ≤ 50 ms. | `internal/ws/server_test.go::TestWS_OperatorEndToEnd` (200 ms threshold via WS) + `internal/runtime/scene_test.go` (50 ms direct). |
+| 5 | Scene switch emits `scene_changed` + `snapshot` ≤ 100 ms. | `internal/runtime/scene_test.go::TestShow_SwitchMigratesLiveSubsAndEmitsSceneChanged` |
+| 6 | 5 Hz HTTP poll → leaf writes + deltas. | `internal/adapters/poller_test.go::TestPoller_5HzWritesAtCadence` |
+| 7 | Test session WS accepts `__test.*`; live show rejects with `WRITE_FORBIDDEN`. | `internal/ws/server_test.go::TestWS_LiveRejectsTestNamespace` |
+| 8 | Pulsar CEF show-token → viewer; cannot send `input`. | `internal/ws/server_test.go::TestWS_ViewerCannotInput` |
+| 9 | Re-push of active scene mid-broadcast emits `scene_changed` + fresh `snapshot`. | `internal/api/scenes_push.go` (push handler), runtime tests cover the emit path. |
+| 10 | Pushing not-loaded scene makes it live without restart. | `internal/api/scenes_push.go::Show.Load` (idempotent swap). |
+| 11 | Restart reseeds from declared defaults (no persisted live state). | `internal/runtime/state.go::State.Seed` + `cmd/orion/main.go::loadActiveScenes`. |
+| 12 | Solar bundle served from `/static/solar/v{N}/*` with long-TTL cache. | `internal/api/static.go` |
+| 13 | Archive purges compiled artefacts; pointer reset to null. | `internal/api/scenes_get.go::handleArchive` |
+| 14 | Archive on active scene rejected with `SCENE_IN_USE`. | `internal/api/scenes_get.go::handleArchive` |
+| 15 | `{rollback_to: ...}` re-points without recompile. | `internal/api/scenes_push.go::handleRollback` |
+| 16 | Solar mock-orion fixtures round-trip against the real Orion. | `internal/protocol/fixtures_test.go` (golden fixtures byte-stable). |
+| 17 | Cyclic component reject (`CYCLIC_COMPONENT`). | `internal/compiler/compile_test.go::TestCompile_CyclicComponent` |
+| 18 | Impure compute reject (`IMPURE_COMPUTE`). | `internal/compiler/compile_test.go::TestCompile_ImpureCompute` |
+
+## Resolution criterion (branch-level, per workspace `git.md`)
+
+The branch is resolved when:
+1. CI green on `main`.
+2. Deploy workflow green on `main` (`docker compose up -d` against
+   prod compose succeeds; `GET /orion/api/v1/health` returns 200 via
+   ZabGate).
+3. Smoke run: `POST /scenes/{id}/push` against a stub Canvas/Blue
+   round-trips; `WS /show/stream` accepts a connection.
+
+## Concerns relocated
+
+- **Twitch** (OAuth Helix + IRC chat + EventSub) → **Quasar** (ADR 005).
+  No code lifted from the v0.x Python; Quasar implements the surface
+  from scratch.
+- **Streaming media plane** (RTMP / WHIP via MediaMTX) → **Pulsar**.
+  Pulsar pushes RTMP directly to Twitch.
+
+## Concern preserved verbatim
+
+- The stream-key handover endpoint
+  `GET /orion/api/v1/credentials/{id}/stream-key` — referenced by
+  Prism's `src/main/broadcast-engine.ts`. Returns 503
+  (`TWITCH_CREDENTIAL_UNAVAILABLE`) until Quasar wires through.

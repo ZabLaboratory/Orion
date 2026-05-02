@@ -1,0 +1,155 @@
+// Package compiler turns a push envelope (Canvas layout + Blue
+// blueprint id + component pushed-version refs) into the two
+// downstream artifacts every part of Orion consumes:
+//
+//   - Graph artifact: the topologically-sorted DAG the runtime walks
+//     for dirty propagation (ADR 004 § 4).
+//   - Render bundle: the Solar-facing tree (primitives only, user
+//     components inlined) plus operator_inputs and external_adapters
+//     metadata (ADR 003 § 3).
+//
+// scene_version is sha256(canonical(graph) || canonical(bundle)) so
+// two pushes of identical inputs land on the same hash and dedupe in
+// scene_pushed_versions on the unique key.
+package compiler
+
+import (
+	"errors"
+	"fmt"
+)
+
+// DiagnosticCode is the stable error/warning identifier the compiler
+// emits. Codes survive across releases — operators triage on them.
+type DiagnosticCode string
+
+// Error codes (ADR 003 § 6 / ADR 004 § 12 + chantier criteria 17, 18).
+const (
+	ErrCyclicComponent      DiagnosticCode = "CYCLIC_COMPONENT"
+	ErrImpureCompute        DiagnosticCode = "IMPURE_COMPUTE"
+	ErrUnknownComponent     DiagnosticCode = "UNKNOWN_COMPONENT"
+	ErrUnknownComputeNode   DiagnosticCode = "UNKNOWN_COMPUTE_NODE"
+	ErrUnknownPath          DiagnosticCode = "UNKNOWN_PATH"
+	ErrInvalidBinding       DiagnosticCode = "INVALID_BINDING"
+	ErrInvalidOperatorInput DiagnosticCode = "INVALID_OPERATOR_INPUT"
+	ErrInvalidAdapter       DiagnosticCode = "INVALID_ADAPTER"
+	ErrFetchUpstream        DiagnosticCode = "FETCH_UPSTREAM"
+	ErrTypeMismatch         DiagnosticCode = "TYPE_MISMATCH"
+	ErrTopologySort         DiagnosticCode = "TOPOLOGY_SORT"
+)
+
+// Diagnostic is a single error or warning produced during compilation.
+type Diagnostic struct {
+	Code     DiagnosticCode `json:"code"`
+	Severity string         `json:"severity"` // "error" | "warning"
+	Message  string         `json:"message"`
+	Path     string         `json:"path,omitempty"` // pointer into the offending artifact
+}
+
+// Diagnostics groups errors and warnings produced during a single
+// compilation. The compiler always returns this struct (never panics
+// on user-supplied data); callers route on Errors().
+type Diagnostics struct {
+	Items []Diagnostic
+}
+
+// Errors returns only the entries with severity = "error".
+func (d *Diagnostics) Errors() []Diagnostic {
+	var out []Diagnostic
+	for _, it := range d.Items {
+		if it.Severity == "error" {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// Warnings returns only the entries with severity = "warning".
+func (d *Diagnostics) Warnings() []Diagnostic {
+	var out []Diagnostic
+	for _, it := range d.Items {
+		if it.Severity == "warning" {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// HasErrors is the binary gate the push handler checks.
+func (d *Diagnostics) HasErrors() bool {
+	for _, it := range d.Items {
+		if it.Severity == "error" {
+			return true
+		}
+	}
+	return false
+}
+
+// AddError appends an error-severity diagnostic.
+func (d *Diagnostics) AddError(code DiagnosticCode, format string, args ...any) {
+	d.Items = append(d.Items, Diagnostic{
+		Code:     code,
+		Severity: "error",
+		Message:  fmt.Sprintf(format, args...),
+	})
+}
+
+// AddErrorAt is like AddError but attaches a source path.
+func (d *Diagnostics) AddErrorAt(code DiagnosticCode, path, format string, args ...any) {
+	d.Items = append(d.Items, Diagnostic{
+		Code:     code,
+		Severity: "error",
+		Message:  fmt.Sprintf(format, args...),
+		Path:     path,
+	})
+}
+
+// AddWarning appends a warning-severity diagnostic.
+func (d *Diagnostics) AddWarning(code DiagnosticCode, format string, args ...any) {
+	d.Items = append(d.Items, Diagnostic{
+		Code:     code,
+		Severity: "warning",
+		Message:  fmt.Sprintf(format, args...),
+	})
+}
+
+// Err converts a diagnostics bag with errors into a Go error so
+// the push handler can use errors.Is checks against named codes.
+type CompileError struct {
+	Diagnostics Diagnostics
+}
+
+func (e *CompileError) Error() string {
+	if len(e.Diagnostics.Items) == 0 {
+		return "compiler: error"
+	}
+	return fmt.Sprintf("compiler: %d diagnostic(s), first: [%s] %s",
+		len(e.Diagnostics.Items),
+		e.Diagnostics.Items[0].Code,
+		e.Diagnostics.Items[0].Message,
+	)
+}
+
+// HasCode reports whether any diagnostic in the error matches the
+// given code. Lets callers route on `errors.As(...).HasCode(CYCLIC)`.
+func (e *CompileError) HasCode(code DiagnosticCode) bool {
+	for _, it := range e.Diagnostics.Items {
+		if it.Code == code {
+			return true
+		}
+	}
+	return false
+}
+
+// Is implements errors.Is so callers can check against sentinel
+// "any compile error" matchers if desired.
+func (e *CompileError) Is(target error) bool {
+	_, ok := target.(*CompileError)
+	return ok
+}
+
+// Sentinel target used by callers that just want "did the compiler
+// reject the push".
+var ErrCompileFailed = errors.New("compiler: failed")
+
+// Unwrap lets errors.Is(err, ErrCompileFailed) match.
+func (e *CompileError) Unwrap() error { return ErrCompileFailed }

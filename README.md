@@ -1,44 +1,53 @@
 # Orion
 
-> **v1 deleted on 2026-05-02.** Awaiting the v2 Go rewrite per
-> [ADR 004 — Orion v2 (reactive runtime)](../docs/adr/004-orion-v2-runtime.md).
-> See [CLAUDE.md](./CLAUDE.md) for what survived, what moved, and
-> what's next.
+Reactive runtime for the Zablab broadcast platform's compiled scenes.
+Owns the scene compiler (Canvas + Blue + components → graph + Solar
+render bundle), per-scene goroutine event loops, and the WS fan-out
+to live show subscribers (Solar, Prism, mPrism, Companion, Quasar).
 
-## What Orion v2 will be (once scaffolded)
-
-Reactive runtime for the platform's compiled scenes. Owns the scene
-compiler (Canvas + Blue + components → graph + Solar render bundle),
-per-scene goroutine event loops, and the WS fan-out to live show
-subscribers (Solar, Prism, mPrism, Companion, Quasar).
-
-- **Port** : `4007`
+- **Port** : `4007` (HTTP + WS)
+- **Internal port** : `4017` (Prometheus scrape, dev-network only)
 - **Gateway prefix** : `/orion`
 - **DB port (local)** : `5447`
 - **Docker network** : `zab_network` (external)
+- **Status** : v2 scaffold landed (Go) — see
+  [CLAUDE.md](./CLAUDE.md) for a full layout map and resolution
+  matrix; [ADR 004](../docs/adr/004-orion-v2-runtime.md) for the
+  spec.
 
-## What Orion is **no longer** responsible for
+## Quick start
 
-- **Twitch** (OAuth Helix + IRC chat + EventSub) → moved to **Quasar**
-  (ADR 005). The previous Twitch credentials, OAuth flow, and chat
-  plumbing are reimplemented from scratch in Quasar.
-- **Streaming media plane** (RTMP/WHIP via MediaMTX) → moved to
-  **Pulsar** (bundled in Prism). Pulsar pushes RTMP directly to
-  Twitch.
+```sh
+# Install deps + verify
+go mod tidy
+go vet ./...
+go test ./...
 
-## What's preserved across the rewrite
+# Build the binary
+go build -o ./bin/orion ./cmd/orion
 
-The stream-key handover endpoint
-`GET /orion/api/v1/credentials/{id}/stream-key` — referenced by
-Prism's main process (`src/main/broadcast-engine.ts`). v2's Go
-implementation re-exposes it under the same path. Until v2 ships,
-Prism's pre-flight `twitch_credential` check fails clearly.
+# Boot against the dev DB
+docker compose -f deploy/compose.yaml up -d orion-postgres
+ORION_DATABASE_URL=postgres://orion:CHANGEME@localhost:5447/orion?sslmode=disable \
+ORION_ZABAUTH_VALIDATE_URL=http://zabgate:4000/auth/api/v1/tokens \
+ORION_CANVAS_BASE_URL=http://zabgate:4000/canvas \
+ORION_BLUE_BASE_URL=http://zabgate:4000/blue \
+./bin/orion
+```
 
-## History
+## Repository layout
 
-The v0.x Python codebase shipped a streaming control plane around
-MediaMTX, browser-composed scenes relayed to Twitch, and a Twitch
-orchestrator (OAuth + IRC chat prep). The v0.4.0 release pivoted away
-from streaming control ; ADR 004 then ruled out a refactor in favour
-of a Go rewrite, and ADR 005 split off Twitch into its own service.
-The full v0.x changelog stays in [CHANGELOG.md](./CHANGELOG.md).
+See [CLAUDE.md](./CLAUDE.md) — full tree plus the spec → file mapping
+for every chantier resolution criterion.
+
+## Concerns relocated
+
+- **Twitch** (OAuth Helix + IRC chat + EventSub) → **Quasar** (ADR 005).
+- **Streaming media plane** (RTMP/WHIP via MediaMTX) → **Pulsar**
+  (bundled in Prism).
+
+## Concern preserved verbatim
+
+- `GET /orion/api/v1/credentials/{id}/stream-key` — referenced by
+  Prism's main process. Returns 503 until Quasar wires the
+  underlying Twitch credential storage.

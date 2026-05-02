@@ -1,0 +1,450 @@
+package runtime
+
+import (
+	"context"
+	"encoding/json"
+	"log/slog"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/ZabLaboratory/Orion/internal/compiler"
+	"github.com/ZabLaboratory/Orion/internal/protocol"
+)
+
+// InputMsg is what an adapter, operator, or service produces. The
+// Inbox is where these land before reaching a scene's loop.
+type InputMsg struct {
+	Path        string
+	Value       json.RawMessage
+	Source      string // server-trusted identity prefix per ADR 002 § 6
+	ClientMsgID string
+	IsSystem    bool // true for tick / __system writes — bypass scope checks
+}
+
+// SubscriberMsg is the union of messages a subscription receives.
+// Concrete types: *protocol.Snapshot, *protocol.Delta,
+// *protocol.SceneChanged, *protocol.Error. The WS layer encodes them
+// onto the wire; tests assert on the typed values directly.
+type SubscriberMsg = any
+
+// Subscription is one client's lease on a scene's outbound stream.
+// The scene loop pushes onto Out; the WS layer drains it. A bounded
+// channel + the per-connection Drop policy implements the
+// backpressure rule from ADR 002 § 9.
+type Subscription struct {
+	Out    chan SubscriberMsg
+	closed atomic.Bool
+	scene  *Scene
+}
+
+// Close drains the subscriber and removes it from the scene. Idempotent.
+func (s *Subscription) Close() {
+	if s.closed.Swap(true) {
+		return
+	}
+	if s.scene != nil {
+		s.scene.unsubscribe(s)
+	}
+	close(s.Out)
+}
+
+// Scene is one live scene instance — a graph + state + a goroutine
+// that drives the drain-then-compute loop.
+type Scene struct {
+	id     string
+	graph  *compiler.Graph
+	bundle *compiler.RenderBundle
+	state  *State
+	cmpReg *ComputeRegistry
+	logger *slog.Logger
+
+	inbox chan InputMsg
+
+	subsMu sync.Mutex
+	subs   []*Subscription
+
+	// ctx and cancel are bound at NewScene so Stop can safely fire
+	// before Run has had a chance to start. Running both Run and
+	// Stop concurrently used to race on cancel; pre-binding the
+	// context closes that window.
+	ctx    context.Context
+	cancel context.CancelFunc
+	done   chan struct{}
+
+	// computeOrder is the topological compute list, cached at scene
+	// load. Each entry is a runtime view of a graph node that the
+	// recompute loop walks.
+	computeOrder []computeEntry
+}
+
+type computeEntry struct {
+	node    compiler.GraphNode
+	upstream []string // input port name -> upstream node id; zipped 1:1 with node.Upstream for v1
+}
+
+// NewScene constructs a Scene from compiled artefacts and seeds its
+// state from the graph defaults. The goroutine starts only after Run
+// is called by the Show.
+func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, registry *ComputeRegistry, logger *slog.Logger) *Scene {
+	ctx, cancel := context.WithCancel(context.Background())
+	s := &Scene{
+		id:     id,
+		graph:  graph,
+		bundle: bundle,
+		state:  NewState(),
+		cmpReg: registry,
+		logger: logger.With("scene_id", id),
+		inbox:  make(chan InputMsg, 256),
+		ctx:    ctx,
+		cancel: cancel,
+		done:   make(chan struct{}),
+	}
+	s.state.Seed(graph.Defaults)
+	for _, n := range graph.Nodes {
+		s.computeOrder = append(s.computeOrder, computeEntry{node: n, upstream: n.Upstream})
+	}
+	return s
+}
+
+// ID returns the scene's id.
+func (s *Scene) ID() string { return s.id }
+
+// Graph exposes the compiled graph artefact (used by adapters to
+// read declared bindings).
+func (s *Scene) Graph() *compiler.Graph { return s.graph }
+
+// Bundle exposes the render bundle artefact (served by the API).
+func (s *Scene) Bundle() *compiler.RenderBundle { return s.bundle }
+
+// Run starts the scene goroutine. Blocks until the scene's context
+// is cancelled (via Stop or via the parent ctx going down).
+//
+// parentCtx links the scene's lifecycle to the show's: when the show
+// is stopped, every scene's parentCtx fires Done and the watcher
+// goroutine below cancels each scene in turn.
+func (s *Scene) Run(parentCtx context.Context) {
+	defer close(s.done)
+	go func() {
+		select {
+		case <-parentCtx.Done():
+			s.cancel()
+		case <-s.ctx.Done():
+		}
+	}()
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case msg := <-s.inbox:
+			s.applyInput(msg)
+			s.drainNonBlocking()
+			s.recompute()
+			s.emit(&msg)
+		}
+	}
+}
+
+// Stop signals the loop to exit and waits for it to drain. Safe to
+// call before Run starts (the context is bound at NewScene time).
+func (s *Scene) Stop() {
+	s.cancel()
+	<-s.done
+}
+
+// Input enqueues a write. Returns false if the inbox is full.
+func (s *Scene) Input(msg InputMsg) bool {
+	select {
+	case s.inbox <- msg:
+		return true
+	default:
+		return false
+	}
+}
+
+// Subscribe registers a new subscriber and returns a snapshot to seed it.
+// The caller is expected to push the snapshot onto its WS as the
+// first frame, then forward Out.
+func (s *Scene) Subscribe(buf int) (*Subscription, *protocol.Snapshot) {
+	if buf < 16 {
+		buf = 16
+	}
+	sub := &Subscription{
+		Out:   make(chan SubscriberMsg, buf),
+		scene: s,
+	}
+	seq, state := s.state.Snapshot()
+	snap := &protocol.Snapshot{
+		SceneID:      s.id,
+		SceneVersion: s.graph.SceneVersion,
+		Sequence:     seq,
+		State:        state,
+	}
+	s.subsMu.Lock()
+	s.subs = append(s.subs, sub)
+	s.subsMu.Unlock()
+	return sub, snap
+}
+
+// AttachExisting hooks an existing subscription to this scene. Used
+// by Show.SetActive to migrate live-show subscribers between scenes
+// without forcing the WS to reconnect (ADR 002 § 11).
+func (s *Scene) AttachExisting(sub *Subscription) *protocol.Snapshot {
+	s.subsMu.Lock()
+	s.subs = append(s.subs, sub)
+	s.subsMu.Unlock()
+	sub.scene = s
+	seq, state := s.state.Snapshot()
+	return &protocol.Snapshot{
+		SceneID:      s.id,
+		SceneVersion: s.graph.SceneVersion,
+		Sequence:     seq,
+		State:        state,
+	}
+}
+
+// Detach removes a subscription from this scene without closing it.
+// Pair with AttachExisting on the destination scene.
+func (s *Scene) Detach(sub *Subscription) {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	for i, x := range s.subs {
+		if x == sub {
+			s.subs = append(s.subs[:i], s.subs[i+1:]...)
+			return
+		}
+	}
+}
+
+func (s *Scene) unsubscribe(sub *Subscription) {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	for i, x := range s.subs {
+		if x == sub {
+			s.subs = append(s.subs[:i], s.subs[i+1:]...)
+			return
+		}
+	}
+}
+
+// SubscriberCount is exposed for tests / metrics.
+func (s *Scene) SubscriberCount() int {
+	s.subsMu.Lock()
+	defer s.subsMu.Unlock()
+	return len(s.subs)
+}
+
+// applyInput writes the input to state, marking the leaf dirty if
+// the value actually changed.
+func (s *Scene) applyInput(msg InputMsg) {
+	s.state.Set(msg.Path, msg.Value)
+}
+
+// drainNonBlocking pulls every input already sitting in the inbox.
+// ADR 004 § 4.2: this is the natural batching primitive — under
+// burst, many writes coalesce into one recompute pass.
+func (s *Scene) drainNonBlocking() {
+	for {
+		select {
+		case msg := <-s.inbox:
+			s.applyInput(msg)
+		default:
+			return
+		}
+	}
+}
+
+// recompute walks the topo-sorted compute list, recomputing every
+// node whose upstream is dirty. A node whose computed value didn't
+// change is dropped (Set returns false), which prevents needless
+// patches downstream.
+func (s *Scene) recompute() {
+	for _, ce := range s.computeOrder {
+		if ce.node.Kind == "input" {
+			// inputs are written directly by adapters; nothing to
+			// recompute here.
+			continue
+		}
+		anyDirty := false
+		for _, up := range ce.upstream {
+			if s.state.IsDirty(s.upstreamPath(up)) {
+				anyDirty = true
+				break
+			}
+		}
+		if !anyDirty {
+			continue
+		}
+
+		// Gather upstream values. v1 wires by upstream node id; the
+		// compute reads them as port values via a name convention.
+		// Edges' to_port names aren't carried into the graph artefact
+		// in v1 — the runtime just uses sequential numeric ports
+		// (`a`, `b`, …) which matches the v1 stdlib's port set.
+		args := s.gatherInputs(ce)
+		fn, err := s.cmpReg.Get(ce.node.Compute)
+		if err != nil {
+			s.logger.Error("unknown compute", "compute", ce.node.Compute, "node", ce.node.ID, "err", err)
+			continue
+		}
+		val, err := fn(args)
+		if err != nil {
+			s.logger.Warn("compute error", "compute", ce.node.Compute, "node", ce.node.ID, "err", err)
+			continue
+		}
+		if ce.node.Path != "" {
+			s.state.Set(ce.node.Path, val)
+		}
+	}
+}
+
+func (s *Scene) gatherInputs(ce computeEntry) map[string]json.RawMessage {
+	out := make(map[string]json.RawMessage, len(ce.upstream))
+	portNames := []string{"a", "b", "c", "d"}
+	for i, up := range ce.upstream {
+		name := portNames[i%len(portNames)]
+		if v, ok := s.state.Get(s.upstreamPath(up)); ok {
+			out[name] = v
+		}
+	}
+	return out
+}
+
+// upstreamPath maps an upstream node id back to a state path. v1
+// scaffold: the node's OutputAt is the path; if the upstream node
+// is itself an input (no path), we fall back to the node's id.
+func (s *Scene) upstreamPath(nodeID string) string {
+	for _, n := range s.graph.Nodes {
+		if n.ID == nodeID {
+			if n.Path != "" {
+				return n.Path
+			}
+			return nodeID
+		}
+	}
+	return nodeID
+}
+
+// emit assembles a Delta from the dirty set and fans it out.
+func (s *Scene) emit(cause *InputMsg) {
+	dirty := s.state.FlushDirty()
+	if len(dirty) == 0 && cause != nil && cause.ClientMsgID != "" {
+		// ADR 002 § 6: zero-patch delta confirms an idempotent input
+		// so optimistic UI clears its pending state.
+		seq := s.state.AdvanceSequence()
+		msg := &protocol.Delta{
+			SceneID:  s.id,
+			Sequence: seq,
+			Patches:  []protocol.Patch{},
+			Cause:    causeFrom(cause),
+		}
+		s.fanout(msg)
+		return
+	}
+	if len(dirty) == 0 {
+		return
+	}
+	patches := make([]protocol.Patch, 0, len(dirty))
+	for _, p := range dirty {
+		v, ok := s.state.Get(p)
+		if !ok {
+			continue
+		}
+		patches = append(patches, protocol.Patch{Path: p, Value: v})
+	}
+	if len(patches) == 0 {
+		return
+	}
+	seq := s.state.AdvanceSequence()
+	msg := &protocol.Delta{
+		SceneID:  s.id,
+		Sequence: seq,
+		Patches:  patches,
+		Cause:    causeFrom(cause),
+	}
+	s.fanout(msg)
+}
+
+func causeFrom(in *InputMsg) *protocol.Cause {
+	if in == nil || (in.Source == "" && in.ClientMsgID == "") {
+		return nil
+	}
+	return &protocol.Cause{Source: in.Source, InputID: in.ClientMsgID}
+}
+
+// fanout pushes a server message onto every active subscription.
+// Backpressure: drops to the slowest subscriber by collapsing into
+// a fresh snapshot — but the v1 implementation is simpler: a full
+// queue causes the subscription to receive a snapshot reset on the
+// next emit. The WS layer's Connection.sendQ tightens this further.
+func (s *Scene) fanout(msg SubscriberMsg) {
+	s.subsMu.Lock()
+	subs := make([]*Subscription, len(s.subs))
+	copy(subs, s.subs)
+	s.subsMu.Unlock()
+	for _, sub := range subs {
+		select {
+		case sub.Out <- msg:
+		default:
+			// Slow consumer — collapse into a snapshot (ADR 002 § 9).
+			s.collapseToSnapshot(sub)
+		}
+	}
+}
+
+func (s *Scene) collapseToSnapshot(sub *Subscription) {
+	// Drain the existing queue.
+	for {
+		select {
+		case <-sub.Out:
+		default:
+			goto seed
+		}
+	}
+seed:
+	seq, state := s.state.Snapshot()
+	snap := &protocol.Snapshot{
+		SceneID:      s.id,
+		SceneVersion: s.graph.SceneVersion,
+		Sequence:     seq,
+		State:        state,
+	}
+	select {
+	case sub.Out <- snap:
+	case <-time.After(50 * time.Millisecond):
+		// Subscriber is *very* stuck — close it; the WS layer will
+		// reconnect.
+		sub.Close()
+	}
+}
+
+// EmitSceneChanged sends a SceneChanged to every subscriber and
+// resets the per-scene sequence (ADR 002 § 7). The Show calls this
+// when the operator switches scenes; the destination scene's
+// snapshot reseeds the sequence on the next subscribe call.
+func (s *Scene) EmitSceneChanged(from, to string, transition json.RawMessage) {
+	s.state.ResetSequence()
+	msg := &protocol.SceneChanged{
+		FromSceneID: from,
+		ToSceneID:   to,
+		Transition:  transition,
+	}
+	s.fanout(msg)
+}
+
+// EmitFreshSnapshot pushes a new snapshot to every subscriber
+// (used after a re-push or a scene switch).
+func (s *Scene) EmitFreshSnapshot() {
+	seq, state := s.state.Snapshot()
+	if seq == 0 {
+		seq = s.state.AdvanceSequence()
+	}
+	snap := &protocol.Snapshot{
+		SceneID:      s.id,
+		SceneVersion: s.graph.SceneVersion,
+		Sequence:     seq,
+		State:        state,
+	}
+	s.fanout(snap)
+}

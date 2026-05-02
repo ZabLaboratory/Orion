@@ -1,0 +1,65 @@
+# Local-dev / VPS-prod compose. The maintainer wires the prod variant
+# at deploy time by overlaying secrets via the ../.env.orion file
+# (etage 1 — never committed).
+
+services:
+  orion:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: ghcr.io/zablaboratory/orion:dev
+    container_name: orion
+    restart: unless-stopped
+    env_file:
+      - ../../.env.orion
+    networks:
+      - zab_network
+    depends_on:
+      orion-postgres:
+        condition: service_healthy
+    expose:
+      - "4007"
+      - "4017"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+
+  orion-postgres:
+    image: postgres:16-alpine
+    container_name: orion-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: orion
+      POSTGRES_USER: orion
+      POSTGRES_PASSWORD_FILE: /run/secrets/orion_db_password
+    secrets:
+      - orion_db_password
+    volumes:
+      - orion-pg-data:/var/lib/postgresql/data
+    networks:
+      - zab_network
+    ports:
+      - "5447:5432"  # local-dev access; remove on prod compose
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orion"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: "0.5"
+
+networks:
+  zab_network:
+    external: true
+
+secrets:
+  orion_db_password:
+    file: ../../.secrets/orion_db_password
+
+volumes:
+  orion-pg-data:
