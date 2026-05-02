@@ -1,61 +1,44 @@
 # Orion
 
-Twitch orchestrator for the Zablab platform. Owns Twitch credentials (encrypted at rest), the OAuth Helix flow, and IRC chat plumbing.
+> **v1 deleted on 2026-05-02.** Awaiting the v2 Go rewrite per
+> [ADR 004 — Orion v2 (reactive runtime)](../docs/adr/004-orion-v2-runtime.md).
+> See [CLAUDE.md](./CLAUDE.md) for what survived, what moved, and
+> what's next.
 
-It does **not** own broadcast media. Streaming is handled externally by [Pulsar](https://github.com/ZabLaboratory/Pulsar) (broadcast engine bundled in Prism), which pushes directly to Twitch RTMP. Pulsar is an external module — Orion never touches it, and Pulsar never touches Orion's infrastructure.
+## What Orion v2 will be (once scaffolded)
 
-See [CLAUDE.md](./CLAUDE.md) for the full data model, conventions, and deployment expectations.
+Reactive runtime for the platform's compiled scenes. Owns the scene
+compiler (Canvas + Blue + components → graph + Solar render bundle),
+per-scene goroutine event loops, and the WS fan-out to live show
+subscribers (Solar, Prism, mPrism, Companion, Quasar).
 
-- **Port**: `4007`
-- **Gateway prefix**: `/orion`
-- **DB port (local)**: `5447`
-- **Docker network**: `zab_network` (external)
+- **Port** : `4007`
+- **Gateway prefix** : `/orion`
+- **DB port (local)** : `5447`
+- **Docker network** : `zab_network` (external)
 
-## Quick start
+## What Orion is **no longer** responsible for
 
-```bash
-# Install
-uv sync
+- **Twitch** (OAuth Helix + IRC chat + EventSub) → moved to **Quasar**
+  (ADR 005). The previous Twitch credentials, OAuth flow, and chat
+  plumbing are reimplemented from scratch in Quasar.
+- **Streaming media plane** (RTMP/WHIP via MediaMTX) → moved to
+  **Pulsar** (bundled in Prism). Pulsar pushes RTMP directly to
+  Twitch.
 
-# Dev (port 4007)
-uv run uvicorn orion.main:app --reload --port 4007
+## What's preserved across the rewrite
 
-# Env
-cp .env.example ../.env.orion
-# Fill ENCRYPTION_KEY and Twitch credentials.
+The stream-key handover endpoint
+`GET /orion/api/v1/credentials/{id}/stream-key` — referenced by
+Prism's main process (`src/main/broadcast-engine.ts`). v2's Go
+implementation re-exposes it under the same path. Until v2 ships,
+Prism's pre-flight `twitch_credential` check fails clearly.
 
-# Lint / typecheck / test
-uv run ruff check .
-uv run mypy src
-uv run pytest
+## History
 
-# Migrations
-uv run alembic upgrade head
-
-# Full stack (API + Postgres)
-docker network create zab_network   # one-off, only if missing
-docker compose up -d
-```
-
-## API
-
-All endpoints live under `/api/v1`. The gateway strips the `/orion` prefix, so browsers call `/orion/api/v1/...` and Orion receives `/api/v1/...`.
-
-| Method | Path | Description |
-|---|---|---|
-| `GET` | `/health` | Liveness + DB connectivity |
-| `GET/POST` | `/api/v1/credentials` | List / create Twitch credential |
-| `PUT/DELETE` | `/api/v1/credentials/{id}` | Update / delete |
-| `POST` | `/api/v1/twitch/oauth/authorize` | Get Twitch authorize URL |
-| `POST` | `/api/v1/twitch/oauth/callback` | Exchange code for tokens |
-| `WS` | `/api/v1/chat/live/{channel_login}` | Live chat fan-out (subscriber-driven supervisor lands in a follow-up PR) |
-| `GET` | `/api/v1/_schema` | QueryMe catalogue (read-only, blueprint-facing) |
-| `POST` | `/api/v1/_query` | QueryMe execution (read-only) |
-
-Identity comes from the `X-Authenticated-User` header injected by ZabGate after JWT validation. No local JWT validation on Orion — ZabGate is the only auth layer.
-
-## Future scope (separate PRs)
-
-- **EventSub webhooks** — subs / donations / bits / follows / raids / hype train.
-- **Expanded Helix endpoints** — channel info, schedule, clips, predictions.
-- **Subscriber-driven IRC supervisor** — re-introduces chat capture when a WS client subscribes to `/api/v1/chat/live/{channel}`.
+The v0.x Python codebase shipped a streaming control plane around
+MediaMTX, browser-composed scenes relayed to Twitch, and a Twitch
+orchestrator (OAuth + IRC chat prep). The v0.4.0 release pivoted away
+from streaming control ; ADR 004 then ruled out a refactor in favour
+of a Go rewrite, and ADR 005 split off Twitch into its own service.
+The full v0.x changelog stays in [CHANGELOG.md](./CHANGELOG.md).

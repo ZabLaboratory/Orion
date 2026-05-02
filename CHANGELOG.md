@@ -1,13 +1,44 @@
 # Changelog
 
-All notable changes to Orion (the Zablab Twitch orchestrator) land here.
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
-and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+All notable changes to Orion land here. Format follows
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Every release section is written *before* the tag is pushed — the
-`release.yml` workflow extracts the section matching the tag and uses it
-as the GitHub Release body (which the Discord webhook then picks up).
-If a section is missing, the release publishes with empty notes.
+`release.yml` workflow extracts the section matching the tag and uses
+it as the GitHub Release body. If a section is missing, the release
+publishes with empty notes.
+
+## [Unreleased]
+
+### Removed
+
+- **Entire v0.x Python implementation deleted** on 2026-05-02 per
+  [ADR 004 — Orion v2 (reactive runtime)](../docs/adr/004-orion-v2-runtime.md).
+  `src/`, `tests/`, `alembic/`, `scripts/`, `deploy/`, `Dockerfile`,
+  `docker-compose.yml`, `docker-compose.prod.yml`, `pyproject.toml`,
+  `uv.lock`, `Makefile`, `alembic.ini`, `.github/`, `.env.example` are
+  all gone. `CHANGELOG.md`, `README.md`, `CLAUDE.md`, `.gitignore`
+  remain ; v2 will scaffold into the same project repo on a follow-up
+  branch.
+- The Twitch concerns (OAuth Helix, IRC chat plumbing, encrypted
+  credentials) move to **Quasar** per
+  [ADR 005 — Quasar (multi-platform integrations)](../docs/adr/005-quasar-platforms.md).
+  No code is migrated verbatim — Quasar reimplements the Twitch
+  surface from scratch. User OAuth tokens do not migrate ; operators
+  re-authorize once after Quasar lands.
+- The streaming media plane (RTMP/WHIP, MediaMTX integration) is
+  retired. **Pulsar** (bundled in Prism) pushes RTMP directly to
+  Twitch — Orion is no longer in the media path.
+
+### Note
+
+Orion v0.x was the Twitch orchestrator + browser-composed-scene
+relay ; ADR 004 explicitly drops every concern except scene
+compilation + reactive runtime. Until v2 ships, the entire `/orion/*`
+prefix routes to a non-existent upstream and will return 502 from
+ZabGate. Prism's broadcast pre-flight surfaces this as a clear
+`twitch_credential` failure.
 
 ## [0.4.0] - 2026-04-30
 
