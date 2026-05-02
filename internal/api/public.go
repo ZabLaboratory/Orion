@@ -35,7 +35,14 @@ type PublicDeps struct {
 
 // RegisterPublic wires every endpoint per ADR 004 § 2. Routes start
 // at /api/v1/... — ZabGate strips the /orion prefix before forwarding.
+//
+// `/health` and `/ready` are also exposed bare (no `/api/v1/`)
+// because ZabGate's upstream-health poller calls `{url}/health`
+// per the workspace convention (`agents/_shared/conventions.md`).
+// Same handler, two paths.
 func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
+	mux.HandleFunc("GET /health", health)
+	mux.HandleFunc("GET /ready", ready(deps))
 	mux.HandleFunc("GET /api/v1/health", health)
 	mux.HandleFunc("GET /api/v1/ready", ready(deps))
 
