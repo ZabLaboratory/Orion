@@ -30,13 +30,14 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # ---- runtime stage --------------------------------------------------------
 FROM gcr.io/distroless/static:nonroot
 
-# Distroless static: orion + goose + migrations + env template.
+# Distroless static: orion + goose + migrations.
 # The compose run with --entrypoint /goose runs migrations; the default
-# entrypoint /orion is the service itself.
+# entrypoint /orion is the service itself. .env.template stays in the
+# repo (docs only); it never makes it into the image because rsync's
+# `--exclude .env.*` filter would skip it on deploy anyway.
 COPY --from=build /out/orion        /orion
 COPY --from=build /go/bin/goose     /goose
 COPY migrations                     /migrations
-COPY .env.template                  /.env.template
 
 USER nonroot:nonroot
 EXPOSE 4007 4017
