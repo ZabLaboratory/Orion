@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -106,6 +107,26 @@ func run() error {
 	fetcher := compiler.NewHTTPFetcher(cfg.CanvasBaseURL, cfg.BlueBaseURL, cfg.ServiceToken)
 	_ = auth.NewValidator(cfg.ZabAuthValidateURL, cfg.ServiceToken, cfg.AuthCacheTTL)
 
+	// Service-token manager — mints + rotates the Bearer token Orion
+	// presents on outbound calls through ZabGate (currently the
+	// stream-key proxy ; future: any other Orion → ZabGate call).
+	// Static mode (no operator token) keeps backward-compat with the
+	// existing `ORION_SERVICE_TOKEN` env-only pattern.
+	authBase := strings.TrimSuffix(cfg.ZabAuthValidateURL, "/tokens")
+	serviceTokens := &auth.ServiceTokenManager{
+		MintURL:       authBase + "/service-tokens",
+		RefreshURL:    authBase + "/service-tokens/refresh",
+		OperatorToken: cfg.OperatorToken,
+		StaticToken:   cfg.ServiceToken,
+		ServiceName:   "orion",
+		Paths:         cfg.ServicePaths,
+		Logger:        logger,
+	}
+	if err := serviceTokens.Start(ctx); err != nil {
+		logger.Warn("service token manager start failed; falling back to static mode", "err", err)
+	}
+	defer serviceTokens.Stop()
+
 	wsServer := &ws.Server{
 		Show:    show,
 		Inbox:   inbox,
@@ -117,16 +138,18 @@ func run() error {
 	// Public mux: HTTP + WS surface routed through ZabGate.
 	publicMux := http.NewServeMux()
 	api.RegisterPublic(publicMux, api.PublicDeps{
-		Logger:    logger,
-		Metrics:   metrics,
-		Config:    cfg,
-		Show:      show,
-		Inbox:     inbox,
-		Test:      testMgr,
-		Store:     st,
-		Fetcher:   fetcher,
-		WSServer:  wsServer,
-		StaticDir: http.Dir(cfg.SolarRoot),
+		Logger:        logger,
+		Metrics:       metrics,
+		Config:        cfg,
+		Show:          show,
+		Inbox:         inbox,
+		Test:          testMgr,
+		Store:         st,
+		Fetcher:       fetcher,
+		WSServer:      wsServer,
+		StaticDir:     http.Dir(cfg.SolarRoot),
+		QuasarBaseURL: cfg.QuasarBaseURL,
+		ServiceTokens: serviceTokens,
 	})
 
 	// Internal-only HTTP surface for prom scrape + dev probes.

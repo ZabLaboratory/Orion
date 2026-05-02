@@ -21,16 +21,18 @@ import (
 
 // PublicDeps groups every dependency the public router needs.
 type PublicDeps struct {
-	Logger    *slog.Logger
-	Metrics   *obs.Metrics
-	Config    config.Config
-	Show      *runtime.Show
-	Inbox     *adapters.Inbox
-	Test      *runtime.TestSessionManager
-	Store     *store.Store
-	Fetcher   compiler.Fetcher
-	WSServer  *ws.Server
-	StaticDir http.FileSystem // /static/solar/...
+	Logger        *slog.Logger
+	Metrics       *obs.Metrics
+	Config        config.Config
+	Show          *runtime.Show
+	Inbox         *adapters.Inbox
+	Test          *runtime.TestSessionManager
+	Store         *store.Store
+	Fetcher       compiler.Fetcher
+	WSServer      *ws.Server
+	StaticDir     http.FileSystem // /static/solar/...
+	QuasarBaseURL string          // e.g. http://zabgate:4000/quasar
+	ServiceTokens *auth.ServiceTokenManager
 }
 
 // RegisterPublic wires every endpoint per ADR 004 § 2. Routes start

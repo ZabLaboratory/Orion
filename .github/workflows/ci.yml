@@ -171,6 +171,7 @@ jobs:
           APP_PATH: ${{ secrets.VPS_APP_PATH }}
           ORION_PG_PASSWORD: ${{ secrets.ORION_PG_PASSWORD }}
           ORION_SERVICE_TOKEN: ${{ secrets.ORION_SERVICE_TOKEN }}
+          ORION_OPERATOR_TOKEN: ${{ secrets.ORION_OPERATOR_TOKEN }}
         run: |
           $SSH_CMD "cat > $APP_PATH/.env && chmod 600 $APP_PATH/.env" << EOF
           # Public surface
@@ -193,9 +194,16 @@ jobs:
           ORION_AUTH_CACHE_TTL_S=60
           ORION_SERVICE_TOKEN=$ORION_SERVICE_TOKEN
 
+          # Live service-token mint + refresh — when ORION_OPERATOR_TOKEN
+          # is set, Orion mints a fresh token at boot and rotates it
+          # before expiry. Empty operator token → static fallback above.
+          ORION_OPERATOR_TOKEN=$ORION_OPERATOR_TOKEN
+          ORION_SERVICE_PATHS=quasar.credentials.read
+
           # Upstream services (compile-time fetch through the gateway)
           ORION_CANVAS_BASE_URL=http://zabgate:4000/canvas
           ORION_BLUE_BASE_URL=http://zabgate:4000/blue
+          ORION_QUASAR_BASE_URL=http://zabgate:4000/quasar
 
           # Runtime
           ORION_TICK_HZ=60
