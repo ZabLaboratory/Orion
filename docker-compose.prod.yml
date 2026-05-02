@@ -15,6 +15,13 @@ services:
     depends_on:
       orion-db:
         condition: service_healthy
+    # Solar bundles unpacked on the VPS by the deploy workflow are
+    # mounted read-only into the container so Orion's static handler
+    # at /static/solar/v{N.N.N}/* can serve them without re-baking
+    # the image on every Solar release. The host directory is
+    # populated per-version (./solar/v0.1.1/, ./solar/v0.1.2/, ...).
+    volumes:
+      - ./solar:/var/lib/orion/solar:ro
     deploy:
       resources:
         limits:

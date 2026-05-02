@@ -153,6 +153,8 @@ jobs:
           SSH_OPTS: -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new
           TARGET: ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}:${{ secrets.VPS_APP_PATH }}
         run: |
+          # solar/ is populated on the VPS by the next step from Solar
+          # GitHub Releases ; rsync must not delete it.
           rsync -az --delete \
             --exclude '.git' \
             --exclude '.github' \
@@ -162,8 +164,48 @@ jobs:
             --exclude 'dist' \
             --exclude 'coverage.out' \
             --exclude 'coverage.html' \
+            --exclude 'solar' \
             -e "ssh $SSH_OPTS" \
             ./ "$TARGET/"
+
+      - name: Install Solar bundles
+        env:
+          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
+          APP_PATH: ${{ secrets.VPS_APP_PATH }}
+          # Pinned versions consumed by Orion's static handler at
+          # /static/solar/v{N.N.N}/*. Bumping here in a PR is the
+          # operational handle to roll Pulsar CEF / browser hosts
+          # forward to a new Solar release. Multiple values supported
+          # to allow canarying a new version alongside the previous.
+          SOLAR_VERSIONS: "v0.1.1"
+        run: |
+          $SSH_CMD bash -s -- "$APP_PATH" "$SOLAR_VERSIONS" << 'INSTALL_SCRIPT'
+          set -euo pipefail
+          APP_PATH="$1"
+          VERSIONS="$2"
+          mkdir -p "$APP_PATH/solar"
+          cd "$APP_PATH/solar"
+          for v in $VERSIONS; do
+            target="$APP_PATH/solar/$v"
+            mkdir -p "$target"
+            if [ -f "$target/.installed" ]; then
+              echo "→ Solar $v already installed, skipping"
+              continue
+            fi
+            tmp=$(mktemp -d)
+            gh release download "$v" -R ZabLaboratory/Solar -p 'solar-*.tgz' --dir "$tmp"
+            tar -xzf "$tmp"/solar-*.tgz -C "$target"
+            rm -rf "$tmp"
+            # Marker is the success signal — set last so a partial
+            # extract leaves the directory unmarked and the next
+            # deploy retries.
+            touch "$target/.installed"
+            echo "✓ installed Solar $v at $target"
+            ls -la "$target/" | head -10
+          done
+          echo "=== Final layout ==="
+          find "$APP_PATH/solar" -maxdepth 2 -type d
+          INSTALL_SCRIPT
 
       - name: Write remote .env
         env:
