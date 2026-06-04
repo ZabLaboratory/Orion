@@ -61,8 +61,8 @@ func representativeLayout() LayoutNode {
 }
 
 func representativeInputs() []OperatorInput {
-	min := 0.0
-	max := 100.0
+	minV := 0.0
+	maxV := 100.0
 	return []OperatorInput{
 		{
 			Path:       "scene.title",
@@ -76,8 +76,8 @@ func representativeInputs() []OperatorInput {
 			Label:      "Score",
 			Type:       "number",
 			WritableBy: []string{"operator"},
-			Min:        &min,
-			Max:        &max,
+			Min:        &minV,
+			Max:        &maxV,
 			Group:      "scoreboard",
 		},
 	}
