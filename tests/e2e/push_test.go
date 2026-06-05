@@ -47,14 +47,22 @@ func requireDB(t *testing.T) *store.Store {
 }
 
 func applyMigration(ctx context.Context, pool *pgxpool.Pool) error {
-	migration, err := os.ReadFile("../../migrations/0001_init.sql")
-	if err != nil {
-		return err
+	// Apply every migration in order so the e2e schema matches prod.
+	for _, path := range []string{
+		"../../migrations/0001_init.sql",
+		"../../migrations/0002_lsml_bundle.sql",
+	} {
+		migration, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		// Strip goose markers so we can exec the raw SQL.
+		stripped := stripGoose(string(migration))
+		if _, err := pool.Exec(ctx, stripped); err != nil {
+			return fmt.Errorf("apply %s: %w", path, err)
+		}
 	}
-	// Strip goose markers so we can exec the raw SQL.
-	stripped := stripGoose(string(migration))
-	_, err = pool.Exec(ctx, stripped)
-	return err
+	return nil
 }
 
 func stripGoose(s string) string {

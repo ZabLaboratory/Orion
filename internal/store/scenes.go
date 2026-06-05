@@ -42,13 +42,20 @@ type SceneDefinition struct {
 }
 
 // ScenePushedVersion holds an immutable compiled artifact pair.
+//
+// LSMLBundleJSON / LSMLBundleHash are the additive Lumencast-convergence
+// columns (ADR 007 §C.2). They are nil/empty for versions pushed in
+// `bespoke` mode (the default) and only populated when ORION_LSDP_MODE
+// is dual|lsdp. The bespoke GraphJSON/BundleJSON path is unaffected.
 type ScenePushedVersion struct {
-	SceneID      uuid.UUID
-	SceneVersion string
-	DefinitionID uuid.UUID
-	GraphJSON    json.RawMessage
-	BundleJSON   json.RawMessage
-	CreatedAt    time.Time
+	SceneID        uuid.UUID
+	SceneVersion   string
+	DefinitionID   uuid.UUID
+	GraphJSON      json.RawMessage
+	BundleJSON     json.RawMessage
+	LSMLBundleJSON json.RawMessage // nil unless LSML persisted (dual|lsdp)
+	LSMLBundleHash *string         // the LSML content address ("sha256:<hex>")
+	CreatedAt      time.Time
 }
 
 // ErrSceneInUse is returned when an operator tries to archive the
@@ -165,14 +172,39 @@ func (s *Store) GetDefinition(ctx context.Context, id uuid.UUID) (*SceneDefiniti
 // InsertPushedVersion + SetLatestPushedVersion are typically called
 // together inside a single tx — see Store.Tx helper.
 func (s *Store) InsertPushedVersion(ctx context.Context, tx pgx.Tx, pv ScenePushedVersion) error {
+	// lsml_bundle_jsonb / lsml_bundle_hash are nil/NULL in bespoke mode;
+	// pgx binds a nil json.RawMessage / *string as SQL NULL, so the
+	// additive columns stay empty unless the caller populated them.
 	_, err := tx.Exec(ctx,
 		`INSERT INTO scene_pushed_versions (scene_id, scene_version, definition_id,
-		    graph_jsonb, bundle_jsonb, created_at)
-		   VALUES ($1, $2, $3, $4, $5, $6)
+		    graph_jsonb, bundle_jsonb, lsml_bundle_jsonb, lsml_bundle_hash, created_at)
+		   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		   ON CONFLICT (scene_id, scene_version) DO NOTHING`,
-		pv.SceneID, pv.SceneVersion, pv.DefinitionID, pv.GraphJSON, pv.BundleJSON, pv.CreatedAt,
+		pv.SceneID, pv.SceneVersion, pv.DefinitionID, pv.GraphJSON, pv.BundleJSON,
+		pv.LSMLBundleJSON, pv.LSMLBundleHash, pv.CreatedAt,
 	)
 	return err
+}
+
+// GetLSMLBundleByHash fetches the persisted LSML bundle bytes for a
+// scene, content-addressed by the LSML hash ("sha256:<hex>"). Returns
+// ErrNotFound when no pushed version of the scene carries that hash —
+// the by-hash GET path translates that to 404 (ADR 007 §C.2). Only ever
+// returns rows whose lsml_bundle_hash is non-NULL, so bespoke-mode
+// versions are invisible to this lookup.
+func (s *Store) GetLSMLBundleByHash(ctx context.Context, sceneID uuid.UUID, lsmlHash string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	err := s.pool.QueryRow(ctx,
+		`SELECT lsml_bundle_jsonb
+		   FROM scene_pushed_versions
+		  WHERE scene_id = $1 AND lsml_bundle_hash = $2
+		  LIMIT 1`,
+		sceneID, lsmlHash,
+	).Scan(&raw)
+	if err != nil {
+		return nil, noRow(err)
+	}
+	return raw, nil
 }
 
 // GetPushedVersion fetches the named version (rollback target reads
