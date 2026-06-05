@@ -143,10 +143,27 @@ func Compile(
 		Defaults:       defaults,
 		OperatorInputs: allInputs,
 	}
+	// Lower the authoring-vocab tree (`style.*`, `size.{w,h}`, `geometry`,
+	// `cornerRadius`, nested `stroke`) into the FLAT render vocab the
+	// Lumencast runtime reads (`size`/`weight`/`colour`, `width`/`height`,
+	// `kind`/`radius`, `stroke`+`stroke_width`). The lowering is the
+	// missing LSML→RenderBundle step (ADR 007 §9); without it Solar paints
+	// at default font/size/dims. It operates on a fresh tree so `expanded`
+	// stays in authoring vocab for EmitLSML (the LSML bundle keeps the
+	// authoring keys — no double-lowering, ADR 007 §9.6). Ref #41.
+	loweredRoot := lowerRenderTree(expanded)
 	bundle := &RenderBundle{
-		Root:             expanded,
+		Root:             loweredRoot,
 		OperatorInputs:   allInputs,
 		ExternalAdapters: adapters,
+		// Carry the pre-lowering authoring tree so EmitLSML (the C4 path)
+		// reads the authoring vocab, not the lowered render vocab. It is
+		// `json:"-"` so it never reaches the wire/persisted bundle/hash —
+		// `Root` served to Solar stays lowered (fidelity #41 intact).
+		// `expanded` is a distinct object from `loweredRoot` (lowering
+		// returned a fresh tree), so they never alias. Fixes Vigil's
+		// finding on PR #42 (EmitLSML was fed bundle.Root lowered).
+		AuthoringRoot: expanded,
 	}
 
 	version, err := computeSceneVersion(graph, bundle)

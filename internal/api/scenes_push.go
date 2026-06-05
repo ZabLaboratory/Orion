@@ -176,8 +176,17 @@ func persistLSMLAndMaybeAdopt(
 	bundle *compiler.RenderBundle,
 	pv *store.ScenePushedVersion,
 ) string {
+	// EmitLSML MUST read the AUTHORING tree, not the lowered render Root.
+	// The LSML 1.1 bundle is authoring-vocab (ADR 007 §9.6), and C4
+	// adopt-on-verify compares this hash against Prism's, which is computed
+	// from the authoring tree (`sceneToLsml`). Feeding bundle.Root (lowered
+	// to `size`/`colour`/`width`/`kind`) emitted render-vocab LSML and made
+	// HashBundle diverge from Prism's → LSML_HASH_MISMATCH never collapsed
+	// (Vigil's finding on PR #42). bundle.AuthoringRoot is the pre-lowering
+	// `expanded` tree the compiler now carries (compiler.RenderBundle,
+	// json:"-" — never on the wire, so Solar's served Root stays lowered).
 	lsmlBundle, lsmlHash, _, emitErr := compiler.EmitLSML(
-		sceneID.String(), bundle.Root, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		sceneID.String(), bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
 	)
 	if emitErr != nil {
 		deps.Logger.Warn("lsml emit failed; persisting bespoke only",

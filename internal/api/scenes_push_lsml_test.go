@@ -22,32 +22,43 @@ func silentDeps() PublicDeps {
 // that EmitLSML can seal. It deliberately carries a string with HTML
 // special characters (`&`, `<`, `>`) so the hash we recompute is the
 // exact value the HTML-escape parity fix targets (ADR 007 §C.4).
+//
+// AuthoringRoot mirrors Root here: this fixture uses no authoring-only
+// vocab (`value` is read identically in both vocabs), so the authoring
+// and lowered trees coincide. The C4 path hashes AuthoringRoot (the LSML
+// bundle is authoring-vocab, ADR 007 §9.6), so the fixture must set it —
+// a real compile fills it with the pre-lowering `expanded` tree
+// (compile.go). Leaving it zero would emit an empty-tree LSML and break
+// the adopt-on-verify match (the wiring this test guards).
 func representativeBundle() *compiler.RenderBundle {
-	return &compiler.RenderBundle{
-		Root: compiler.LayoutNode{
-			Kind: "frame",
-			ID:   "root",
-			Children: []compiler.LayoutNode{
-				{
-					Kind: "text",
-					ID:   "title",
-					Props: map[string]json.RawMessage{
-						// The HTML-escape trap: `&`/`<`/`>` must survive
-						// byte-identically across the TS and Go serializers.
-						"value": json.RawMessage(`"A & B < C > D"`),
-					},
-					Bindings: map[string]string{"value": "scene.title"},
+	root := compiler.LayoutNode{
+		Kind: "frame",
+		ID:   "root",
+		Children: []compiler.LayoutNode{
+			{
+				Kind: "text",
+				ID:   "title",
+				Props: map[string]json.RawMessage{
+					// The HTML-escape trap: `&`/`<`/`>` must survive
+					// byte-identically across the TS and Go serializers.
+					"value": json.RawMessage(`"A & B < C > D"`),
 				},
+				Bindings: map[string]string{"value": "scene.title"},
 			},
 		},
+	}
+	return &compiler.RenderBundle{
+		Root:          root,
+		AuthoringRoot: root,
 	}
 }
 
 // orionHashOf returns the LSML content address Orion computes for a
-// bundle, the same way the push handler does in dual|lsdp mode.
+// bundle, the same way the push handler does in dual|lsdp mode: from the
+// AUTHORING tree (ADR 007 §9.6 / §C.4), NOT the lowered render Root.
 func orionHashOf(t *testing.T, sceneID string, bundle *compiler.RenderBundle) string {
 	t.Helper()
-	_, hash, _, err := compiler.EmitLSML(sceneID, bundle.Root, bundle.OperatorInputs, bundle.ExternalAdapters, nil)
+	_, hash, _, err := compiler.EmitLSML(sceneID, bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil)
 	if err != nil {
 		t.Fatalf("EmitLSML: %v", err)
 	}
