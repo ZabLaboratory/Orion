@@ -55,4 +55,23 @@ type RenderBundle struct {
 	OperatorInputs   []OperatorInput   `json:"operator_inputs"`
 	ExternalAdapters []ExternalAdapter `json:"external_adapters"`
 	Assets           []AssetRef        `json:"assets,omitempty"`
+
+	// AuthoringRoot is the pre-lowering tree in the AUTHORING vocab
+	// (`style.fontSize`/`color`, `size.{w,h}`, `geometry`, `cornerRadius`,
+	// nested `stroke`) — i.e. `Root` BEFORE lowerRenderTree flattened it to
+	// the flat render vocab Solar reads. It is `json:"-"`: it never travels
+	// on the wire and is NOT part of the persisted bundle JSON nor the
+	// scene_version hash, so the served RenderBundle (and the Solar render
+	// fidelity proven in #41) is byte-identical with or without this field.
+	//
+	// It exists for one consumer: EmitLSML (ADR 007 §9.6 / §C.1). The LSML
+	// 1.1 bundle MUST carry the authoring vocab — both because LSML is an
+	// authoring-vocab format (§9.6) and because C4 adopt-on-verify hashes
+	// the authoring tree on the Prism side (`sceneToLsml`); emitting from
+	// the lowered `Root` produced a permanent LSML_HASH_MISMATCH (the bug
+	// Vigil found on PR #42). The compile tail fills this with `expanded`
+	// before lowering `Root`; the two trees are distinct objects (lowering
+	// returns a fresh tree and never mutates its input), so reading one
+	// never disturbs the other.
+	AuthoringRoot LayoutNode `json:"-"`
 }

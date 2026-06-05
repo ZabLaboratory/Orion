@@ -156,6 +156,14 @@ func Compile(
 		Root:             loweredRoot,
 		OperatorInputs:   allInputs,
 		ExternalAdapters: adapters,
+		// Carry the pre-lowering authoring tree so EmitLSML (the C4 path)
+		// reads the authoring vocab, not the lowered render vocab. It is
+		// `json:"-"` so it never reaches the wire/persisted bundle/hash —
+		// `Root` served to Solar stays lowered (fidelity #41 intact).
+		// `expanded` is a distinct object from `loweredRoot` (lowering
+		// returned a fresh tree), so they never alias. Fixes Vigil's
+		// finding on PR #42 (EmitLSML was fed bundle.Root lowered).
+		AuthoringRoot: expanded,
 	}
 
 	version, err := computeSceneVersion(graph, bundle)
