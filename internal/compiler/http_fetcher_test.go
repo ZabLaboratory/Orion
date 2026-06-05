@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -127,5 +128,92 @@ func TestFetchComputeManifest_ResolvesBlueprintDefinitionRef(t *testing.T) {
 	}
 	if !entry.IsPure {
 		t.Fatalf("compute ref %q decoded as impure — would emit a spurious IMPURE_COMPUTE", ref)
+	}
+}
+
+// TestBlueprintNode_DecodesDefinitionWireField is the contract test the
+// rest of the suite was missing: every other test builds the compute ref
+// as a Go string literal and indexes manifest[ref], so the JSON tag on
+// BlueprintNode is never exercised. This test decodes a REALISTIC Blue
+// blueprint graph payload (the shape of Blue/src/blue/schemas/graph.py:
+// nodes carry the ref in `definition`, edges in from_node/from_port/
+// to_node/to_port) into BlueprintGraph and proves the tag reads
+// `definition`, then runs the full validateBlueprint path with a manifest
+// that contains the node's ref — expecting zero diagnostics.
+//
+// Regression-proving: with the old tag `json:"compute"`, no producer
+// emits `compute`, so bp.Nodes[0].Compute decodes to "" — the first
+// assertion below fails, and validateBlueprint would look up manifest[""]
+// and emit UNKNOWN_COMPUTE_NODE. This test goes red on the old tag and
+// green on `json:"definition"` (issue #32, ADR 004 §7.1).
+func TestBlueprintNode_DecodesDefinitionWireField(t *testing.T) {
+	// A blueprint graph as Blue actually serialises it (graph.py:29-58).
+	// Note: no `compute`, no `output_at`, no `args` keys — those are not
+	// the producer's field names (the output_at/args drift is issue #35,
+	// out of scope here). The ref lives in `definition`.
+	const payload = `{
+		"id": "bp-contract-1",
+		"nodes": [
+			{
+				"id": "n1",
+				"definition": "core.math.add@1",
+				"config": {"label": "add A+B"},
+				"inputs": [
+					{"name": "a", "type": "core.primitive.float"},
+					{"name": "b", "type": "core.primitive.float"}
+				],
+				"outputs": [
+					{"name": "result", "type": "core.primitive.float"}
+				]
+			}
+		],
+		"edges": [
+			{"from_node": "n0", "from_port": "out", "to_node": "n1", "to_port": "a"}
+		]
+	}`
+
+	var bp BlueprintGraph
+	if err := json.Unmarshal([]byte(payload), &bp); err != nil {
+		t.Fatalf("unmarshal Blue blueprint payload: %v", err)
+	}
+
+	if len(bp.Nodes) != 1 {
+		t.Fatalf("decoded %d nodes, want 1", len(bp.Nodes))
+	}
+	// The load-bearing assertion: the tag must bind to `definition`. On
+	// the old `json:"compute"` tag this is "" and the test fails here.
+	if got := bp.Nodes[0].Compute; got != "core.math.add@1" {
+		t.Fatalf("bp.Nodes[0].Compute = %q, want %q — the JSON tag must read the `definition` wire field, not `compute`", got, "core.math.add@1")
+	}
+	// Sanity: the snake_case edge tags decode too (already covered, but
+	// keeps this payload honest as a full graph shape).
+	if bp.Edges[0].ToNode != "n1" || bp.Edges[0].ToPort != "a" {
+		t.Fatalf("edge decoded as %+v, want to_node=n1 to_port=a", bp.Edges[0])
+	}
+
+	// Now the full validation path: a manifest containing the node's ref
+	// must produce zero diagnostics. testdata/blue_compute_manifest.json
+	// already carries core.math.add@1 as is_pure=true is_bounded=true.
+	fixture, err := os.ReadFile(filepath.Join("testdata", "blue_compute_manifest.json"))
+	if err != nil {
+		t.Fatalf("read manifest fixture: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(fixture)
+	}))
+	defer srv.Close()
+
+	manifest, err := NewHTTPFetcher("http://canvas.invalid", srv.URL, "").
+		FetchComputeManifest(context.Background())
+	if err != nil {
+		t.Fatalf("FetchComputeManifest: %v", err)
+	}
+	if _, ok := manifest["core.math.add@1"]; !ok {
+		t.Fatalf("manifest fixture missing core.math.add@1 — the test premise is broken")
+	}
+
+	_, _, diags := validateBlueprint(&bp, manifest)
+	if len(diags) != 0 {
+		t.Fatalf("validateBlueprint emitted %d diagnostic(s) for a valid pure node, want 0: %+v", len(diags), diags)
 	}
 }
