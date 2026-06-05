@@ -143,8 +143,17 @@ func Compile(
 		Defaults:       defaults,
 		OperatorInputs: allInputs,
 	}
+	// Lower the authoring-vocab tree (`style.*`, `size.{w,h}`, `geometry`,
+	// `cornerRadius`, nested `stroke`) into the FLAT render vocab the
+	// Lumencast runtime reads (`size`/`weight`/`colour`, `width`/`height`,
+	// `kind`/`radius`, `stroke`+`stroke_width`). The lowering is the
+	// missing LSML→RenderBundle step (ADR 007 §9); without it Solar paints
+	// at default font/size/dims. It operates on a fresh tree so `expanded`
+	// stays in authoring vocab for EmitLSML (the LSML bundle keeps the
+	// authoring keys — no double-lowering, ADR 007 §9.6). Ref #41.
+	loweredRoot := lowerRenderTree(expanded)
 	bundle := &RenderBundle{
-		Root:             expanded,
+		Root:             loweredRoot,
 		OperatorInputs:   allInputs,
 		ExternalAdapters: adapters,
 	}
