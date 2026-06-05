@@ -50,6 +50,7 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 
 	mux.HandleFunc("POST /api/v1/scenes/{id}/push", pushScene(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/render-bundle", getRenderBundle(deps))
+	mux.HandleFunc("GET /api/v1/scenes/{id}/lsml-bundle", getLSMLBundle(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/operator-inputs", getOperatorInputs(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/graph", getGraph(deps))
 	mux.HandleFunc("POST /api/v1/scenes/{id}/status", postSceneStatus(deps))
