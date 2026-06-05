@@ -20,6 +20,35 @@ const (
 	LogFormatText LogFormat = "text"
 )
 
+// LSDPMode is the Lumencast-convergence migration flag (ADR 007 §C.5).
+// It gates the additive LSML persist/serve path so a deploy of the C2
+// code with the flag unset changes nothing (no-op parallel-run).
+//
+//   - bespoke (default): today's behaviour only. The LSML bundle is
+//     neither persisted on push nor served. The bespoke RenderBundle
+//     serve is the only render artefact path.
+//   - dual: the LSML bundle is ALSO persisted on push and served at the
+//     dedicated LSML endpoint, beside the untouched bespoke serve.
+//   - lsdp: the end state (flipped after B+C prove out). For C2 it
+//     behaves like dual on the serve side; the wire cutover is C3/C5.
+//
+// The full ORION_LSDP_MODE flag (including the WS-wire semantics) lands
+// in C5; C2 introduces only the persist/serve dimension it needs, inert
+// by default.
+type LSDPMode string
+
+const (
+	LSDPModeBespoke LSDPMode = "bespoke"
+	LSDPModeDual    LSDPMode = "dual"
+	LSDPModeLSDP    LSDPMode = "lsdp"
+)
+
+// PersistsLSML reports whether the mode persists + serves the LSML
+// bundle. False for bespoke (the no-op default).
+func (m LSDPMode) PersistsLSML() bool {
+	return m == LSDPModeDual || m == LSDPModeLSDP
+}
+
 // Config is the typed view of Orion's environment. Every field maps to
 // a single env var; empty defaults are filled in by Load.
 type Config struct {
@@ -42,6 +71,7 @@ type Config struct {
 	HTTPPollUserAgent  string
 	LogLevel           string
 	LogFormat          LogFormat
+	LSDPMode           LSDPMode
 }
 
 // Load reads env vars, applies defaults, and validates required fields.
@@ -76,6 +106,17 @@ func Load() (Config, error) {
 		cfg.LogFormat = LogFormatText
 	default:
 		problems = append(problems, "ORION_LOG_FORMAT must be 'json' or 'text'")
+	}
+
+	switch LSDPMode(strings.ToLower(getenv("ORION_LSDP_MODE", string(LSDPModeBespoke)))) {
+	case LSDPModeBespoke:
+		cfg.LSDPMode = LSDPModeBespoke
+	case LSDPModeDual:
+		cfg.LSDPMode = LSDPModeDual
+	case LSDPModeLSDP:
+		cfg.LSDPMode = LSDPModeLSDP
+	default:
+		problems = append(problems, "ORION_LSDP_MODE must be 'bespoke', 'dual', or 'lsdp'")
 	}
 
 	if v, err := getInt("ORION_TICK_HZ", 60); err != nil {
