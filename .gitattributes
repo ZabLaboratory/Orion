@@ -1,0 +1,23 @@
+# Normalize line endings: LF in the repo, regardless of OS checkout.
+# Stops gofmt CRLF false-positives on Windows working trees (#33).
+
+* text=auto eol=lf
+
+# Source & config — always LF
+*.go   text eol=lf
+*.sql  text eol=lf
+*.mod  text eol=lf
+*.sum  text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.sh   text eol=lf
+
+# Binaries — never touch
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.gif binary
+*.woff2 binary
