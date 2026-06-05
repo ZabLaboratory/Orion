@@ -43,10 +43,24 @@ func Compile(
 		d.AddError(ErrFetchUpstream, "fetch canvas %s: %v", envelope.CanvasVersion, err)
 		return nil, nil, "", &CompileError{Diagnostics: *d}
 	}
-	blueprint, err := fetcher.FetchBlueprint(ctx, envelope.BlueBlueprintID)
-	if err != nil {
-		d.AddError(ErrFetchUpstream, "fetch blueprint %s: %v", envelope.BlueBlueprintID, err)
-		return nil, nil, "", &CompileError{Diagnostics: *d}
+	// A blueprint-free scene (layout-only default) references no logic
+	// graph. "No blueprint" is encoded as ABSENCE: tolerate both ""
+	// (target state) and "none" (legacy deprecation window — current
+	// Prism sends the sentinel because Canvas's blue_blueprint_id is
+	// min_length=1). When absent we SKIP FetchBlueprint and feed the
+	// rest of compile a zero-value graph (validateBlueprint /
+	// topologicalSort already accept an empty BlueprintGraph). This is
+	// an unconditional robustness fix — not gated on ORION_LSDP_MODE.
+	// ADR 007 §8, option (a). Ref #28.
+	var blueprint *BlueprintGraph
+	if bpID := envelope.BlueBlueprintID; bpID == "" || bpID == "none" {
+		blueprint = &BlueprintGraph{}
+	} else {
+		blueprint, err = fetcher.FetchBlueprint(ctx, bpID)
+		if err != nil {
+			d.AddError(ErrFetchUpstream, "fetch blueprint %s: %v", bpID, err)
+			return nil, nil, "", &CompileError{Diagnostics: *d}
+		}
 	}
 	manifest, err := fetcher.FetchComputeManifest(ctx)
 	if err != nil {
