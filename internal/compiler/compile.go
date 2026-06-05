@@ -354,21 +354,50 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 			continue
 		}
 
+		// Derive kind + leaf path from the REAL node body (config /
+		// inputs / outputs), per ADR 004 §7.2. The leaf-path rule is
+		// isolated in nodeLeafPath — it is the single seam Atlas flagged
+		// for the residual question (the exact config key Prism's
+		// blueprint editor authors for an output name). If that ever
+		// diverges from the stdlib signature, this one function changes,
+		// not the struct shape.
+		path := nodeLeafPath(n)
+
 		kind := "computed"
-		if len(upstreams[n.ID]) == 0 {
+		switch {
+		case n.Compute == coreOutput:
+			// An explicit output sink — the leaf the runtime writes to.
+			kind = "output"
+		case len(upstreams[n.ID]) == 0:
+			// A leaf with no upstream: an adapter/operator input
+			// (core.input@1) or a constant source (core.literal@1).
 			kind = "input"
 		}
-		if n.OutputAt != "" {
-			kind = "output"
-			if def, ok := n.Args["default"]; ok {
-				defaults[n.OutputAt] = def
+
+		// Seed graph.Defaults from constant sources and unwired ports.
+		// core.literal@1's config.value is the constant; it seeds the
+		// literal's own output leaf (replaces the old Args["default"]).
+		if n.Compute == coreLiteral && path != "" {
+			if v, ok := n.Config["value"]; ok {
+				defaults[path] = v
 			}
+		}
+		// Unwired input ports seed their declared fallback so a node
+		// whose port has no inbound edge still has a value at cold start.
+		for _, p := range n.Inputs {
+			if p.Default == nil {
+				continue
+			}
+			if _, wired := wiredPorts(n.ID, b.Edges)[p.Name]; wired {
+				continue
+			}
+			defaults[n.ID+"."+p.Name] = p.Default
 		}
 
 		nodes = append(nodes, GraphNode{
 			ID:        n.ID,
 			Kind:      kind,
-			Path:      n.OutputAt,
+			Path:      path,
 			Compute:   n.Compute,
 			Upstream:  upstreams[n.ID],
 			IsPure:    entry.IsPure,
@@ -376,6 +405,61 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 		})
 	}
 	return nodes, defaults, diags
+}
+
+// Stdlib node references whose body carries a state-leaf-bearing config
+// (ADR 004 §7.2, source: Blue/src/blue/services/stdlib_seeder.py).
+const (
+	coreOutput  = "core.output@1"  // config.name → the leaf the runtime writes
+	coreInput   = "core.input@1"   // config.name → the interface input name
+	coreLiteral = "core.literal@1" // config.value → seeds graph.Defaults
+)
+
+// nodeLeafPath returns the state leaf a blueprint node's result is
+// written to, or "" for an intermediate compute whose outputs only feed
+// downstream nodes via edges (core.math.*, core.compare.*, …).
+//
+// This is the leaf-path rule that replaces the phantom OutputAt
+// (ADR 004 §7.2). It is deliberately the ONLY place the wire body is
+// translated into a leaf address, so the residual question — the exact
+// config key Prism's blueprint editor writes for an output's name — has
+// a single seam to adjust if a real Prism-authored blueprint ever
+// diverges from the stdlib signature.contract.
+//
+// Sink nodes (core.output@1 / core.input@1) name their leaf in
+// config.name. A literal (core.literal@1) has no config.name; its output
+// leaf is the node's own id (matching scene.go's upstreamPath fallback,
+// which addresses an unnamed upstream node by its id). All other nodes
+// return "" — their outputs are consumed off edges, never as leaves.
+func nodeLeafPath(n BlueprintNode) string {
+	switch n.Compute {
+	case coreOutput, coreInput:
+		if raw, ok := n.Config["name"]; ok {
+			var name string
+			if err := json.Unmarshal(raw, &name); err == nil && name != "" {
+				return name
+			}
+		}
+		return ""
+	case coreLiteral:
+		// A literal seeds Defaults at its own output leaf; the runtime
+		// addresses an unnamed upstream by node id (scene.go:362-371).
+		return n.ID
+	default:
+		return ""
+	}
+}
+
+// wiredPorts returns the set of input port names on nodeID that have an
+// inbound edge (so their value comes from upstream, not a default).
+func wiredPorts(nodeID string, edges []BlueprintEdge) map[string]struct{} {
+	wired := make(map[string]struct{})
+	for _, e := range edges {
+		if e.ToNode == nodeID {
+			wired[e.ToPort] = struct{}{}
+		}
+	}
+	return wired
 }
 
 // topologicalSort returns the nodes in dependency order using Kahn's

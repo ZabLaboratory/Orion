@@ -140,11 +140,47 @@ type BlueprintGraph struct {
 // producer emits — left Compute == "" on every real push, which made
 // validateBlueprint look up manifest[""] and emit a spurious
 // UNKNOWN_COMPUTE_NODE (issue #32, ADR 004 §7.1).
+//
+// Body shape (ADR 004 §7.2, issue #35). The earlier `OutputAt`
+// (`json:"output_at"`) and `Args` (`json:"args"`) tags named fields no
+// producer emits, so every node deserialised all-zero and the runtime
+// graph was built blind (kind="input", path="", no default) without
+// raising a diagnostic — a silently wrong push. The real node body, as
+// shaped by Prism (src/renderer/src/lib/blue-types.ts:58-68) and stored
+// by Blue (Blue/src/blue/schemas/graph.py:29-45), carries three fields:
+//
+//   - config: static config params keyed by the node's signature.config
+//     names (Blue/src/blue/schemas/node_definition.py). Per-node meaning;
+//     the leaf-path derivation reads config.name on core.output@1 /
+//     core.input@1 and config.value on core.literal@1
+//     (stdlib_seeder.py:648-701).
+//   - inputs: typed input ports. Wiring lives on edges (to_node/to_port),
+//     NOT here; inputs[].default is the unwired-port fallback.
+//   - outputs: typed output ports. The compute writes its result(s) here;
+//     edges (from_node/from_port) consume them.
 type BlueprintNode struct {
-	ID       string                     `json:"id"`
-	Compute  string                     `json:"definition"`
-	OutputAt string                     `json:"output_at,omitempty"` // dotted leaf path the compute writes to
-	Args     map[string]json.RawMessage `json:"args,omitempty"`
+	ID      string                     `json:"id"`
+	Compute string                     `json:"definition"`
+	Config  map[string]json.RawMessage `json:"config,omitempty"`
+	Inputs  []BlueprintPort            `json:"inputs,omitempty"`
+	Outputs []BlueprintPort            `json:"outputs,omitempty"`
+}
+
+// BlueprintPort mirrors Blue's Port schema
+// (Blue/src/blue/schemas/graph.py:17-27): a typed input or output on a
+// node. Field names are snake_case on the wire — both producer (Prism)
+// and store (Blue) are owned by us, so no camelCase alias dance. `Kind`
+// is the seeder's `data` | `exec` discriminator (stdlib_seeder.py:51,55,
+// 68,75); it is `extra` on Blue's Port (ConfigDict(extra="allow")) but
+// present on every seeded port, so Orion carries it. `Default` is the
+// unwired-port fallback the runtime seeds into graph.Defaults.
+type BlueprintPort struct {
+	ID       string          `json:"id,omitempty"`
+	Name     string          `json:"name"`
+	Type     string          `json:"type"`
+	Kind     string          `json:"kind,omitempty"`
+	Required bool            `json:"required,omitempty"`
+	Default  json.RawMessage `json:"default,omitempty"`
 }
 
 // BlueprintEdge connects FromNode.OutputPort to ToNode.InputPort. v1
