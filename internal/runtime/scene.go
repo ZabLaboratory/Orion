@@ -152,7 +152,9 @@ func (s *Scene) SetMirror(m SceneMirror) {
 		return
 	}
 	seq, state := s.state.Snapshot()
-	m.Forward(&protocol.Snapshot{
+	// Through tapMirror so a panic in the kit seed is recover-isolated
+	// too (a faulty mirror must not crash Show.Load).
+	s.tapMirror(&protocol.Snapshot{
 		SceneID:      s.id,
 		SceneVersion: s.graph.SceneVersion,
 		Sequence:     seq,
@@ -416,20 +418,35 @@ func causeFrom(in *InputMsg) *protocol.Cause {
 	return &protocol.Cause{Source: in.Source, InputID: in.ClientMsgID}
 }
 
+// tapMirror forwards the message to the LSDP mirror (if any), isolated
+// by a recover: a panic in the kit-side wire (dual/lsdp mode) MUST NOT
+// take down the scene goroutine or the bespoke fan-out — the bespoke
+// wire is the source of truth (ADR 007 §C.3b). On a panic the emit is
+// dropped for the LSDP wire only and logged; bespoke is unaffected.
+// A nil mirror (bespoke mode) is a no-op.
+func (s *Scene) tapMirror(msg SubscriberMsg) {
+	if s.mirror == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			s.logger.Error("lsdp mirror tap panicked; degraded to bespoke for this emit", "panic", r)
+		}
+	}()
+	s.mirror.Forward(msg)
+}
+
 // fanout pushes a server message onto every active subscription.
 // Backpressure: drops to the slowest subscriber by collapsing into
 // a fresh snapshot — but the v1 implementation is simpler: a full
 // queue causes the subscription to receive a snapshot reset on the
 // next emit. The WS layer's Connection.sendQ tightens this further.
 func (s *Scene) fanout(msg SubscriberMsg) {
-	// ADR 007 §C.3b: tap the output port for the LSDP/1.1 wire. The
-	// reactive engine is wire-agnostic — the same computed message
-	// drives both the bespoke subscribers and the kit scene. nil in
-	// bespoke mode (no-op). Done before the bespoke fan-out so the two
-	// wires observe the same ordering.
-	if s.mirror != nil {
-		s.mirror.Forward(msg)
-	}
+	// ADR 007 §C.3b: tap the output port for the LSDP/1.1 wire, before
+	// the bespoke fan-out so both wires observe the same ordering. The
+	// tap is recover-isolated (tapMirror) so a kit-side panic degrades
+	// to bespoke-only rather than killing the scene goroutine.
+	s.tapMirror(msg)
 	s.subsMu.Lock()
 	subs := make([]*Subscription, len(s.subs))
 	copy(subs, s.subs)
