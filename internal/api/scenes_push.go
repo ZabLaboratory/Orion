@@ -82,15 +82,37 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
-		err = deps.Store.Tx(ctx, func(tx pgx.Tx) error {
-			pv := store.ScenePushedVersion{
-				SceneID:      sceneID,
-				SceneVersion: sceneVersion,
-				DefinitionID: definitionID,
-				GraphJSON:    mustJSON(graph),
-				BundleJSON:   mustJSON(bundle),
-				CreatedAt:    time.Now(),
+		pv := store.ScenePushedVersion{
+			SceneID:      sceneID,
+			SceneVersion: sceneVersion,
+			DefinitionID: definitionID,
+			GraphJSON:    mustJSON(graph),
+			BundleJSON:   mustJSON(bundle),
+			CreatedAt:    time.Now(),
+		}
+
+		// ADR 007 §C.2 — additive LSML persist, gated by ORION_LSDP_MODE.
+		// In bespoke mode (the default) this is skipped entirely, so the
+		// pushed-version row carries NULL LSML columns and the deploy is
+		// a no-op. In dual|lsdp the compiler's expanded tree is also
+		// emitted as an LSML 1.1 bundle (EmitLSML, C1) and persisted
+		// beside the bespoke RenderBundle, content-addressed by its own
+		// lsml.HashBundle. A failure to emit is a warning, never a push
+		// failure — the bespoke path already succeeded by this point.
+		if deps.Config.LSDPMode.PersistsLSML() {
+			lsmlBundle, lsmlHash, _, emitErr := compiler.EmitLSML(
+				sceneID.String(), bundle.Root, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+			)
+			if emitErr != nil {
+				deps.Logger.Warn("lsml emit failed; persisting bespoke only",
+					"scene_id", sceneID.String(), "scene_version", sceneVersion, "error", emitErr)
+			} else {
+				pv.LSMLBundleJSON = mustJSON(lsmlBundle)
+				pv.LSMLBundleHash = &lsmlHash
 			}
+		}
+
+		err = deps.Store.Tx(ctx, func(tx pgx.Tx) error {
 			if err := deps.Store.InsertPushedVersion(ctx, tx, pv); err != nil {
 				return err
 			}
