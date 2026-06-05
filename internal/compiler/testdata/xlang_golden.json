@@ -1,0 +1,8 @@
+{
+  "_comment": "Cross-language LSML hash-parity golden fixture (ADR 007 §C.4, issue #22 acceptance #3). Produced by the real TS @lumencast/compiler hashBundle()+canonicalize() against a bundle whose text value carries the '&'/'<'/'>' HTML-escape trap the parity fix corrected. Regenerate: see scenes-Orion cross-language test doc. Orion's lsml.HashBundle of the equivalent layout MUST byte-match `hash` and `canonical`.",
+  "scene_id": "xlang-scene",
+  "text_value": "A & B < C > D",
+  "binding_path": "scene.title",
+  "canonical": "{\"layout\":{\"children\":[{\"bind\":{\"value\":\"scene.title\"},\"id\":\"title\",\"kind\":\"text\",\"value\":\"A & B < C > D\"}],\"id\":\"root\",\"kind\":\"frame\"},\"lsml\":\"1.1\",\"scene_id\":\"xlang-scene\",\"scene_version\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}",
+  "hash": "sha256:494fa4ebd9076433bbbd723a57e05e3eee4e23db397a73d8dc36ed55069eba65"
+}
