@@ -145,9 +145,10 @@ type BlueprintEdge struct {
 	ToPort   string `json:"to_port"`
 }
 
-// ComputeManifestEntry mirrors what Blue's
-// GET /blue/api/v1/_compute-manifest returns per compute id. The
-// compiler queries this to enforce purity (criterion 18).
+// ComputeManifestEntry is Orion's internal view of one compute the
+// compiler can resolve. The compiler queries this by compute id to
+// enforce purity (criterion 18). It is BUILT from Blue's wire DTO
+// (blueManifestEntry) — it is not the wire shape itself.
 type ComputeManifestEntry struct {
 	IsPure             bool     `json:"is_pure"`
 	IsBounded          bool     `json:"is_bounded"`
@@ -156,5 +157,42 @@ type ComputeManifestEntry struct {
 	Version            string   `json:"version"`
 }
 
-// ComputeManifest is the manifest map: compute id → entry.
+// ComputeManifest is the manifest map: compute id → entry. The key is
+// Blue's `node_id`, i.e. the qualified reference `namespace.name@version`
+// (e.g. "core.math.add@1", "quasar.twitch.chat@1"). This is the SAME
+// string a blueprint graph node carries in its `definition` field, so
+// validateBlueprint can look an entry up by the node's compute ref.
+//
+// Source of truth for the key shape:
+//   - Blue manifest:  Blue/src/blue/services/compute_manifest.py:126
+//     node_id = f"{namespace}.{name}@{version}"
+//   - Blue blueprint: Blue/src/blue/schemas/graph.py:32,40
+//     Node.definition = "the qualified reference (namespace.name@version)"
 type ComputeManifest map[string]ComputeManifestEntry
+
+// blueManifestEntry mirrors Blue's wire DTO ManifestEntryDTO
+// (Blue/src/blue/routes/compute_manifest.py:32-42). Field types match
+// Blue verbatim: version is an INT, declared_inputs is a list of dicts,
+// declared_output_type may be a string, a list of strings, or null.
+// Orion adapts these into ComputeManifestEntry rather than decoding
+// straight into it — decoding straight in is what broke every push
+// (issue #30, found by the live E2E on 2026-06-05).
+type blueManifestEntry struct {
+	NodeID             string                   `json:"node_id"`
+	Namespace          string                   `json:"namespace"`
+	Name               string                   `json:"name"`
+	Version            int                      `json:"version"`
+	IsPure             bool                     `json:"is_pure"`
+	IsBounded          bool                     `json:"is_bounded"`
+	DeclaredInputs     []map[string]any `json:"declared_inputs"`
+	DeclaredOutputType json.RawMessage          `json:"declared_output_type"`
+	Source             string                   `json:"source"`
+	Platform           map[string]any   `json:"platform"`
+}
+
+// blueManifestResponse is Blue's envelope: {"entries":[...],"count":N}
+// (Blue/src/blue/routes/compute_manifest.py:45-47).
+type blueManifestResponse struct {
+	Entries []blueManifestEntry `json:"entries"`
+	Count   int                 `json:"count"`
+}

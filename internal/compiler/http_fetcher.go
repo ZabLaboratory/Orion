@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -62,15 +63,82 @@ func (f *HTTPFetcher) FetchComponent(ctx context.Context, ref ComponentRef) (*Us
 	return &out, nil
 }
 
-// FetchComputeManifest calls GET {blue}/api/v1/_compute-manifest
-// per chantier-blue-extensions's contract.
+// FetchComputeManifest calls GET {blue}/api/v1/_compute-manifest and
+// decodes Blue's real `{entries:[...],count}` envelope into Orion's
+// compute-id → entry map.
+//
+// Blue does NOT serve a top-level `{computeId: entry}` map; it wraps
+// the rows in an envelope and uses Blue-native field types (version is
+// an int, declared_inputs is a list of dicts, declared_output_type may
+// be a list). Decoding the response straight into ComputeManifest is
+// what made every push fail COMPILE_FAILED — see issue #30 (found by
+// the live E2E push on 2026-06-05). We decode into the Blue-shaped DTO
+// first, then build the map keyed by node_id (namespace.name@version),
+// which is the same ref a blueprint node carries in `definition`.
 func (f *HTTPFetcher) FetchComputeManifest(ctx context.Context) (ComputeManifest, error) {
-	var out ComputeManifest
+	var resp blueManifestResponse
 	url := f.BlueBase + "/api/v1/_compute-manifest"
-	if err := f.getJSON(ctx, url, &out); err != nil {
+	if err := f.getJSON(ctx, url, &resp); err != nil {
 		return nil, fmt.Errorf("blue compute manifest: %w", err)
 	}
-	return out, nil
+	return buildComputeManifest(resp), nil
+}
+
+// buildComputeManifest adapts Blue's wire DTO into Orion's map. Keyed
+// by node_id so validateBlueprint's `manifest[n.Compute]` lookup hits
+// when the blueprint node's compute ref is `namespace.name@version`.
+func buildComputeManifest(resp blueManifestResponse) ComputeManifest {
+	out := make(ComputeManifest, len(resp.Entries))
+	for _, e := range resp.Entries {
+		out[e.NodeID] = ComputeManifestEntry{
+			IsPure:             e.IsPure,
+			IsBounded:          e.IsBounded,
+			DeclaredInputs:     declaredInputNames(e.DeclaredInputs),
+			DeclaredOutputType: flattenOutputType(e.DeclaredOutputType),
+			Version:            strconv.Itoa(e.Version),
+		}
+	}
+	return out
+}
+
+// declaredInputNames projects Blue's list-of-dict declared_inputs down
+// to the input names Orion cares about. The compiler only enforces
+// purity/boundedness off the manifest; the full port specs live in
+// Blue. Keeping []string avoids churn on the downstream Go type while
+// preserving the input identity.
+func declaredInputNames(inputs []map[string]any) []string {
+	if len(inputs) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(inputs))
+	for _, in := range inputs {
+		if name, ok := in["name"].(string); ok && name != "" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+// flattenOutputType collapses Blue's `str | list[str] | null` output
+// type into Orion's single string. A list (multiple outputs) is joined
+// with ", " — the compiler treats this field as informational only, so
+// a stable readable form is enough.
+func flattenOutputType(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	var list []string
+	if err := json.Unmarshal(raw, &list); err == nil {
+		return strings.Join(list, ", ")
+	}
+	return ""
 }
 
 func (f *HTTPFetcher) getJSON(ctx context.Context, url string, out any) error {
