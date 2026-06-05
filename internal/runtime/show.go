@@ -26,8 +26,40 @@ type Show struct {
 	active   string
 	liveSubs []*Subscription
 
+	// mirrors is the optional LSDP/1.1 wire (ADR 007 §C.3b). nil in
+	// bespoke mode — the entire kit path is then dead weight that never
+	// runs (no-op deploy). In dual/lsdp mode the Show asks it for a
+	// per-scene SceneMirror at Load and tells it which scene is active
+	// at SetActive, so the kit serves the same source as the bespoke
+	// wire.
+	mirrors MirrorRegistry
+
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+// MirrorRegistry is the Show-side handle on the LSDP/1.1 wire
+// (ADR 007 §C.3b). The lsdp package implements it over a
+// lumencast-go server.Server. nil = bespoke mode.
+type MirrorRegistry interface {
+	// MirrorFor returns the SceneMirror for the given scene id,
+	// registering a paired kit scene if needed. sceneVersion is the
+	// LSML/graph content address echoed on snapshot/scene_changed
+	// frames.
+	MirrorFor(sceneID, sceneVersion string) SceneMirror
+	// SetActive tells the wire which scene the live endpoint serves,
+	// mirroring Show.SetActive so the kit migrates its live subscribers.
+	SetActive(sceneID string)
+	// Drop removes a scene's paired kit scene (on Unload).
+	Drop(sceneID string)
+}
+
+// SetMirrors installs the LSDP/1.1 wire. Called once at boot in
+// dual/lsdp mode, before any scene is loaded. nil keeps bespoke mode.
+func (sh *Show) SetMirrors(m MirrorRegistry) {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	sh.mirrors = m
 }
 
 // ErrSceneNotFound is the API-facing miss.
@@ -70,6 +102,12 @@ func (sh *Show) Load(id string, graph *compiler.Graph, bundle *compiler.RenderBu
 		existing.Stop()
 	}
 	scene := NewScene(id, graph, bundle, sh.registry, sh.logger)
+	// ADR 007 §C.3b: in dual/lsdp mode, pair the scene with a kit
+	// scene and tap its output port. The mirror is seeded with the
+	// freshly-seeded snapshot inside SetMirror before Run starts.
+	if sh.mirrors != nil {
+		scene.SetMirror(sh.mirrors.MirrorFor(id, graph.SceneVersion))
+	}
 	sh.scenes[id] = scene
 	go scene.Run(sh.ctx)
 }
@@ -81,6 +119,9 @@ func (sh *Show) Unload(id string) {
 	if existing, ok := sh.scenes[id]; ok {
 		existing.Stop()
 		delete(sh.scenes, id)
+		if sh.mirrors != nil {
+			sh.mirrors.Drop(id)
+		}
 	}
 	if sh.active == id {
 		sh.active = ""
@@ -134,7 +175,17 @@ func (sh *Show) SetActive(id string, transition json.RawMessage) error {
 	sh.active = id
 	prev, hadPrev := sh.scenes[from]
 	migrating := append([]*Subscription{}, sh.liveSubs...)
+	mirrors := sh.mirrors
 	sh.mu.Unlock()
+
+	// ADR 007 §C.3b: switch the kit's active scene too, so LSDP/1.1
+	// live subscribers get scene_changed + a fresh snapshot off the
+	// kit's own migration path (server.SetActive). Done first so the
+	// kit observes the switch before the next emit fans out on the
+	// destination.
+	if mirrors != nil {
+		mirrors.SetActive(id)
+	}
 
 	// Step 1: detach migrating subs from the previous scene (if any).
 	if hadPrev {

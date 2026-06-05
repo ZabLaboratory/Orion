@@ -28,6 +28,25 @@ type InputMsg struct {
 // onto the wire; tests assert on the typed values directly.
 type SubscriberMsg = any
 
+// SceneMirror is an optional, write-only observer of a scene's
+// outbound stream (ADR 007 §C.3b, the LSDP/1.1 wire seam). Every
+// message the bespoke fan-out produces is *also* handed to the mirror,
+// so a second wire (the lumencast-go LSDP/1.1 server) can be driven
+// from the **same** reactive source without the engine knowing which
+// wires exist.
+//
+// The reactive loop never moves: the mirror is a tap on the output
+// port (`fanout`), not a replacement for it. In `bespoke` mode the
+// mirror is nil and the tap is a no-op — a deploy with the flag unset
+// changes nothing.
+//
+// Forward is called on the scene goroutine while the subscriber list
+// lock is NOT held; implementations must not block (the kit's Emit is
+// non-blocking with snapshot-collapse back-pressure).
+type SceneMirror interface {
+	Forward(msg SubscriberMsg)
+}
+
 // Subscription is one client's lease on a scene's outbound stream.
 // The scene loop pushes onto Out; the WS layer drains it. A bounded
 // channel + the per-connection Drop policy implements the
@@ -76,6 +95,11 @@ type Scene struct {
 	// load. Each entry is a runtime view of a graph node that the
 	// recompute loop walks.
 	computeOrder []computeEntry
+
+	// mirror, when non-nil, taps every outbound message for a second
+	// wire (LSDP/1.1 via lumencast-go — ADR 007 §C.3b). nil = bespoke
+	// mode, the tap is inert.
+	mirror SceneMirror
 }
 
 type computeEntry struct {
@@ -116,6 +140,25 @@ func (s *Scene) Graph() *compiler.Graph { return s.graph }
 
 // Bundle exposes the render bundle artefact (served by the API).
 func (s *Scene) Bundle() *compiler.RenderBundle { return s.bundle }
+
+// SetMirror attaches (or clears, with nil) the LSDP/1.1 output tap
+// (ADR 007 §C.3b). It must be called before Run starts, while no
+// subscriber is attached — the Show wires it at Load time. Passing a
+// non-nil mirror also seeds it with the scene's current snapshot so a
+// late-attached kit scene starts from the same state.
+func (s *Scene) SetMirror(m SceneMirror) {
+	s.mirror = m
+	if m == nil {
+		return
+	}
+	seq, state := s.state.Snapshot()
+	m.Forward(&protocol.Snapshot{
+		SceneID:      s.id,
+		SceneVersion: s.graph.SceneVersion,
+		Sequence:     seq,
+		State:        state,
+	})
+}
 
 // Run starts the scene goroutine. Blocks until the scene's context
 // is cancelled (via Stop or via the parent ctx going down).
@@ -379,6 +422,14 @@ func causeFrom(in *InputMsg) *protocol.Cause {
 // queue causes the subscription to receive a snapshot reset on the
 // next emit. The WS layer's Connection.sendQ tightens this further.
 func (s *Scene) fanout(msg SubscriberMsg) {
+	// ADR 007 §C.3b: tap the output port for the LSDP/1.1 wire. The
+	// reactive engine is wire-agnostic — the same computed message
+	// drives both the bespoke subscribers and the kit scene. nil in
+	// bespoke mode (no-op). Done before the bespoke fan-out so the two
+	// wires observe the same ordering.
+	if s.mirror != nil {
+		s.mirror.Forward(msg)
+	}
 	s.subsMu.Lock()
 	subs := make([]*Subscription, len(s.subs))
 	copy(subs, s.subs)
