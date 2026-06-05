@@ -1,5 +1,7 @@
 github.com/Lumencast/lumencast-go v0.0.0-20260503145435-73b7fe9b078a h1:xQ1FZMQdWazJ0y6WjhDzM4So/rTUQIs6xMNpDnTUxoI=
 github.com/Lumencast/lumencast-go v0.0.0-20260503145435-73b7fe9b078a/go.mod h1:S99/WPDLew+UDUW9tHsoaGdMMDCdtf4dF/HJbxn8rAE=
+github.com/Lumencast/lumencast-go v0.0.0-20260605000252-c79c502cc47f h1:b9iHHS5gHMBSGhqZTwJv3pDaZg3GGaiTvvErnonEv1I=
+github.com/Lumencast/lumencast-go v0.0.0-20260605000252-c79c502cc47f/go.mod h1:S99/WPDLew+UDUW9tHsoaGdMMDCdtf4dF/HJbxn8rAE=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
