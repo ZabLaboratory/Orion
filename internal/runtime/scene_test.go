@@ -16,7 +16,10 @@ func quietLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 }
 
-// helper: build a scene with one input → one output passthrough.
+// helper: build a scene with one input → one output sink. The output
+// node carries the versioned `core.output@1` id (the sink passthrough
+// registered by NewComputeRegistry, ADR 004 §7.3) and writes its single
+// inbound value to its `Path` leaf.
 func passthroughScene(t *testing.T, id string) *Scene {
 	t.Helper()
 	graph := &compiler.Graph{
@@ -24,7 +27,7 @@ func passthroughScene(t *testing.T, id string) *Scene {
 		SceneVersion: "sha256:test",
 		Nodes: []compiler.GraphNode{
 			{ID: "in.score", Kind: "input"},
-			{ID: "out.score", Kind: "output", Path: "score.team_a", Compute: "core.passthrough", Upstream: []string{"in.score"}},
+			{ID: "out.score", Kind: "output", Path: "score.team_a", Compute: "core.output@1", Upstream: []string{"in.score"}},
 		},
 		Defaults: map[string]json.RawMessage{
 			"score.team_a": json.RawMessage(`0`),
@@ -181,6 +184,90 @@ func TestScene_IdempotentInputProducesZeroPatchEcho(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("no zero-patch echo")
+	}
+}
+
+// TestScene_VersionedBlueprintGraphWritesLeaf exercises the §7.3 fix on
+// a *real* versioned graph built only from NewComputeRegistry() — no
+// custom Register(). It models a blueprint-bearing scene:
+//
+//	core.literal@1 (seeded calc.base=10)  ┐
+//	                                       ├─ core.math.add@1 → calc.sum
+//	core.input@1   (calc.delta, adapter)  ┘
+//	                                          └─ core.output@1 → score.team_a
+//
+// Pushing calc.delta=5 must make the output sink leaf score.team_a equal
+// 15. Before the re-key, Get("core.math.add@1") missed → the add node's
+// leaf was never written → score.team_a stalled at its default. With the
+// registry keyed on namespace.name@version, the whole chain resolves.
+func TestScene_VersionedBlueprintGraphWritesLeaf(t *testing.T) {
+	graph := &compiler.Graph{
+		SceneID:      "scene-versioned",
+		SceneVersion: "sha256:versioned",
+		Nodes: []compiler.GraphNode{
+			// literal seeds calc.base; lands Kind=input (no upstream),
+			// skipped by recompute, value comes from Defaults (§7.3).
+			{ID: "lit.base", Kind: "input", Path: "calc.base", Compute: "core.literal@1"},
+			// adapter-written input leaf.
+			{ID: "in.delta", Kind: "input", Path: "calc.delta", Compute: "core.input@1"},
+			// add reads its two upstreams positionally as ports a,b.
+			{ID: "add", Kind: "computed", Path: "calc.sum", Compute: "core.math.add@1", Upstream: []string{"lit.base", "in.delta"}},
+			// output sink passes calc.sum through to the public leaf.
+			{ID: "out", Kind: "output", Path: "score.team_a", Compute: "core.output@1", Upstream: []string{"add"}},
+		},
+		Defaults: map[string]json.RawMessage{
+			"calc.base":    json.RawMessage(`10`),
+			"calc.delta":   json.RawMessage(`0`),
+			"calc.sum":     json.RawMessage(`0`),
+			"score.team_a": json.RawMessage(`0`),
+		},
+	}
+	bundle := &compiler.RenderBundle{SceneVersion: "sha256:versioned"}
+	scene := NewScene("scene-versioned", graph, bundle, NewComputeRegistry(), quietLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go scene.Run(ctx)
+	t.Cleanup(scene.Stop)
+
+	sub, _ := scene.Subscribe(16)
+
+	// Adapter writes calc.delta = 5. Expected: calc.sum = 15 and the
+	// output sink leaf score.team_a = 15.
+	if !scene.Input(InputMsg{Path: "calc.delta", Value: json.RawMessage(`5`), Source: "test"}) {
+		t.Fatal("inbox full?")
+	}
+
+	got := map[string]json.RawMessage{}
+	deadline := time.After(time.Second)
+	for {
+		done := false
+		select {
+		case msg := <-sub.Out:
+			d, ok := msg.(*protocol.Delta)
+			if !ok {
+				continue
+			}
+			for _, p := range d.Patches {
+				got[p.Path] = p.Value
+			}
+			// Wait until the sink leaf has propagated.
+			if _, ok := got["score.team_a"]; ok {
+				done = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out; patches so far: %v", got)
+		}
+		if done {
+			break
+		}
+	}
+
+	if string(got["score.team_a"]) != "15" {
+		t.Fatalf("output sink leaf score.team_a = %s, want 15 (the add@1 result through output@1)", got["score.team_a"])
+	}
+	if v, ok := got["calc.sum"]; ok && string(v) != "15" {
+		t.Fatalf("calc.sum = %s, want 15", v)
 	}
 }
 

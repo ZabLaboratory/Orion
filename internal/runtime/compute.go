@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 )
 
 // ComputeFn is one entry in the compute registry — a pure function
@@ -20,29 +21,59 @@ type ComputeRegistry struct {
 	fns map[string]ComputeFn
 }
 
-// NewComputeRegistry builds the v1 stdlib registry. Mirrors the 13
-// core nodes Blue seeds at first boot (literal, input, output, add,
-// mul, if, get-field, set-field, plus a couple comparison helpers).
+// NewComputeRegistry builds the v1 stdlib registry. Every entry is
+// keyed by the qualified id the compiler emits and Blue's manifest
+// carries — `namespace.name@version` (ADR 004 §7.3, Orion#38). This is
+// the same string as `GraphNode.Compute` (`compile.go`, `Compute:
+// n.Compute`) and Blue's manifest key (`compute_manifest.py`,
+// `node_id = f"{namespace}.{name}@{version}"`), so `cmpReg.Get(node.
+// Compute)` resolves by construction.
+//
+// The *authoritative* set is Blue's seeded stdlib
+// (`Blue/src/blue/services/stdlib_seeder.py`, `_CORE_NODES`). Only the
+// nodes the reactive loop actually executes (`Kind != "input"`, i.e.
+// computed + output sinks) need an entry. `core.input@1` and
+// `core.literal@1` are deliberately absent: the former's leaf is
+// adapter-written, the latter is seeded into `graph.Defaults` at
+// compile time and lands `Kind == "input"` — both are skipped by
+// `recompute` (`scene.go`). The set will grow with the producer (Prism)
+// — this constructor is the single seam to extend.
 func NewComputeRegistry() *ComputeRegistry {
 	r := &ComputeRegistry{fns: map[string]ComputeFn{}}
-	r.fns["core.input"] = passthrough     // input nodes are passthrough leaves
-	r.fns["core.literal"] = literalFn     // emits a constant — `default` arg is the value
-	r.fns["core.passthrough"] = passthrough
-	r.fns["core.identity"] = passthrough
-	r.fns["core.add"] = arithmetic(func(a, b float64) float64 { return a + b })
-	r.fns["core.sub"] = arithmetic(func(a, b float64) float64 { return a - b })
-	r.fns["core.mul"] = arithmetic(func(a, b float64) float64 { return a * b })
-	r.fns["core.div"] = arithmetic(func(a, b float64) float64 {
+
+	// Math — ports `a`, `b` (stdlib `core.math.*`).
+	r.fns["core.math.add@1"] = arithmetic(func(a, b float64) float64 { return a + b })
+	r.fns["core.math.sub@1"] = arithmetic(func(a, b float64) float64 { return a - b })
+	r.fns["core.math.mul@1"] = arithmetic(func(a, b float64) float64 { return a * b })
+	r.fns["core.math.div@1"] = arithmetic(func(a, b float64) float64 {
 		if b == 0 {
 			return 0
 		}
 		return a / b
 	})
-	r.fns["core.eq"] = comparator(func(a, b float64) bool { return a == b })
-	r.fns["core.lt"] = comparator(func(a, b float64) bool { return a < b })
-	r.fns["core.gt"] = comparator(func(a, b float64) bool { return a > b })
-	r.fns["core.not"] = notFn
-	r.fns["core.if"] = ifFn
+	r.fns["core.math.mod@1"] = arithmetic(math.Mod)
+
+	// Comparison — ports `a`, `b` (stdlib `core.compare.*`).
+	r.fns["core.compare.equal@1"] = comparator(func(a, b float64) bool { return a == b })
+	r.fns["core.compare.not-equal@1"] = comparator(func(a, b float64) bool { return a != b })
+	r.fns["core.compare.less-than@1"] = comparator(func(a, b float64) bool { return a < b })
+	r.fns["core.compare.less-equal@1"] = comparator(func(a, b float64) bool { return a <= b })
+	r.fns["core.compare.greater-than@1"] = comparator(func(a, b float64) bool { return a > b })
+	r.fns["core.compare.greater-equal@1"] = comparator(func(a, b float64) bool { return a >= b })
+
+	// Logic — port `a` (stdlib `core.logic.not`).
+	r.fns["core.logic.not@1"] = notFn
+
+	// Flow — ports `condition`, `when_true`, `when_false`
+	// (stdlib `core.flow.select`).
+	r.fns["core.flow.select@1"] = selectFn
+
+	// Output sink — passthrough to its `Path` leaf (port `value`).
+	// ADR 004 §7.3 Decision B(a): registered as a passthrough so the
+	// existing `Kind != "input"` → Get → Set(Path) loop writes the
+	// single inbound value to the leaf with zero change to `recompute`.
+	r.fns["core.output@1"] = passthrough
+
 	return r
 }
 
@@ -63,15 +94,19 @@ func (r *ComputeRegistry) Register(id string, fn ComputeFn) {
 	r.fns[id] = fn
 }
 
-// passthrough returns the first input by lexicographic key (or by
-// the conventional `value` / `in` port). Inputs that are pre-sorted
-// arrive deterministically.
+// passthrough returns the node's single inbound value. Selection order
+// is deterministic (ADR 004 §7.3): the positional port `a` first —
+// `gatherInputs` (`scene.go`) delivers a sink's one upstream under `a`
+// regardless of the stdlib port name — then the conventional `value` /
+// `in` ports, then any remaining input, else `null`. A `core.output@1`
+// sink has exactly one inbound edge (stdlib `value` data input), so the
+// choice is unambiguous in practice; the fallback chain keeps it
+// deterministic if the port convention ever shifts.
 func passthrough(inputs map[string]json.RawMessage) (json.RawMessage, error) {
-	if v, ok := inputs["value"]; ok {
-		return v, nil
-	}
-	if v, ok := inputs["in"]; ok {
-		return v, nil
+	for _, name := range []string{"a", "value", "in"} {
+		if v, ok := inputs[name]; ok {
+			return v, nil
+		}
 	}
 	for _, v := range inputs {
 		return v, nil
@@ -79,17 +114,7 @@ func passthrough(inputs map[string]json.RawMessage) (json.RawMessage, error) {
 	return json.RawMessage(`null`), nil
 }
 
-func literalFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
-	if v, ok := inputs["default"]; ok {
-		return v, nil
-	}
-	if v, ok := inputs["value"]; ok {
-		return v, nil
-	}
-	return json.RawMessage(`null`), nil
-}
-
-// arithmetic builds an ADD/SUB/MUL/DIV compute. Inputs are read from
+// arithmetic builds an ADD/SUB/MUL/DIV/MOD compute. Inputs are read from
 // ports `x` (or `a`) and `y` (or `b`).
 func arithmetic(op func(a, b float64) float64) ComputeFn {
 	return func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
@@ -121,8 +146,11 @@ func comparator(op func(a, b float64) bool) ComputeFn {
 	}
 }
 
+// notFn implements `core.logic.not@1`. The stdlib declares a single
+// `a` port (`stdlib_seeder.py`); v1 gatherInputs delivers that upstream
+// positionally under `a`. The extra names are tolerated fallbacks.
 func notFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
-	v, err := readBool(inputs, "x", "value", "in")
+	v, err := readBool(inputs, "a", "x", "value", "in")
 	if err != nil {
 		return nil, err
 	}
@@ -130,18 +158,30 @@ func notFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
 	return out, nil
 }
 
-func ifFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
-	cond, err := readBool(inputs, "cond", "if", "test")
+// selectFn implements `core.flow.select@1` (stdlib `core.flow.select`,
+// `stdlib_seeder.py`): return `when_true` if `condition` is true, else
+// `when_false`. Pure data, no exec pin. It reads each port by its
+// stdlib name (`condition`/`when_true`/`when_false`) and falls back to
+// the positional ports `gatherInputs` (`scene.go`) actually delivers
+// (`a`/`b`/`c`) — v1 wires upstreams positionally, so a real graph
+// arrives under `a`,`b`,`c` zipped to the edge order
+// condition,when_true,when_false (ADR 004 §7.2).
+func selectFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+	cond, err := readBool(inputs, "condition", "a", "cond")
 	if err != nil {
 		return nil, err
 	}
 	if cond {
-		if v, ok := inputs["then"]; ok {
-			return v, nil
+		for _, name := range []string{"when_true", "b", "then"} {
+			if v, ok := inputs[name]; ok {
+				return v, nil
+			}
 		}
 	} else {
-		if v, ok := inputs["else"]; ok {
-			return v, nil
+		for _, name := range []string{"when_false", "c", "else"} {
+			if v, ok := inputs[name]; ok {
+				return v, nil
+			}
 		}
 	}
 	return json.RawMessage(`null`), nil
