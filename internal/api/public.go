@@ -33,6 +33,13 @@ type PublicDeps struct {
 	StaticDir     http.FileSystem // /static/solar/...
 	QuasarBaseURL string          // e.g. http://zabgate:4000/quasar
 	ServiceTokens *auth.ServiceTokenManager
+
+	// LSDPHandler is the lumencast-go LSDP/1.1 WebSocket handler
+	// (ADR 007 §C.3b). Non-nil only in dual/lsdp mode; in bespoke mode
+	// it is nil and the LSDP route is not registered (no-op deploy).
+	// The handler internally routes /lsdp.v1, so the public route
+	// rewrites the path to it before delegating.
+	LSDPHandler http.Handler
 }
 
 // RegisterPublic wires every endpoint per ADR 004 § 2. Routes start
@@ -66,8 +73,29 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("/api/v1/show/stream", deps.WSServer.ServeShowStream)
 	mux.HandleFunc("/api/v1/scenes/{id}/test", deps.WSServer.ServeTestSession)
 
+	// LSDP/1.1 wire (ADR 007 §C.3b) — distinct route, dual-served beside
+	// the bespoke /show/stream above. Registered only in dual/lsdp mode
+	// (LSDPHandler nil ⇒ bespoke ⇒ route absent, no behaviour change).
+	// The kit handler routes its own /lsdp.v1 path, so we rewrite the
+	// request path before delegating.
+	if deps.LSDPHandler != nil {
+		mux.Handle("/api/v1/show/stream.lsdp", lsdpRoute(deps.LSDPHandler))
+	}
+
 	// Static Solar bundle host (long-TTL immutable cache headers).
 	mux.Handle("GET /static/solar/", staticSolarHandler(deps.StaticDir))
+}
+
+// lsdpRoute rewrites the public LSDP route onto the path the kit's Mux
+// expects (/lsdp.v1) and delegates. The kit reads identity from the
+// upgrade request via Config.IdentityFromRequest (header-trust); the
+// rewrite preserves the request headers ZabGate injected.
+func lsdpRoute(kit http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/lsdp.v1"
+		kit.ServeHTTP(w, r2)
+	})
 }
 
 func health(w http.ResponseWriter, _ *http.Request) {
