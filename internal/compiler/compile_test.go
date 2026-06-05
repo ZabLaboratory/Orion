@@ -242,10 +242,72 @@ func TestCompile_DeterministicHash(t *testing.T) {
 	}
 }
 
+// A blueprint-free scene (layout-only default) compiles cleanly. The
+// fetcher is rigged with failKind:"blueprint" so any call to
+// FetchBlueprint errors — a green compile therefore PROVES the fetch
+// was skipped (issue #28, ADR 007 §8). Both the target sentinel ""
+// and the legacy "none" must be tolerated.
+func TestCompile_NoBlueprint(t *testing.T) {
+	newFetcher := func() *fakeFetcher {
+		return &fakeFetcher{
+			layouts: map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+			// No blueprints registered, and failKind forces
+			// FetchBlueprint to error if it is ever called.
+			blueprints: map[string]*BlueprintGraph{},
+			manifest:   pureManifest(),
+			failKind:   "blueprint",
+		}
+	}
+
+	cases := []struct {
+		name string
+		bpID string
+	}{
+		{name: "empty target sentinel", bpID: ""},
+		{name: "legacy none sentinel", bpID: "none"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFetcher()
+			envelope := PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: tc.bpID}
+
+			g, b, version, err := Compile(context.Background(), "scene-1", envelope, f)
+			if err != nil {
+				// If the fetch were NOT skipped, failKind:"blueprint"
+				// would surface here as ErrFetchUpstream.
+				t.Fatalf("blueprint-free compile errored (fetch not skipped?): %v", err)
+			}
+			if g == nil || b == nil {
+				t.Fatal("expected non-nil graph and bundle")
+			}
+			if !strings.HasPrefix(version, "sha256:") {
+				t.Fatalf("scene_version = %q, want sha256: prefix", version)
+			}
+			if g.SceneVersion != version || b.SceneVersion != version {
+				t.Fatal("scene_version not propagated to artefacts")
+			}
+			// No blueprint means no compute nodes.
+			if len(g.Nodes) != 0 {
+				t.Fatalf("expected 0 graph nodes for blueprint-free scene, got %d", len(g.Nodes))
+			}
+
+			// Determinism: a second identical push hashes byte-equal.
+			_, _, version2, err := Compile(context.Background(), "scene-1", envelope, newFetcher())
+			if err != nil {
+				t.Fatalf("second compile errored: %v", err)
+			}
+			if version != version2 {
+				t.Fatalf("non-deterministic scene_version: %s vs %s", version, version2)
+			}
+		})
+	}
+}
+
 // User-component operator_inputs are hoisted with instance-path prefix.
 func TestCompile_HoistsOperatorInputs(t *testing.T) {
 	comp := &UserComponent{
-		ID: "team-row",
+		ID:   "team-row",
 		Body: LayoutNode{Kind: "stack", ID: "body"},
 		Inputs: []OperatorInput{
 			{Path: "score", Label: "Score", Type: "number"},
