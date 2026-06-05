@@ -78,6 +78,42 @@ func TestScene_InputProducesDelta(t *testing.T) {
 	}
 }
 
+// panicMirror simulates a buggy / 3rd-party kit wire that panics on
+// every emit. The bespoke wire (source of truth) must survive — both
+// the SetMirror seed and the fan-out tap are recover-isolated
+// (ADR 007 §C.3b, Vigil #26 medium).
+type panicMirror struct{}
+
+func (panicMirror) Forward(SubscriberMsg) { panic("boom from kit") }
+
+func TestScene_MirrorPanicDoesNotKillBespoke(t *testing.T) {
+	scene := passthroughScene(t, "scene-panic")
+	scene.SetMirror(panicMirror{}) // seed via tapMirror must not panic the caller
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go scene.Run(ctx)
+	t.Cleanup(scene.Stop)
+
+	sub, _ := scene.Subscribe(8)
+	if !scene.Input(InputMsg{
+		Path:        "score.team_a",
+		Value:       json.RawMessage(`14`),
+		Source:      "operator:u",
+		ClientMsgID: "uuid-panic",
+	}) {
+		t.Fatal("inbox full?")
+	}
+
+	select {
+	case msg := <-sub.Out:
+		if _, ok := msg.(*protocol.Delta); !ok {
+			t.Fatalf("expected Delta despite mirror panic, got %T", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bespoke wire died after mirror panic — recover isolation failed")
+	}
+}
+
 func TestScene_BurstCoalescesIntoOneRecompute(t *testing.T) {
 	scene := passthroughScene(t, "scene-burst")
 	ctx, cancel := context.WithCancel(context.Background())

@@ -23,6 +23,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/auth"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/config"
+	"github.com/ZabLaboratory/Orion/internal/lsdp"
 	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/store"
@@ -72,6 +73,23 @@ func run() error {
 	registry := runtime.NewComputeRegistry()
 	show := runtime.NewShow(registry, logger)
 	defer show.Stop()
+
+	// LSDP/1.1 wire (ADR 007 §C.3b) — built and installed on the show
+	// only in dual/lsdp mode, before cold-start so every loaded scene is
+	// paired with a kit scene. In bespoke mode the wire is nil: the kit
+	// is never constructed and the bespoke WS is the only wire (no-op
+	// deploy). Gateway-first holds by construction — the wire's only
+	// identity source is auth.FromHeaders (no JWT, no token).
+	var lsdpHandler http.Handler
+	if cfg.LSDPMode == config.LSDPModeDual || cfg.LSDPMode == config.LSDPModeLSDP {
+		wire, err := lsdp.NewWire(logger)
+		if err != nil {
+			return err
+		}
+		show.SetMirrors(wire)
+		lsdpHandler = wire.Handler()
+		logger.Info("lsdp wire enabled", "mode", string(cfg.LSDPMode))
+	}
 
 	testMgr := runtime.NewTestSessionManager(registry, logger, 5*time.Minute)
 	defer testMgr.Close()
@@ -150,6 +168,7 @@ func run() error {
 		StaticDir:     http.Dir(cfg.SolarRoot),
 		QuasarBaseURL: cfg.QuasarBaseURL,
 		ServiceTokens: serviceTokens,
+		LSDPHandler:   lsdpHandler,
 	})
 
 	// Internal-only HTTP surface for prom scrape + dev probes.
