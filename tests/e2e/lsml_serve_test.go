@@ -177,6 +177,119 @@ func TestE2E_BespokeServeUnchangedWithLSML(t *testing.T) {
 	}
 }
 
+// Acceptance #1 (issue #22) — adopt-on-verify collapse at the DB level.
+// When Orion adopts the LSML content address as scene_version (because
+// the Canvas-supplied hash byte-matched), the pushed-version row is
+// keyed by that single identity: SceneVersion == LSMLBundleHash. The C2
+// serve at /lsml-bundle?v={scene_version} therefore resolves, because
+// GetLSMLBundleByHash keys on lsml_bundle_hash and that now equals the
+// scene_version pointer the runtime reads. This is the two-addresses-
+// collapse the issue requires (ADR 007 §C.4).
+func TestE2E_LSMLIdentityCollapseResolvesServe(t *testing.T) {
+	st := requireDB(t)
+	ctx := context.Background()
+	sceneID := uuid.New()
+
+	if _, err := st.CreateScene(ctx, sceneID, "collapse-scene"); err != nil {
+		t.Fatal(err)
+	}
+
+	fetcher := &stubFetcher{
+		layouts: map[string]*compiler.CanvasLayout{
+			"v1": {Version: "v1", Root: compiler.LayoutNode{
+				Kind: "stack", ID: "root",
+				Children: []compiler.LayoutNode{
+					{Kind: "text", ID: "title", Bindings: map[string]string{"text": "score.home"}},
+				},
+			}},
+		},
+		blueprints: map[string]*compiler.BlueprintGraph{
+			"bp-1": {ID: "bp-1", Nodes: []compiler.BlueprintNode{
+				{ID: "out.x", Compute: "core.input", OutputAt: "score.home"},
+			}},
+		},
+		manifest: compiler.ComputeManifest{"core.input": {IsPure: true, IsBounded: true, Version: "1"}},
+	}
+
+	_, bundle, _, err := compiler.Compile(ctx, sceneID.String(),
+		compiler.PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-1"}, fetcher)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	// Orion recomputes the LSML hash — this is the value a byte-matching
+	// Canvas would have supplied, so adoption uses it as scene_version.
+	lsmlBundle, lsmlHash, _, err := compiler.EmitLSML(
+		sceneID.String(), bundle.Root, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+	)
+	if err != nil {
+		t.Fatalf("emit lsml: %v", err)
+	}
+	lsmlBytes, _ := json.Marshal(lsmlBundle)
+
+	defID := uuid.New()
+	if err := st.InsertDefinition(ctx, store.SceneDefinition{
+		ID: defID, SceneID: sceneID, DefinitionVersion: 1,
+		CanvasVersion: "v1", BlueBlueprintID: "bp-1",
+		ComponentsJSON: json.RawMessage(`[]`), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The adopted shape: scene_version == lsml_bundle_hash (collapsed).
+	err = st.Tx(ctx, func(tx pgx.Tx) error {
+		gjson, _ := json.Marshal(struct{}{})
+		bjson, _ := json.Marshal(bundle)
+		pv := store.ScenePushedVersion{
+			SceneID:        sceneID,
+			SceneVersion:   lsmlHash, // adopted: PK == LSML address
+			DefinitionID:   defID,
+			GraphJSON:      gjson,
+			BundleJSON:     bjson,
+			LSMLBundleJSON: lsmlBytes,
+			LSMLBundleHash: &lsmlHash,
+			CreatedAt:      time.Now(),
+		}
+		if err := st.InsertPushedVersion(ctx, tx, pv); err != nil {
+			return err
+		}
+		return st.SetLatestPushedVersion(ctx, tx, sceneID, &lsmlHash)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The pointer the runtime reads is the LSML address.
+	scene, err := st.GetScene(ctx, sceneID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scene.LatestPushedVersion == nil || *scene.LatestPushedVersion != lsmlHash {
+		t.Fatalf("latest_pushed_version = %v, want adopted LSML hash %q", scene.LatestPushedVersion, lsmlHash)
+	}
+
+	// The C2 serve keyed by scene_version resolves on the unified
+	// identity: GetLSMLBundleByHash(sceneID, scene_version) returns the
+	// bytes, because lsml_bundle_hash == scene_version after collapse.
+	got, err := st.GetLSMLBundleByHash(ctx, sceneID, *scene.LatestPushedVersion)
+	if err != nil {
+		t.Fatalf("collapsed /lsml-bundle?v={scene_version} did not resolve: %v", err)
+	}
+	if !jsonEqual(t, got, lsmlBytes) {
+		t.Fatalf("served bytes mismatch:\n got=%s\nwant=%s", got, lsmlBytes)
+	}
+
+	// And the bespoke render-bundle serve keyed by the SAME
+	// scene_version also resolves (one address, two artefact views).
+	pv, err := st.GetPushedVersion(ctx, sceneID, *scene.LatestPushedVersion)
+	if err != nil {
+		t.Fatalf("render-bundle?v={scene_version} did not resolve after collapse: %v", err)
+	}
+	if pv.SceneVersion != lsmlHash {
+		t.Fatalf("pushed version PK = %q, want adopted hash %q", pv.SceneVersion, lsmlHash)
+	}
+}
+
 // jsonEqual reports whether two raw JSON byte streams are semantically
 // equal (key-order and whitespace insensitive) — Postgres jsonb storage
 // reorders keys, so a raw bytes.Equal would be too strict.

@@ -91,25 +91,28 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 			CreatedAt:    time.Now(),
 		}
 
-		// ADR 007 §C.2 — additive LSML persist, gated by ORION_LSDP_MODE.
-		// In bespoke mode (the default) this is skipped entirely, so the
-		// pushed-version row carries NULL LSML columns and the deploy is
+		// ADR 007 §C.2/§C.4 — additive LSML persist + adopt-on-verify,
+		// gated by ORION_LSDP_MODE. In bespoke mode (the default) this is
+		// skipped entirely, so the pushed-version row carries NULL LSML
+		// columns, scene_version stays the legacy mint, and the deploy is
 		// a no-op. In dual|lsdp the compiler's expanded tree is also
 		// emitted as an LSML 1.1 bundle (EmitLSML, C1) and persisted
 		// beside the bespoke RenderBundle, content-addressed by its own
 		// lsml.HashBundle. A failure to emit is a warning, never a push
 		// failure — the bespoke path already succeeded by this point.
+		//
+		// C4 identity collapse (adopt-on-verify, never adopt-on-trust):
+		// when Canvas supplies its own lsml_bundle_hash in the envelope
+		// AND it byte-matches Orion's freshly-recomputed hash, Orion
+		// adopts that hash as the scene_version. The two previously
+		// distinct addresses (the bespoke graph+bundle scene_version and
+		// the LSML content address) collapse into one, so the C2 serve
+		// at /lsml-bundle?v={scene_version} resolves on the same identity.
+		// On mismatch (drift) or absence (old Canvas), scene_version stays
+		// the legacy mint and a mismatch emits an LSML_HASH_MISMATCH
+		// warning — Orion never blindly trusts a hash it did not verify.
 		if deps.Config.LSDPMode.PersistsLSML() {
-			lsmlBundle, lsmlHash, _, emitErr := compiler.EmitLSML(
-				sceneID.String(), bundle.Root, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
-			)
-			if emitErr != nil {
-				deps.Logger.Warn("lsml emit failed; persisting bespoke only",
-					"scene_id", sceneID.String(), "scene_version", sceneVersion, "error", emitErr)
-			} else {
-				pv.LSMLBundleJSON = mustJSON(lsmlBundle)
-				pv.LSMLBundleHash = &lsmlHash
-			}
+			sceneVersion = persistLSMLAndMaybeAdopt(deps, sceneID, sceneVersion, envelope.LSMLBundleHash, bundle, &pv)
 		}
 
 		err = deps.Store.Tx(ctx, func(tx pgx.Tx) error {
@@ -145,6 +148,71 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 			},
 		})
 	})
+}
+
+// persistLSMLAndMaybeAdopt emits the LSML 1.1 bundle for a compiled
+// scene, persists it on the pushed-version row, and resolves the C4
+// identity question. It returns the scene_version the caller must use
+// as the pushed-version PK + latest pointer.
+//
+// Behaviour (ADR 007 §C.4):
+//   - emit fails        → log a warning, persist nothing LSML-side, keep
+//     the legacy scene_version. Never fails the push.
+//   - canvasHash == ""  → old/legacy Canvas (or LSML-unaware push). Persist
+//     the LSML bundle keyed by its own hash for the C2 serve, but DO NOT
+//     collapse identity — scene_version stays the legacy mint. No warning.
+//   - canvasHash matches → adopt-on-verify: scene_version becomes the LSML
+//     content address, collapsing the two addresses. pv.SceneVersion and
+//     pv.LSMLBundleHash are realigned to the adopted hash so the C2 serve
+//     at ?v={scene_version} resolves on the unified identity.
+//   - canvasHash differs → drift. Keep the legacy mint, still persist the
+//     LSML bundle under its own (Orion-computed) hash, and emit an
+//     LSML_HASH_MISMATCH warning. Never fails, never silently adopts.
+func persistLSMLAndMaybeAdopt(
+	deps PublicDeps,
+	sceneID uuid.UUID,
+	sceneVersion string,
+	canvasHash string,
+	bundle *compiler.RenderBundle,
+	pv *store.ScenePushedVersion,
+) string {
+	lsmlBundle, lsmlHash, _, emitErr := compiler.EmitLSML(
+		sceneID.String(), bundle.Root, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+	)
+	if emitErr != nil {
+		deps.Logger.Warn("lsml emit failed; persisting bespoke only",
+			"scene_id", sceneID.String(), "scene_version", sceneVersion, "error", emitErr)
+		return sceneVersion
+	}
+
+	pv.LSMLBundleJSON = mustJSON(lsmlBundle)
+	pv.LSMLBundleHash = &lsmlHash
+
+	if canvasHash == "" {
+		// No Canvas-supplied identity to reconcile: persist for the C2
+		// serve only, identity stays the legacy mint.
+		return sceneVersion
+	}
+
+	if canvasHash == lsmlHash {
+		// Byte-match: adopt the LSML content address as scene_version.
+		// The two addresses collapse; the C2 serve resolves at
+		// ?v={scene_version}. Realign the PK so the persisted row is
+		// keyed by the unified identity.
+		pv.SceneVersion = lsmlHash
+		deps.Logger.Info("lsml identity adopted (byte-match)",
+			"scene_id", sceneID.String(), "scene_version", lsmlHash)
+		return lsmlHash
+	}
+
+	// Mismatch: drift between Canvas's hash and Orion's recomputed hash.
+	// Never adopt — fall back to the legacy mint and surface a warning.
+	deps.Logger.Warn("LSML_HASH_MISMATCH",
+		"scene_id", sceneID.String(),
+		"canvas_hash", canvasHash,
+		"orion_hash", lsmlHash,
+		"scene_version", sceneVersion)
+	return sceneVersion
 }
 
 // writePushError translates a *compiler.CompileError into the

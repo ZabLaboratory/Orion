@@ -11,6 +11,17 @@ type PushEnvelope struct {
 	BlueBlueprintID string         `json:"blue_blueprint_id,omitempty"`
 	Components      []ComponentRef `json:"components,omitempty"`
 
+	// LSMLBundleHash is the LSML content address Canvas/Prism computed
+	// for this scene's authored bundle (the A0 store key, ADR 007 §C.4).
+	// It is OPTIONAL and additive: an old Canvas omits it, in which case
+	// Orion mints scene_version legacy-style exactly as before. When
+	// present, Orion recompiles, emits its own LSML bundle, hashes it,
+	// and — only on a byte-match — adopts this value as scene_version
+	// (the identity collapse). A mismatch falls back to the legacy mint
+	// plus an LSML_HASH_MISMATCH warning. The field is read only in
+	// dual|lsdp mode; in bespoke mode it is ignored entirely.
+	LSMLBundleHash string `json:"lsml_bundle_hash,omitempty"`
+
 	// Rollback path: re-points latest_pushed_version at an existing
 	// scene_version without recompilation.
 	RollbackTo string `json:"rollback_to,omitempty"`
