@@ -41,8 +41,8 @@ func (p PushEnvelope) IsRollback() bool { return p.RollbackTo != "" }
 // CanvasLayout is the scene's authored tree from Canvas. The compiler
 // walks it, resolves component refs, and emits the render bundle.
 type CanvasLayout struct {
-	Version string         `json:"version"`
-	Root    LayoutNode     `json:"root"`
+	Version string          `json:"version"`
+	Root    LayoutNode      `json:"root"`
 	Inputs  []OperatorInput `json:"operator_inputs,omitempty"`
 }
 
@@ -50,12 +50,12 @@ type CanvasLayout struct {
 // (kind in primitive set) or a user-component reference (kind ==
 // component_id, fetched via ComponentRef).
 type LayoutNode struct {
-	Kind       string                     `json:"kind"`
-	ID         string                     `json:"id,omitempty"`
-	Props      map[string]json.RawMessage `json:"props,omitempty"`
-	Bindings   map[string]string          `json:"bindings,omitempty"`
+	Kind        string                     `json:"kind"`
+	ID          string                     `json:"id,omitempty"`
+	Props       map[string]json.RawMessage `json:"props,omitempty"`
+	Bindings    map[string]string          `json:"bindings,omitempty"`
 	Transitions map[string]json.RawMessage `json:"transitions,omitempty"`
-	Children   []LayoutNode               `json:"children,omitempty"`
+	Children    []LayoutNode               `json:"children,omitempty"`
 
 	// component_id is set when Kind names a user component (the
 	// authored layout uses the component's id directly as the kind
@@ -67,19 +67,19 @@ type LayoutNode struct {
 // OperatorInput is the declared operator surface for a path.
 // Mirrors ADR 003 § 7.1.
 type OperatorInput struct {
-	Path        string          `json:"path"`
-	Label       string          `json:"label"`
-	Type        string          `json:"type"`
-	Default     json.RawMessage `json:"default,omitempty"`
-	Group       string          `json:"group,omitempty"`
-	WritableBy  []string        `json:"writable_by,omitempty"`
-	OptionsSrc  string          `json:"options_source,omitempty"`
-	Min         *float64        `json:"min,omitempty"`
-	Max         *float64        `json:"max,omitempty"`
-	Step        *float64        `json:"step,omitempty"`
-	MaxLength   *int            `json:"max_length,omitempty"`
-	Regex       string          `json:"regex,omitempty"`
-	EnumValues  []string        `json:"enum_values,omitempty"`
+	Path       string          `json:"path"`
+	Label      string          `json:"label"`
+	Type       string          `json:"type"`
+	Default    json.RawMessage `json:"default,omitempty"`
+	Group      string          `json:"group,omitempty"`
+	WritableBy []string        `json:"writable_by,omitempty"`
+	OptionsSrc string          `json:"options_source,omitempty"`
+	Min        *float64        `json:"min,omitempty"`
+	Max        *float64        `json:"max,omitempty"`
+	Step       *float64        `json:"step,omitempty"`
+	MaxLength  *int            `json:"max_length,omitempty"`
+	Regex      string          `json:"regex,omitempty"`
+	EnumValues []string        `json:"enum_values,omitempty"`
 }
 
 // ExternalAdapter is one declared external input source pulled out
@@ -105,11 +105,11 @@ type AssetRef struct {
 // for inlining. Cycle detection runs over the graph defined by
 // LayoutNode.Kind references between components.
 type UserComponent struct {
-	ID         string          `json:"id"`
-	Version    string          `json:"version"`
+	ID         string           `json:"id"`
+	Version    string           `json:"version"`
 	Parameters []ComponentParam `json:"parameters"`
-	Body       LayoutNode      `json:"body"`
-	Inputs     []OperatorInput `json:"operator_inputs,omitempty"`
+	Body       LayoutNode       `json:"body"`
+	Inputs     []OperatorInput  `json:"operator_inputs,omitempty"`
 }
 
 // ComponentParam declares an input name + (optional) default.
@@ -178,15 +178,15 @@ type ComputeManifest map[string]ComputeManifestEntry
 // straight into it — decoding straight in is what broke every push
 // (issue #30, found by the live E2E on 2026-06-05).
 type blueManifestEntry struct {
-	NodeID             string                   `json:"node_id"`
-	Namespace          string                   `json:"namespace"`
-	Name               string                   `json:"name"`
-	Version            int                      `json:"version"`
-	IsPure             bool                     `json:"is_pure"`
-	IsBounded          bool                     `json:"is_bounded"`
+	NodeID             string           `json:"node_id"`
+	Namespace          string           `json:"namespace"`
+	Name               string           `json:"name"`
+	Version            int              `json:"version"`
+	IsPure             bool             `json:"is_pure"`
+	IsBounded          bool             `json:"is_bounded"`
 	DeclaredInputs     []map[string]any `json:"declared_inputs"`
-	DeclaredOutputType json.RawMessage          `json:"declared_output_type"`
-	Source             string                   `json:"source"`
+	DeclaredOutputType json.RawMessage  `json:"declared_output_type"`
+	Source             string           `json:"source"`
 	Platform           map[string]any   `json:"platform"`
 }
 
