@@ -127,11 +127,22 @@ type BlueprintGraph struct {
 }
 
 // BlueprintNode is one node in the blueprint. Compute is the registry
-// id ("core.add", "quasar.twitch.chat@1", …); the compiler probes
+// id ("core.math.add@1", "quasar.twitch.chat@1", …); the compiler probes
 // Blue's manifest for is_pure / is_bounded.
+//
+// The wire field is `definition` — the qualified reference
+// `namespace.name@version` — not `compute`. That is what every producer
+// emits: Blue (graph.py:40, Node.definition) and Prism
+// (src/renderer/src/lib/blue-types.ts:61, Node.definition). The Go field
+// keeps the name Compute because that is the semantic role the compiler
+// gives it (manifest[n.Compute] lookup); only the JSON tag binds to the
+// canonical `definition` wire field. Tagging it `compute` — a field no
+// producer emits — left Compute == "" on every real push, which made
+// validateBlueprint look up manifest[""] and emit a spurious
+// UNKNOWN_COMPUTE_NODE (issue #32, ADR 004 §7.1).
 type BlueprintNode struct {
 	ID       string                     `json:"id"`
-	Compute  string                     `json:"compute"`
+	Compute  string                     `json:"definition"`
 	OutputAt string                     `json:"output_at,omitempty"` // dotted leaf path the compute writes to
 	Args     map[string]json.RawMessage `json:"args,omitempty"`
 }
