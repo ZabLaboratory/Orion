@@ -1,0 +1,70 @@
+{
+  "entries": [
+    {
+      "node_id": "core.math.add@1",
+      "namespace": "core.math",
+      "name": "add",
+      "version": 1,
+      "is_pure": true,
+      "is_bounded": true,
+      "declared_inputs": [
+        {"name": "a", "type": "core.primitive.float", "kind": "data", "required": true, "default": 0},
+        {"name": "b", "type": "core.primitive.float", "kind": "data", "required": true, "default": 0}
+      ],
+      "declared_output_type": "core.primitive.float",
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.input@1",
+      "namespace": "core",
+      "name": "input",
+      "version": 1,
+      "is_pure": true,
+      "is_bounded": true,
+      "declared_inputs": [],
+      "declared_output_type": null,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.cast.to-integer@1",
+      "namespace": "core.cast",
+      "name": "to-integer",
+      "version": 1,
+      "is_pure": true,
+      "is_bounded": true,
+      "declared_inputs": [
+        {"name": "value", "type": "core.primitive.json", "kind": "data", "required": true, "default": null}
+      ],
+      "declared_output_type": ["core.primitive.integer", "core.primitive.boolean"],
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.source.read@1",
+      "namespace": "core.source",
+      "name": "read",
+      "version": 1,
+      "is_pure": false,
+      "is_bounded": false,
+      "declared_inputs": [],
+      "declared_output_type": ["core.primitive.json", "core.primitive.string"],
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "quasar.twitch.chat@1",
+      "namespace": "quasar.twitch",
+      "name": "chat",
+      "version": 1,
+      "is_pure": true,
+      "is_bounded": true,
+      "declared_inputs": [],
+      "declared_output_type": "core.primitive.json",
+      "source": "stdlib",
+      "platform": {"name": "twitch"}
+    }
+  ],
+  "count": 5
+}
