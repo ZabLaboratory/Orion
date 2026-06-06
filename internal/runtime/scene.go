@@ -103,7 +103,7 @@ type Scene struct {
 }
 
 type computeEntry struct {
-	node    compiler.GraphNode
+	node     compiler.GraphNode
 	upstream []string // input port name -> upstream node id; zipped 1:1 with node.Upstream for v1
 }
 
@@ -128,6 +128,14 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 	for _, n := range graph.Nodes {
 		s.computeOrder = append(s.computeOrder, computeEntry{node: n, upstream: n.Upstream})
 	}
+	// Cold-start compute: Seed only fills constant/input leaves, so without
+	// an initial forced pass every COMPUTED leaf (math/compare/logic/output)
+	// would be absent from the first snapshot — a blueprint-backed scene
+	// would render blank until the first input arrived. Run the topo-sorted
+	// graph once now (force, ignoring dirtiness) so the scene is fully
+	// evaluated before the first Subscribe. Synchronous + pre-Run, so no
+	// subscriber can observe the un-evaluated state.
+	s.recompute(true)
 	return s
 }
 
@@ -185,7 +193,7 @@ func (s *Scene) Run(parentCtx context.Context) {
 		case msg := <-s.inbox:
 			s.applyInput(msg)
 			s.drainNonBlocking()
-			s.recompute()
+			s.recompute(false)
 			s.emit(&msg)
 		}
 	}
@@ -304,22 +312,24 @@ func (s *Scene) drainNonBlocking() {
 // node whose upstream is dirty. A node whose computed value didn't
 // change is dropped (Set returns false), which prevents needless
 // patches downstream.
-func (s *Scene) recompute() {
+func (s *Scene) recompute(force bool) {
 	for _, ce := range s.computeOrder {
 		if ce.node.Kind == "input" {
 			// inputs are written directly by adapters; nothing to
 			// recompute here.
 			continue
 		}
-		anyDirty := false
-		for _, up := range ce.upstream {
-			if s.state.IsDirty(s.upstreamPath(up)) {
-				anyDirty = true
-				break
+		if !force {
+			anyDirty := false
+			for _, up := range ce.upstream {
+				if s.state.IsDirty(s.upstreamPath(up)) {
+					anyDirty = true
+					break
+				}
 			}
-		}
-		if !anyDirty {
-			continue
+			if !anyDirty {
+				continue
+			}
 		}
 
 		// Gather upstream values. v1 wires by upstream node id; the
@@ -338,9 +348,19 @@ func (s *Scene) recompute() {
 			s.logger.Warn("compute error", "compute", ce.node.Compute, "node", ce.node.ID, "err", err)
 			continue
 		}
-		if ce.node.Path != "" {
-			s.state.Set(ce.node.Path, val)
+		// Persist the result so downstream nodes can read it. A named
+		// sink/leaf (output/input/literal → Path) writes its public leaf;
+		// an INTERMEDIATE compute (core.math.*/compare/logic, Path=="")
+		// writes to its node id — the exact address upstreamPath falls
+		// back to, so a multi-stage graph (literal→add→output) actually
+		// chains. Without this an intermediate's value vanished and every
+		// downstream node read null (the real compiler gives intermediates
+		// Path==""; only hand-built test graphs assigned them a Path).
+		leaf := ce.node.Path
+		if leaf == "" {
+			leaf = ce.node.ID
 		}
+		s.state.Set(leaf, val)
 	}
 }
 

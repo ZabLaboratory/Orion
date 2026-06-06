@@ -271,6 +271,53 @@ func TestScene_VersionedBlueprintGraphWritesLeaf(t *testing.T) {
 	}
 }
 
+// TestScene_ColdStartComputesBlueprintLeaf proves the two runtime gaps the
+// blueprint path hit (found 2026-06-06, masked by hand-built test graphs):
+//
+//   - COLD-START COMPUTE: a computed leaf must be evaluated before the first
+//     Subscribe, so a blueprint-backed scene renders its computed value on
+//     go-live WITHOUT waiting for an input. (Seed only fills constants; the
+//     loop only recomputed on an input.)
+//   - INTERMEDIATE PERSISTENCE: an intermediate compute carries Path=="" from
+//     the REAL compiler (nodeLeafPath returns "" for core.math.*); its result
+//     must still be written (to its node id) so the downstream output sink can
+//     read it. The prior code only wrote when Path!="", so any compiler-shaped
+//     multi-stage graph chained to null.
+//
+// Graph (exactly as compiler.validateBlueprint shapes it — note add.Path==""):
+//
+//	core.literal@1 lit.a (Defaults["lit.a"]=10)  ┐
+//	core.literal@1 lit.b (Defaults["lit.b"]=5)   ├─ core.math.add@1 add (Path="")
+//	                                              └─ core.output@1 out → display.total
+//
+// No input is pushed. The very first snapshot must carry display.total = 15.
+func TestScene_ColdStartComputesBlueprintLeaf(t *testing.T) {
+	graph := &compiler.Graph{
+		SceneID:      "scene-cold",
+		SceneVersion: "sha256:cold",
+		Nodes: []compiler.GraphNode{
+			{ID: "lit.a", Kind: "input", Path: "lit.a", Compute: "core.literal@1"},
+			{ID: "lit.b", Kind: "input", Path: "lit.b", Compute: "core.literal@1"},
+			// Intermediate: Path=="" exactly like the real compiler emits.
+			{ID: "add", Kind: "computed", Path: "", Compute: "core.math.add@1", Upstream: []string{"lit.a", "lit.b"}},
+			{ID: "out", Kind: "output", Path: "display.total", Compute: "core.output@1", Upstream: []string{"add"}},
+		},
+		Defaults: map[string]json.RawMessage{
+			"lit.a": json.RawMessage(`10`),
+			"lit.b": json.RawMessage(`5`),
+		},
+	}
+	bundle := &compiler.RenderBundle{SceneVersion: "sha256:cold"}
+	scene := NewScene("scene-cold", graph, bundle, NewComputeRegistry(), quietLogger())
+
+	// Subscribe WITHOUT pushing any input — the snapshot must already carry
+	// the cold-start-computed output leaf.
+	_, snap := scene.Subscribe(8)
+	if got := string(snap.State["display.total"]); got != "15" {
+		t.Fatalf("cold-start display.total = %q, want 15 (literal 10 + literal 5, computed before first subscribe)", got)
+	}
+}
+
 func TestShow_SwitchMigratesLiveSubsAndEmitsSceneChanged(t *testing.T) {
 	logger := quietLogger()
 	show := NewShow(NewComputeRegistry(), logger)

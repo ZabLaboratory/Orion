@@ -43,14 +43,37 @@ func (f *HTTPFetcher) FetchCanvasLayout(ctx context.Context, version string) (*C
 	return &out, nil
 }
 
-// FetchBlueprint calls GET {blue}/api/v1/blueprints/{id}.
+// FetchBlueprint resolves a blueprint's compute graph from Blue.
+//
+// Blue does NOT serve the graph on the blueprint row: GET
+// /api/v1/blueprints/{id} returns BlueprintRead ({id, slug, status,
+// current_version, interface, …}) with NO nodes/edges — the graph lives
+// in the immutable version (blueprint_versions.graph). So this is a
+// TWO-CALL fetch: read the blueprint to learn current_version, then read
+// that version and lift its nested `graph.{nodes,edges}` into Orion's
+// flat BlueprintGraph. (Same drift class as the compute-manifest envelope,
+// issue #31 — unexercised because every live push so far was blueprint-
+// free. BlueprintNode/Edge json tags already match Blue's graph schema:
+// `definition`, `from_node`/`to_node`/`from_port`/`to_port`.)
 func (f *HTTPFetcher) FetchBlueprint(ctx context.Context, id string) (*BlueprintGraph, error) {
-	var out BlueprintGraph
-	url := f.BlueBase + "/api/v1/blueprints/" + id
-	if err := f.getJSON(ctx, url, &out); err != nil {
+	var meta struct {
+		ID             string `json:"id"`
+		CurrentVersion int    `json:"current_version"`
+	}
+	if err := f.getJSON(ctx, f.BlueBase+"/api/v1/blueprints/"+id, &meta); err != nil {
 		return nil, fmt.Errorf("blue blueprint %s: %w", id, err)
 	}
-	return &out, nil
+	var ver struct {
+		Graph struct {
+			Nodes []BlueprintNode `json:"nodes"`
+			Edges []BlueprintEdge `json:"edges"`
+		} `json:"graph"`
+	}
+	url := fmt.Sprintf("%s/api/v1/blueprints/%s/versions/%d", f.BlueBase, id, meta.CurrentVersion)
+	if err := f.getJSON(ctx, url, &ver); err != nil {
+		return nil, fmt.Errorf("blue blueprint %s version %d: %w", id, meta.CurrentVersion, err)
+	}
+	return &BlueprintGraph{ID: meta.ID, Nodes: ver.Graph.Nodes, Edges: ver.Graph.Edges}, nil
 }
 
 // FetchComponent calls GET {canvas}/api/v1/components/{id}/{version}.
