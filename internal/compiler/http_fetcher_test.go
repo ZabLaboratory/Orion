@@ -97,6 +97,62 @@ func TestFetchComputeManifest_BlueContract(t *testing.T) {
 	}
 }
 
+// TestFetchBlueprint_BlueContract proves the TWO-CALL fetch against
+// Blue's REAL shape: GET /blueprints/{id} returns BlueprintRead (NO
+// nodes/edges, just current_version), and the graph is read from GET
+// /blueprints/{id}/versions/{current_version} whose VersionRead nests it
+// under `graph.{nodes,edges}`. Regression guard for the blueprint-fetch
+// drift found 2026-06-06 (every prior live push was blueprint-free, so
+// FetchBlueprint — which decoded the row straight into BlueprintGraph and
+// got empty nodes/edges — was never exercised). Same class as issue #31.
+func TestFetchBlueprint_BlueContract(t *testing.T) {
+	const blueprintRead = `{"id":"bp-1","slug":"sb","name":"Scoreboard","kind":"function",
+		"status":"published","current_version":2,"tags":[],
+		"interface":{"inputs":[],"outputs":[]}}`
+	const versionRead = `{"id":"v-1","blueprint_id":"bp-1","version":2,"status":"published",
+		"interface":{"inputs":[],"outputs":[]},"annotations":{},
+		"graph":{"nodes":[
+			{"id":"add","definition":"core.math.add@1","config":{},"inputs":[],"outputs":[]},
+			{"id":"out","definition":"core.output@1","config":{"name":"score.total"}}
+		],"edges":[
+			{"id":"e1","from_node":"add","from_port":"sum","to_node":"out","to_port":"value"}
+		],"variables":[]}}`
+
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if filepath.Base(filepath.Dir(r.URL.Path)) == "versions" {
+			_, _ = w.Write([]byte(versionRead))
+		} else {
+			_, _ = w.Write([]byte(blueprintRead))
+		}
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher("http://canvas.invalid", srv.URL, "")
+	bp, err := f.FetchBlueprint(context.Background(), "bp-1")
+	if err != nil {
+		t.Fatalf("FetchBlueprint: %v", err)
+	}
+	// Resolved the current version (2) on the second call.
+	if len(paths) != 2 || paths[1] != "/api/v1/blueprints/bp-1/versions/2" {
+		t.Fatalf("paths = %v, want [.../blueprints/bp-1, .../blueprints/bp-1/versions/2]", paths)
+	}
+	if bp.ID != "bp-1" || len(bp.Nodes) != 2 || len(bp.Edges) != 1 {
+		t.Fatalf("graph lift wrong: id=%q nodes=%d edges=%d (drift: row has no graph)", bp.ID, len(bp.Nodes), len(bp.Edges))
+	}
+	if bp.Nodes[0].Compute != "core.math.add@1" {
+		t.Fatalf("node[0].definition→Compute = %q, want core.math.add@1", bp.Nodes[0].Compute)
+	}
+	if got := string(bp.Nodes[1].Config["name"]); got != `"score.total"` {
+		t.Fatalf("output node config.name = %s, want \"score.total\"", got)
+	}
+	if bp.Edges[0].FromNode != "add" || bp.Edges[0].ToPort != "value" {
+		t.Fatalf("edge decode wrong: %+v", bp.Edges[0])
+	}
+}
+
 // TestFetchComputeManifest_ResolvesBlueprintDefinitionRef proves the
 // decoded manifest's keys line up with the compute ref a blueprint node
 // references — i.e. a valid stdlib node does NOT trip a spurious
