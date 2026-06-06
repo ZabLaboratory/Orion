@@ -45,8 +45,10 @@ func lowerRenderProps(
 		return lowerFrame(props, bindings)
 	case "shape":
 		return lowerShape(props, bindings)
+	case "image":
+		return lowerImage(props, bindings)
 	default:
-		// stack, grid, image, media, repeat, instance, user components:
+		// stack, grid, media, repeat, instance, user components:
 		// no authoring→render rename is defined; pass through verbatim
 		// (fresh copies so the caller never aliases our input). stack is
 		// already aligned (direction/gap/align/justify/wrap/crossGap),
@@ -65,17 +67,18 @@ type renameMap map[string]string
 // object is flattened first (see lowerText), so these apply to the keys
 // AFTER flattening. The producer emits these inside `style`.
 var textRenames = renameMap{
-	"fontSize":   "size",   // text.tsx:10 resolved.size
-	"fontWeight": "weight", // text.tsx:11 resolved.weight
-	"color":      "colour", // text.tsx:12 resolved.colour (US→GB, text only)
-	"textAlign":  "align",  // text.tsx:13 resolved.align
+	"fontSize":   "size",   // text.tsx resolved.size
+	"fontFamily": "font",   // text.tsx resolved.font (LSML style.fontFamily)
+	"fontWeight": "weight", // text.tsx resolved.weight
+	"color":      "colour", // text.tsx resolved.colour (US→GB, text only)
+	"textAlign":  "align",  // text.tsx resolved.align
 }
 
 // textKeep is the set of top-level text props the runtime reads as-is.
-// value (bound, text.tsx:9) and opacity (text.tsx:14) pass through.
-// Everything else the producer emits inside `style` that the runtime
-// does NOT read (fontFamily/lineHeight/letterSpacing/…) is dropped — we
-// do not fabricate render keys the `.tsx` never reads (ADR 007 §9.3).
+// value (bound) and opacity pass through. Everything else the producer
+// emits inside `style` that the runtime does NOT read (lineHeight/
+// letterSpacing/…) is dropped — we do not fabricate render keys the
+// `.tsx` never reads (ADR 007 §9.3).
 var textKeep = map[string]struct{}{
 	"value":   {},
 	"opacity": {},
@@ -181,6 +184,24 @@ func lowerShape(props map[string]json.RawMessage, bindings map[string]string) (m
 				// (:36-37), x/y — flat keys the runtime reads. Keep.
 				out[k] = v
 			}
+		}
+	}
+	return out, rekeyBindings(bindings, rename)
+}
+
+// lowerImage splits the image's nested `size:{w,h}` into flat width/height
+// (image.tsx reads resolved.width/height to honour intrinsic dimensions;
+// absent → it fills its container). alt/fit/src/position/opacity/x/y are
+// flat keys the runtime reads as-is.
+func lowerImage(props map[string]json.RawMessage, bindings map[string]string) (map[string]json.RawMessage, map[string]string) {
+	out := make(map[string]json.RawMessage)
+	rename := sizeBindingRenames() // size/size.w/size.h → width/height
+	for k, v := range props {
+		switch k {
+		case "size":
+			splitSize(v, out) // → width / height (image.tsx)
+		default:
+			out[k] = v
 		}
 	}
 	return out, rekeyBindings(bindings, rename)

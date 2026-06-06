@@ -58,6 +58,16 @@ func authoringLayout(version string) *CanvasLayout {
 								"stroke":       raw(`{"color":"#222","width":2}`),
 							},
 						},
+						{
+							Kind: "image",
+							ID:   "logo",
+							Props: map[string]json.RawMessage{
+								"alt":  raw(`"logo"`),
+								"size": raw(`{"w":96,"h":64}`),
+								"fit":  raw(`"contain"`),
+								"src":  raw(`"http://x/logo.svg"`),
+							},
+						},
 					},
 				},
 			},
@@ -162,7 +172,8 @@ func TestLowerRenderProps_Bundle(t *testing.T) {
 	jsonEq(t, text, "weight", 700)
 	jsonEq(t, text, "colour", "#fff")
 	jsonEq(t, text, "align", "center")
-	// authoring keys gone; fontFamily dropped (runtime never reads it).
+	jsonEq(t, text, "font", "Inter") // style.fontFamily → font (text.tsx reads resolved.font)
+	// authoring keys gone (style flattened + renamed away).
 	absent(t, text, "style", "fontSize", "fontWeight", "color", "textAlign", "fontFamily")
 	// bound value survives, re-keyed unchanged (value stays value).
 	if got, ok := text.Bindings["value"]; !ok || got != "score.team_a" {
@@ -193,6 +204,17 @@ func TestLowerRenderProps_Bundle(t *testing.T) {
 	jsonEq(t, shape, "stroke", "#222")
 	jsonEq(t, shape, "stroke_width", 2)
 	absent(t, shape, "geometry", "size", "cornerRadius")
+
+	// --- image: size.{w,h} → width/height; alt/fit/src kept ---
+	image := findNode(root, "logo")
+	if image == nil {
+		t.Fatal("image node 'logo' not found")
+	}
+	jsonEq(t, image, "width", 96)
+	jsonEq(t, image, "height", 64)
+	jsonEq(t, image, "fit", "contain")
+	jsonEq(t, image, "src", "http://x/logo.svg")
+	absent(t, image, "size")
 
 	// --- stack: NO regression — props byte-identical to authoring ---
 	stack := findNode(root, "col")
