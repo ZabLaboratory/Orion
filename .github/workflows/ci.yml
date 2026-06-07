@@ -179,10 +179,16 @@ jobs:
           # to allow canarying a new version alongside the previous.
           SOLAR_VERSIONS: "v0.1.1"
         run: |
-          $SSH_CMD bash -s -- "$APP_PATH" "$SOLAR_VERSIONS" << 'INSTALL_SCRIPT'
+          # Interpolate APP_PATH / SOLAR_VERSIONS into the remote command
+          # the same safe way as "Ensure target dir exists" — single-quoted
+          # values baked into a leading shell preamble — rather than passing
+          # them as positional args to `bash -s -- …`. The positional path
+          # transmits the *runner-local* expansion of the args through the
+          # ssh argv before the remote shell ever runs, where it was getting
+          # mangled (root cause: see PR/commit body). Here the script reads
+          # APP_PATH/VERSIONS as plain shell vars set on the remote side.
+          $SSH_CMD "APP_PATH='$APP_PATH' VERSIONS='$SOLAR_VERSIONS' bash -s" << 'INSTALL_SCRIPT'
           set -euo pipefail
-          APP_PATH="$1"
-          VERSIONS="$2"
           mkdir -p "$APP_PATH/solar"
           cd "$APP_PATH/solar"
           for v in $VERSIONS; do
@@ -275,13 +281,16 @@ jobs:
           GIT_REVISION: ${{ github.sha }}
           GIT_SOURCE: ${{ github.server_url }}/${{ github.repository }}
         run: |
-          $SSH_CMD bash -s -- "$APP_PATH" "$GIT_REVISION" "$GIT_SOURCE" << 'DEPLOY_SCRIPT'
+          # Same safe interpolation as "Ensure target dir exists" / "Install
+          # Solar bundles": single-quoted values baked into a leading remote
+          # shell preamble, not positional args to `bash -s -- …`. This step
+          # shares the Solar step's root cause — the positional path was being
+          # mangled in transit — so it gets the same treatment.
+          $SSH_CMD "APP_PATH='$APP_PATH' ORION_GIT_REVISION='$GIT_REVISION' ORION_GIT_SOURCE='$GIT_SOURCE' bash -s" << 'DEPLOY_SCRIPT'
           set -euo pipefail
-          APP_PATH="$1"
           # Exported so compose's build.args ${ORION_GIT_REVISION/SOURCE}
           # interpolation picks them up at build time.
-          export ORION_GIT_REVISION="$2"
-          export ORION_GIT_SOURCE="$3"
+          export ORION_GIT_REVISION ORION_GIT_SOURCE
           cd "$APP_PATH"
 
           echo "=== Network preflight ==="
