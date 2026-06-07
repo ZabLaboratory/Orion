@@ -9,11 +9,16 @@
   de `deploy.yml` séparé ; `ci.yml` exécute build/test/lint + le pipeline de deploy push-to-main).
 - **PRs** : #46 (durcissement image — OCI labels + healthcheck, merge `b93e48a`), #48
   (`fix(deploy): interpolate remote paths instead of bash -s positional args`, merge dans `main` `20f1318`).
-- **Statut final (2026-06-07)** : **PARTIELLEMENT résolu.** Le drift de répertoire est **corrigé**
-  (`/home/ubuntu/orion` contient désormais le Go, plus de Python ; aucun nouvel arbre fantôme).
-  Le deploy reste **ROUGE** sur un **second secret corrompu** non encore re-setté :
-  `ORION_PG_PASSWORD` → migration goose `28P01`. Prod **jamais interrompue** (conteneur Go up depuis
-  5 semaines). Arbres fantômes **conservés** (point 4 non vert).
+- **Statut final (2026-06-07)** : **RÉSOLU.** Les **deux** secrets corrompus ont été re-settés
+  proprement via **PowerShell** par Eleven (`VPS_APP_PATH` updated `02:54:37Z`, `ORION_PG_PASSWORD`
+  updated `03:04:35Z`). Le re-run du job `Deploy` sur `main` (run `27080585131`) est **VERT** de bout
+  en bout : goose applique `0002_lsml_bundle.sql` (`migrated to version: 2`, plus de `28P01`),
+  `up -d --force-recreate` recrée le conteneur. Prod vérifiée : conteneur `orion` `9d2b15458ab3`
+  sur **nouvelle image** `9cd5f7c1…` (≠ rollback `032895d81079`), **healthy** (distroless, pas de
+  `/bin/sh`), labels OCI `revision=20f1318…` / `source=github.com/ZabLaboratory/Orion`. Smoke gateway :
+  `/orion/api/v1/health` = 200, `/orion/ready` = 200, `POST …/scenes/x/push` sans token = 401.
+  `/home/ubuntu/orion` = Go, **aucun nouvel arbre fantôme**. Les **deux arbres fantômes ont été
+  purgés** (ref-scan = 0) ; backups conservés.
 
 ---
 
@@ -113,8 +118,8 @@ Diagnostic VPS (read-only, valeurs jamais affichées) :
 
 ## 4. Remédiation (chronologie 2026-06-07)
 
-Ordre de sécurité : **backups AVANT toute action**, purge des arbres fantômes **non exécutée**
-(critères de résolution non verts).
+Ordre de sécurité : **backups AVANT toute action**, purge des arbres fantômes **exécutée en dernier**,
+après deploy entièrement vert + ref-scan = 0.
 
 1. **Backups / rollback** (`ts=20260607-015218`, vérifiés présents) :
    - `orion-orion:rollback-$ts` = image Go `032895d81079` (identique au conteneur courant) ;
@@ -131,42 +136,48 @@ Ordre de sécurité : **backups AVANT toute action**, purge des arbres fantômes
      (nettoyés par `rsync --delete`) → **drift résolu** ;
    - **aucun nouvel arbre fantôme** : `ls /home/ubuntu` ne montre toujours que les deux arbres
      préexistants (`C:`, BOM).
-3. **Deploy ROUGE** au step `Build, migrate, restart` → goose `28P01` (§2b), car
-   `ORION_PG_PASSWORD` est encore corrompu (`-`).
-4. **Pas de rollback applicatif** : le deploy a planté **avant** `up -d --force-recreate orion` ;
-   le conteneur et le volume n'ont **pas** été touchés. Prod intacte.
-5. **Arbres fantômes NON purgés** (point 4 du protocole non vert).
+3. **Re-set propre de `ORION_PG_PASSWORD` par Eleven via PowerShell** — valeur = password legacy
+   valide **32 octets** du rôle SQL `orion` figé dans le volume (Option A, zéro mutation DB).
+   `repo-scope`, updated `2026-06-07T03:04:35Z`. Keeper n'a ni lu ni affiché la valeur.
+4. **Re-run du job `Deploy`** sur `main` (run `27080585131`, `gh run rerun --failed`) → **VERT** :
+   - `Build, migrate, restart` : `orion-postgres Healthy`, goose `OK 0002_lsml_bundle.sql` +
+     `goose: successfully migrated database to version: 2` (plus de `28P01`) ;
+   - `Container orion Recreated` (`up -d --force-recreate`), health interne `Orion healthy` ;
+   - `Smoke test via gateway` : `Orion reachable via https://zabgate.cyell.dev/orion/*`.
+5. **Vérification prod (indépendante de la CI)** : conteneur `orion` `9d2b15458ab3`, image
+   `9cd5f7c1…` (≠ rollback `032895d81079`), `Up … (healthy)`, distroless (`/bin/sh` absent),
+   labels OCI `revision=20f13183…` / `source=https://github.com/ZabLaboratory/Orion`.
+   Gateway : health 200, ready 200, push-no-token 401. `/home/ubuntu/orion` = Go, aucun nouvel
+   arbre fantôme.
+6. **Purge des arbres fantômes** (point 4 du protocole, désormais vert) : ref-scan préalable = 0
+   (aucun conteneur ne les référence en `working_dir`/`config_files`, aucun bind mount). Le tree
+   BOM contenait une copie périmée du repo avec un `.env` orphelin (jamais lu) — sa suppression est
+   un gain d'hygiène. `rm -rf /home/ubuntu/<U+FEFF>` + `rm -rf '/home/ubuntu/C:'` → confirmés
+   `GONE`, non recréés au deploy suivant. **Backups conservés** : `orion.bak-$ts`,
+   `orion.compose.bak-$ts`, `orion.go-bom.bak-$ts`, image `orion-orion:rollback-$ts`.
+   Conteneur `orion` toujours `healthy` après purge.
 
-## 5. Bloquant restant & marche à suivre
+## 5. Incident résolu — reliquats (hors périmètre / suivi)
 
-### Bloquant (hors périmètre Keeper — secret + surface sensible → Eleven + clearance Bastion)
+L'incident est **clos** (deploy vert + prod vérifiée + arbres fantômes purgés). Restent des
+éléments de suivi, dont aucun ne bloque la prod :
 
-⛔ **Re-setter `ORION_PG_PASSWORD` proprement via PowerShell** (comme `VPS_APP_PATH`), avec la
-**bonne valeur** = le password du rôle SQL `orion` déjà figé dans le volume = **les 32 octets** du
-backup `/home/ubuntu/orion.bak-$ts/.env` (vérifié : s'authentifie sur TCP ; url-safe, sans
-espace/BOM/`:` → ne sera pas re-mangé par PowerShell).
+1. **Révocation du PAT longue-vie** par le porteur (action **humaine**) — un PAT a servi pendant
+   l'incident ; à révoquer maintenant que le deploy est vert.
+2. **C2 — durcissement `ci.yml` (PR séparée, review Vigil)** : (a) quoter `"$APP_PATH"` au step
+   *Write remote .env* ; (b) garde preflight rejetant un `VPS_APP_PATH` à BOM / espace / `:` /
+   non-absolu. Aurait bloqué l'incident à la source. **Diff de code → review Vigil**, pas un
+   hotfix auto-mergeable.
+3. **C4 — secret org** : rationaliser le scope des secrets de deploy (org vs repo) si décidé.
+4. **R1/R2 — ADR** : tracer dans un ADR le risque résiduel (re-set de secrets depuis Windows,
+   politique PowerShell-only) et la décision Option A (alignement secret↔volume, pas de rotation).
+5. **Backup `orion.go-bom.bak-$ts`** : conservé volontairement (copie de sûreté de l'arbre BOM) ;
+   à nettoyer plus tard une fois la confiance établie.
 
-- **Option A (retenue, zéro risque data)** : aligner le **secret** sur le password **existant** du
-  volume (32 o). Aucune mutation DB, réversible.
-- **Option B (rotation)** : choisir un nouveau password + `ALTER ROLE orion PASSWORD …` sur la DB
-  live + re-set du secret. Rotation = surface sensible → **clearance Bastion + rollback documenté**.
-  Non retenue ici (Option A suffit).
-
-> Keeper **n'a ni lu ni affiché** la valeur du password : seuls la **longueur** et la
-> **localisation** (`orion.bak-$ts/.env`) sont communiquées à Eleven, qui re-set via PowerShell.
-
-### Après le re-set de `ORION_PG_PASSWORD` (à enchaîner)
-
-1. **Re-run du job `Deploy`** (re-run failed du dernier run, ou push trivial sur `main`).
-2. **Vérifications de résolution** (toutes via la prod) : goose applique (plus de `28P01`),
-   `up -d --force-recreate orion` recrée le conteneur, conteneur `healthy`, image Go distroless,
-   labels OCI `org.opencontainers.image.revision` / `.source` **non-`unknown`**,
-   `curl https://zabgate.cyell.dev/orion/api/v1/health` = **200**, `/orion/api/v1/ready` = **200**,
-   `POST …/scenes/x/push` sans token = **401**.
-3. **Purge des arbres fantômes** (`/home/ubuntu/<BOM>/` et `/home/ubuntu/C:/`) **seulement** après
-   deploy entièrement vert **ET** re-scan de références = 0 (compose/scripts/cron/systemd/Caddy).
-   Conserver `orion.go-bom.bak-$ts` un temps.
-4. **Révocation du PAT longue-vie** par le porteur (action humaine).
+> Note Option A retenue à l'origine : la **bonne valeur** de `ORION_PG_PASSWORD` était le password
+> du rôle SQL `orion` déjà figé dans le volume (32 octets, s'authentifie sur TCP) — pas une rotation.
+> Aucune mutation DB, réversible. Keeper n'a **ni lu ni affiché** la valeur ; seuls longueur et
+> localisation ont été communiqués à Eleven, qui a re-setté via PowerShell.
 
 ## 6. Rollback (référence)
 
