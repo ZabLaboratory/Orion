@@ -193,8 +193,18 @@ jobs:
               continue
             fi
             tmp=$(mktemp -d)
-            gh release download "$v" -R ZabLaboratory/Solar -p 'solar-*.tgz' --dir "$tmp"
-            tar -xzf "$tmp"/solar-*.tgz -C "$target"
+            # ZabLaboratory/Solar is a PUBLIC repo: its release assets are
+            # downloadable anonymously over HTTPS, so we pull the tarball
+            # directly instead of `gh release download` (which needed the
+            # VPS PAT, now rejected by org policy — root cause of the
+            # 8-run deploy red). Asset name matches Solar's release.yml
+            # (`solar-<tag>.tgz`, tag = $v, e.g. solar-v0.1.1.tgz).
+            # -f makes curl fail on HTTP >=400, so a partial/failed
+            # download leaves the directory unmarked and the next deploy
+            # retries — preserving the .installed idempotency contract.
+            curl -fsSL --retry 3 -o "$tmp/solar-$v.tgz" \
+              "https://github.com/ZabLaboratory/Solar/releases/download/$v/solar-$v.tgz"
+            tar -xzf "$tmp/solar-$v.tgz" -C "$target"
             rm -rf "$tmp"
             # Marker is the success signal — set last so a partial
             # extract leaves the directory unmarked and the next
@@ -259,10 +269,19 @@ jobs:
         env:
           SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
           APP_PATH: ${{ secrets.VPS_APP_PATH }}
+          # Passed through to docker compose build so the OCI image labels
+          # (org.opencontainers.image.revision/.source) carry the deployed
+          # commit instead of the Dockerfile `unknown` defaults.
+          GIT_REVISION: ${{ github.sha }}
+          GIT_SOURCE: ${{ github.server_url }}/${{ github.repository }}
         run: |
-          $SSH_CMD bash -s -- "$APP_PATH" << 'DEPLOY_SCRIPT'
+          $SSH_CMD bash -s -- "$APP_PATH" "$GIT_REVISION" "$GIT_SOURCE" << 'DEPLOY_SCRIPT'
           set -euo pipefail
           APP_PATH="$1"
+          # Exported so compose's build.args ${ORION_GIT_REVISION/SOURCE}
+          # interpolation picks them up at build time.
+          export ORION_GIT_REVISION="$2"
+          export ORION_GIT_SOURCE="$3"
           cd "$APP_PATH"
 
           echo "=== Network preflight ==="
