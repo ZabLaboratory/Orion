@@ -25,7 +25,12 @@ services:
       test: ["CMD", "/healthcheck"]
       interval: 30s
       timeout: 5s
-      start_period: 10s
+      # Orion applies goose migrations at boot before the public listener is
+      # ready; 10s could flag a healthy-but-still-migrating container as
+      # unhealthy on a cold start (and trip restart loops). 30s gives boot +
+      # migration headroom without delaying detection of a genuinely dead
+      # container, since failures during start_period don't count toward retries.
+      start_period: 30s
       retries: 3
     # Solar bundles unpacked on the VPS by the deploy workflow are
     # mounted read-only into the container so Orion's static handler
