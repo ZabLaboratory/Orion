@@ -5,7 +5,17 @@
 
 services:
   orion:
-    build: .
+    build:
+      context: .
+      # Feed the OCI image labels (org.opencontainers.image.revision /
+      # .source, declared in the Dockerfile) so built images are traceable
+      # to a commit instead of carrying the `unknown` defaults. The deploy
+      # workflow exports ORION_GIT_REVISION / ORION_GIT_SOURCE before
+      # `docker compose build`; absent those env vars (e.g. a manual local
+      # build) the Dockerfile ARG defaults still apply.
+      args:
+        ORION_GIT_REVISION: ${ORION_GIT_REVISION:-unknown}
+        ORION_GIT_SOURCE: ${ORION_GIT_SOURCE:-https://github.com/ZabLaboratory/Orion}
     container_name: orion
     restart: unless-stopped
     env_file: .env
@@ -15,6 +25,23 @@ services:
     depends_on:
       orion-db:
         condition: service_healthy
+    # Liveness probe. The runtime image is distroless/static:nonroot — no
+    # shell, no curl/wget — so the probe self-execs the dedicated static
+    # /healthcheck binary (cmd/healthcheck), which GETs the bare `/health`
+    # liveness route on the public listener (ORION_LISTEN_ADDR, :4007 by
+    # default; see internal/api/public.go + internal/config/config.go) and
+    # exits non-zero on anything but HTTP 200.
+    healthcheck:
+      test: ["CMD", "/healthcheck"]
+      interval: 30s
+      timeout: 5s
+      # Orion applies goose migrations at boot before the public listener is
+      # ready; 10s could flag a healthy-but-still-migrating container as
+      # unhealthy on a cold start (and trip restart loops). 30s gives boot +
+      # migration headroom without delaying detection of a genuinely dead
+      # container, since failures during start_period don't count toward retries.
+      start_period: 30s
+      retries: 3
     # Solar bundles unpacked on the VPS by the deploy workflow are
     # mounted read-only into the container so Orion's static handler
     # at /static/solar/v{N.N.N}/* can serve them without re-baking
