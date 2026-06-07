@@ -5,7 +5,17 @@
 
 services:
   orion:
-    build: .
+    build:
+      context: .
+      # Feed the OCI image labels (org.opencontainers.image.revision /
+      # .source, declared in the Dockerfile) so built images are traceable
+      # to a commit instead of carrying the `unknown` defaults. The deploy
+      # workflow exports ORION_GIT_REVISION / ORION_GIT_SOURCE before
+      # `docker compose build`; absent those env vars (e.g. a manual local
+      # build) the Dockerfile ARG defaults still apply.
+      args:
+        ORION_GIT_REVISION: ${ORION_GIT_REVISION:-unknown}
+        ORION_GIT_SOURCE: ${ORION_GIT_SOURCE:-https://github.com/ZabLaboratory/Orion}
     container_name: orion
     restart: unless-stopped
     env_file: .env
