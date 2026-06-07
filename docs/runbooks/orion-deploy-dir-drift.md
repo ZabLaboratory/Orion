@@ -6,7 +6,17 @@
 - **Date incident traité** : 2026-06-07
 - **Auteur** : Keeper (tier merge), chaîne `/fix` orchestrée par Eleven
 - **PR de fix image** : #46 (`fix(deploy): harden Orion prod image — OCI labels + container healthcheck`), merge commit `b93e48a`
-- **Statut final** : deploy `Deploy` ROUGE (échec migration) → **rollback non nécessaire** (prod jamais interrompue) → **incident PARTIELLEMENT résolu** : image durcie buildée et prouvée, mais **non mise en prod** ; deux causes secrets restent à corriger hors périmètre Keeper.
+- **Statut final** : les **deux secrets cassés sont corrigés** (BOM retiré de `VPS_APP_PATH`,
+  `ORION_PG_PASSWORD` resynchronisé) et le drift de chemin est résolu (le deploy cible désormais
+  le vrai `/home/ubuntu/orion`). Mais le deploy reste ROUGE sur une **troisième cause distincte
+  découverte à la remédiation** : un bug de passage d'argument dans le step `Install Solar bundles`
+  de `ci.yml` (voir §2c). Prod **jamais interrompue** (ancien conteneur toujours up). Incident
+  **PARTIELLEMENT résolu** ; le dossier BOM est **conservé** (point 4 non vert).
+
+> **Noms réels des secrets** (confirmés par Bastion) : le secret de chemin est `VPS_APP_PATH`
+> (pas `APP_PATH`), et le secret de password est `ORION_PG_PASSWORD` (pas `ORION_DATABASE_URL` ;
+> ce dernier n'est pas un secret — il est construit par interpolation dans le `.env` distant à
+> partir de `ORION_PG_PASSWORD`). Les anciennes mentions ci-dessous sont conservées pour l'historique.
 
 ---
 
@@ -64,6 +74,34 @@ GitHub, lui, est rejeté en `28P01`.
 > Un `POSTGRES_PASSWORD` n'est appliqué qu'à la **première** initialisation du volume.
 > Changer le secret après coup ne réécrit pas le volume → mismatch silencieux jusqu'au
 > prochain deploy qui s'authentifie par le réseau.
+>
+> **Résolution** : le password legacy valide vit dans `/home/ubuntu/orion/.env` (32 octets,
+> authentifie OK). Le secret `ORION_PG_PASSWORD` portait une autre valeur (43 octets) jamais
+> appliquée au rôle SQL → `28P01`. Resync = recopier le legacy dans le secret (pipe direct
+> VPS→`gh secret set`, jamais affiché).
+
+### 2c. Bug de passage d'argument au step `Install Solar bundles` (cause découverte à la remédiation)
+
+Une fois `VPS_APP_PATH` nettoyé, le deploy avance jusqu'au drift résolu (« Ensure target dir »
+résout bien `/home/ubuntu/orion`, mtime du jour), puis **échoue plus loin**, au step
+`Install Solar bundles` :
+
+```
+mkdir: cannot create directory ‘C:/Program’: Not a directory
+```
+
+Le step exécute `$SSH_CMD bash -s -- "$APP_PATH" "$SOLAR_VERSIONS" << 'INSTALL_SCRIPT'`. Le chemin
+absolu passé en **argument positionnel** (`-- "$APP_PATH"`) est victime d'une **conversion de
+chemin de type MSYS/Git-Bash** (`/home/...` → `C:/Program Files/Git/...`, tronqué au premier
+espace → `C:/Program`), d'où le `mkdir` sur `C:/Program`. Reproductibilité prouvée : 3 runs
+identiques échouent au même point ; le même heredoc lancé en **interpolation** (comme le step
+« Ensure target dir » qui, lui, marche : `"mkdir -p '$APP_PATH'"`) crée correctement
+`/home/ubuntu/orion/solar` (vérifié à la main sur le VPS).
+
+> **Ce n'est ni un secret, ni de l'infra pure** : c'est un bug de **code de workflow** (`ci.yml`),
+> introduit par la réécriture du téléchargement Solar dans PR #46. Le correctif (cesser de passer
+> le chemin en argument positionnel ; l'interpoler dans le heredoc, comme « Ensure target dir »)
+> est un **diff de code** → review Vigil requise, hors exception hotfix auto-mergeable de Keeper.
 
 ## 3. Le piège du dossier BOM
 
@@ -117,26 +155,42 @@ docker compose -f /home/ubuntu/orion/docker-compose.prod.yml up -d --force-recre
 Backups conservés : `orion.bak-$ts`, `orion.compose.bak-$ts`, `orion.go-bom.bak-$ts`,
 images `orion-orion:rollback-$ts` et `orion-orion:built-b93e48a-20260607`.
 
-## 6. Reste à faire (hors périmètre auto-merge Keeper — surface secrets)
+## 6. État après remédiation 2026-06-07 (sous clearance Bastion) & reste à faire
 
-Ces actions touchent des **secrets** → clearance Bastion requise, pas un hotfix auto-mergeable :
+**Fait (sous clearance Bastion, exécuté par Keeper) :**
 
-1. **Nettoyer le secret `APP_PATH`** dans GitHub Actions (`ZabLaboratory/Orion`) : retirer le
-   BOM (U+FEFF) en tête → doit valoir exactement `/home/ubuntu/orion`.
-2. **Resynchroniser `ORION_DATABASE_URL`** (secret GitHub) avec le password réel du volume
-   Postgres de prod — OU rotation maîtrisée du password (changer le rôle Postgres `orion`
-   ET le secret de concert), rollback documenté.
-3. Après 1+2 : **re-déployer** (re-run du job `Deploy`). Cible attendue : `/home/ubuntu/orion`
-   passe en Go, migration goose OK, conteneur recréé `healthy`, labels OCI `revision`/`source`
+1. ✅ **`VPS_APP_PATH` nettoyé** : `gh secret set VPS_APP_PATH --body "/home/ubuntu/orion"`
+   (chaîne ASCII littérale, octets `2f 68 6f 6d 65…6f 6e`, aucun BOM, aucun newline). Effet prouvé :
+   « Ensure target dir » résout désormais `/home/ubuntu/orion` (mtime du jour) au lieu de l'arbre BOM.
+2. ✅ **`ORION_PG_PASSWORD` resynchronisé** sur le password legacy valide, pipe direct
+   VPS→`gh secret set --body -` (valeur jamais affichée ni écrite sur disque).
+
+**Bloquant restant (hors périmètre auto-merge Keeper — code de workflow) :**
+
+3. ⛔ **Corriger le step `Install Solar bundles` de `ci.yml`** (§2c) : ne plus passer `$APP_PATH`
+   en argument positionnel `bash -s -- "$APP_PATH"` (mangling MSYS → `C:/Program`), mais
+   l'interpoler dans le heredoc (forme du step « Ensure target dir » qui fonctionne). **Diff de
+   code → branche `keeper/<slug>` + review Vigil.** Tant que ce step échoue, le deploy reste rouge.
+
+**Après le fix #3 (à enchaîner) :**
+
+4. **Re-déployer** (re-run du job `Deploy`). Cible attendue : `/home/ubuntu/orion` passe en Go,
+   migration goose OK, conteneur recréé `healthy`, image distroless, labels OCI `revision`/`source`
    non-`unknown`, smoke `health/ready=200`, operator `401`.
-4. **Purger le dossier BOM** seulement après deploy vert ET re-scan de références = 0
+5. **Purger le dossier BOM** seulement après deploy vert ET re-scan de références = 0
    (compose/scripts/cron/systemd/Caddy/deploy). Garder `orion.go-bom.bak-$ts` un temps.
-5. **Révocation du PAT longue-vie** par le porteur (action humaine, hors Keeper).
+6. **Révocation du PAT longue-vie** par le porteur (action humaine, hors Keeper) — après deploy vert.
 
 ## 7. Prévention
 
-- **`APP_PATH` / chemins de deploy** : valider l'absence de BOM/whitespace dans les secrets de
-  chemin (preflight `printf '%q'` ou `od -c` sur le secret avant `cd`/`rsync`).
+- **`VPS_APP_PATH` / chemins de deploy (risque R3 Bastion)** : durcir le job `preflight-deploy` —
+  aujourd'hui il ne teste que la **présence** (`-z`) des secrets, pas leur forme. Ajouter une
+  **assertion préflight** qui **rejette** un secret de chemin contenant un BOM (U+FEFF), un
+  whitespace, ou non absolu (`case "$P" in /*) ;; *) exit 1 ;; esac` + test BOM via `od`/`printf '%q'`).
+  C'est précisément ce qui aurait bloqué l'incident à la source.
+- **Passage de chemins via SSH dans les workflows** : ne jamais passer un chemin absolu en
+  **argument positionnel** à un `bash -s --` distant (mangling MSYS → `C:/Program`). Interpoler
+  dans le corps du heredoc (forme « Ensure target dir »). Cf. §2c.
 - **Diagnostic** : l'IMAGE qui tourne fait foi (`docker inspect`), pas le contenu du répertoire.
 - **Postgres** : ne jamais changer un secret de password sans rotation coordonnée du rôle SQL ;
   un `POSTGRES_PASSWORD` ne s'applique qu'à l'init du volume.
