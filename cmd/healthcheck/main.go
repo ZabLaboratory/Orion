@@ -21,6 +21,14 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+// run performs the liveness probe and returns the process exit code. It is
+// split out from main so that every deferred call (the context cancel and the
+// response body close) runs before the process exits: os.Exit skips deferred
+// functions, so the single os.Exit lives in main and run only ever returns.
+func run() int {
 	addr := os.Getenv("ORION_LISTEN_ADDR")
 	if addr == "" {
 		addr = "0.0.0.0:4007"
@@ -44,15 +52,16 @@ func main() {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		os.Exit(1)
+		return 1
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		os.Exit(1)
+		return 1
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		os.Exit(1)
+		return 1
 	}
+	return 0
 }
