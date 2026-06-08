@@ -129,15 +129,32 @@ jobs:
           # partial extract never leaves a half-populated served directory.
           stage="$(mktemp -d)"
           tar -xzf "$tmp/solar-$V.tgz" -C "$stage"
-          # The Solar tarball packs dist/ flat (./index.html, ./*.js …).
-          if [ ! -f "$stage/index.html" ]; then
-            echo "::error::Solar $V tarball has no index.html at root — refusing to install"
+          # Resolve the SERVED ROOT inside the tarball.
+          #
+          # Solar's dual-build (ADR 001, v0.2.1+) packs dist/ with TWO
+          # artefacts: the library entry (./solar.js, externals — vendored by
+          # Prism, NOT servable: it has bare specifiers) at the tarball root,
+          # and the self-contained HOST bundle (./host/index.html +
+          # ./host/assets/*, deps inlined, zero bare specifiers) under ./host/.
+          # The served root is the HOST subtree. Pre-dual-build releases
+          # (≤ v0.2.0) packed a single flat bundle with ./index.html at root.
+          # Prefer host/, fall back to flat root, so this deploy works for both.
+          if [ -f "$stage/host/index.html" ]; then
+            served="$stage/host"
+            echo "→ dual-build layout: serving host/ subtree (self-contained)"
+          elif [ -f "$stage/index.html" ]; then
+            served="$stage"
+            echo "→ flat layout: serving tarball root"
+          else
+            echo "::error::Solar $V tarball has no index.html (checked ./host/index.html and ./index.html) — refusing to install"
             exit 1
           fi
-          # Replace contents of target with staged contents (keep the dir
-          # itself, which is the bind-mount path Orion serves from).
+          # Replace contents of target with the served-root contents (keep the
+          # dir itself, which is the bind-mount path Orion serves from). Only
+          # the served root is copied — the library entry never lands in the
+          # served dir.
           find "$target" -mindepth 1 ! -name '.installed' -exec rm -rf {} + 2>/dev/null || true
-          cp -a "$stage/." "$target/"
+          cp -a "$served/." "$target/"
           rm -rf "$stage"
 
           # Marker LAST = success signal (idempotency contract).
