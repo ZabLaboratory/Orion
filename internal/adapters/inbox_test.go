@@ -2,17 +2,13 @@ package adapters
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
 	"testing"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
-func quietLogger() *slog.Logger {
-	return slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
-}
+// quietLogger is shared with poller_test.go in this package.
 
 // sceneWithOperatorInput builds a scene whose compiled graph declares a
 // single operator_input leaf (path A with a seeded default) — the M9 shape
