@@ -130,12 +130,17 @@ ssh vps-ovh "
 "
 ```
 
-> Note: the next `ci.yml` code deploy regenerates `/home/ubuntu/orion/.env`
-> from the workflow's heredoc, which does **not** yet template `ORION_LSDP_MODE`.
-> Until `ci.yml`'s "Write remote .env" step is taught the key (follow-up),
-> a code redeploy reverts the flip to bespoke. The etage-1 `.env.orion` is the
-> durable record; re-apply this step after any `ci.yml` deploy, or land the
-> `ci.yml` change. **Tracked as the residual gap below.**
+> **Durability across code deploys.** `ci.yml`'s "Write remote .env" step
+> regenerates `/home/ubuntu/orion/.env` on every push to main. It now templates
+> `ORION_LSDP_MODE` from the **`ORION_LSDP_MODE` repo variable** (defaulting to
+> `bespoke` when unset). To keep the `dual` flip durable, set the repo variable:
+>
+> ```
+> gh variable set ORION_LSDP_MODE -R ZabLaboratory/Orion --body dual
+> ```
+>
+> Without this, a code redeploy reverts the manual VPS flip to bespoke. The
+> etage-1 `.env.orion` remains the human-readable record of intent.
 
 ### Verify
 
@@ -177,6 +182,51 @@ ssh vps-ovh "
 
 The migration 0002 down-migration (`goose down`) drops the LSML columns/index
 if a full schema rollback is ever needed — not required for a mode rollback.
+
+---
+
+## Incident surfaced during the first flip (2026-06-08) — PG password drift
+
+The first `--force-recreate orion` for the flip exposed a **pre-existing**
+credential drift unrelated to LSDP: Orion crash-looped with
+`failed SASL auth: FATAL: password authentication failed for user "orion"
+(SQLSTATE 28P01)`.
+
+**Root cause.** A prior `ORION_PG_PASSWORD` rotation updated the VPS `.env`
+(and the CI `ORION_PG_PASSWORD` secret) but was **never applied to the live
+`orion-postgres` role** (no `ALTER ROLE`). Orion had stayed up on its open
+connection pool, masking the mismatch until a recreate forced re-auth. The
+flip did not cause it — it merely detonated a latent landmine that the next
+`ci.yml` deploy would have hit anyway.
+
+**Diagnosis (reproducible).** The password the live volume accepts was the one
+still recorded in etage-1 `D:\Documents\Zab\.env.orion`; the VPS `.env` held a
+diverged value. Proven by auth-testing each candidate:
+
+```bash
+ssh vps-ovh "docker run --rm --network zab-internal -e PGPASSWORD='<candidate>' \
+  postgres:16-alpine psql -h orion-postgres -U orion -d orion -tAc 'SELECT 1'"
+```
+
+**Fix applied (reversible, data-safe).** Rewrote `ORION_PG_PASSWORD` and the
+password embedded in `ORION_DATABASE_URL` in the VPS `.env` back to the
+live-accepted (etage-1) value, then recreated — no `ALTER ROLE`, no volume
+touched, no data loss. Orion went healthy, `lsdp wire enabled mode=dual`.
+
+**Residual / handover to Bastion (credential surface).** The drift means the
+`ORION_PG_PASSWORD` GitHub secret and the etage-1 `.env.orion` PG password are
+**out of sync with each other**, and a deliberate rotation was left half-done.
+Reconciling them is a secrets-surface decision (Bastion):
+- Either re-pin the CI secret + etage-1 to the live-accepted value (revert the
+  half-rotation), **or**
+- Complete the intended rotation: `ALTER ROLE orion PASSWORD '<new>'` on the
+  live DB, then align `.env` / CI secret / etage-1 to the new value, in one
+  coordinated change.
+
+Until reconciled, **do not** let `ci.yml` rewrite `.env` from the stale
+`ORION_PG_PASSWORD` secret (it would re-introduce the 28P01 crash-loop). The
+`ORION_PG_PASSWORD` GitHub secret must be corrected to the live-accepted value
+**before** the next code deploy.
 
 ---
 

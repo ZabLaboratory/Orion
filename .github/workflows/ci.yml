@@ -230,6 +230,12 @@ jobs:
           ORION_PG_PASSWORD: ${{ secrets.ORION_PG_PASSWORD }}
           ORION_SERVICE_TOKEN: ${{ secrets.ORION_SERVICE_TOKEN }}
           ORION_OPERATOR_TOKEN: ${{ secrets.ORION_OPERATOR_TOKEN }}
+          # Lumencast convergence flag (ADR 007 §C.5). Defaults to bespoke
+          # (no-op) when the secret/var is unset, so an un-flipped service is
+          # unchanged. Set the ORION_LSDP_MODE repo variable to `dual` to keep
+          # the flip durable across code deploys (otherwise this heredoc would
+          # silently revert a manual VPS flip back to bespoke).
+          ORION_LSDP_MODE: ${{ vars.ORION_LSDP_MODE }}
         run: |
           $SSH_CMD "cat > $APP_PATH/.env && chmod 600 $APP_PATH/.env" << EOF
           # Public surface
@@ -269,6 +275,9 @@ jobs:
           ORION_HTTP_POLL_USER_AGENT=orion-poller/1.0
           ORION_LOG_LEVEL=info
           ORION_LOG_FORMAT=json
+
+          # Empty (bespoke) unless the ORION_LSDP_MODE repo variable is set.
+          ORION_LSDP_MODE=${ORION_LSDP_MODE:-bespoke}
           EOF
 
       - name: Build, migrate, restart
