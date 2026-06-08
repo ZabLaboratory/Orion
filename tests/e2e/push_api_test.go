@@ -223,7 +223,16 @@ func defaultBlueprints() map[string]*compiler.BlueprintGraph {
 		"bp-probe": {
 			ID: "bp-probe",
 			Nodes: []compiler.BlueprintNode{
-				{ID: "out.score", Compute: "core.input", OutputAt: "score.home"},
+				// core.input@1 declares its leaf path in config.name (ADR 004 §7.2).
+				// The old OutputAt field was removed when the node body was
+				// restructured to use config/inputs/outputs.
+				{
+					ID:      "out.score",
+					Compute: "core.input@1",
+					Config: map[string]json.RawMessage{
+						"name": json.RawMessage(`"score.home"`),
+					},
+				},
 			},
 		},
 	}
@@ -231,7 +240,7 @@ func defaultBlueprints() map[string]*compiler.BlueprintGraph {
 
 func defaultManifest() compiler.ComputeManifest {
 	return compiler.ComputeManifest{
-		"core.input": {IsPure: true, IsBounded: true, Version: "1"},
+		"core.input@1": {IsPure: true, IsBounded: true, Version: "1"},
 	}
 }
 
