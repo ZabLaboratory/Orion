@@ -215,6 +215,14 @@ func (m *ServiceTokenManager) refresh(ctx context.Context) (ServiceTokenBundle, 
 	if err != nil {
 		return ServiceTokenBundle{}, err
 	}
+	// Bastion C3: ZabAuth authenticates the refresh caller by the same
+	// operator Bearer mint() presents (mirror of mint, l.196) — the
+	// refresh_token is the rotation credential and travels in the body,
+	// it is NOT an Authorization bearer. Before this, refresh() set no
+	// Authorization header at all, so ZabAuth 401'd every rotation and
+	// the token silently went stale. The operator token (never the
+	// refresh/access token) is the bearer; neither is ever logged (C4).
+	req.Header.Set("Authorization", "Bearer "+m.OperatorToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	return m.do(req, http.StatusOK)
