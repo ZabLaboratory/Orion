@@ -228,6 +228,61 @@ Until reconciled, **do not** let `ci.yml` rewrite `.env` from the stale
 `ORION_PG_PASSWORD` GitHub secret must be corrected to the live-accepted value
 **before** the next code deploy.
 
+### Reconciliation — rotation (b), true rotation to a fresh value (2026-06-08, RESOLVED)
+
+An interim option (a) (re-pin the four copies to the live-accepted canonical
+value) was considered, then **ruled insufficient by Bastion's conditional
+clearance** and superseded by a **true rotation (b)**.
+
+**Why (b) over (a) — chronology, verified by fingerprint.** The transient `sed`
+exposure of `ORION_DATABASE_URL` happened during the **first #48 VPS diagnosis,
+before any rotation**, when the VPS `.env` already carried the **canonical
+`45eeb639…`** value. Proven here: on a fresh non-loopback SCRAM the live role
+**accepted** `45eeb639` and **rejected** the pre-#48 `a61f1b51`. So
+**canonical == the value that transited the exposed `sed`** → option (a) would
+re-adopt a transiently-exposed secret → insufficient under `security.md`.
+Bascule to a brand-new value.
+
+**New value.** `python3 -c "import secrets; print(secrets.token_urlsafe(48))"`
+generated on the box into a `0600` temp, never printed. Fingerprint
+sha256[:16] **`306b7535bc91db33`**, len 64; asserted distinct from canonical
+before use.
+
+**Applied — no value ever printed; pipe/stdin only:**
+1. `ALTER ROLE orion PASSWORD` on live `orion-postgres` via `psql -v np=…`
+   binding fed by stdin (value never in argv/echo). Exit 0.
+2. **Fresh non-loopback SCRAM** against `172.26.0.4` on `zab-internal` (NOT
+   `127.0.0.1` — container `pg_hba` `trust`s loopback = false PASS):
+   new `306b7535` → **SUCCESS**; old canonical `45eeb639` → **28P01** (exposed
+   value now **dead** — the security gain of (b)); `wrong-xyz` → **28P01**
+   (control negative genuinely challenges).
+3. All **four** copies aligned to `306b7535`: live role (above); VPS
+   `/home/ubuntu/orion/.env` (`ORION_PG_PASSWORD` **and** the pwd inside
+   `ORION_DATABASE_URL`); etage-1 `D:\Documents\Zab\.env.orion` (both fields);
+   GH secret `ORION_PG_PASSWORD` via `gh secret set` stdin pipe.
+4. **ci.yml path simulated**: the "Write remote .env" heredoc reproduced into a
+   throwaway `.env.ci-sim` from the new value; fresh SCRAM via that file's
+   `ORION_DATABASE_URL` → OK; goose-style URL connect → OK; file deleted.
+5. **Live deploy re-validation (strongest proof of the GH secret).** Re-ran the
+   deploy (run `27113773755`) — it wrote the remote `.env` from
+   `secrets.ORION_PG_PASSWORD`, recreated Orion, came up `database:ok`. The 4th
+   copy is thus proven by a real deploy, not just pipe-provenance.
+   `/orion/api/v1/health` & `/ready` = **200**.
+6. **Backups purged.** Every `.env.bak-*` was fingerprinted; all carried a
+   now-dead password (`a61f1b51`, `45eeb639`) and were removed — only the live
+   `.env` (`306b7535`) remains, **no blind-restore landmine**. The `/tmp` secret
+   temps (VPS + local) were `shred`-removed.
+
+**Bastion angle — sealed.** The transiently-exposed value no longer
+authenticates anywhere; live role + all env copies + CI secret are on a fresh
+value that never left a pipe/stdin. No secret value appears in any log, terminal,
+commit, or this runbook (fingerprints only).
+
+**Operational rule for next rotation.** Always `ALTER ROLE` the live role in the
+**same** change that updates the four env copies. The #48 incident was a rotation
+that touched the env copies but never the live role — that asymmetry is the
+latent landmine a recreate detonates.
+
 ---
 
 ## Quick reference — health signals
