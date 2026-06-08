@@ -7,9 +7,26 @@ import "encoding/json"
 // validates the mutual exclusion before constructing this struct.
 type PushEnvelope struct {
 	// Definition fields (regular push).
-	CanvasVersion   string         `json:"canvas_version,omitempty"`
-	BlueBlueprintID string         `json:"blue_blueprint_id,omitempty"`
-	Components      []ComponentRef `json:"components,omitempty"`
+	CanvasVersion string `json:"canvas_version,omitempty"`
+
+	// DEPRECATED but ACCEPTED (ADR 001 §3.1): the legacy single blueprint.
+	// When set and Blueprints is empty, the API layer (scenes_push.go)
+	// normalises it into a one-element Blueprints list with key "" (the
+	// default/anonymous blueprint key) whose prefix is empty → leaf paths
+	// stay byte-identical to the pre-001 single-blueprint behaviour. Emitted
+	// by Prism/Canvas before they adopt `blueprints`. NEVER set together with
+	// Blueprints — both present → 400 ENVELOPE_BLUEPRINT_CONFLICT.
+	BlueBlueprintID string `json:"blue_blueprint_id,omitempty"`
+
+	// Blueprints is the N distinct Blue blueprints this scene binds (ADR 001
+	// §3.1). Each entry pairs a Blue blueprint id with a scene-local Key that
+	// components reference (via LayoutNode.Bindings, leading dotted segment)
+	// to declare which blueprint they consume (§3.3). Order is normalised
+	// (sort by Key) before hashing so scene_version is stable regardless of
+	// the authored order (§3.5). Mutually exclusive with BlueBlueprintID.
+	Blueprints []BlueprintRef `json:"blueprints,omitempty"`
+
+	Components []ComponentRef `json:"components,omitempty"`
 
 	// LSMLBundleHash is the LSML content address Canvas/Prism computed
 	// for this scene's authored bundle (the A0 store key, ADR 007 §C.4).
@@ -25,6 +42,17 @@ type PushEnvelope struct {
 	// Rollback path: re-points latest_pushed_version at an existing
 	// scene_version without recompilation.
 	RollbackTo string `json:"rollback_to,omitempty"`
+}
+
+// BlueprintRef pairs a Blue blueprint id with the scene-local key that
+// components use to bind to it (ADR 001 §3.1). Key is unique within an
+// envelope; the compiler prefixes every leaf path the blueprint
+// contributes with "<Key>." (§3.3). The legacy length-1 list uses Key
+// "" (empty prefix → byte-identical leaf paths to the pre-001 single
+// blueprint). ID is the FetchBlueprint argument.
+type BlueprintRef struct {
+	Key string `json:"key"`
+	ID  string `json:"id"`
 }
 
 // ComponentRef names a pushed user-component version that the scene

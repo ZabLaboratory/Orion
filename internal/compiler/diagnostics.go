@@ -35,6 +35,16 @@ const (
 	ErrFetchUpstream        DiagnosticCode = "FETCH_UPSTREAM"
 	ErrTypeMismatch         DiagnosticCode = "TYPE_MISMATCH"
 	ErrTopologySort         DiagnosticCode = "TOPOLOGY_SORT"
+
+	// ErrUnknownBlueprintKey (ADR 001 §3.3): a component binding's leading
+	// dotted segment names a blueprint key that no BlueprintRef declares.
+	// Fails the push closed instead of silently reading nothing.
+	ErrUnknownBlueprintKey DiagnosticCode = "UNKNOWN_BLUEPRINT_KEY"
+
+	// ErrDuplicateBlueprintKey (ADR 001 §3.1/§5 R1): two BlueprintRefs share
+	// a Key within one envelope — the scene-local handle must be unique or
+	// the leaf-path namespacing collides.
+	ErrDuplicateBlueprintKey DiagnosticCode = "DUPLICATE_BLUEPRINT_KEY"
 )
 
 // Diagnostic is a single error or warning produced during compilation.

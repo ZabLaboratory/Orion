@@ -49,6 +49,15 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
+		// ADR 001 §3.1: the legacy singular blue_blueprint_id and the new
+		// blueprints[] list are mutually exclusive. Both set → 400
+		// ENVELOPE_BLUEPRINT_CONFLICT, rejected here BEFORE Compile so it is
+		// an envelope-shape error (400), not a compile diagnostic (422).
+		if _, err := compiler.NormalizeBlueprints(envelope); errors.Is(err, compiler.ErrEnvelopeBlueprintConflict) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "ENVELOPE_BLUEPRINT_CONFLICT"})
+			return
+		}
+
 		started := time.Now()
 		graph, bundle, sceneVersion, err := compiler.Compile(ctx, sceneID.String(), envelope, deps.Fetcher)
 		if err != nil {
