@@ -43,24 +43,37 @@ func Compile(
 		d.AddError(ErrFetchUpstream, "fetch canvas %s: %v", envelope.CanvasVersion, err)
 		return nil, nil, "", &CompileError{Diagnostics: *d}
 	}
-	// A blueprint-free scene (layout-only default) references no logic
-	// graph. "No blueprint" is encoded as ABSENCE: tolerate both ""
-	// (target state) and "none" (legacy deprecation window — current
-	// Prism sends the sentinel because Canvas's blue_blueprint_id is
-	// min_length=1). When absent we SKIP FetchBlueprint and feed the
-	// rest of compile a zero-value graph (validateBlueprint /
-	// topologicalSort already accept an empty BlueprintGraph). This is
-	// an unconditional robustness fix — not gated on ORION_LSDP_MODE.
-	// ADR 007 §8, option (a). Ref #28.
-	var blueprint *BlueprintGraph
-	if bpID := envelope.BlueBlueprintID; bpID == "" || bpID == "none" {
-		blueprint = &BlueprintGraph{}
-	} else {
-		blueprint, err = fetcher.FetchBlueprint(ctx, bpID)
-		if err != nil {
-			d.AddError(ErrFetchUpstream, "fetch blueprint %s: %v", bpID, err)
+	// Normalise the dual-shape blueprint envelope into the single keyed
+	// list the compiler walks (ADR 001 §3.1). The legacy singular
+	// BlueBlueprintID folds to a length-1 list keyed "" (empty prefix →
+	// byte-identical leaf paths to pre-001); "" / "none" / absent fold to
+	// an empty list (blueprint-free scene, issue #28 robustness preserved —
+	// the per-blueprint loop below runs zero times → zero-value graph).
+	// A conflict (both singular AND plural set) is rejected at the API
+	// layer (400 ENVELOPE_BLUEPRINT_CONFLICT) before Compile; re-deriving
+	// here keeps Compile self-consistent and fails closed if ever misused.
+	blueprintRefs, normErr := NormalizeBlueprints(envelope)
+	if normErr != nil {
+		d.AddError(ErrInvalidBinding, "blueprint envelope: %v", normErr)
+		return nil, nil, "", &CompileError{Diagnostics: *d}
+	}
+	// Keys must be unique within the envelope (§3.1/§5 R1) or the leaf-path
+	// namespacing collides.
+	if keyDiags := validateBlueprintKeys(blueprintRefs); len(keyDiags) > 0 {
+		d.Items = append(d.Items, keyDiags...)
+		return nil, nil, "", &CompileError{Diagnostics: *d}
+	}
+	// Fetch each blueprint, keyed by its scene-local key. The fetcher
+	// interface is unchanged (one id → one graph, §3.2); the loop is the
+	// caller's. v1 keeps fetches serial (HTTP keepalive amortises, §5 R3).
+	keyedBlueprints := make([]keyedBlueprint, 0, len(blueprintRefs))
+	for _, ref := range blueprintRefs {
+		bp, ferr := fetcher.FetchBlueprint(ctx, ref.ID)
+		if ferr != nil {
+			d.AddError(ErrFetchUpstream, "fetch blueprint %s (key %q): %v", ref.ID, ref.Key, ferr)
 			return nil, nil, "", &CompileError{Diagnostics: *d}
 		}
+		keyedBlueprints = append(keyedBlueprints, keyedBlueprint{key: ref.Key, graph: bp})
 	}
 	manifest, err := fetcher.FetchComputeManifest(ctx)
 	if err != nil {
@@ -106,19 +119,45 @@ func Compile(
 		d.AddError(ErrInvalidOperatorInput, "duplicate operator_input paths: %s", strings.Join(dups, ", "))
 	}
 
-	// 4) Validate Blueprint compute purity (criterion 18) and resolve
-	//    the runtime graph nodes.
-	graphNodes, defaults, validateDiags := validateBlueprint(blueprint, manifest)
-	d.Items = append(d.Items, validateDiags...)
-	if d.HasErrors() {
-		return nil, nil, "", &CompileError{Diagnostics: *d}
+	// 4+5) Validate purity (criterion 18) and topo-sort PER BLUEPRINT, then
+	//    concatenate in stable key order (ADR 001 §3.2). Each blueprint's
+	//    leaf paths, node ids and Defaults keys are prefixed by "<key>."
+	//    (§3.3) so two blueprints declaring the same leaf name do not collide
+	//    in one state namespace. The legacy key "" yields an empty prefix →
+	//    paths/ids/defaults are byte-identical to the single-blueprint world
+	//    (R4 non-regression). Edges are intra-blueprint (v1 forbids
+	//    cross-blueprint edges, §3.4), so each graph topo-sorts independently.
+	var sorted []GraphNode
+	defaults := map[string]json.RawMessage{}
+	for _, kb := range keyedBlueprints {
+		graphNodes, bpDefaults, validateDiags := validateBlueprint(kb.graph, manifest)
+		d.Items = append(d.Items, validateDiags...)
+		if d.HasErrors() {
+			return nil, nil, "", &CompileError{Diagnostics: *d}
+		}
+
+		bpSorted, topoErr := topologicalSort(graphNodes, kb.graph.Edges)
+		if topoErr != nil {
+			d.AddError(ErrTopologySort, "blueprint %q sort: %v", kb.key, topoErr)
+			return nil, nil, "", &CompileError{Diagnostics: *d}
+		}
+
+		// Prefix this blueprint's contributions by "<key>." (empty for legacy).
+		prefixGraphNodes(bpSorted, kb.key)
+		sorted = append(sorted, bpSorted...)
+		for path, v := range bpDefaults {
+			defaults[prefixLeaf(kb.key, path)] = v
+		}
 	}
 
-	// 5) Topological sort of compute nodes. Cycles in the blueprint
-	//    edge graph are rejected.
-	sorted, topoErr := topologicalSort(graphNodes, blueprint.Edges)
-	if topoErr != nil {
-		d.AddError(ErrTopologySort, "blueprint sort: %v", topoErr)
+	// Validate that every component binding addressing the blueprint-key
+	// namespace names a DECLARED key (ADR 001 §3.3.4): in a multi-blueprint
+	// scene (≥1 non-empty key) a dotted binding's leading segment must be a
+	// declared key, else UNKNOWN_BLUEPRINT_KEY. Legacy/blueprint-free scenes
+	// (only the "" key, or none) skip this — their bindings are keyless and
+	// must stay byte-identical to today.
+	if bindDiags := validateBindingKeys(layout, components, declaredKeys(blueprintRefs)); len(bindDiags) > 0 {
+		d.Items = append(d.Items, bindDiags...)
 		return nil, nil, "", &CompileError{Diagnostics: *d}
 	}
 
@@ -175,6 +214,99 @@ func Compile(
 	bundle.SceneVersion = version
 
 	return graph, bundle, version, nil
+}
+
+// keyedBlueprint pairs a fetched blueprint graph with the scene-local key
+// it was fetched under (ADR 001 §3.2). The key drives leaf-path prefixing.
+type keyedBlueprint struct {
+	key   string
+	graph *BlueprintGraph
+}
+
+// prefixLeaf prefixes a leaf path with "<key>." (ADR 001 §3.3). The legacy
+// key "" yields the path unchanged → byte-identical leaf addresses to the
+// pre-001 single-blueprint world (R4 non-regression). An empty path (an
+// intermediate compute with no public leaf) stays empty.
+func prefixLeaf(key, path string) string {
+	if key == "" || path == "" {
+		return path
+	}
+	return key + "." + path
+}
+
+// prefixGraphNodes namespaces a blueprint's runtime nodes by its key in place
+// (ADR 001 §3.3): both the node id (so two blueprints' node ids never collide
+// in the merged graph) and the public leaf Path, plus the Upstream id
+// references (which point at sibling node ids within the same blueprint, so
+// they take the same prefix). The legacy key "" is a no-op.
+func prefixGraphNodes(nodes []GraphNode, key string) {
+	if key == "" {
+		return
+	}
+	for i := range nodes {
+		nodes[i].ID = key + "." + nodes[i].ID
+		nodes[i].Path = prefixLeaf(key, nodes[i].Path)
+		for j := range nodes[i].Upstream {
+			nodes[i].Upstream[j] = key + "." + nodes[i].Upstream[j]
+		}
+	}
+}
+
+// validateBindingKeys enforces the component↔blueprint binding rule
+// (ADR 001 §3.3.4). It only engages when the scene declares at least one
+// NON-EMPTY blueprint key (a genuine multi-blueprint scene); legacy and
+// blueprint-free scenes (only the "" key, or none) are exempt so their
+// keyless bindings stay byte-identical to today.
+//
+// When engaged: every dotted binding value on the layout (and on every
+// fetched component body) whose leading segment is non-empty must name a
+// DECLARED blueprint key — otherwise it is a typo'd / dangling reference and
+// the push fails closed with UNKNOWN_BLUEPRINT_KEY. A single-segment binding
+// (no dot) is a keyless non-blueprint binding and is left alone.
+func validateBindingKeys(layout *CanvasLayout, components map[string]*UserComponent, keys map[string]struct{}) []Diagnostic {
+	hasNonEmptyKey := false
+	for k := range keys {
+		if k != "" {
+			hasNonEmptyKey = true
+			break
+		}
+	}
+	if !hasNonEmptyKey {
+		return nil
+	}
+
+	var diags []Diagnostic
+	seen := make(map[string]struct{})
+	check := func(n LayoutNode) {
+		for _, v := range n.Bindings {
+			lead, _, dotted := strings.Cut(v, ".")
+			if !dotted || lead == "" {
+				continue // keyless non-blueprint binding
+			}
+			if _, ok := keys[lead]; ok {
+				continue // resolves to a declared blueprint key
+			}
+			if _, dup := seen[v]; dup {
+				continue
+			}
+			seen[v] = struct{}{}
+			diags = append(diags, Diagnostic{
+				Code:     ErrUnknownBlueprintKey,
+				Severity: "error",
+				Message:  fmt.Sprintf("binding %q references undeclared blueprint key %q", v, lead),
+				Path:     v,
+			})
+		}
+	}
+	if layout != nil {
+		walkLayout(layout.Root, check)
+	}
+	for _, uc := range components {
+		if uc != nil {
+			walkLayout(uc.Body, check)
+		}
+	}
+	return diags
 }
 
 // detectComponentCycles walks the component-uses-component graph. A
