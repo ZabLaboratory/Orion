@@ -358,12 +358,38 @@ jobs:
       - name: Smoke test via gateway
         env:
           SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
+          APP_PATH: ${{ secrets.VPS_APP_PATH }}
         run: |
           # Gateway-first: the deploy must validate the full
           # Caddy + DNS + TLS path, not just the container. /orion/api/v1/health
           # is unauthenticated per ADR 004 § 2 so we can probe it directly.
-          $SSH_CMD 'curl -fsS --max-time 5 https://zabgate.cyell.dev/orion/api/v1/health > /dev/null' \
-            || (echo "::error::Public gateway probe failed (Caddy/DNS/TLS or routing)"; \
-                $SSH_CMD 'docker compose -f '"${{ secrets.VPS_APP_PATH }}"'/docker-compose.prod.yml logs --tail=50 orion'; \
-                exit 1)
+          #
+          # Bounded retry/backoff (not continue-on-error): the preceding
+          # "Build, migrate, restart" step does `up -d --force-recreate orion`,
+          # after which ZabGate/Caddy must re-resolve the new container in its
+          # upstream pool. That refresh lags the in-container health gate by a
+          # few seconds, so a single immediate probe can catch a transient 503
+          # (gateway has no healthy upstream yet) even though Orion is UP —
+          # the exact flake that reddened run 27113773755. We retry the public
+          # probe up to 8 times with linear backoff (~1.5s→~12s, ~54s ceiling).
+          # A persistent failure (real Caddy/DNS/TLS/routing/auth break) still
+          # exhausts the loop and fails the deploy — the failure mode is kept,
+          # only the recreate transient is absorbed. Mirrors the internal
+          # health gate, which already retries 15×.
+          ATTEMPTS=8
+          ok=0
+          for i in $(seq 1 $ATTEMPTS); do
+            if $SSH_CMD 'curl -fsS --max-time 5 https://zabgate.cyell.dev/orion/api/v1/health > /dev/null'; then
+              ok=1
+              echo "Gateway probe OK on attempt $i/$ATTEMPTS"
+              break
+            fi
+            echo "Gateway probe attempt $i/$ATTEMPTS not yet ready (likely upstream re-resolve after --force-recreate); backing off..."
+            sleep $((i + i / 2 + 1))
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::Public gateway probe failed after $ATTEMPTS attempts (Caddy/DNS/TLS or routing)"
+            $SSH_CMD "docker compose -f '$APP_PATH'/docker-compose.prod.yml logs --tail=50 orion"
+            exit 1
+          fi
           echo "Orion reachable via https://zabgate.cyell.dev/orion/*"
