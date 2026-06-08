@@ -66,15 +66,14 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: true
-      # Scope: Probe-authored API contract tests in tests/e2e/contract/.
-      # NOTE: the existing Forge e2e tests in tests/e2e/ (push_test.go,
-      # lsml_serve_test.go) reference the removed OutputAt field in
-      # compiler.BlueprintNode and fail to compile under -tags e2e. This is a
-      # Forge defect reported in the Probe findings. The Probe tests are in a
-      # separate package (tests/e2e/contract) to avoid the compilation failure
-      # until Forge repairs the affected test files.
-      - name: run e2e tests (ADR-002 §6 contract)
-        run: go test -v -tags e2e -count=1 -timeout 120s ./tests/e2e/contract/...
+      # Whole tests/e2e tree: the Probe-authored API contract tests
+      # (tests/e2e/contract/, ADR-002 §6) AND the Forge e2e tests in
+      # tests/e2e/ (push_test.go, lsml_serve_test.go). The latter previously
+      # failed to compile against the removed compiler.BlueprintNode.OutputAt
+      # field; that Forge defect is repaired (config.name form) and the
+      # shared-DB schema apply is now idempotent, so the full tree runs.
+      - name: run e2e tests (ADR-002 §6 contract + Forge e2e)
+        run: go test -v -tags e2e -count=1 -timeout 120s ./tests/e2e/...
 
   staticcheck:
     name: staticcheck

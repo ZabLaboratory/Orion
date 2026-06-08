@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // SceneStatus matches the CHECK in migrations/0001_init.sql.
@@ -171,11 +172,32 @@ func (s *Store) SetLatestPushedVersion(ctx context.Context, tx pgx.Tx, id uuid.U
 	return nil
 }
 
-// InsertDefinition records a save. definition_version is monotonically
-// computed by the caller (max+1 strategy is fine — saves are
-// single-writer per scene from Canvas's perspective).
+// InsertDefinition records a save on the pool directly. definition_version
+// is supplied by the caller. This is the single-writer convenience path
+// (e.g. the e2e seed in tests/e2e/push_test.go); the push handler uses
+// InsertDefinitionTx so the MAX(definition_version)+1 read and this insert
+// share one transaction and one scenes-row lock (R2 — see NextDefinitionVersionTx).
 func (s *Store) InsertDefinition(ctx context.Context, def SceneDefinition) error {
-	_, err := s.pool.Exec(ctx,
+	return insertDefinition(ctx, s.pool, def)
+}
+
+// InsertDefinitionTx is the transactional twin of InsertDefinition. The push
+// handler calls it inside the same Store.Tx that locked the scenes row and
+// computed def.DefinitionVersion via NextDefinitionVersionTx, so two concurrent
+// first-pushes can never both read MAX=0 and collide on
+// UNIQUE(scene_id, definition_version).
+func (s *Store) InsertDefinitionTx(ctx context.Context, tx pgx.Tx, def SceneDefinition) error {
+	return insertDefinition(ctx, tx, def)
+}
+
+// querier is the common surface of *pgxpool.Pool and pgx.Tx the definition
+// inserts share, so the SQL lives in one place.
+type querier interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func insertDefinition(ctx context.Context, q querier, def SceneDefinition) error {
+	_, err := q.Exec(ctx,
 		`INSERT INTO scene_definitions (id, scene_id, definition_version,
 		    canvas_version, blue_blueprint_id, components_jsonb, created_at)
 		   VALUES ($1, $2, $3, $4, $5, $6, $7)`,
@@ -275,7 +297,9 @@ func (s *Store) Tx(ctx context.Context, fn func(pgx.Tx) error) error {
 }
 
 // MaxDefinitionVersion returns the highest definition_version stored
-// for the scene, or 0 if none yet.
+// for the scene, or 0 if none yet. Pool-scoped read — no lock; safe only
+// where the caller is the single writer for the scene. The push handler
+// uses NextDefinitionVersionTx instead.
 func (s *Store) MaxDefinitionVersion(ctx context.Context, sceneID uuid.UUID) (int, error) {
 	var v *int
 	err := s.pool.QueryRow(ctx,
@@ -289,6 +313,47 @@ func (s *Store) MaxDefinitionVersion(ctx context.Context, sceneID uuid.UUID) (in
 		return 0, nil
 	}
 	return *v, nil
+}
+
+// NextDefinitionVersionTx locks the scenes row (SELECT ... FOR UPDATE) and
+// returns MAX(definition_version)+1 for the scene, all inside the caller's
+// transaction. The row lock serialises concurrent push writers on the same
+// scene_id: the second writer blocks on the FOR UPDATE until the first
+// commits its InsertDefinitionTx, then reads the now-incremented MAX. This
+// closes the read-then-insert race that let N concurrent first-pushes each
+// compute version 1 and collide on UNIQUE(scene_id, definition_version)
+// → Postgres 23505 → 500 (Probe #56 / PR #61, R2).
+//
+// The lock is taken on the scenes row (not scene_definitions) because the
+// scene_definitions rows being counted may not exist yet on a first push —
+// there is nothing to lock there. The scenes row is guaranteed to exist:
+// the push handler's UpsertScene created it earlier in the same request.
+// ErrNotFound if the scene row is absent (defensive — the caller upserts
+// first, so this should not happen on the push path).
+func (s *Store) NextDefinitionVersionTx(ctx context.Context, tx pgx.Tx, sceneID uuid.UUID) (int, error) {
+	// Take the row lock first. The result is discarded; FOR UPDATE is the
+	// point. A separate aggregate query then reads the current MAX under
+	// the lock the loser is now waiting on.
+	var locked uuid.UUID
+	err := tx.QueryRow(ctx,
+		`SELECT id FROM scenes WHERE id = $1 FOR UPDATE`, sceneID,
+	).Scan(&locked)
+	if err != nil {
+		return 0, noRow(err)
+	}
+
+	var v *int
+	err = tx.QueryRow(ctx,
+		`SELECT MAX(definition_version) FROM scene_definitions WHERE scene_id = $1`,
+		sceneID,
+	).Scan(&v)
+	if err != nil {
+		return 0, err
+	}
+	if v == nil {
+		return 1, nil
+	}
+	return *v + 1, nil
 }
 
 func scanScene(row pgx.Row) (*Scene, error) {

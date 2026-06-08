@@ -81,29 +81,7 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
-		// Persist definition + pushed version + advance pointer in
-		// one transaction so external observers never see torn state.
-		nextDefVer, err := deps.Store.MaxDefinitionVersion(ctx, sceneID)
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
-			return
-		}
-		nextDefVer++
-
 		definitionID := uuid.New()
-		definition := store.SceneDefinition{
-			ID:                definitionID,
-			SceneID:           sceneID,
-			DefinitionVersion: nextDefVer,
-			CanvasVersion:     envelope.CanvasVersion,
-			BlueBlueprintID:   envelope.BlueBlueprintID,
-			ComponentsJSON:    mustJSON(envelope.Components),
-			CreatedAt:         time.Now(),
-		}
-		if err := deps.Store.InsertDefinition(ctx, definition); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
-			return
-		}
 
 		pv := store.ScenePushedVersion{
 			SceneID:      sceneID,
@@ -138,7 +116,33 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 			sceneVersion = persistLSMLAndMaybeAdopt(deps, sceneID, sceneVersion, envelope.LSMLBundleHash, bundle, &pv)
 		}
 
+		// Persist definition + pushed version + advance pointer in ONE
+		// transaction so external observers never see torn state AND so the
+		// definition_version sequence is race-safe (R2). NextDefinitionVersionTx
+		// takes a SELECT ... FOR UPDATE on the scenes row: concurrent first-pushes
+		// of the same scene_id serialise on that lock, so each reads a fresh
+		// MAX(definition_version) and they get distinct versions instead of all
+		// computing 1 and colliding on UNIQUE(scene_id, definition_version)
+		// → 23505 → 500 (Probe #56 / PR #61). InsertPushedVersion's
+		// ON CONFLICT DO NOTHING keeps the deterministic-scene_version re-push
+		// idempotent (criterion 6.2/6.8).
 		err = deps.Store.Tx(ctx, func(tx pgx.Tx) error {
+			nextDefVer, err := deps.Store.NextDefinitionVersionTx(ctx, tx, sceneID)
+			if err != nil {
+				return err
+			}
+			definition := store.SceneDefinition{
+				ID:                definitionID,
+				SceneID:           sceneID,
+				DefinitionVersion: nextDefVer,
+				CanvasVersion:     envelope.CanvasVersion,
+				BlueBlueprintID:   envelope.BlueBlueprintID,
+				ComponentsJSON:    mustJSON(envelope.Components),
+				CreatedAt:         time.Now(),
+			}
+			if err := deps.Store.InsertDefinitionTx(ctx, tx, definition); err != nil {
+				return err
+			}
 			if err := deps.Store.InsertPushedVersion(ctx, tx, pv); err != nil {
 				return err
 			}
