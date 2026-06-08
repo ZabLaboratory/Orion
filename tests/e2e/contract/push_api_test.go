@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 
@@ -41,13 +42,13 @@ func operatorHeaders(r *http.Request) {
 
 // doPush sends POST /api/v1/scenes/{id}/push with the default stub envelope.
 // The returned *http.Response body MUST be read and closed by the caller.
-func doPush(t *testing.T, ts interface{ URL string }, sceneID uuid.UUID) *http.Response {
+func doPush(t *testing.T, ts *httptest.Server, sceneID uuid.UUID) *http.Response {
 	t.Helper()
 	return doPushEnvelope(t, ts, sceneID, defaultEnvelope())
 }
 
 // doPushEnvelope sends POST /api/v1/scenes/{id}/push with the given envelope.
-func doPushEnvelope(t *testing.T, ts interface{ URL string }, sceneID uuid.UUID, env interface{}) *http.Response {
+func doPushEnvelope(t *testing.T, ts *httptest.Server, sceneID uuid.UUID, env interface{}) *http.Response {
 	t.Helper()
 	body, err := json.Marshal(env)
 	if err != nil {
