@@ -33,12 +33,26 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 		ctx, cancel := context.WithTimeout(r.Context(), deps.Config.PushTimeout)
 		defer cancel()
 
-		scene, err := deps.Store.GetScene(ctx, sceneID)
+		// ADR 002 §3.1: upsert-on-push. Canvas authors the scene in its
+		// own DB and never seeds Orion, so a first push lands on a scene
+		// whose row does not exist here. UpsertScene creates it (status=
+		// active, name=placeholder=scene_id — Canvas stays the source of
+		// truth for the name, §3.2) or no-ops if it already exists,
+		// returning the row either way. This both removes the spurious
+		// 404 NOT_FOUND on the first-push path AND guarantees the FK
+		// target scene_definitions.scene_id→scenes(id) exists before
+		// InsertDefinition. Race-safe under concurrent first-pushes (R2).
+		// The placeholder name is never overwritten on re-push.
+		scene, err := deps.Store.UpsertScene(ctx, sceneID, sceneID.String())
 		if err != nil {
 			status, code := codeFromError(err)
 			writeJSON(w, status, map[string]string{"code": code})
 			return
 		}
+		// Archived guard preserved (ADR 002 §3.1, criterion 5): the
+		// upsert no-ops on an existing archived scene (DO UPDATE SET
+		// id=id never touches status), so this runs on the real row and
+		// still rejects with 409 SCENE_ARCHIVED.
 		if scene.Status == store.SceneArchived {
 			writeJSON(w, http.StatusConflict, map[string]string{"code": "SCENE_ARCHIVED"})
 			return
