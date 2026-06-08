@@ -45,7 +45,13 @@ func seedLSMLScene(t *testing.T, st *store.Store, sceneID uuid.UUID) (string, []
 			"bp-1": {
 				ID: "bp-1",
 				Nodes: []compiler.BlueprintNode{
-					{ID: "out.x", Compute: "core.input", OutputAt: "score.home"},
+					// core.input declares its leaf path in config.name (ADR 004
+					// §7.2). Replaces the removed BlueprintNode.OutputAt field.
+					{
+						ID:      "out.x",
+						Compute: "core.input",
+						Config:  map[string]json.RawMessage{"name": json.RawMessage(`"score.home"`)},
+					},
 				},
 			},
 		},
@@ -206,7 +212,13 @@ func TestE2E_LSMLIdentityCollapseResolvesServe(t *testing.T) {
 		},
 		blueprints: map[string]*compiler.BlueprintGraph{
 			"bp-1": {ID: "bp-1", Nodes: []compiler.BlueprintNode{
-				{ID: "out.x", Compute: "core.input", OutputAt: "score.home"},
+				// core.input declares its leaf path in config.name (ADR 004
+				// §7.2). Replaces the removed BlueprintNode.OutputAt field.
+				{
+					ID:      "out.x",
+					Compute: "core.input",
+					Config:  map[string]json.RawMessage{"name": json.RawMessage(`"score.home"`)},
+				},
 			}},
 		},
 		manifest: compiler.ComputeManifest{"core.input": {IsPure: true, IsBounded: true, Version: "1"}},
