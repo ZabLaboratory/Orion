@@ -121,8 +121,6 @@ func run() error {
 		}
 	}
 
-	// HTTP compiler fetcher + auth validator.
-	fetcher := compiler.NewHTTPFetcher(cfg.CanvasBaseURL, cfg.BlueBaseURL, cfg.ServiceToken)
 	_ = auth.NewValidator(cfg.ZabAuthValidateURL, cfg.ServiceToken, cfg.AuthCacheTTL)
 
 	// Service-token manager — mints + rotates the Bearer token Orion
@@ -144,6 +142,16 @@ func run() error {
 		logger.Warn("service token manager start failed; falling back to static mode", "err", err)
 	}
 	defer serviceTokens.Stop()
+
+	// HTTP compiler fetcher — its outbound service token is read LIVE
+	// from the manager on every Canvas/Blue fetch (Bastion C1), so a
+	// token rotation is reflected immediately. Wiring it to the static
+	// cfg.ServiceToken (the old NewHTTPFetcher path) froze the boot
+	// placeholder and 401'd every fetch → 422 push. Token() collapses
+	// to the static token in static mode, so dev/test posture is
+	// unchanged. Both bases stay ZabGate-fronted (C5/C6): no direct
+	// service-to-service path is introduced.
+	fetcher := compiler.NewHTTPFetcherWithTokenFunc(cfg.CanvasBaseURL, cfg.BlueBaseURL, serviceTokens.Token)
 
 	wsServer := &ws.Server{
 		Show:    show,

@@ -96,6 +96,91 @@ func TestServiceTokenManager_LiveModeMintAndRefresh(t *testing.T) {
 	}
 }
 
+// TestServiceTokenManager_RefreshAttachesOperatorBearer proves Bastion
+// C3: refresh() presents Bearer <OperatorToken> (mirror of mint), so
+// ZabAuth authenticates the rotation. The stub REJECTS a refresh that
+// arrives without the operator bearer — before the fix, refresh() set
+// no Authorization header at all, so this rotation 401'd and the token
+// silently went stale. The refresh_token travels in the body, never as
+// the bearer; we assert that too.
+func TestServiceTokenManager_RefreshAttachesOperatorBearer(t *testing.T) {
+	var refreshAuth atomic.Value // string
+	refreshAuth.Store("")
+	var refreshBody atomic.Value // string
+	refreshBody.Store("")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/auth/api/v1/service-tokens":
+			if r.Header.Get("Authorization") != "Bearer admin-jwt" {
+				http.Error(w, "missing operator", http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":       "live-1",
+				"refresh_token":      "rt-1",
+				"expires_at":         time.Now().Add(2 * time.Second).Format(time.RFC3339Nano),
+				"refresh_expires_at": time.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339Nano),
+			})
+		case "/auth/api/v1/service-tokens/refresh":
+			auth := r.Header.Get("Authorization")
+			refreshAuth.Store(auth)
+			var b map[string]string
+			_ = json.NewDecoder(r.Body).Decode(&b)
+			refreshBody.Store(b["refresh_token"])
+			// C3: ZabAuth authenticates the refresh by the operator
+			// bearer. No/incorrect bearer → 401 (the pre-fix behaviour).
+			if auth != "Bearer admin-jwt" {
+				http.Error(w, "missing operator on refresh", http.StatusUnauthorized)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":       "live-rotated",
+				"refresh_token":      "rt-2",
+				"expires_at":         time.Now().Add(2 * time.Second).Format(time.RFC3339Nano),
+				"refresh_expires_at": time.Now().Add(30 * 24 * time.Hour).Format(time.RFC3339Nano),
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	m := &ServiceTokenManager{
+		MintURL:       srv.URL + "/auth/api/v1/service-tokens",
+		RefreshURL:    srv.URL + "/auth/api/v1/service-tokens/refresh",
+		OperatorToken: "admin-jwt",
+		ServiceName:   "orion",
+		RefreshLead:   1900 * time.Millisecond,
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer m.Stop()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if m.Token() == "live-rotated" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got := m.Token(); got != "live-rotated" {
+		t.Fatalf("token = %q, want live-rotated — refresh likely 401'd for want of the operator bearer (C3)", got)
+	}
+	if got := refreshAuth.Load().(string); got != "Bearer admin-jwt" {
+		t.Fatalf("refresh Authorization = %q, want Bearer admin-jwt (C3)", got)
+	}
+	// The refresh_token is the rotation credential in the BODY, never
+	// the bearer.
+	if got := refreshBody.Load().(string); got != "rt-1" {
+		t.Fatalf("refresh body refresh_token = %q, want rt-1 (must travel in body, not as bearer)", got)
+	}
+}
+
 func TestServiceTokenManager_MintFailureSurfaces(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)

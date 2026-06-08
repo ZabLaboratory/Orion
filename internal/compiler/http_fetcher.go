@@ -3,6 +3,7 @@ package compiler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,22 +15,50 @@ import (
 // HTTPFetcher hits Canvas / Blue / components endpoints over HTTP.
 // Production wires this against ZabGate (so the trust model stays
 // gateway-first); tests construct a fake against an httptest server.
+//
+// The outbound service token is read **live at every request** via
+// TokenFunc, not frozen at construction (ADR 002-B2 / Bastion C1). The
+// service token manager rotates the access token on a background loop;
+// capturing it once at boot meant the fetcher kept presenting the boot
+// value (the static placeholder) forever, so every Canvas/Blue fetch
+// 401'd and every push 422'd. getJSON calls TokenFunc() at call-time,
+// mirroring the credentials proxy (internal/api/credentials.go:58).
 type HTTPFetcher struct {
-	Client       *http.Client
-	CanvasBase   string // e.g. http://zabgate:4000/canvas
-	BlueBase     string // e.g. http://zabgate:4000/blue
-	ServiceToken string // Orion's outbound service token
-	UserAgent    string
+	Client     *http.Client
+	CanvasBase string // e.g. http://zabgate:4000/canvas
+	BlueBase   string // e.g. http://zabgate:4000/blue
+	// TokenFunc returns Orion's current outbound service token, read
+	// fresh on each request so a rotation is picked up immediately. Nil
+	// is treated as "no token configured" (dev / tests that hit an
+	// unauthenticated stub) — see getJSON.
+	TokenFunc func() string
+	UserAgent string
 }
 
-// NewHTTPFetcher constructs a fetcher with sensible defaults.
+// NewHTTPFetcher constructs a fetcher with sensible defaults. The
+// serviceToken argument is a STATIC token captured into a closure for
+// backward-compat with dev/test call sites that pass a fixed value (or
+// "" for an unauthenticated stub). Production must use
+// NewHTTPFetcherWithTokenFunc to wire the live, rotating token (C1).
 func NewHTTPFetcher(canvasBase, blueBase, serviceToken string) *HTTPFetcher {
+	var tf func() string
+	if serviceToken != "" {
+		tf = func() string { return serviceToken }
+	}
+	return NewHTTPFetcherWithTokenFunc(canvasBase, blueBase, tf)
+}
+
+// NewHTTPFetcherWithTokenFunc constructs a fetcher that reads its
+// service token live from tokenFunc on every request (Bastion C1). In
+// production cmd/orion wires tokenFunc to the ServiceTokenManager's
+// Token method so a rotation is reflected on the next fetch.
+func NewHTTPFetcherWithTokenFunc(canvasBase, blueBase string, tokenFunc func() string) *HTTPFetcher {
 	return &HTTPFetcher{
-		Client:       &http.Client{Timeout: 10 * time.Second},
-		CanvasBase:   strings.TrimRight(canvasBase, "/"),
-		BlueBase:     strings.TrimRight(blueBase, "/"),
-		ServiceToken: serviceToken,
-		UserAgent:    "orion-compiler/1.0",
+		Client:     &http.Client{Timeout: 10 * time.Second},
+		CanvasBase: strings.TrimRight(canvasBase, "/"),
+		BlueBase:   strings.TrimRight(blueBase, "/"),
+		TokenFunc:  tokenFunc,
+		UserAgent:  "orion-compiler/1.0",
 	}
 }
 
@@ -164,13 +193,31 @@ func flattenOutputType(raw json.RawMessage) string {
 	return ""
 }
 
+// ErrNoServiceToken is returned when the fetcher is in live mode (a
+// TokenFunc is wired) but the current token is empty — e.g. the service
+// token manager has not minted yet or a rotation produced an empty
+// value. Per Bastion C2 the fetch fails explicitly rather than firing
+// an opaque anonymous request that would 401 downstream with no signal.
+var ErrNoServiceToken = errors.New("compiler: no service token available for outbound fetch")
+
 func (f *HTTPFetcher) getJSON(ctx context.Context, url string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
-	if f.ServiceToken != "" {
-		req.Header.Set("Authorization", "Bearer "+f.ServiceToken)
+	// Bastion C1: read the token live, per request — never a value
+	// captured at construction. A nil TokenFunc means "no auth wired"
+	// (dev / unauthenticated stub) and sends an anonymous request, which
+	// is the historical behaviour for the "" service-token case. A
+	// non-nil TokenFunc means live mode: an empty result is a hard,
+	// explicit failure (C2 — no silent anonymous fall-back). The token
+	// value itself is never logged or wrapped into an error (C4).
+	if f.TokenFunc != nil {
+		token := f.TokenFunc()
+		if token == "" {
+			return ErrNoServiceToken
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	req.Header.Set("User-Agent", f.UserAgent)
 	req.Header.Set("Accept", "application/json")

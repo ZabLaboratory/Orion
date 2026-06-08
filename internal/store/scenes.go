@@ -73,6 +73,32 @@ func (s *Store) CreateScene(ctx context.Context, id uuid.UUID, name string) (*Sc
 	return scanScene(row)
 }
 
+// UpsertScene ensures a scenes row exists for id, idempotently. On a
+// first push it creates the row (status=active, latest_pushed_version=
+// NULL, name=placeholder — Canvas owns the canonical name, ADR 002
+// §3.2). On a subsequent push it is a no-op and returns the existing
+// row unchanged (existing name/status/pointer preserved).
+//
+// The ON CONFLICT clause uses DO UPDATE SET id = scenes.id (a no-op
+// write to the PK) rather than DO NOTHING deliberately (ADR 002 §3.1):
+// DO NOTHING does not return a row via RETURNING, so a concurrent
+// first-push that loses the insert race would get zero rows and have
+// to re-SELECT. The no-op DO UPDATE makes RETURNING always yield the
+// surviving row in one statement — idempotent, race-safe (R2), one
+// round-trip. It touches only id (to itself): name, status, and
+// latest_pushed_version are never overwritten on an existing scene, so
+// an archived scene stays archived and the caller's archived guard runs
+// on the real row.
+func (s *Store) UpsertScene(ctx context.Context, id uuid.UUID, name string) (*Scene, error) {
+	row := s.pool.QueryRow(ctx,
+		`INSERT INTO scenes (id, name, status) VALUES ($1, $2, 'active')
+		   ON CONFLICT (id) DO UPDATE SET id = scenes.id
+		   RETURNING id, name, status, latest_pushed_version, created_at, updated_at`,
+		id, name,
+	)
+	return scanScene(row)
+}
+
 // GetScene fetches one scene by id.
 func (s *Store) GetScene(ctx context.Context, id uuid.UUID) (*Scene, error) {
 	row := s.pool.QueryRow(ctx,
