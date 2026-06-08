@@ -372,6 +372,103 @@ func TestCompile_HoistsOperatorInputs(t *testing.T) {
 	}
 }
 
+// TestCompile_SeedsOperatorInputDefault is the M9/D2 contract test: a
+// scene declaring a top-level operator_input that carries a `default`
+// must (a) seed graph.Defaults[path]=default at compile (so a restart /
+// cold boot reseeds the declared value, criterion 11 for operator
+// inputs) AND (b) register the path in graph.OperatorInputs (so
+// sceneAcceptsPath authorises the operator's write — the push of B is
+// not rejected WRITE_FORBIDDEN). Before the fix Defaults was fed only by
+// blueprint literals / unwired ports, so the operator-input leaf had no
+// boot value and the first capture saw it absent.
+func TestCompile_SeedsOperatorInputDefault(t *testing.T) {
+	layout := &CanvasLayout{
+		Version: "v1",
+		Root:    LayoutNode{Kind: "stack", ID: "root"},
+		Inputs: []OperatorInput{
+			{
+				Path:    "headline.text",
+				Label:   "Headline",
+				Type:    "text",
+				Default: json.RawMessage(`"GO LIVE"`),
+			},
+		},
+	}
+	bp := &BlueprintGraph{ID: "bp-1"}
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": layout},
+		blueprints: map[string]*BlueprintGraph{"bp-1": bp},
+		components: map[ComponentRef]*UserComponent{},
+		manifest:   pureManifest(),
+	}
+	g, _, _, err := Compile(context.Background(), "scene-1",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-1"}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// (a) The declared default is seeded into graph.Defaults at its leaf.
+	raw, ok := g.Defaults["headline.text"]
+	if !ok {
+		t.Fatal("graph.Defaults missing the operator_input leaf — default not seeded (D2 regression)")
+	}
+	if string(raw) != `"GO LIVE"` {
+		t.Fatalf(`Defaults["headline.text"] = %s, want "GO LIVE"`, raw)
+	}
+
+	// (b) The path is registered as an accepted input (the set
+	// sceneAcceptsPath consults: graph.OperatorInputs). Without this the
+	// operator's write to the leaf would be dropped (delivered=false).
+	found := false
+	for _, in := range g.OperatorInputs {
+		if in.Path == "headline.text" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("graph.OperatorInputs missing the operator_input path — write would be rejected")
+	}
+}
+
+// TestCompile_OperatorInputNoDefaultUnseeded proves an operator_input
+// WITHOUT a default leaves its leaf unseeded (no value at cold start —
+// unchanged behaviour) while still being registered as acceptable.
+func TestCompile_OperatorInputNoDefaultUnseeded(t *testing.T) {
+	layout := &CanvasLayout{
+		Version: "v1",
+		Root:    LayoutNode{Kind: "stack", ID: "root"},
+		Inputs: []OperatorInput{
+			{Path: "ticker.text", Label: "Ticker", Type: "text"},
+		},
+	}
+	bp := &BlueprintGraph{ID: "bp-1"}
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": layout},
+		blueprints: map[string]*BlueprintGraph{"bp-1": bp},
+		components: map[ComponentRef]*UserComponent{},
+		manifest:   pureManifest(),
+	}
+	g, _, _, err := Compile(context.Background(), "scene-1",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-1"}, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := g.Defaults["ticker.text"]; ok {
+		t.Fatal("operator_input with no default must not seed Defaults")
+	}
+	found := false
+	for _, in := range g.OperatorInputs {
+		if in.Path == "ticker.text" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("operator_input must still be registered as acceptable even without a default")
+	}
+}
+
 // TestBlueprintNode_BodyContract is the contract test for issue #35
 // (ADR 004 §7.2). It deserialises a REAL Blue node body — the
 // config/inputs/outputs shape Prism emits and Blue stores — and asserts

@@ -150,6 +150,23 @@ func Compile(
 		}
 	}
 
+	// Seed graph.Defaults from operator_input declarations (M9). Until now
+	// Defaults was fed ONLY by blueprint constant sources / unwired ports —
+	// an operator_input's leaf was declared (OperatorInputs) but never given
+	// its boot value, so criterion 11 (restart reseeds from declared
+	// defaults) did not hold for operator inputs and the first capture saw
+	// the leaf absent. Each input carrying a `default` seeds its own leaf.
+	// allInputs paths are already instance-prefixed by expandLayout (hoisted)
+	// / authored verbatim (top-level), so the leaf address matches what the
+	// runtime writes and what sceneAcceptsPath registers. An input without a
+	// default leaves the leaf unseeded (no value at cold start, unchanged).
+	for _, in := range allInputs {
+		if len(in.Default) == 0 {
+			continue
+		}
+		defaults[in.Path] = in.Default
+	}
+
 	// Validate that every component binding addressing the blueprint-key
 	// namespace names a DECLARED key (ADR 001 §3.3.4): in a multi-blueprint
 	// scene (≥1 non-empty key) a dotted binding's leading segment must be a
