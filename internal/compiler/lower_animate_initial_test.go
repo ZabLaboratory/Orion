@@ -12,13 +12,13 @@ import (
 // LayoutNode.Transitions (Canvas folds the whole `animate` map into
 // `transitions` on push — verified on the live served bundle, Pulsar runbook
 // m10-animate-initial-contract-hole): from {opacity:0, scale:0.85} → target
-// {opacity:1, scale:1}, 550 ms ease-out.
+// {opacity:1, scale:1}, 1200 ms ease-out.
 func m10AnimateTransitions() map[string]json.RawMessage {
 	return map[string]json.RawMessage{
 		"from":       json.RawMessage(`{"opacity":0,"transform":{"scale":0.85}}`),
 		"opacity":    json.RawMessage(`1`),
 		"transform":  json.RawMessage(`{"scale":1}`),
-		"transition": json.RawMessage(`{"duration":550,"easing":"ease-out"}`),
+		"transition": json.RawMessage(`{"duration":1200,"easing":"ease-out"}`),
 	}
 }
 
@@ -73,8 +73,8 @@ func compileM10Animated(t *testing.T) *RenderBundle {
 // `animate_initial` BYTE-IDENTICAL to what @lumencast/compiler@0.3.0's
 // lowerAnimateState + JSON.stringify emit for the same from-state
 // ({"opacity":0,"scale":0.85} — insertion order opacity→scale, ES6 number
-// formatting), and `transitions` is left exactly as ingested (the runtime
-// reads its timing).
+// formatting), and `transitions` is lowered to the runtime's per-prop
+// contract (lower_transitions.go — parity proven in lower_transitions_test.go).
 func TestLowerAnimateInitial_M10Parity(t *testing.T) {
 	bundle := compileM10Animated(t)
 
@@ -86,14 +86,12 @@ func TestLowerAnimateInitial_M10Parity(t *testing.T) {
 	if got := string(node.AnimateInitial); got != wantTS {
 		t.Fatalf("animate_initial = %s, want TS-parity bytes %s", got, wantTS)
 	}
-	// transitions untouched: same keys, same bytes, `from` still present.
-	want := m10AnimateTransitions()
-	if len(node.Transitions) != len(want) {
-		t.Fatalf("transitions keys changed: got %v", keysOf(node.Transitions))
-	}
-	for k, v := range want {
-		if got, ok := node.Transitions[k]; !ok || string(got) != string(v) {
-			t.Fatalf("transitions[%q] = %s, want %s (must stay as ingested)", k, got, v)
+	// transitions lowered to per-prop: the envelope keys (from/transform/
+	// transition) do NOT survive on the served node — the runtime reads
+	// the timing off the per-prop entries.
+	for _, k := range []string{"from", "transform", "transition"} {
+		if _, ok := node.Transitions[k]; ok {
+			t.Fatalf("envelope key %q survived on the lowered node: %v", k, keysOf(node.Transitions))
 		}
 	}
 	// The wire field name is the runtime's reader key.
