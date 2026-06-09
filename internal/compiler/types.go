@@ -113,6 +113,28 @@ type LayoutNode struct {
 	// parity oracle, A5.3). Orion builds it byte-for-byte in lowerWipeCover but
 	// does not re-interpret it downstream.
 	Keyframes json.RawMessage `json:"keyframes,omitempty"`
+
+	// AnimateInitial carries the runtime `RenderNode.animate_initial` field
+	// (LSML 1.1 §6: the `animate.from` mount-play state) — a FLAT framer-motion
+	// map (`opacity`/`scale`/`rotate`/`x`/`y`) the Lumencast runtime (≥0.3.0)
+	// passes verbatim as framer `initial={...}` so the node mounts in the
+	// from-state and ramps to its target (mount-play). The runtime reads ONLY
+	// this flat top-level field, never `transitions.from` — the schema mismatch
+	// that blocked the M10 ramp (Pulsar runbook
+	// m10-animate-initial-contract-hole, PR Pulsar#98).
+	//
+	// Produced by lowerAnimateInitial (the Go mirror of
+	// @lumencast/compiler@0.3.0 lowerAnimateState, compile.ts:240-255) from the
+	// `from` entry the authored `animate` directive carries inside Transitions.
+	// `transitions` itself is left untouched (the runtime reads its timing).
+	//
+	// Same additive discipline as Keyframes: `omitempty`, never set when no
+	// `from` is authored (rétro-compat: prior no-mount-play behaviour holds),
+	// no Unmarshal drop. It rides ONLY on the lowered render bundle (`Root`):
+	// AuthoringRoot never carries it and EmitLSML does not read it
+	// (emit_lsml.go::lsmlNode), so the C4 LSML content-hash (scenes_push.go,
+	// adopt-on-verify) is unperturbed — render-bundle-only.
+	AnimateInitial json.RawMessage `json:"animate_initial,omitempty"`
 }
 
 // OperatorInput is the declared operator surface for a path.

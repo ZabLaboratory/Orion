@@ -320,6 +320,15 @@ func lowerRenderTree(node LayoutNode) LayoutNode {
 
 	out := node
 	out.Props, out.Bindings = lowerRenderProps(node.Kind, node.Props, node.Bindings)
+	// Mount-play (LSML 1.1 §6 `animate.from`): promote the from-state riding
+	// inside `transitions` to the flat `animate_initial` field the runtime
+	// reads (render-bundle ↔ runtime contract, Pulsar runbook
+	// m10-animate-initial-contract-hole). Transitions stay untouched. Lives
+	// ONLY on this lowered tree — AuthoringRoot/EmitLSML never see it, so the
+	// C4 LSML hash is unperturbed (same stance as Keyframes).
+	if initial := lowerAnimateInitial(node.Transitions); initial != nil {
+		out.AnimateInitial = initial
+	}
 	if len(node.Children) > 0 {
 		out.Children = make([]LayoutNode, len(node.Children))
 		for i, c := range node.Children {
