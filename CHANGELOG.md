@@ -11,6 +11,141 @@ publishes with empty notes.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-06-10
+
+Second release of the Go runtime. v1.1.0 is the **Lumencast-convergence
+groundwork** release: Orion now emits and serves the cross-language
+**LSML 1.1** bundle alongside its bespoke render bundle, accepts an
+**N-blueprint** push envelope, and adopts a **upsert-on-push** scene
+lifecycle — all behind back-compatible defaults so existing Prism /
+Canvas / Blue clients keep working byte-for-byte. The release also
+hardens the live service-token plane (mint + rotation against ZabAuth)
+and resolves the deploy pipeline that brought the v1.0.0 cut onto the
+VPS. No breaking changes: the LSML path is gated behind
+`ORION_LSDP_MODE` (default `bespoke` = no-op), migration `0002` is
+additive/nullable, and the multi-blueprint envelope serialises a
+length-1 list byte-identically to the legacy single-blueprint format.
+
+### ✨ Features
+
+- **LSML 1.1 emission alongside the render bundle** (ADR 007 §C). The
+  compiler now produces a second, language-neutral artefact — the
+  **LSML 1.1** bundle — in the same compile pass that builds the
+  bespoke `RenderBundle`. Go↔TS cross-language golden fixtures prove
+  byte-stable parity, so the same scene compiled by either runtime is
+  identical. (`internal/compiler/emit_lsml.go`)
+- **Orion serves LSML bytes** (ADR 007 §C.2). New
+  `GET /api/v1/scenes/{id}/lsml-bundle?v={hash}` endpoint, content-
+  addressed and immutable, served from the new nullable
+  `lsml_bundle_jsonb` / `lsml_bundle_hash` columns (migration `0002`).
+  Orion treats the bundle as opaque bytes — it never walks the layout
+  tree; the TS runtime does.
+- **Identity adopt-on-verify** (ADR 007 §C C4). When the LSML hash and
+  the legacy `scene_version` mint agree, Orion collapses to a single
+  scene identity; on mismatch it falls back to the legacy mint, so the
+  identity contract never silently diverges.
+- **LSDP/1.1 wire seam** (ADR 007 §C.3b). New `internal/lsdp/` package
+  mounts the Lumencast Streaming Data Protocol wire over the existing
+  WS transport via a header-trust seam, gated by `ORION_LSDP_MODE`
+  (`bespoke` | `dual` | `lsdp`). `bespoke` (default) is a full no-op.
+- **Multi-blueprint push envelope** (ADR 001). A single push may now
+  carry N distinct Blue blueprints (`blueprints[]`) instead of one
+  implicit blueprint. The legacy single-blueprint field is still
+  accepted and normalised into a one-element list; sending both at
+  once is rejected with `ENVELOPE_BLUEPRINT_CONFLICT` (400).
+- **Stream-key handover goes live** (ADR 005 §11). The
+  `GET /credentials/{id}/stream-key` endpoint flips from its 503 stub
+  into a thin proxy to Quasar through ZabGate, forwarding body and
+  status verbatim (503 `QUASAR_NOT_WIRED` when the upstream URL is
+  unset, 403 anonymous, 200/404 forwarded, 502 on unreachable).
+- **Live service-token mint + rotation** (`internal/auth/`). With
+  `ORION_OPERATOR_TOKEN` set, Orion mints a service token from ZabAuth
+  at boot and a background loop rotates it 5 min before expiry under a
+  write lock; without it, falls back to the static `ORION_SERVICE_TOKEN`
+  for dev/test. The fetcher now carries a per-request token (no frozen
+  placeholder) and fails explicitly rather than going silently
+  anonymous.
+- **Compiler runtime-vocabulary lowering.** The compiler now lowers
+  authoring constructs into the runtime render vocabulary so the
+  reactive engine consumes a flat, contract-stable shape:
+  - `RenderBundle` props lowered to runtime vocab (ADR 007 §9).
+  - Text `fontFamily` + image `size` lowered to render vocab.
+  - `animate` envelopes lowered to per-prop transitions, with a flat
+    `animate_initial` emitted on lowered nodes (render-bundle ↔ runtime
+    contract parity).
+  - The `wipe-cover` authoring element lowered to `RenderNode.keyframes`
+    (M10 overlay transition).
+
+### 🐛 Fixes
+
+- **Upsert-on-push scene lifecycle** (ADR 002 §3.1-3.3). `POST /push`
+  now upserts the scene row (`ON CONFLICT DO UPDATE RETURNING`),
+  fixing the 404 a first push hit against the mandatory `scenes` FK
+  row. Race-safe and idempotent; Canvas stays the source of truth for
+  the scene name.
+- **Race-safe `definition_version` on concurrent first-push** (#56) —
+  two simultaneous first pushes no longer clobber the version pointer.
+- **Operator-input defaults seeded into `graph.Defaults`** (M9/D2) so a
+  cold-started scene reseeds its declared operator-input values instead
+  of starting blank.
+- **Blueprint compute path** — fetch graph, cold-start and intermediate
+  persistence fixed end-to-end (#44).
+- **Versioned compute registry keys** — runtime `ComputeRegistry`
+  re-keyed on `namespace.name@version` so two versions of the same
+  compute coexist (#39).
+- **Blueprint node contract alignment** with Blue — node body aligned
+  to Blue's `config`/`inputs`/`outputs` (#37), node ref bound to the
+  canonical `definition` wire field (#36), and Blue's real
+  `_compute-manifest` envelope decoded correctly (#31).
+- **Blueprint-free scenes tolerated** — a scene with no blueprint no
+  longer fails to compile (#29).
+
+### 🔧 Build / CI / Deploy
+
+- **Repeatable Solar bundle deploy** — new `solar-deploy.yml` workflow
+  rolls a version-parameterised Solar bundle onto the VPS under
+  `ORION_SOLAR_ROOT/<version>/` without a code push; idempotent
+  (installed versions skipped). LSDP deploy runbook added.
+- **Solar bundle served from host subtree** — deploy serves the `host/`
+  subtree of the dual-build Solar tarball (#59); bundles mounted via a
+  host volume and fetched on the VPS (#16).
+- **Drop VPS PAT from Solar fetch** — the public Solar bundle is now
+  pulled over HTTPS instead of an authenticated VPS personal access
+  token.
+- **Deploy path hardening** — remote paths interpolated instead of
+  passed as `bash -s` positional args (#48); git revision/source
+  stamped into OCI image labels; OCI provenance labels + a static
+  healthcheck probe added to the image.
+- **Docker healthcheck activated** on the orion service, with the
+  healthcheck binary exiting via `run()`'s int so deferred cleanup runs
+  on every path; `start_period` raised to 30 s to cover the goose
+  migration boot.
+- **`.gitattributes`** added to pin LF line endings on Go sources (#34).
+
+### 📝 Docs
+
+- ADR-001 (multi-blueprint push envelope) accepted (#51).
+- ADR-002 (scene lifecycle Canvas↔Orion, upsert-on-push) accepted (#58).
+- Solar deploy host/-subtree hotfix traced in a runbook (#60).
+
+### ⚠️ Breaking changes
+
+- None. All new behaviour is additive and back-compatible: the LSML /
+  LSDP plane is off by default (`ORION_LSDP_MODE=bespoke`), migration
+  `0002` only adds nullable columns, and the single-blueprint envelope
+  is still accepted with byte-identical output.
+
+### New configuration
+
+- `ORION_LSDP_MODE` — `bespoke` (default) | `dual` | `lsdp`. Gates LSML
+  persistence + the LSDP wire.
+- `ORION_OPERATOR_TOKEN` — operator token used to mint/rotate the live
+  service token against ZabAuth. Empty → static `ORION_SERVICE_TOKEN`.
+- `ORION_SERVICE_PATHS` — CSV of service-token `paths` claims
+  (default `quasar.credentials.read`).
+- `ORION_QUASAR_BASE_URL` — Quasar base URL for the stream-key proxy
+  (empty → 503 `QUASAR_NOT_WIRED`).
+
 ## [1.0.0] - 2026-05-02
 
 First release of the Go rewrite per
