@@ -90,6 +90,29 @@ type LayoutNode struct {
 	// string; the compiler distinguishes by lookup against the
 	// pushed components fetched via ComponentRef).
 	ComponentArgs map[string]json.RawMessage `json:"component_args,omitempty"`
+
+	// Keyframes carries the runtime `RenderNode.keyframes` block (LSML 1.1
+	// §6.6: {key, duration_ms, easing, steps[]}) the Lumencast runtime's
+	// KeyframePlayer replays on every delta at `key`. It is the served-bundle
+	// form of a leaf-driven multi-step animation, produced by Orion's
+	// lowering — see lowerWipeCover (ADR 003 Amendment 5 §A5.3, the chosen
+	// authoring maillon "(B)"). The M10 `wipe-cover` authoring element lowers
+	// to a `frame` node carrying this block.
+	//
+	// It is `omitempty` and ADDITIVE: every existing producer/consumer that
+	// never sets it round-trips byte-identically (no Unmarshal drop, the field
+	// simply stays nil). It rides ONLY on the lowered render bundle (`Root`):
+	// it is NEVER authored on the pre-lowering tree, so AuthoringRoot never
+	// carries it and EmitLSML (which reads Kind/ID/Props/Bindings/Transitions/
+	// Children, not Keyframes — emit_lsml.go::lsmlNode) is unaffected. The C4
+	// LSML content-hash (scenes_push.go, adopt-on-verify) therefore stays
+	// stable: render-bundle-only, no LSML-emit change (SPIKE-LSML-HASH, A5.5).
+	//
+	// Carried as opaque json.RawMessage: Orion is a transport for the keyframe
+	// shape, whose single source of truth is Solar's buildWipeCoverNode (the
+	// parity oracle, A5.3). Orion builds it byte-for-byte in lowerWipeCover but
+	// does not re-interpret it downstream.
+	Keyframes json.RawMessage `json:"keyframes,omitempty"`
 }
 
 // OperatorInput is the declared operator surface for a path.

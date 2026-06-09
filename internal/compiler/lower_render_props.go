@@ -302,6 +302,22 @@ func copyBindings(bindings map[string]string) map[string]string {
 // returning a fresh tree (the input is not mutated). It is the recursive
 // driver the compile tail calls on the assembled render-bundle root.
 func lowerRenderTree(node LayoutNode) LayoutNode {
+	// The `wipe-cover` authoring element lowers to a keyframed `frame` render
+	// node (ADR 003 Amendment 5 §A5.3): a different kind + props + a synthesised
+	// `keyframes` block, so it is handled before the generic per-kind prop
+	// lowering. A malformed element falls through (ok=false) to the generic
+	// path, where it stays an inert `wipe-cover` node the runtime renders as
+	// nothing (no half-built keyframe shipped). The keyframes block lives ONLY
+	// on this lowered tree (`Root`); the pre-lowering authoring node keeps
+	// `kind:"wipe-cover"` for EmitLSML, so the C4 LSML hash is unperturbed.
+	if node.Kind == WipeCoverKind {
+		if lowered, ok := lowerWipeCover(node); ok {
+			// wipe-cover is a leaf overlay node — no children to recurse into.
+			lowered.Children = nil
+			return lowered
+		}
+	}
+
 	out := node
 	out.Props, out.Bindings = lowerRenderProps(node.Kind, node.Props, node.Bindings)
 	if len(node.Children) > 0 {
