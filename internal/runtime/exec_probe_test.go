@@ -62,7 +62,7 @@ func TestExec_ParkFork_InLoopBody_LoopContinues(t *testing.T) {
 
 	var mu sync.Mutex
 	var keys []string
-	sc.registerExecOp("test.latent", func(_ *Scene, t *execTask, node *ExecNode, _ string) execOpOutcome {
+	sc.registerExecOp("test.latent", func(_ *Scene, _ *execTask, node *ExecNode, _ string) execOpOutcome {
 		mu.Lock()
 		defer mu.Unlock()
 		// Each iteration gets a unique wake key via the task env index.
@@ -346,17 +346,6 @@ func TestExec_SetEffector_CustomEffectorReceivesWrites(t *testing.T) {
 	}
 	prog.Nodes["set"].Config["value"] = raw(`42`)
 
-	type countingEffector struct {
-		mu     sync.Mutex
-		calls  int
-		prints int
-	}
-	var eff countingEffector
-	type effImpl struct{ e *countingEffector }
-	effI := &effImpl{&eff}
-	_ = effI // compiler check
-
-	// We need a concrete type; inline it here.
 	var called int64
 	sc := execScene(t, "effector-seam", prog)
 	sc.SetEffector(&captureEffector{
