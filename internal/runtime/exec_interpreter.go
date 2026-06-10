@@ -45,7 +45,14 @@ type execFrame struct {
 // All of it is plain data owned by the scene goroutine — re-enqueueing
 // or parking a task moves a pointer, never suspends a goroutine.
 type execTask struct {
-	id     uint64
+	id uint64
+	// prog is the program this task belongs to (issue #105): node ids
+	// and the blueprint key are program-local, so the interpreter
+	// resolves them through the task's own program, never through a
+	// scene-global one — that is what lets one scene host N programs
+	// without their node namespaces colliding. Read-only (set at fire,
+	// inherited by forked continuations); never mutated mid-task.
+	prog   *ExecProgram
 	frames []execFrame
 	env    map[string]json.RawMessage
 	steps  uint64
@@ -104,7 +111,7 @@ func (s *Scene) stepTask(t *execTask) {
 		s.execNode(t, f.node, f.port)
 
 	case frameSeq:
-		node := s.execProg.Nodes[f.node]
+		node := t.prog.Nodes[f.node]
 		if node == nil || f.idx >= len(node.seqTargets) {
 			t.frames = t.frames[:top]
 			return
@@ -114,7 +121,7 @@ func (s *Scene) stepTask(t *execTask) {
 		t.pushNode(tgt)
 
 	case frameLoop:
-		node := s.execProg.Nodes[f.node]
+		node := t.prog.Nodes[f.node]
 		if node == nil {
 			t.frames = t.frames[:top]
 			return
@@ -178,7 +185,7 @@ func (t *execTask) pushNodeIfNext(node *ExecNode, pin string) {
 // (criterion 1) is what guarantees this branch never fires for a
 // manifest-known node type in the final state.
 func (s *Scene) execNode(t *execTask, id, port string) {
-	node := s.execProg.Nodes[id]
+	node := t.prog.Nodes[id]
 	if node == nil {
 		s.logger.Error("exec: unknown node id", "node", id)
 		return
@@ -260,7 +267,7 @@ func (s *Scene) applyOutcome(t *execTask, node *ExecNode, out execOpOutcome) {
 		// siblings / loop iterations) — UE latent semantics. The
 		// environment is snapshotted so per-iteration pins stay correct
 		// at resume time.
-		cont := &execTask{id: t.id, env: copyEnv(t.env)}
+		cont := &execTask{id: t.id, prog: t.prog, env: copyEnv(t.env)}
 		cont.pushNode(out.resume)
 		if s.parkTask(out.parkKey, cont) {
 			if out.timer {
@@ -344,7 +351,7 @@ func (s *Scene) execVariableSet(t *execTask, node *ExecNode) {
 	if !ok {
 		val = json.RawMessage(`null`)
 	}
-	s.effector.SetLeaf("__vars."+s.execProg.BlueprintKey+"."+name, val)
+	s.effector.SetLeaf("__vars."+t.prog.BlueprintKey+"."+name, val)
 }
 
 func (s *Scene) execPrint(t *execTask, node *ExecNode) {
@@ -357,7 +364,7 @@ func (s *Scene) execPrint(t *execTask, node *ExecNode) {
 			line = string(raw)
 		}
 	}
-	s.effector.Print(s.execProg.BlueprintKey, line)
+	s.effector.Print(t.prog.BlueprintKey, line)
 }
 
 // --- demand-driven data pulls (ADR 003 §3.1.1) ------------------------

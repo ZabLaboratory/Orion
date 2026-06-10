@@ -99,10 +99,10 @@ func postTestSession(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, status, map[string]string{"code": code})
 			return
 		}
-		// nil exec program: the compiler partition does not emit
-		// ExecPrograms yet — exec stays dormant on every API path
-		// until the phase-4 gate (ADR 003 R9).
-		sessionID, _ := deps.Test.Open(r.Context(), body.SceneID, scene.Graph(), scene.Bundle(), nil)
+		// No exec programs passed: the live-activation seam (execForAir)
+		// does not arm exec yet — exec stays dormant on every API path
+		// until the phase-4 gate (ADR 006 §3.4 / issue #106).
+		sessionID, _ := deps.Test.Open(r.Context(), body.SceneID, scene.Graph(), scene.Bundle())
 		writeJSON(w, http.StatusCreated, map[string]string{
 			"session_id": sessionID,
 			"ws_url":     "/orion/api/v1/scenes/" + body.SceneID + "/test?session=" + sessionID,

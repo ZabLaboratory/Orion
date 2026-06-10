@@ -232,6 +232,11 @@ func planEntrypoints(prog *ExecProgram) []entrypointPlan {
 	var plans []entrypointPlan
 	for _, k := range keys {
 		e := prog.Entrypoints[k]
+		// The clone's trigger index is keyed by the namespaced trigger
+		// key (issue #105 — InstallExec namespaces every entry
+		// `<blueprint_key>/<entry_id>`); fire through the same key so the
+		// resolution in RunValidationEntrypoint matches.
+		nk := entryKey(prog.BlueprintKey, k)
 		switch e.Kind {
 		case EntryOnTick:
 			// N frames, each with a representative delta_seconds bound
@@ -243,20 +248,20 @@ func planEntrypoints(prog *ExecProgram) []entrypointPlan {
 						e.Node + ".delta_seconds": json.RawMessage("0.016"),
 					}
 				}
-				plans = append(plans, entrypointPlan{entry: k, env: env})
+				plans = append(plans, entrypointPlan{entry: nk, env: env})
 			}
 		case EntryOnEvent:
 			// Feed the on-event topic its canonical fixture by pre-seeding
 			// the event leaf the entrypoint's body reads — the entrypoint
 			// fire itself carries no env (the value lives in state).
 			plans = append(plans, entrypointPlan{
-				entry:     k,
+				entry:     nk,
 				seedPath:  eventsPrefix + e.Event,
 				seedValue: fixtureForEvent(e.Event),
 			})
 		default:
 			// on-start and explicitly-fired entries: one firing.
-			plans = append(plans, entrypointPlan{entry: k})
+			plans = append(plans, entrypointPlan{entry: nk})
 		}
 	}
 	return plans

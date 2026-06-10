@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -247,31 +248,82 @@ const (
 	defaultExecParkCap = 1024
 )
 
-// InstallExec attaches the exec program. Must be called before Run
-// (like SetMirror): the scene goroutine is the only reader afterwards.
-// The program itself must stay immutable — it may be shared between
-// instances.
-func (s *Scene) InstallExec(p *ExecProgram) {
+// execEntryRef binds a namespaced trigger key to its owning program and
+// the program-local entrypoint. Node ids and the blueprint key are
+// program-local, so a fired task must be born knowing which program it
+// belongs to (issue #105).
+type execEntryRef struct {
+	prog  *ExecProgram
+	entry ExecEntry
+}
+
+// entryKey is the namespaced trigger key `<blueprint_key>/<entry_id>`
+// (ADR 006 §3.3): merging N programs' indexes into one scene cannot let
+// two blueprints' identically-named entrypoints collide, and the slash
+// separator is reserved (blueprint keys and entrypoint ids never carry
+// one).
+func entryKey(blueprintKey, entryID string) string {
+	return blueprintKey + "/" + entryID
+}
+
+// InstallExec attaches the scene's exec programs — ALL of a live scene's
+// blueprints (issue #105), or the single program of a validation clone.
+// Must be called before Run (like SetMirror): the scene goroutine is the
+// only reader afterwards. The programs stay immutable — they may be
+// shared between instances (live + test session), so InstallExec never
+// mutates a program, only the per-scene indexes below.
+//
+// The per-program trigger indexes are MERGED into the scene's, with each
+// entry key namespaced `<blueprint_key>/<entry_id>` and the merged index
+// SORTED: the firing order of multiple entries of one kind must never
+// derive from map iteration (determinism — ADR 003 §3.1.7 / ADR 006
+// §3.3). Programs are visited in sorted blueprint-key order for the same
+// reason.
+func (s *Scene) InstallExec(progs ...*ExecProgram) {
 	s.execOnStart, s.execOnTick = nil, nil
 	s.execOnEvent = nil
-	if p != nil {
+	s.execProgs = nil
+	s.execEntries = nil
+
+	// Drop nils, then visit in sorted blueprint-key order so the merge is
+	// deterministic regardless of the caller's slice order.
+	sorted := make([]*ExecProgram, 0, len(progs))
+	for _, p := range progs {
+		if p != nil {
+			sorted = append(sorted, p)
+		}
+	}
+	if len(sorted) == 0 {
+		return
+	}
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].BlueprintKey < sorted[j].BlueprintKey
+	})
+
+	s.execProgs = make(map[string]*ExecProgram, len(sorted))
+	s.execEntries = map[string]execEntryRef{}
+	for _, p := range sorted {
+		s.execProgs[p.BlueprintKey] = p
 		for _, n := range p.Nodes {
 			n.seqTargets = sequenceTargets(n)
 		}
-		// Trigger indexes (issue #83), in SORTED entry-key order: the
-		// firing order of multiple entries of one kind must never
-		// derive from map iteration.
+		// Namespace + index this program's entrypoints, in sorted local
+		// key order; the per-kind indexes below accumulate across
+		// programs and are sorted as a whole at the end.
 		keys := make([]string, 0, len(p.Entrypoints))
 		for k := range p.Entrypoints {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			switch e := p.Entrypoints[k]; e.Kind {
+			nk := entryKey(p.BlueprintKey, k)
+			e := p.Entrypoints[k]
+			s.execEntries[nk] = execEntryRef{prog: p, entry: e}
+			switch e.Kind {
 			case EntryOnStart:
-				s.execOnStart = append(s.execOnStart, k)
+				s.execOnStart = append(s.execOnStart, nk)
 			case EntryOnTick:
-				s.execOnTick = append(s.execOnTick, k)
+				s.execOnTick = append(s.execOnTick, nk)
 			case EntryOnEvent:
 				if e.Event == "" {
 					continue
@@ -279,11 +331,43 @@ func (s *Scene) InstallExec(p *ExecProgram) {
 				if s.execOnEvent == nil {
 					s.execOnEvent = map[string][]string{}
 				}
-				s.execOnEvent[e.Event] = append(s.execOnEvent[e.Event], k)
+				s.execOnEvent[e.Event] = append(s.execOnEvent[e.Event], nk)
 			}
 		}
 	}
-	s.execProg = p
+	// Sort the merged per-kind indexes so firing order is a pure function
+	// of the namespaced keys, never of program- or map-iteration order.
+	sort.Strings(s.execOnStart)
+	sort.Strings(s.execOnTick)
+	for ev := range s.execOnEvent {
+		sort.Strings(s.execOnEvent[ev])
+	}
+}
+
+// resolveEntry resolves a fire key to its program + entrypoint. The
+// canonical key is the namespaced `<blueprint_key>/<entry_id>` (the form
+// every trigger index stores, issue #105) — a direct hit. As a
+// convenience for explicit fires (FireExec / the validation harness),
+// a BARE local entry id also resolves, but only when it is unambiguous
+// across the installed program set: a collision (two blueprints both
+// declaring `start`) refuses the bare id (caller must namespace), so a
+// fire never silently lands in the wrong blueprint.
+func (s *Scene) resolveEntry(key string) (execEntryRef, bool) {
+	if ref, ok := s.execEntries[key]; ok {
+		return ref, true
+	}
+	var found execEntryRef
+	n := 0
+	for nk, ref := range s.execEntries {
+		if local, ok := strings.CutPrefix(nk, ref.prog.BlueprintKey+"/"); ok && local == key {
+			found = ref
+			n++
+		}
+	}
+	if n == 1 {
+		return found, true
+	}
+	return execEntryRef{}, false
 }
 
 // FireOnStart fires every `on-start` entrypoint (ADR 003 §3.1.3: the
@@ -383,15 +467,16 @@ func (s *Scene) enqueueFire(entry string) { s.enqueueFireEnv(entry, nil) }
 // enqueueFireEnv is enqueueFire with event-pin bindings seeded into
 // the task environment (on-tick's `<node>.delta_seconds`).
 func (s *Scene) enqueueFireEnv(entry string, env map[string]json.RawMessage) {
-	if s.execProg == nil {
+	if len(s.execProgs) == 0 {
 		s.logger.Warn("exec fire on scene without exec program", "entry", entry)
 		return
 	}
-	e, ok := s.execProg.Entrypoints[entry]
+	ref, ok := s.resolveEntry(entry)
 	if !ok {
 		s.logger.Warn("exec fire for unknown entrypoint", "entry", entry)
 		return
 	}
+	e := ref.entry
 	// B5 back-pressure (ADR 003 §3.1.6): the budget counts ALIVE
 	// tasks (runnable + parked). Beyond it the NEW fire is shed and
 	// counted — a running task is never killed.
@@ -405,8 +490,9 @@ func (s *Scene) enqueueFireEnv(entry string, env map[string]json.RawMessage) {
 	}
 	s.execTaskSeq++
 	t := &execTask{
-		id:  s.execTaskSeq,
-		env: map[string]json.RawMessage{},
+		id:   s.execTaskSeq,
+		prog: ref.prog,
+		env:  map[string]json.RawMessage{},
 	}
 	for k, v := range env {
 		t.env[k] = v

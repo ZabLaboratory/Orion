@@ -109,22 +109,28 @@ func (sh *Show) Stop() {
 // (used by the push handler when a re-push lands on an already-live
 // scene — ADR 004 § 7).
 func (sh *Show) Load(id string, graph *compiler.Graph, bundle *compiler.RenderBundle) {
-	sh.LoadExec(id, graph, bundle, nil)
+	sh.LoadExec(id, graph, bundle)
 }
 
-// LoadExec is Load with an exec program attached (ADR 003 §3.1, issue
-// #83). R9 dormancy note: NO production path passes a non-nil program
-// — the compiler partition and the live-activation enablement land
-// with the phase-4 validation gate. Until then this seam is exercised
-// by tests only, and every Load from the push/boot paths keeps exec
-// uninstalled (prog == nil → all trigger wiring below is inert).
+// LoadExec is Load with the scene's exec program SET attached (ADR 003
+// §3.1, issue #83; multi-program lift, ADR 006 §3.3 / issue #105). A
+// live scene hosts ALL of its blueprints' programs — `progs` is the set
+// `ExecProgramsFromGraph` returns; InstallExec merges their trigger
+// indexes under namespaced keys.
+//
+// R9 dormancy note: NO production path passes a non-empty set — the
+// live-activation enablement (the `execForAir` seam) lands with the
+// phase-4 validation gate (issue #106). Until then every Load from the
+// push/boot paths passes nil, so exec stays uninstalled (len(progs)==0 →
+// all trigger wiring below is inert) and the seam is exercised by tests
+// only.
 //
 // Re-push semantics (§3.1.4): swapping an already-loaded scene STOPS
 // the previous instance — its live tasks, parked continuations and
 // timers die with it (cancellation by teardown) — and the new instance
 // starts from declared defaults (restart-reseed). If the swapped scene
 // is the ACTIVE one, `on-start` fires on the fresh instance.
-func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, prog *ExecProgram) {
+func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, progs ...*ExecProgram) {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if existing, ok := sh.scenes[id]; ok {
@@ -134,9 +140,7 @@ func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.Rend
 	if sh.execMetrics != nil {
 		scene.SetExecMetrics(sh.execMetrics)
 	}
-	if prog != nil {
-		scene.InstallExec(prog)
-	}
+	scene.InstallExec(progs...)
 	// ADR 007 §C.3b: in dual/lsdp mode, pair the scene with a kit
 	// scene and tap its output port. The mirror is seeded with the
 	// freshly-seeded snapshot inside SetMirror before Run starts.
