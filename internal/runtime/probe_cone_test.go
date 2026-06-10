@@ -64,7 +64,7 @@ func TestScene_DiamondRecomputesOnceWithBothUpstreams(t *testing.T) {
 
 	reg := NewComputeRegistry()
 	// double: returns input*2
-	reg.Register("test.double@1", func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+	reg.Register("test.double@1", func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 		for _, v := range inputs {
 			var n float64
 			if err := json.Unmarshal(v, &n); err != nil {
@@ -75,7 +75,7 @@ func TestScene_DiamondRecomputesOnceWithBothUpstreams(t *testing.T) {
 		return json.RawMessage(`0`), nil
 	})
 	// triple: returns input*3
-	reg.Register("test.triple@1", func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+	reg.Register("test.triple@1", func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 		for _, v := range inputs {
 			var n float64
 			if err := json.Unmarshal(v, &n); err != nil {
@@ -86,7 +86,7 @@ func TestScene_DiamondRecomputesOnceWithBothUpstreams(t *testing.T) {
 		return json.RawMessage(`0`), nil
 	})
 	// sum2: adds its two upstream values (positional a, b)
-	reg.Register("test.sum2@1", func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+	reg.Register("test.sum2@1", func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 		sumCalls.Add(1)
 		var a, b float64
 		if v, ok := inputs["a"]; ok {
@@ -165,7 +165,7 @@ func TestScene_FanOutAllConsumersRecompute(t *testing.T) {
 	for i := 0; i < N; i++ {
 		computeKey := fmt.Sprintf("test.fanout.%d@1", i)
 		idx := i
-		reg.Register(computeKey, func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+		reg.Register(computeKey, func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 			counters[idx].Add(1)
 			for _, v := range inputs {
 				return v, nil
@@ -265,7 +265,7 @@ func TestScene_MultiSinkPartialDirtyPreservesUntouchedSink(t *testing.T) {
 	}
 	reg := NewComputeRegistry()
 	relay := func(c *atomic.Int64) ComputeFn {
-		return func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+		return func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 			c.Add(1)
 			for _, v := range inputs {
 				return v, nil
@@ -441,7 +441,7 @@ func TestScene_DeepChain1000NodesValueReachesSink(t *testing.T) {
 	})
 
 	reg := NewComputeRegistry()
-	reg.Register("test.passthrough@1", func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+	reg.Register("test.passthrough@1", func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 		for _, v := range inputs {
 			return v, nil
 		}

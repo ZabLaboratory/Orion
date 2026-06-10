@@ -56,6 +56,16 @@ type GraphNode struct {
 	// time so the runtime can trust them without re-querying Blue.
 	IsPure    bool `json:"is_pure,omitempty"`
 	IsBounded bool `json:"is_bounded,omitempty"`
+
+	// Config carries the blueprint node's config object verbatim into
+	// the artefact (issue #81). Config-bearing pure computes read it at
+	// execution time — `core.data.get-field`/`set-field` (`path`),
+	// `core.data.aggregate` (`op`) — mirroring Blue's
+	// handler(inputs, config, state) contract (executor.py). Only
+	// COMPUTED nodes carry it: input/output/literal configs are already
+	// lowered into Path / Defaults at compile. omitempty keeps pre-#81
+	// artefacts and config-less nodes byte-identical.
+	Config map[string]json.RawMessage `json:"config,omitempty"`
 }
 
 // GraphInput is one inbound data edge on a GraphNode: the upstream

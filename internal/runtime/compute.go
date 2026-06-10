@@ -8,10 +8,14 @@ import (
 )
 
 // ComputeFn is one entry in the compute registry — a pure function
-// over named inputs. Returns the new value at the output path. v1
+// over named inputs plus the node's authored config (issue #81,
+// mirroring Blue's handler(inputs, config, state) contract in
+// executor.py — config-bearing pure nodes like core.data.get-field
+// read `config.path`). Returns the new value at the output path. v1
 // arity is "many inputs in, one value out" matching Blue's stdlib
-// node shape.
-type ComputeFn func(inputs map[string]json.RawMessage) (json.RawMessage, error)
+// node shape; config is nil for config-less nodes and pre-#81
+// artefacts.
+type ComputeFn func(inputs, config map[string]json.RawMessage) (json.RawMessage, error)
 
 // ComputeRegistry maps Blue stdlib compute ids to Go implementations.
 // The compiler enforced that every compute referenced by the graph
@@ -74,6 +78,10 @@ func NewComputeRegistry() *ComputeRegistry {
 	// single inbound value to the leaf with zero change to `recompute`.
 	r.fns["core.output@1"] = passthrough
 
+	// Pure data-node tranche — logic, extended math, string, cast,
+	// data (ADR 003 §3.4 phase 0, issue #81). compute_pure.go.
+	r.registerPureTranche()
+
 	return r
 }
 
@@ -103,7 +111,7 @@ func (r *ComputeRegistry) Register(id string, fn ComputeFn) {
 // then `value` / `in`, then any remaining input, else `null`. A
 // `core.output@1` sink has exactly one inbound edge, so the choice is
 // unambiguous in practice.
-func passthrough(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+func passthrough(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 	for _, name := range []string{"a", "value", "in"} {
 		if v, ok := inputs[name]; ok {
 			return v, nil
@@ -118,7 +126,7 @@ func passthrough(inputs map[string]json.RawMessage) (json.RawMessage, error) {
 // arithmetic builds an ADD/SUB/MUL/DIV/MOD compute. Inputs are read from
 // ports `x` (or `a`) and `y` (or `b`).
 func arithmetic(op func(a, b float64) float64) ComputeFn {
-	return func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+	return func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 		a, err := readNum(inputs, "x", "a")
 		if err != nil {
 			return nil, err
@@ -133,7 +141,7 @@ func arithmetic(op func(a, b float64) float64) ComputeFn {
 }
 
 func comparator(op func(a, b float64) bool) ComputeFn {
-	return func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+	return func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 		a, err := readNum(inputs, "x", "a")
 		if err != nil {
 			return nil, err
@@ -152,7 +160,7 @@ func comparator(op func(a, b float64) bool) ComputeFn {
 // the upstream under that declared name (which coincides with the
 // positional fallback pre-#79 artefacts get). The extra names are
 // tolerated, non-load-bearing fallbacks.
-func notFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+func notFn(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 	v, err := readBool(inputs, "a", "x", "value", "in")
 	if err != nil {
 		return nil, err
@@ -170,7 +178,7 @@ func notFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
 // The positional names (`a`/`b`/`c`) remain only as the fallback for
 // pre-#79 persisted artefacts, whose edges arrived zipped in authored
 // order condition,when_true,when_false (ADR 004 §7.2).
-func selectFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+func selectFn(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 	cond, err := readBool(inputs, "condition", "a", "cond")
 	if err != nil {
 		return nil, err

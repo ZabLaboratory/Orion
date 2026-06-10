@@ -41,7 +41,7 @@ func twoChainScene(t *testing.T) (*Scene, *atomic.Int64, *atomic.Int64) {
 	var countA, countB atomic.Int64
 	reg := NewComputeRegistry()
 	counting := func(c *atomic.Int64) ComputeFn {
-		return func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+		return func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 			c.Add(1)
 			for _, v := range inputs {
 				return v, nil
@@ -160,10 +160,10 @@ func TestScene_RecomputeUnchangedValueStopsPropagation(t *testing.T) {
 	}
 	var tailCalls atomic.Int64
 	reg := NewComputeRegistry()
-	reg.Register("test.const@1", func(map[string]json.RawMessage) (json.RawMessage, error) {
+	reg.Register("test.const@1", func(_, _ map[string]json.RawMessage) (json.RawMessage, error) {
 		return json.RawMessage(`"steady"`), nil // same value every time
 	})
-	reg.Register("test.tail@1", func(inputs map[string]json.RawMessage) (json.RawMessage, error) {
+	reg.Register("test.tail@1", func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 		tailCalls.Add(1)
 		for _, v := range inputs {
 			return v, nil
