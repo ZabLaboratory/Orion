@@ -64,16 +64,35 @@ services:
           # deploy.resources.limits.cpus on `up` by translating it to the
           # container's CPU quota (cgroup cpu.max). 1.0 = at most one full core.
           #
-          # Sizing rationale: the VPS is a shared multi-service OVH host (G2 +
-          # Zab stacks on one box). 1.0 core is far above Orion's normal/idle
-          # footprint (exec is dormant in prod per R9 — near-zero CPU at boot,
-          # migrations + listener only), so it does NOT throttle boot, health,
-          # migrations, or normal serving. Yet it caps a single runaway scene
-          # at one core, leaving the rest of the host for ZabGate + the show
-          # even on the smallest plausible 2-vCPU tier. Recalibrate once the
-          # live core count is confirmed (`nproc` on the VPS) — see runbook
-          # docs/runbooks/orion-cpu-pathological-scene.md §Sizing.
-          cpus: "1.0"
+          # Sizing rationale (recalibrated post-nproc, ADR 006 P-3 / #108).
+          # The VPS is a shared multi-service OVH host (G2 + Zab + Observer +
+          # Bushido + Citadel stacks on one box). `nproc` on vps-ovh confirmed
+          # 2026-06-10: **8 vCPU**, 22 GiB RAM. The #89 cap of 1.0 was posted
+          # conservatively when SSH was unavailable (it assumed a possible
+          # 2-vCPU tier); the real box is far larger.
+          #
+          # Cap set to 2.0 = at most two full cores = **25% of the host**.
+          #   - Headroom: a single runaway scene saturates this cgroup at 2
+          #     cores and can NEVER approach host saturation — 6 cores (75%)
+          #     stay free for ZabGate, the live show, and every co-tenant. Host
+          #     load contribution from a pinned Orion stays ~2/8.
+          #   - Show fitness: exec goes live soon (R9-lift, ADR 006). When a
+          #     scene's legitimate exec load and a runaway share THIS cgroup,
+          #     1.0 would throttle the show itself; 2.0 lets a busy-but-legit
+          #     scene have a full core of slack above a one-core runaway floor.
+          #   - Not higher: 4.0 would hand half the host to one app cgroup whose
+          #     normal footprint is ~2% (7 MiB idle, exec dormant). 2.0 keeps a
+          #     strict protective host cap while covering the show.
+          # Recalibrate again if the co-tenant mix or VPS plan changes — see
+          # runbook docs/runbooks/orion-cpu-pathological-scene.md §Sizing.
+          #
+          # Worker-pool coherence (P-3, étage-1 .env): ORION_EFFECT_WORKERS must
+          # stay ~2x this cap (effects are I/O-bound — http/db/source — so a
+          # little over-subscription hides latency, but 8 workers on a 2-core
+          # quota over-subscribes the cgroup). Recommend ORION_EFFECT_WORKERS=4
+          # (default 8 is now incoherent with the cap); ORION_EFFECT_QUEUE=256
+          # default holds (memory backpressure, not CPU).
+          cpus: "2.0"
         reservations:
           memory: 128M
     networks:

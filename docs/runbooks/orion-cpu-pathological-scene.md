@@ -37,32 +37,43 @@ deploy:
   resources:
     limits:
       memory: 512M
-      cpus: "1.0"
+      cpus: "2.0"
 ```
 
 `docker compose up` (Compose Spec, the deploy path in `ci.yml`) honours
 `deploy.resources.limits.cpus` by translating it to the container's CPU quota
-(cgroup `cpu.max`). **1.0 = at most one full core** of host CPU for the entire
+(cgroup `cpu.max`). **2.0 = at most two full cores** of host CPU for the entire
 `orion` container, no matter how many goroutines a runaway scene spawns.
 
-### Sizing rationale
+### Sizing rationale (recalibrated post-nproc — ADR 006 P-3 / #108)
 
-- The VPS is a **shared multi-service OVH host** (G2 + Zab stacks on one box,
-  same IP). A runaway must not starve ZabGate or the live show.
-- **1.0 core is far above Orion's normal footprint.** Exec is **dormant in
-  prod** (ADR 003 R9): at boot the process does migrations + serves the
-  listener — near-idle CPU. The cap does **not** throttle boot, health,
-  migrations, or normal serving (verified post-deploy, §4).
-- 1.0 is an **absolute** budget, safe regardless of the live core count: on a
-  ≥2-vCPU box a single runaway scene leaves ≥1 core for the rest of the host;
-  even on the smallest plausible 2-vCPU tier it caps the runaway at half the
-  machine, keeping the show responsive.
+- The VPS is a **shared multi-service OVH host** (G2 + Zab + Observer + Bushido
+  + Citadel stacks on one box, same IP). A runaway must not starve ZabGate or
+  the live show.
+- **Measured 2026-06-10**: `ssh vps-ovh "nproc"` → **8 vCPU**, 22 GiB RAM. The
+  original #89 cap of 1.0 was posted **conservatively, without SSH** (it
+  assumed a possible 2-vCPU tier). The real box is far larger.
+- **Cap now 2.0 = 25% of the host.** A single runaway scene saturates this
+  cgroup at 2 cores and can **never approach host saturation** — 6 cores (75%)
+  stay free for ZabGate, the show, and every co-tenant.
+- **Headroom for the show (R9-lift).** Exec goes live soon (ADR 006). A scene's
+  legitimate exec load and a runaway share **the same** `orion` cgroup; 1.0
+  would have throttled the show itself, 2.0 gives a busy-but-legitimate scene a
+  full core of slack above the runaway floor.
+- **Not higher.** 4.0 would hand half the host to one app cgroup whose normal
+  footprint is ~2% (7 MiB idle, exec dormant). 2.0 is a strict protective host
+  cap that still covers the show.
+- **Worker-pool coherence (P-3).** The async-effect pool
+  (`ORION_EFFECT_WORKERS`, étage-1 `.env`) must stay ~2x this cap. Default 8 is
+  now **incoherent** with a 2-core quota (8 workers over-subscribe the cgroup).
+  Recommend `ORION_EFFECT_WORKERS=4` (effects are I/O-bound — http/db/source —
+  so light over-subscription hides latency without saturating CPU quota);
+  `ORION_EFFECT_QUEUE=256` default holds (memory backpressure, not CPU).
 
-> **§Sizing — recalibration.** The exact core count was **not confirmable from
-> CI** (SSH to the VPS was unavailable when this landed). Confirm with
-> `ssh vps-ovh "nproc"` and, if the box is larger (e.g. 4–8 vCPU), the cap may
-> be relaxed — but keep enough headroom that a runaway can never approach host
-> saturation. The conservative 1.0 is correct until measured.
+> **§Sizing — recalibration.** Confirmed against the live box (`nproc` = 8).
+> Recalibrate again only if the co-tenant mix or the OVH plan changes; keep
+> enough headroom that a runaway can never approach host saturation (cap ≤ ~⅓
+> of cores). Bastion reconfirms the worker-pool/cap coherence to close P-3.
 
 ---
 
