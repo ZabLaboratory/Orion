@@ -72,9 +72,18 @@ type execOpOutcome struct {
 	// wheel).
 	timer    bool
 	deadline time.Time
+	// start, when non-nil, runs ONLY after the park was accepted
+	// (B8 cap / duplicate key shed nothing into the world) — the
+	// phase-3 async effects submit their worker-pool job through it,
+	// so a shed park never leaves an orphan in-flight effect.
+	start func()
 	// next, when non-nil and !park, overrides the default
 	// `then` continuation.
 	next *ExecTarget
+	// halt, when true and !park, ends THIS chain here (no default
+	// `then`): the effect completion path uses it when the relevant
+	// out pin is unwired. The task's other frames keep running.
+	halt bool
 }
 
 // execOpFn is an extension exec op. Runs on the scene goroutine.
@@ -185,9 +194,17 @@ func (s *Scene) execNode(t *execTask, id, port string) {
 			// per-iteration pins stay correct at resume time.
 			cont := &execTask{id: t.id, env: copyEnv(t.env)}
 			cont.pushNode(out.resume)
-			if s.parkTask(out.parkKey, cont) && out.timer {
-				s.wheelAdd(out.parkKey, out.deadline)
+			if s.parkTask(out.parkKey, cont) {
+				if out.timer {
+					s.wheelAdd(out.parkKey, out.deadline)
+				}
+				if out.start != nil {
+					out.start()
+				}
 			}
+			return
+		}
+		if out.halt {
 			return
 		}
 		if out.next != nil {

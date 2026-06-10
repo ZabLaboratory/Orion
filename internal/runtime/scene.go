@@ -33,6 +33,12 @@ type InputMsg struct {
 	// producer of resumes, behind its own role+token checks.
 	FireExec   string // exec entrypoint id to fire
 	ResumeExec string // wake key of a parked continuation to resume
+	// ResumeEnv carries the completion bindings of an async effect
+	// (phase 3, issue #85): merged into the parked continuation's
+	// environment on the scene goroutine, just before re-enqueue.
+	// Ownership transfers with the message — the producer (worker
+	// pool) never touches the map after Input.
+	ResumeEnv map[string]json.RawMessage
 }
 
 // SubscriberMsg is the union of messages a subscription receives.
@@ -166,6 +172,11 @@ type Scene struct {
 	execOps map[string]execOpFn
 	// execMetrics is the observability sink (nil = disabled).
 	execMetrics ExecMetrics
+	// effects bundles the phase-3 async-effect executors (issue #85).
+	// Installed by SetEffects pre-Run only; nil = effects unconfigured
+	// (every async-effect op then fails to its error port, fail-closed).
+	// R9: no production path installs it before the phase-4 gate.
+	effects *SceneEffects
 
 	// --- timer wheel / triggers / cancellation (issue #83) ------------
 	// clock is the injectable time source the wheel runs on
@@ -516,7 +527,7 @@ func (s *Scene) applyInput(msg InputMsg) {
 		return
 	}
 	if msg.ResumeExec != "" {
-		s.resumeParked(msg.ResumeExec)
+		s.resumeParkedWith(msg.ResumeExec, msg.ResumeEnv)
 		return
 	}
 	if s.state.Set(msg.Path, msg.Value) {

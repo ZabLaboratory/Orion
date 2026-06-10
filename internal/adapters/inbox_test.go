@@ -38,11 +38,11 @@ func sceneWithOperatorInput(t *testing.T, leaf string) *runtime.Scene {
 func TestSceneAcceptsPath_OperatorInput(t *testing.T) {
 	scene := sceneWithOperatorInput(t, "headline.text")
 
-	if !sceneAcceptsPath(scene, "headline.text") {
+	if !sceneAcceptsPath(scene, "headline.text", false) {
 		t.Fatal("write to declared operator_input leaf rejected — push of B would be dropped (delivered=false)")
 	}
 	// An undeclared leaf is still refused (no over-broad accept).
-	if sceneAcceptsPath(scene, "not.declared") {
+	if sceneAcceptsPath(scene, "not.declared", false) {
 		t.Fatal("undeclared leaf accepted — accept set is too broad")
 	}
 }
@@ -60,11 +60,11 @@ func TestSceneAcceptsPath_StaticSceneUnchanged(t *testing.T) {
 	scene := runtime.NewScene("scene-static", graph, bundle, runtime.NewComputeRegistry(), quietLogger())
 
 	// A leaf seeded in Defaults is accepted (pre-existing rule, unchanged).
-	if !sceneAcceptsPath(scene, "score.team_a") {
+	if !sceneAcceptsPath(scene, "score.team_a", false) {
 		t.Fatal("a default-seeded leaf must stay acceptable (M8 regression)")
 	}
 	// An undeclared leaf is refused.
-	if sceneAcceptsPath(scene, "headline.text") {
+	if sceneAcceptsPath(scene, "headline.text", false) {
 		t.Fatal("static scene must not accept an undeclared operator_input leaf")
 	}
 }

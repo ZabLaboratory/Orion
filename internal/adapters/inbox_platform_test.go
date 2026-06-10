@@ -51,10 +51,10 @@ func TestSceneAcceptsPath_PlatformStreamBinding(t *testing.T) {
 	scene := runtime.NewScene("scene-pf", platformGraph("scene-pf"),
 		&compiler.RenderBundle{SceneVersion: "sha256:test"}, runtime.NewComputeRegistry(), quietLogger())
 
-	if !sceneAcceptsPath(scene, twitchLeaf) {
+	if !sceneAcceptsPath(scene, twitchLeaf, false) {
 		t.Fatal("platform leaf refused despite the platform-stream binding — Quasar's write would be silently absorbed")
 	}
-	if sceneAcceptsPath(scene, "__inputs.platform.twitch.zabchannel.last_raid") {
+	if sceneAcceptsPath(scene, "__inputs.platform.twitch.zabchannel.last_raid", false) {
 		t.Fatal("an unbound platform leaf must stay refused (accept set too broad)")
 	}
 }

@@ -415,7 +415,14 @@ func (s *Scene) parkTask(key string, t *execTask) bool {
 // fireDueTimers. The phase-3 authenticated completion path
 // (B-syswrite) adds the token stamp + role check ABOVE this gate; the
 // version/epoch staleness check below stays as the inner gate.
-func (s *Scene) resumeParked(key string) {
+func (s *Scene) resumeParked(key string) { s.resumeParkedWith(key, nil) }
+
+// resumeParkedWith is resumeParked with completion bindings (phase 3,
+// issue #85): env entries are merged into the parked continuation's
+// environment before re-enqueue, so the resumed chain observes the
+// effect's outputs through the same task-env pins as loop bindings.
+// Scene goroutine only.
+func (s *Scene) resumeParkedWith(key string, env map[string]json.RawMessage) {
 	if ver, epoch, stamped := parseWakeStamp(key); stamped &&
 		(ver != s.graph.SceneVersion || epoch != s.execEpoch) {
 		// Version-stamped wake key of a cancelled epoch / another
@@ -435,6 +442,9 @@ func (s *Scene) resumeParked(key string) {
 		return
 	}
 	delete(s.execParked, key)
+	for k, v := range env {
+		t.env[k] = v
+	}
 	s.execQueue = append(s.execQueue, t)
 	s.reportParked()
 }
