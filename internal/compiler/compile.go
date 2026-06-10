@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/ZabLaboratory/Orion/internal/conformance"
 )
 
 // Compile turns a push envelope into a graph + bundle pair plus a
@@ -526,6 +528,25 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 	}
 
 	for _, n := range b.Nodes {
+		// Structural guard (ADR 006 §3.5): inline-only atoms placed in the
+		// main graph are a Blue authoring error (Blue raises
+		// db_node_outside_query for the same). Mirror that diagnostic.
+		// This check runs BEFORE the manifest lookup so the error message
+		// is structural rather than "unknown compute".
+		if sn, ok := conformance.Classify(n.Compute); ok && sn.Kind == conformance.KindInlineOnly {
+			diags = append(diags, Diagnostic{
+				Code:     ErrDBNodeOutsideQuery,
+				Severity: "error",
+				Message: fmt.Sprintf(
+					"blueprint node %s uses %q in the main graph — this atom is inline-only "+
+						"(legal only inside a core.db.query@1 config.inline_graph per Blue "+
+						"db_node_outside_query); it is served transitively by core.db.query@1",
+					n.ID, n.Compute),
+				Path: n.ID,
+			})
+			continue
+		}
+
 		entry, found := manifest[n.Compute]
 		if !found {
 			diags = append(diags, Diagnostic{

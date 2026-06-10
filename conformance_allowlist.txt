@@ -15,30 +15,13 @@
 # Format: one `node_id` per line. `#` starts a comment. Blank lines OK.
 #
 # -----------------------------------------------------------------------
-# core.db.* query-builder ATOMIC sub-nodes (6).
+# ADR 006 §3.5 (issue #107): the 6 core.db.* query-builder atoms
+# (core.db.{from,where,join,select,order,limit}@1) have been reclassified
+# KindInlineOnly in the conformance matrix (internal/conformance/conformance.go)
+# and dropped from this file. They are served transitively by OpDBQuery
+# (topology A) and are NOT a gap. The allowlist has reached its accepted
+# empty end-state (ADR 003 criterion 1).
 #
-# These are NOT standalone executable nodes. Per Blue's reference
-# executor (Blue/src/blue/services/executor.py:251-305) the
-# core.db.{from,where,join,select,order,limit}@1 atoms are *only* legal
-# INSIDE a core.db.query@1 node's `config.inline_graph`; placed in the
-# main graph, Blue itself raises `db_node_outside_query`. They have no
-# independent runtime semantics: they are a query plan that QueryMe (on
-# the DataSource-owning service) compiles into SQL when Orion's
-# core.db.query@1 executor delegates the inline_graph via
-# `POST /<svc>/api/v1/_query` (ADR 003 Amendment 1, topology A — Orion
-# holds no DB credential, no pgx, no SQL).
-#
-# core.db.query@1 IS served (exec effect OpDBQuery, tests in
-# internal/runtime/exec_effects_test.go::TestEffects_DBQueryTopologyA),
-# which transitively serves these atoms. They sit here because they are
-# manifest ids without a *standalone* Orion executor — a structural
-# fact, not a capability gap. Removing them from the allowlist requires
-# an executor that compiles an inline_graph standalone, which by Blue's
-# own contract is invalid; the maintainer's call (→ Atlas) is whether to
-# instead drop them from the conformance manifest as inline-only nodes.
-core.db.from@1
-core.db.where@1
-core.db.join@1
-core.db.select@1
-core.db.order@1
-core.db.limit@1
+# This file is intentionally EMPTY. The ratchet (allowlistRatchet = 0 in
+# conformance_test.go) is still armed: adding any id here without raising
+# the ratchet constant fails CI immediately.

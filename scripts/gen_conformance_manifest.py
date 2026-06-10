@@ -45,22 +45,42 @@ def main() -> int:
     from blue.services import stdlib_seeder
     from blue.services.node_purity import purity_for
 
+    # Inline-only atoms (ADR 006 §3.5 / issue #107): core.db.*
+    # query-builder atoms that Blue's executor contract restricts to
+    # core.db.query's config.inline_graph. They are served transitively
+    # by OpDBQuery and are NOT standalone-executable (Blue raises
+    # db_node_outside_query for a main-graph placement). The generator
+    # marks them inline_only=true so the vendored manifest reflects this
+    # classification — the conformance matrix classifies them KindInlineOnly.
+    _INLINE_ONLY_IDS = frozenset(
+        {
+            "core.db.from@1",
+            "core.db.join@1",
+            "core.db.limit@1",
+            "core.db.order@1",
+            "core.db.select@1",
+            "core.db.where@1",
+        }
+    )
+
     entries = []
     for n in stdlib_seeder._CORE_NODES:
         pur = purity_for(n["namespace"], n["name"])
-        entries.append(
-            {
-                "node_id": f"{n['namespace']}.{n['name']}@1",
-                "namespace": n["namespace"],
-                "name": n["name"],
-                "version": 1,
-                "category": n.get("category"),
-                "is_pure": pur["is_pure"],
-                "is_bounded": pur["is_bounded"],
-                "source": "stdlib",
-                "platform": None,
-            }
-        )
+        node_id = f"{n['namespace']}.{n['name']}@1"
+        entry = {
+            "node_id": node_id,
+            "namespace": n["namespace"],
+            "name": n["name"],
+            "version": 1,
+            "category": n.get("category"),
+            "is_pure": pur["is_pure"],
+            "is_bounded": pur["is_bounded"],
+            "source": "stdlib",
+            "platform": None,
+        }
+        if node_id in _INLINE_ONLY_IDS:
+            entry["inline_only"] = True
+        entries.append(entry)
     for event_type, _model in CANONICAL_EVENT_TYPES:
         entries.append(
             {
