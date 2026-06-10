@@ -19,6 +19,33 @@ type Metrics struct {
 	PushTotal      *prometheus.CounterVec
 	PushDuration   *prometheus.HistogramVec
 	AdapterErrors  *prometheus.CounterVec
+
+	// Exec-layer observability (ADR 003 §3.1.6, issue #82).
+	// EventShed counts B5 back-pressure sheds of NEW fires
+	// (`orion_event_shed_total`) — never a killed task. TaskPreempt
+	// counts time-slice yields (`orion_task_preempt_total`).
+	// ParkedTasks gauges parked continuations (`orion_parked_tasks`);
+	// TimerWheelSize (`orion_timer_wheel_size`) is registered now and
+	// fed by issue #83's timer wheel.
+	EventShed      *prometheus.CounterVec
+	TaskPreempt    *prometheus.CounterVec
+	ParkedTasks    *prometheus.GaugeVec
+	TimerWheelSize *prometheus.GaugeVec
+}
+
+// ExecEventShed implements the runtime's ExecMetrics seam.
+func (m *Metrics) ExecEventShed(sceneID string) {
+	m.EventShed.WithLabelValues(sceneID).Inc()
+}
+
+// ExecTaskPreempt implements the runtime's ExecMetrics seam.
+func (m *Metrics) ExecTaskPreempt(sceneID string) {
+	m.TaskPreempt.WithLabelValues(sceneID).Inc()
+}
+
+// ExecParkedTasks implements the runtime's ExecMetrics seam.
+func (m *Metrics) ExecParkedTasks(sceneID string, n int) {
+	m.ParkedTasks.WithLabelValues(sceneID).Set(float64(n))
 }
 
 // NewMetrics builds a fresh registry with Orion's metric set.
@@ -64,6 +91,22 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "adapter", Name: "errors_total"},
 			[]string{"kind", "key"},
 		),
+		EventShed: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "event", Name: "shed_total"},
+			[]string{"scene_id"},
+		),
+		TaskPreempt: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "task", Name: "preempt_total"},
+			[]string{"scene_id"},
+		),
+		ParkedTasks: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{Namespace: "orion", Subsystem: "parked", Name: "tasks"},
+			[]string{"scene_id"},
+		),
+		TimerWheelSize: prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{Namespace: "orion", Subsystem: "timer", Name: "wheel_size"},
+			[]string{"scene_id"},
+		),
 	}
 
 	r.MustRegister(
@@ -76,6 +119,10 @@ func NewMetrics() *Metrics {
 		m.PushTotal,
 		m.PushDuration,
 		m.AdapterErrors,
+		m.EventShed,
+		m.TaskPreempt,
+		m.ParkedTasks,
+		m.TimerWheelSize,
 	)
 	return m
 }

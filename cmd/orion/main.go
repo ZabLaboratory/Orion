@@ -72,6 +72,10 @@ func run() error {
 	// Runtime: compute registry → show → tick → test sessions.
 	registry := runtime.NewComputeRegistry()
 	show := runtime.NewShow(registry, logger)
+	// Exec-layer observability (ADR 003 §3.1.6, issue #82):
+	// orion_event_shed_total / orion_task_preempt_total /
+	// orion_parked_tasks land on the internal scrape endpoint.
+	show.SetExecMetrics(metrics)
 	defer show.Stop()
 
 	// LSDP/1.1 wire (ADR 007 §C.3b) — built and installed on the show
