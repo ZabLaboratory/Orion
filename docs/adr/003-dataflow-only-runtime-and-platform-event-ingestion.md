@@ -4,6 +4,11 @@
 - **Date**: 2026-06-10
 - **Revised**: 2026-06-10 — Bastion threat-model revision (E1/E2/E3 hardening
   in §4.5, §4.4 corrected to match `Inbox` reality, criteria 9–11 added)
+- **Revised (2)**: 2026-06-10 — Vigil review: §4.2 binding registration made
+  explicit (synthesized `platform-stream` binding in `graph.Bindings` — the
+  prior "existing machinery just works" was false against `sceneAcceptsPath`),
+  criterion 5 made falsifiable on acceptance, criterion 10b pinned to the
+  existing `scene.Input` bool return, criteria→issues mapping added (§7.13)
 - **Decided**: —
 - **Deciders**: @ClodoCapeo
 - **Author**: Atlas (architect agent)
@@ -257,9 +262,43 @@ For any manifest entry carrying a `platform` block (`types.go:310`),
    missing → `PLATFORM_CHANNEL_MISSING`, invalid → `PLATFORM_CHANNEL_INVALID`
    (fail-closed; an unvalidated channel string would otherwise inject dots
    into the leaf namespace) — mirrored producer-side in Quasar, §4.5 E1;
-3. emits the node as `Kind: "input"`, `Path: <expanded leaf>` — from there the
-   existing machinery just works: Quasar's `Inbox.Write` lands on that leaf,
-   the dirty walk recomputes downstream, deltas fan out.
+3. emits the node as `Kind: "input"`, `Path: <expanded leaf>`;
+4. **registers the leaf as accepted** by synthesizing a `platform-stream`
+   binding into `graph.Bindings`: one `ExternalAdapter{Kind: "platform-stream",
+   TargetPaths: [<expanded leaf>]}` per **distinct** expanded leaf in the scene
+   (deduplicated, deterministic order — the binding participates in
+   `scene_version` like the rest of the artefact; `Key`/`Channel` carry the
+   node id and expanded channel for observability). It is echoed in the
+   bundle's `ExternalAdapters` like any binding.
+
+Step 4 is **normative, not an implementation detail** — without it the design
+silently fails. `Inbox.Write` fans a write out **only** to scenes whose graph
+declares the path (`sceneAcceptsPath`, `inbox.go:102-124`: `Defaults` ∪
+`OperatorInputs` ∪ `Bindings[].TargetPaths`). A platform node lands in none of
+the three (`Defaults` is seeded only by `core.literal@1` and unwired ports,
+`compile.go:546-561`; `OperatorInputs` comes from the layout; `Bindings` is
+empty today): Quasar's write would pass the scope check and then be
+**silently absorbed** (`inbox.go:54`) — the accept-then-ignore §1.3 forbids,
+relocated to ingestion. This is the same failure class the M9 fix closed for
+operator inputs by registering their leaves in the consulted set
+(`compile_test.go:419-431`).
+
+Why `Bindings` and not the alternatives:
+
+- **Not `OperatorInputs`**: a platform leaf is not operator surface — that
+  collection feeds `GET /scenes/{id}/operator-inputs` and Prism's operator UI;
+  registering platform leaves there leaks them as operator-writable controls
+  and corrupts the collection's meaning.
+- **Not a third dedicated set**: a new `Graph` field means touching the
+  artefact shape, `sceneAcceptsPath`, `scene_version` hashing and fixtures —
+  for zero capability over `Bindings`, whose documented role is exactly "the
+  binding declaration that decides who receives the write" (ADR 004 §5) and
+  whose `Kind` enum **already names `platform-stream`** (`types.go:163`).
+- **`Bindings` is semantically exact**: the leaf *is* externally fed; the
+  adapter just lives in Quasar. The §B verdict "no Orion-side adapter" is
+  untouched — the synthesized binding is a compile-time **declaration**
+  consumed by `sceneAcceptsPath` (and observability); no Orion adapter
+  goroutine is spawned for `platform-stream` bindings, ever.
 
 The node's value at the leaf is the **whole canonical event** (payload, actor,
 ts, channel — as Quasar sends it); downstream extraction uses
@@ -273,11 +312,13 @@ version. Per-key namespacing from ADR 001 §3.3 does **not** apply to
 `__inputs.*` leaves (they are a shared external namespace, deliberately
 addressable by any blueprint in the scene).
 
-Scoped out, unchanged: `extractAdapters` remains a stub — its prod wiring for
-**http-poll / pg-listen** bindings is a real adjacent gap (audit §2) owned by
-the Canvas-extensions chantier, tracked as a follow-up, **not** required for
-platform events (no Orion-side adapter exists in this design, so there is
-nothing for it to declare).
+Scoped out, unchanged: `extractAdapters` remains a stub — it reads
+**layout-declared** adapters (http-poll / pg-listen, Canvas-authored), whose
+prod wiring is a real adjacent gap (audit §2) owned by the Canvas-extensions
+chantier, tracked as a follow-up. The `platform-stream` binding of §4.2.4 does
+**not** go through it: it is synthesized by the compiler from the blueprint
+node's manifest `platform` block, a separate compile path with no layout
+involvement.
 
 ### 4.3 Cross-repo consequences (Blue, Quasar)
 
@@ -469,10 +510,17 @@ Testable; CI-enforced where possible.
 4. **Registry tranche.** Every §3.3 compute is registered with unit tests
    (named-port inputs, null/missing-input behavior) and accepted by the
    compiler gate.
-5. **Platform leaf binding.** A blueprint with `quasar.twitch.chat@1`
-   (`config.channel = "ZabChannel"`) compiles to a graph node with
-   `Path == "__inputs.platform.twitch.zabchannel.last_chat"`; missing channel
-   → `PLATFORM_CHANNEL_MISSING`; channel `"a.b"` → `PLATFORM_CHANNEL_INVALID`.
+5. **Platform leaf binding — bound AND accepted.** A blueprint with
+   `quasar.twitch.chat@1` (`config.channel = "ZabChannel"`) compiles to
+   (a) a graph node with
+   `Path == "__inputs.platform.twitch.zabchannel.last_chat"`, **and**
+   (b) a `graph.Bindings` entry `Kind == "platform-stream"` carrying that path
+   in `TargetPaths`, **and** (c) — the falsifying assertion, same discipline
+   as the M9 test (`compile_test.go:419-431`) —
+   `sceneAcceptsPath(scene, "__inputs.platform.twitch.zabchannel.last_chat")
+   == true` on a scene loaded from the compiled graph: the pushed write is
+   *delivered*, not merely addressed. Missing channel →
+   `PLATFORM_CHANNEL_MISSING`; channel `"a.b"` → `PLATFORM_CHANNEL_INVALID`.
 6. **Cross-repo leaf contract.** For all 14 canonical event types, Blue's
    declared `signature.platform.leaf_path` (channel expanded) byte-equals
    Quasar's `leaf_path(event)` — asserted by a shared-fixture test present in
@@ -495,7 +543,12 @@ Testable; CI-enforced where possible.
     for one leaf within one coalescing window produce exactly one push
     carrying the **last** event. (b) Orion test: flooding a scene inbox past
     capacity increments `orion_inbox_dropped_total` and emits a rate-limited
-    warn — no silent drop path remains in `Inbox.Write`.
+    warn — no silent drop path remains in `Inbox.Write`. Mechanically:
+    `scene.Input` **already returns** the drop information
+    (`bool`, `scene.go:210-217`); the change is that `Inbox.Write` must
+    **consume** that return (today discarded, `inbox.go:86`) and count every
+    `false`. No signature change; discarding the return anywhere in
+    `Inbox.Write` is a criterion failure.
 11. **Token scope (E3).** Quasar requests its service token scoped
     `__inputs.platform.twitch.*`; an Orion test asserts a write to
     `__inputs.platform.youtube.x.last_chat` under that scope gets
@@ -504,3 +557,23 @@ Testable; CI-enforced where possible.
     trufflehog); Blue + Quasar CI green (ruff/mypy/pytest/pip-audit); review
     approved by **Vigil**; **Bastion** re-clearance on the revised ingestion
     surface (E1/E2/E3, R2/R3/R4/R8) before any merge touching it.
+
+13. **Criteria → issues mapping.** Every criterion above is owned by exactly
+    one implementation issue (criterion 12 is the org gate, owned by no
+    single issue):
+
+    | Criterion | Issue |
+    |---|---|
+    | 1 — exec rejection (`UNSUPPORTED_COMPUTE`) | Orion #69 |
+    | 2 — acceptance ⊆ registry, `orion_compute_unknown_total` | Orion #69 |
+    | 3 — named ports in the graph artefact | Orion #70 |
+    | 4 — pure data-node registry tranche | Orion #71 |
+    | 5 — platform leaf binding, `sceneAcceptsPath` accepted | Orion #72 |
+    | 6 — cross-repo leaf contract test | Blue #34 + Quasar #7 |
+    | 7 — end-to-end platform event | Orion #73 |
+    | 8 — restart semantics on a platform leaf | Orion #73 |
+    | 9 — producer-side leaf validation (E1) | Quasar #8 |
+    | 10a — producer coalescing (E2.1) | Quasar #8 |
+    | 10b — `orion_inbox_dropped_total`, return consumed (E2.2) | Orion #74 |
+    | 11 — token scope `__inputs.platform.twitch.*` (E3) | Quasar #8 (Orion-side scope test: #73) |
+    | 12 — org gates (CI, Vigil, Bastion re-clearance) | — (merge gate) |
