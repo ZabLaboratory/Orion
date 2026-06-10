@@ -52,6 +52,26 @@ type Metrics struct {
 	// completions a persistently full scene inbox refused.
 	HTTPEgressBlock *prometheus.CounterVec
 	EffectComplDrop *prometheus.CounterVec
+
+	// External completion endpoint (B-syswrite, issue #86).
+	// CompletionRejected (`orion_exec_completion_rejected_total`)
+	// counts dropped animation completion reports by reason: "role"
+	// (scope/role gate), "scene" (unknown scene), "kind", "malformed",
+	// "inbox" (full scene inbox) at the endpoint; "unknown" (no parked
+	// continuation — forged, cross-scene, or the benign loser of the
+	// report-vs-fallback race) from the runtime's resume gate. Stale
+	// version/epoch drops stay on `orion_exec_resume_stale_total`.
+	ComplRejected *prometheus.CounterVec
+}
+
+// CompletionRejected counts an endpoint-level completion drop (#86).
+func (m *Metrics) CompletionRejected(sceneID, reason string) {
+	m.ComplRejected.WithLabelValues(sceneID, reason).Inc()
+}
+
+// ExecResumeUnknown implements the runtime's ExecMetrics seam (#86).
+func (m *Metrics) ExecResumeUnknown(sceneID string) {
+	m.ComplRejected.WithLabelValues(sceneID, "unknown").Inc()
 }
 
 // HTTPEgressBlocked implements the runtime's EffectMetrics seam.
@@ -178,6 +198,10 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "effect", Name: "completion_dropped_total"},
 			[]string{"scene_id"},
 		),
+		ComplRejected: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "exec", Name: "completion_rejected_total"},
+			[]string{"scene_id", "reason"},
+		),
 	}
 
 	r.MustRegister(
@@ -199,6 +223,7 @@ func NewMetrics() *Metrics {
 		m.InboxDrop,
 		m.HTTPEgressBlock,
 		m.EffectComplDrop,
+		m.ComplRejected,
 	)
 	return m
 }

@@ -61,6 +61,10 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/scenes/{id}/operator-inputs", getOperatorInputs(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/graph", getGraph(deps))
 	mux.HandleFunc("POST /api/v1/scenes/{id}/status", postSceneStatus(deps))
+	// External animation completion report (B-syswrite, issue #86).
+	// R9: registered but inert until the phase-4 gate — exec dormant in
+	// prod, so every report drops as an unknown wake key, 202.
+	mux.HandleFunc("POST /api/v1/scenes/{id}/exec/completion", postExecCompletion(deps))
 
 	mux.HandleFunc("GET /api/v1/show", getShow(deps))
 	mux.HandleFunc("POST /api/v1/show/active-scene", postActiveScene(deps))

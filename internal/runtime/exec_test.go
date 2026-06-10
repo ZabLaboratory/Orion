@@ -19,13 +19,26 @@ import (
 
 // fakeExecMetrics is a race-safe ExecMetrics sink for assertions.
 type fakeExecMetrics struct {
-	mu          sync.Mutex
-	shed        int
-	preempt     int
-	parked      int
-	wheel       int
-	parkDropped map[string]int // by reason ("duplicate_key", "cap")
-	resumeStale int
+	mu            sync.Mutex
+	shed          int
+	preempt       int
+	parked        int
+	wheel         int
+	parkDropped   map[string]int // by reason ("duplicate_key", "cap")
+	resumeStale   int
+	resumeUnknown int
+}
+
+func (f *fakeExecMetrics) ExecResumeUnknown(string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resumeUnknown++
+}
+
+func (f *fakeExecMetrics) unknown() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.resumeUnknown
 }
 
 func (f *fakeExecMetrics) ExecTimerWheelSize(_ string, n int) {

@@ -202,6 +202,13 @@ type ExecMetrics interface {
 	// stamp check (`orion_exec_resume_stale_total`, ADR 003 §3.1.4):
 	// a wake key minted before a cancellation resumes nothing.
 	ExecResumeStale(sceneID string)
+	// ExecResumeUnknown counts a resume whose wake key matches no
+	// parked continuation (issue #86,
+	// `orion_exec_completion_rejected_total{reason="unknown"}`): a
+	// forged/cross-scene external report, OR the benign loser of the
+	// report-vs-duration-fallback race (the winner consumed the key).
+	// Either way it is dropped and resumes nothing.
+	ExecResumeUnknown(sceneID string)
 }
 
 // Exec scheduling defaults (ADR 003 §3.1.3: "after a step budget —
@@ -437,7 +444,13 @@ func (s *Scene) resumeParkedWith(key string, env map[string]json.RawMessage) {
 	}
 	t, ok := s.execParked[key]
 	if !ok {
-		// Unknown wake key: dropped, logged — resumes nothing.
+		// Unknown wake key: dropped, logged, counted — resumes nothing.
+		// This is gate (4) of the external completion contract (#86)
+		// AND the idempotent second resolution of the report-vs-
+		// duration-fallback race (the first resolver consumed the key).
+		if s.execMetrics != nil {
+			s.execMetrics.ExecResumeUnknown(s.id)
+		}
 		s.logger.Warn("exec resume for unknown wake key", "key", key)
 		return
 	}
