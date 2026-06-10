@@ -45,7 +45,7 @@ func TestE2E_Conformance_OneOfEachServedType(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bp, manifest, wantLeaves := buildOneOfEachBlueprint(t)
+	bp, manifest, computeLeaves, platformLeaves := buildOneOfEachBlueprint(t)
 	fetcher := &stubFetcher{
 		layouts: map[string]*compiler.CanvasLayout{
 			"v1": {Version: "v1", Root: compiler.LayoutNode{Kind: "stack", ID: "root"}},
@@ -76,21 +76,46 @@ func TestE2E_Conformance_OneOfEachServedType(t *testing.T) {
 		t.Fatal("no active scene after activation")
 	}
 
-	// Observe the live snapshot — exactly what a subscriber sees.
+	// Compute nodes: every value is observable in the live snapshot —
+	// exactly what a subscriber sees.
 	sub, snap := active.Subscribe(8)
 	t.Cleanup(func() { active.Detach(sub) })
 
 	var missing []string
-	for _, leaf := range wantLeaves {
+	for _, leaf := range computeLeaves {
 		if _, ok := snap.State[leaf]; !ok {
 			missing = append(missing, leaf)
 		}
 	}
 	if len(missing) > 0 {
-		t.Fatalf("%d served node(s) produced no observable leaf: %v", len(missing), missing)
+		t.Fatalf("%d compute node(s) produced no observable leaf: %v", len(missing), missing)
 	}
-	t.Logf("criterion 2 (compiler-servable subset): %d served node leaves observable on air",
-		len(wantLeaves))
+
+	// Platform nodes: each is an INPUT leaf written by Quasar, not a
+	// computed value — it is absent from the cold snapshot (no default
+	// seeded) until a platform event arrives. Its "served" proof is that
+	// the compiler BOUND it: the leaf is a node Path in the live graph
+	// (and a platform-stream binding accepts the write — criterion 8).
+	// Assert the binding landed for every platform node.
+	graphPaths := map[string]bool{}
+	for _, n := range active.Graph().Nodes {
+		if n.Path != "" {
+			graphPaths[n.Path] = true
+		}
+	}
+	var unbound []string
+	for _, leaf := range platformLeaves {
+		if !graphPaths[leaf] {
+			unbound = append(unbound, leaf)
+		}
+	}
+	if len(unbound) > 0 {
+		t.Fatalf("%d platform node(s) not bound to their leaf in the live graph: %v",
+			len(unbound), unbound)
+	}
+
+	t.Logf("criterion 2 (compiler-servable subset): %d compute leaves observable on air, "+
+		"%d platform leaves bound", len(computeLeaves), len(platformLeaves))
 }
 
 // buildOneOfEachBlueprint constructs a blueprint with one node of each
@@ -98,8 +123,8 @@ func TestE2E_Conformance_OneOfEachServedType(t *testing.T) {
 // returns. Pure computes are fed a literal and drained into an output
 // sink so each yields a distinct observable leaf; platform nodes bind
 // their __inputs.platform leaf directly. Returns (blueprint, manifest,
-// expected observable leaves).
-func buildOneOfEachBlueprint(t *testing.T) (*compiler.BlueprintGraph, compiler.ComputeManifest, []string) {
+// compute leaves [snapshot-observable], platform leaves [binding-observable]).
+func buildOneOfEachBlueprint(t *testing.T) (*compiler.BlueprintGraph, compiler.ComputeManifest, []string, []string) {
 	t.Helper()
 
 	manifest := compiler.ComputeManifest{
@@ -108,7 +133,8 @@ func buildOneOfEachBlueprint(t *testing.T) (*compiler.BlueprintGraph, compiler.C
 	}
 	var nodes []compiler.BlueprintNode
 	var edges []compiler.BlueprintEdge
-	var wantLeaves []string
+	var computeLeaves []string
+	var platformLeaves []string
 
 	// A shared literal source feeding every compute's `a`/`value` port.
 	nodes = append(nodes, compiler.BlueprintNode{
@@ -144,7 +170,7 @@ func buildOneOfEachBlueprint(t *testing.T) (*compiler.BlueprintGraph, compiler.C
 				compiler.BlueprintEdge{FromNode: "lit", ToNode: nodeID, ToPort: "a"},
 				compiler.BlueprintEdge{FromNode: nodeID, ToNode: outID, ToPort: "value"},
 			)
-			wantLeaves = append(wantLeaves, leafName)
+			computeLeaves = append(computeLeaves, leafName)
 			idx++
 
 		case conformance.KindPlatformBound:
@@ -158,7 +184,7 @@ func buildOneOfEachBlueprint(t *testing.T) (*compiler.BlueprintGraph, compiler.C
 				Config:  map[string]json.RawMessage{"channel": json.RawMessage(`"zabchannel"`)},
 			})
 			// Expanded leaf: __inputs.platform.twitch.zabchannel.last_<event>.
-			wantLeaves = append(wantLeaves,
+			platformLeaves = append(platformLeaves,
 				"__inputs.platform.twitch.zabchannel.last_"+e.Name)
 			idx++
 
@@ -171,5 +197,5 @@ func buildOneOfEachBlueprint(t *testing.T) (*compiler.BlueprintGraph, compiler.C
 		}
 	}
 
-	return &compiler.BlueprintGraph{ID: "bp-all", Nodes: nodes, Edges: edges}, manifest, wantLeaves
+	return &compiler.BlueprintGraph{ID: "bp-all", Nodes: nodes, Edges: edges}, manifest, computeLeaves, platformLeaves
 }
