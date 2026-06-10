@@ -1,8 +1,8 @@
 # ADR 003 — Full Blue execution engine (exec + dataflow) + scene-validation gate + platform-event ingestion
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-06-10
-- **Decided**: —
+- **Decided**: 2026-06-10
 - **Deciders**: @ClodoCapeo
 - **Author**: Atlas (architect agent)
 - **Supersedes**: ADR 003 « dataflow-only runtime » (accepted 2026-06-10, **reversed
