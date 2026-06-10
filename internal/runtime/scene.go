@@ -219,6 +219,17 @@ type Scene struct {
 	execOnStart []string
 	execOnTick  []string
 	execOnEvent map[string][]string
+
+	// --- validation mode (ADR 003 §3.2, issue #87) -------------------
+	// validationMode makes the effect seam STRUCTURALLY inert (B10): a
+	// world-touching async op is routed through validationEffect in
+	// execNode and its I/O closure is never invoked. Set pre-Run only by
+	// the validation harness; false for every live/test scene.
+	validationMode bool
+	// validation captures per-entrypoint observations (leaves, effects,
+	// node coverage) while a validation campaign fires entrypoints.
+	// nil outside a campaign — every record* call is then a no-op.
+	validation *validationCapture
 }
 
 type computeEntry struct {

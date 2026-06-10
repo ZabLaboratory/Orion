@@ -183,43 +183,28 @@ func (s *Scene) execNode(t *execTask, id, port string) {
 		s.logger.Error("exec: unknown node id", "node", id)
 		return
 	}
+	s.validation.recordNode(id)
+	// Validation mode (B10, issue #87): a world-touching async op is
+	// resolved through the SINGLE inert seam — its I/O closure never runs.
+	// This is checked BEFORE op dispatch, so no registered effect can
+	// reach a socket / pgx / live source in validation mode. The seam owns
+	// BOTH the initial entry (park + synthetic completion) AND the
+	// completion re-entry (bind the declared-shape result, walk `then`),
+	// so the op never needs SetEffects installed — the harness proves
+	// scenes whose effects are not wired in the clone.
+	if s.validationMode {
+		if _, world := worldEffectOps[node.Op]; world {
+			if port == effectCompletePort {
+				s.applyOutcome(t, node, s.validationFinish(t, node))
+			} else {
+				s.applyOutcome(t, node, s.validationEffect(node))
+			}
+			return
+		}
+	}
 	// Extension ops first (delay/#83, async effects/phase 3, tests).
 	if fn, ok := s.execOps[node.Op]; ok {
-		out := fn(s, t, node, port)
-		if out.park {
-			// Fork the suspended chain into its own continuation:
-			// the surrounding task continues with its remaining
-			// frames (sequence siblings / loop iterations) — UE
-			// latent semantics. The environment is snapshotted so
-			// per-iteration pins stay correct at resume time.
-			cont := &execTask{id: t.id, env: copyEnv(t.env)}
-			cont.pushNode(out.resume)
-			if s.parkTask(out.parkKey, cont) {
-				if out.timer {
-					s.wheelAdd(out.parkKey, out.deadline)
-				}
-				if out.start != nil {
-					out.start()
-				}
-			}
-			// A park may ALSO continue the current task immediately:
-			// `animation.play`'s `then` fires now while `completed`
-			// waits parked (issue #86). Honoured even when the park was
-			// shed (B8/dup) — only the completion continuation is lost,
-			// counted; the immediate path is never amputated (§1.1).
-			if out.next != nil {
-				t.pushNode(*out.next)
-			}
-			return
-		}
-		if out.halt {
-			return
-		}
-		if out.next != nil {
-			t.pushNode(*out.next)
-			return
-		}
-		t.pushNodeIfNext(node, "then")
+		s.applyOutcome(t, node, fn(s, t, node, port))
 		return
 	}
 
@@ -260,6 +245,49 @@ func (s *Scene) execNode(t *execTask, id, port string) {
 	default:
 		s.logger.Error("exec: unregistered exec op", "op", node.Op, "node", id)
 	}
+}
+
+// applyOutcome applies an extension op's execOpOutcome to the task: the
+// park/fork + timer + start machinery, the immediate `next`, the `halt`,
+// or the default `then`. Extracted so the validation-mode seam
+// (validationEffect, issue #87) reuses the EXACT same park semantics as a
+// live effect — the inert seam differs only in what `start` does (deliver
+// a synthetic completion vs submit a worker job), never in scheduling.
+func (s *Scene) applyOutcome(t *execTask, node *ExecNode, out execOpOutcome) {
+	if out.park {
+		// Fork the suspended chain into its own continuation: the
+		// surrounding task continues with its remaining frames (sequence
+		// siblings / loop iterations) — UE latent semantics. The
+		// environment is snapshotted so per-iteration pins stay correct
+		// at resume time.
+		cont := &execTask{id: t.id, env: copyEnv(t.env)}
+		cont.pushNode(out.resume)
+		if s.parkTask(out.parkKey, cont) {
+			if out.timer {
+				s.wheelAdd(out.parkKey, out.deadline)
+			}
+			if out.start != nil {
+				out.start()
+			}
+		}
+		// A park may ALSO continue the current task immediately:
+		// `animation.play`'s `then` fires now while `completed` waits
+		// parked (issue #86). Honoured even when the park was shed
+		// (B8/dup) — only the completion continuation is lost, counted;
+		// the immediate path is never amputated (§1.1).
+		if out.next != nil {
+			t.pushNode(*out.next)
+		}
+		return
+	}
+	if out.halt {
+		return
+	}
+	if out.next != nil {
+		t.pushNode(*out.next)
+		return
+	}
+	t.pushNodeIfNext(node, "then")
 }
 
 // execGate implements UE gate semantics: persistent open/closed state

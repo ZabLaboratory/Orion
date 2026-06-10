@@ -32,6 +32,18 @@ type Graph struct {
 	// Same shape as the bundle's; persisted on the graph too so
 	// adapters that don't load Solar can fetch it directly.
 	OperatorInputs []OperatorInput `json:"operator_inputs"`
+
+	// ExecPrograms carries the compiled exec layer — one entry per
+	// blueprint (ADR 003 §3.1, issue #87). Each entry is an opaque
+	// runtime.ExecProgram serialized as JSON: the compiler does NOT
+	// know its schema (the runtime owns it), so it travels as raw bytes,
+	// exactly like the store treats graph/bundle. The field is
+	// omitempty: the compiler PARTITION that emits programs is a future
+	// issue (R9 — exec stays dormant until then), so today's artefacts
+	// carry nothing here and stay byte-identical. The validation harness
+	// (#87) reads this set; an empty set means a pure-dataflow scene,
+	// which validates trivially.
+	ExecPrograms []json.RawMessage `json:"exec_programs,omitempty"`
 }
 
 // GraphNode is one node in the topologically-sorted DAG.
