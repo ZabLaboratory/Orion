@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Regenerate internal/conformance/manifest.json from Blue's source of truth.
+
+ADR 003 §6 criterion 1 (total conformance). The conformance matrix
+asserts every Blue compute-manifest node id has a registered Orion
+executor + a passing execution test. That matrix runs OFFLINE in CI
+(no Blue service), so the canonical node-id set is vendored in-tree as
+`internal/conformance/manifest.json`.
+
+This script re-derives that file directly from Blue's seeded stdlib and
+its purity map — the same sources `GET /_compute-manifest` serves at
+runtime — so the vendored copy can never silently drift from the
+authoring language. Run it from a checkout where Blue is reachable on
+the path (sibling repo at ../../../Blue), then commit the diff.
+
+    python scripts/gen_conformance_manifest.py [path-to-Blue/src]
+
+The default Blue source path assumes the étage-1 sibling layout
+(`<structure>/Blue/src`). Pass an explicit path otherwise.
+
+When this script changes the output, a Blue node type was added,
+removed, or re-classified. That is a deliberate cross-repo event: the
+new id either gains an Orion executor + test, or lands on
+`conformance_allowlist.txt` with a documented reason — never silently.
+"""
+
+import json
+import os
+import sys
+
+
+def main() -> int:
+    here = os.path.dirname(os.path.abspath(__file__))
+    repo = os.path.dirname(here)
+    default_blue_src = os.path.normpath(
+        os.path.join(repo, "..", "..", "Blue", "src")
+    )
+    blue_src = sys.argv[1] if len(sys.argv) > 1 else default_blue_src
+    if not os.path.isdir(blue_src):
+        print(f"error: Blue src not found at {blue_src}", file=sys.stderr)
+        return 2
+    sys.path.insert(0, blue_src)
+
+    from blue.models.canonical import CANONICAL_EVENT_TYPES
+    from blue.services import stdlib_seeder
+    from blue.services.node_purity import purity_for
+
+    entries = []
+    for n in stdlib_seeder._CORE_NODES:
+        pur = purity_for(n["namespace"], n["name"])
+        entries.append(
+            {
+                "node_id": f"{n['namespace']}.{n['name']}@1",
+                "namespace": n["namespace"],
+                "name": n["name"],
+                "version": 1,
+                "category": n.get("category"),
+                "is_pure": pur["is_pure"],
+                "is_bounded": pur["is_bounded"],
+                "source": "stdlib",
+                "platform": None,
+            }
+        )
+    for event_type, _model in CANONICAL_EVENT_TYPES:
+        entries.append(
+            {
+                "node_id": f"quasar.twitch.{event_type}@1",
+                "namespace": "quasar.twitch",
+                "name": event_type,
+                "version": 1,
+                "category": "platform-event",
+                "is_pure": True,
+                "is_bounded": True,
+                "source": "stdlib",
+                "platform": {"name": "twitch"},
+            }
+        )
+
+    entries.sort(key=lambda e: e["node_id"])
+    out_path = os.path.join(repo, "internal", "conformance", "manifest.json")
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump({"count": len(entries), "entries": entries}, f, indent=2)
+        f.write("\n")
+    print(f"wrote {len(entries)} entries to {out_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

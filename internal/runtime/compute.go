@@ -102,6 +102,19 @@ func (r *ComputeRegistry) Register(id string, fn ComputeFn) {
 	r.fns[id] = fn
 }
 
+// IDs returns the set of registered compute ids. The conformance matrix
+// (ADR 003 §6 criterion 1) uses it to prove the declared
+// data-layer-served node set matches what the registry actually
+// installs — so a node claimed "served by the compute registry" that
+// nobody registered fails CI, not air.
+func (r *ComputeRegistry) IDs() []string {
+	out := make([]string, 0, len(r.fns))
+	for id := range r.fns {
+		out = append(out, id)
+	}
+	return out
+}
+
 // passthrough returns the node's single inbound value. Since issue #79
 // (ADR 003 §3.1.1) `gatherInputs` delivers a compiled sink's one
 // upstream under its DECLARED port name — the stdlib `value` input —

@@ -1,0 +1,924 @@
+{
+  "count": 81,
+  "entries": [
+    {
+      "node_id": "core.animation.play@1",
+      "namespace": "core.animation",
+      "name": "play",
+      "version": 1,
+      "category": "side-effect",
+      "is_pure": false,
+      "is_bounded": false,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.cast.to-boolean@1",
+      "namespace": "core.cast",
+      "name": "to-boolean",
+      "version": 1,
+      "category": "cast",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.cast.to-float@1",
+      "namespace": "core.cast",
+      "name": "to-float",
+      "version": 1,
+      "category": "cast",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.cast.to-integer@1",
+      "namespace": "core.cast",
+      "name": "to-integer",
+      "version": 1,
+      "category": "cast",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.cast.to-string@1",
+      "namespace": "core.cast",
+      "name": "to-string",
+      "version": 1,
+      "category": "cast",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.compare.equal@1",
+      "namespace": "core.compare",
+      "name": "equal",
+      "version": 1,
+      "category": "comparison",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.compare.greater-equal@1",
+      "namespace": "core.compare",
+      "name": "greater-equal",
+      "version": 1,
+      "category": "comparison",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.compare.greater-than@1",
+      "namespace": "core.compare",
+      "name": "greater-than",
+      "version": 1,
+      "category": "comparison",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.compare.less-equal@1",
+      "namespace": "core.compare",
+      "name": "less-equal",
+      "version": 1,
+      "category": "comparison",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.compare.less-than@1",
+      "namespace": "core.compare",
+      "name": "less-than",
+      "version": 1,
+      "category": "comparison",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.compare.not-equal@1",
+      "namespace": "core.compare",
+      "name": "not-equal",
+      "version": 1,
+      "category": "comparison",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.data.aggregate@1",
+      "namespace": "core.data",
+      "name": "aggregate",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.data.get-field@1",
+      "namespace": "core.data",
+      "name": "get-field",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.data.list-append@1",
+      "namespace": "core.data",
+      "name": "list-append",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.data.list-at@1",
+      "namespace": "core.data",
+      "name": "list-at",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.data.list-length@1",
+      "namespace": "core.data",
+      "name": "list-length",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.data.set-field@1",
+      "namespace": "core.data",
+      "name": "set-field",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.db.from@1",
+      "namespace": "core.db",
+      "name": "from",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.db.join@1",
+      "namespace": "core.db",
+      "name": "join",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.db.limit@1",
+      "namespace": "core.db",
+      "name": "limit",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.db.order@1",
+      "namespace": "core.db",
+      "name": "order",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.db.query@1",
+      "namespace": "core.db",
+      "name": "query",
+      "version": 1,
+      "category": "data",
+      "is_pure": false,
+      "is_bounded": false,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.db.select@1",
+      "namespace": "core.db",
+      "name": "select",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.db.where@1",
+      "namespace": "core.db",
+      "name": "where",
+      "version": 1,
+      "category": "data",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.event.on-event@1",
+      "namespace": "core.event",
+      "name": "on-event",
+      "version": 1,
+      "category": "event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.event.on-start@1",
+      "namespace": "core.event",
+      "name": "on-start",
+      "version": 1,
+      "category": "event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.event.on-tick@1",
+      "namespace": "core.event",
+      "name": "on-tick",
+      "version": 1,
+      "category": "event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.flow.branch@1",
+      "namespace": "core.flow",
+      "name": "branch",
+      "version": 1,
+      "category": "control-flow",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.flow.delay@1",
+      "namespace": "core.flow",
+      "name": "delay",
+      "version": 1,
+      "category": "control-flow",
+      "is_pure": false,
+      "is_bounded": false,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.flow.for-each@1",
+      "namespace": "core.flow",
+      "name": "for-each",
+      "version": 1,
+      "category": "control-flow",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.flow.for-loop@1",
+      "namespace": "core.flow",
+      "name": "for-loop",
+      "version": 1,
+      "category": "control-flow",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.flow.gate@1",
+      "namespace": "core.flow",
+      "name": "gate",
+      "version": 1,
+      "category": "control-flow",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.flow.select@1",
+      "namespace": "core.flow",
+      "name": "select",
+      "version": 1,
+      "category": "control-flow",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.flow.sequence@1",
+      "namespace": "core.flow",
+      "name": "sequence",
+      "version": 1,
+      "category": "control-flow",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.flow.while@1",
+      "namespace": "core.flow",
+      "name": "while",
+      "version": 1,
+      "category": "control-flow",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.http-request@1",
+      "namespace": "core",
+      "name": "http-request",
+      "version": 1,
+      "category": "io",
+      "is_pure": false,
+      "is_bounded": false,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.http.request@1",
+      "namespace": "core.http",
+      "name": "request",
+      "version": 1,
+      "category": "io",
+      "is_pure": false,
+      "is_bounded": false,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.input@1",
+      "namespace": "core",
+      "name": "input",
+      "version": 1,
+      "category": "io",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.literal@1",
+      "namespace": "core",
+      "name": "literal",
+      "version": 1,
+      "category": "io",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.logic.and@1",
+      "namespace": "core.logic",
+      "name": "and",
+      "version": 1,
+      "category": "logic",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.logic.not@1",
+      "namespace": "core.logic",
+      "name": "not",
+      "version": 1,
+      "category": "logic",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.logic.or@1",
+      "namespace": "core.logic",
+      "name": "or",
+      "version": 1,
+      "category": "logic",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.logic.xor@1",
+      "namespace": "core.logic",
+      "name": "xor",
+      "version": 1,
+      "category": "logic",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.abs@1",
+      "namespace": "core.math",
+      "name": "abs",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.add@1",
+      "namespace": "core.math",
+      "name": "add",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.ceil@1",
+      "namespace": "core.math",
+      "name": "ceil",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.clamp@1",
+      "namespace": "core.math",
+      "name": "clamp",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.div@1",
+      "namespace": "core.math",
+      "name": "div",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.floor@1",
+      "namespace": "core.math",
+      "name": "floor",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.lerp@1",
+      "namespace": "core.math",
+      "name": "lerp",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.max@1",
+      "namespace": "core.math",
+      "name": "max",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.min@1",
+      "namespace": "core.math",
+      "name": "min",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.mod@1",
+      "namespace": "core.math",
+      "name": "mod",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.mul@1",
+      "namespace": "core.math",
+      "name": "mul",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.round@1",
+      "namespace": "core.math",
+      "name": "round",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.math.sub@1",
+      "namespace": "core.math",
+      "name": "sub",
+      "version": 1,
+      "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.output@1",
+      "namespace": "core",
+      "name": "output",
+      "version": 1,
+      "category": "io",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.print@1",
+      "namespace": "core",
+      "name": "print",
+      "version": 1,
+      "category": "io",
+      "is_pure": false,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.source.read@1",
+      "namespace": "core.source",
+      "name": "read",
+      "version": 1,
+      "category": "data",
+      "is_pure": false,
+      "is_bounded": false,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.string.concat@1",
+      "namespace": "core.string",
+      "name": "concat",
+      "version": 1,
+      "category": "string",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.string.format@1",
+      "namespace": "core.string",
+      "name": "format",
+      "version": 1,
+      "category": "string",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.string.length@1",
+      "namespace": "core.string",
+      "name": "length",
+      "version": 1,
+      "category": "string",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.string.lower@1",
+      "namespace": "core.string",
+      "name": "lower",
+      "version": 1,
+      "category": "string",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.string.split@1",
+      "namespace": "core.string",
+      "name": "split",
+      "version": 1,
+      "category": "string",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.string.upper@1",
+      "namespace": "core.string",
+      "name": "upper",
+      "version": 1,
+      "category": "string",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.variable.get@1",
+      "namespace": "core.variable",
+      "name": "get",
+      "version": 1,
+      "category": "variable",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.variable.set@1",
+      "namespace": "core.variable",
+      "name": "set",
+      "version": 1,
+      "category": "variable",
+      "is_pure": false,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "quasar.twitch.channel_point_redemption@1",
+      "namespace": "quasar.twitch",
+      "name": "channel_point_redemption",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.chat@1",
+      "namespace": "quasar.twitch",
+      "name": "chat",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.cheer@1",
+      "namespace": "quasar.twitch",
+      "name": "cheer",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.follow@1",
+      "namespace": "quasar.twitch",
+      "name": "follow",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.poll_begin@1",
+      "namespace": "quasar.twitch",
+      "name": "poll_begin",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.poll_end@1",
+      "namespace": "quasar.twitch",
+      "name": "poll_end",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.prediction_begin@1",
+      "namespace": "quasar.twitch",
+      "name": "prediction_begin",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.prediction_end@1",
+      "namespace": "quasar.twitch",
+      "name": "prediction_end",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.prediction_lock@1",
+      "namespace": "quasar.twitch",
+      "name": "prediction_lock",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.raid@1",
+      "namespace": "quasar.twitch",
+      "name": "raid",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.stream_offline@1",
+      "namespace": "quasar.twitch",
+      "name": "stream_offline",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.stream_online@1",
+      "namespace": "quasar.twitch",
+      "name": "stream_online",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.subscription@1",
+      "namespace": "quasar.twitch",
+      "name": "subscription",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    },
+    {
+      "node_id": "quasar.twitch.subscription_gift@1",
+      "namespace": "quasar.twitch",
+      "name": "subscription_gift",
+      "version": 1,
+      "category": "platform-event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": {
+        "name": "twitch"
+      }
+    }
+  ]
+}
