@@ -96,6 +96,22 @@ type Scene struct {
 	// recompute loop walks.
 	computeOrder []computeEntry
 
+	// O(1) load-time indexes (issue #80, ADR 003 §3.1.5). Built once
+	// in NewScene, read-only afterwards (scene goroutine only).
+	//
+	// nodePath maps a node id to the state path its value lives at
+	// (GraphNode.Path, or the node id for unnamed intermediates) —
+	// replaces the per-lookup linear scan of graph.Nodes.
+	nodePath map[string]string
+	// consumers maps a state path to the computeOrder indexes of the
+	// nodes that read it as an upstream. This is the reverse-adjacency
+	// index the dirty-cone walk follows downstream.
+	consumers map[string][]int
+	// pending accumulates the state paths whose value actually changed
+	// since the last recompute (applyInput writes that Set accepted).
+	// They seed the dirty cone; recompute consumes and clears them.
+	pending map[string]struct{}
+
 	// mirror, when non-nil, taps every outbound message for a second
 	// wire (LSDP/1.1 via lumencast-go — ADR 007 §C.3b). nil = bespoke
 	// mode, the tap is inert.
@@ -125,6 +141,16 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 		done:   make(chan struct{}),
 	}
 	s.state.Seed(graph.Defaults)
+	// O(1) node-id → state-path index (issue #80): one pass, then
+	// every upstreamPath call is a map hit instead of an O(N) scan.
+	s.nodePath = make(map[string]string, len(graph.Nodes))
+	for _, n := range graph.Nodes {
+		if n.Path != "" {
+			s.nodePath[n.ID] = n.Path
+		} else {
+			s.nodePath[n.ID] = n.ID
+		}
+	}
 	for _, n := range graph.Nodes {
 		// The dirty-check upstream set derives from the NAMED wiring when
 		// the artefact carries it (issue #79) — Inputs is authoritative;
@@ -139,6 +165,28 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 			}
 		}
 		s.computeOrder = append(s.computeOrder, computeEntry{node: n, upstream: up})
+	}
+	// Reverse-adjacency index (issue #80, ADR 003 §3.1.5): for each
+	// recomputable node, register it as a consumer of every upstream
+	// state path. The dirty-cone walk seeds from the changed paths and
+	// follows this index downstream — cost proportional to the affected
+	// cone, never the scene. Input-kind nodes never recompute, so they
+	// take no consumer entry.
+	s.consumers = make(map[string][]int)
+	s.pending = make(map[string]struct{})
+	for idx, ce := range s.computeOrder {
+		if ce.node.Kind == "input" {
+			continue
+		}
+		seen := make(map[string]struct{}, len(ce.upstream))
+		for _, up := range ce.upstream {
+			p := s.upstreamPath(up)
+			if _, dup := seen[p]; dup {
+				continue // two ports off the same upstream — index once
+			}
+			seen[p] = struct{}{}
+			s.consumers[p] = append(s.consumers[p], idx)
+		}
 	}
 	// Cold-start compute: Seed only fills constant/input leaves, so without
 	// an initial forced pass every COMPUTED leaf (math/compare/logic/output)
@@ -301,9 +349,14 @@ func (s *Scene) SubscriberCount() int {
 }
 
 // applyInput writes the input to state, marking the leaf dirty if
-// the value actually changed.
+// the value actually changed. A changed path is also recorded as a
+// dirty-cone seed for the next recompute (issue #80); an idempotent
+// write (Set returned false) seeds nothing — exactly the writes the
+// previous IsDirty walk would have ignored.
 func (s *Scene) applyInput(msg InputMsg) {
-	s.state.Set(msg.Path, msg.Value)
+	if s.state.Set(msg.Path, msg.Value) {
+		s.pending[msg.Path] = struct{}{}
+	}
 }
 
 // drainNonBlocking pulls every input already sitting in the inbox.
@@ -320,59 +373,141 @@ func (s *Scene) drainNonBlocking() {
 	}
 }
 
-// recompute walks the topo-sorted compute list, recomputing every
-// node whose upstream is dirty. A node whose computed value didn't
-// change is dropped (Set returns false), which prevents needless
-// patches downstream.
+// recompute re-evaluates the graph. force=true (cold start only)
+// walks the full topo-sorted compute list once. force=false walks the
+// DIRTY CONE only (issue #80, ADR 003 §3.1.5): the paths applyInput
+// changed seed a topo-index-ordered queue; each recomputed node whose
+// value changed pushes its own consumers. Cost is proportional to the
+// affected subgraph, not the scene — the 20 k enabler. Popping in
+// ascending topo index guarantees every producer runs before its
+// consumers, so the semantics are identical to the previous full walk
+// with per-node IsDirty checks (a node recomputes iff some upstream
+// value actually changed; an unchanged computed value — Set returns
+// false — stops the propagation exactly as before).
 func (s *Scene) recompute(force bool) {
-	for _, ce := range s.computeOrder {
-		if ce.node.Kind == "input" {
-			// inputs are written directly by adapters; nothing to
-			// recompute here.
-			continue
+	if force {
+		for i := range s.computeOrder {
+			s.computeAt(i)
 		}
-		if !force {
-			anyDirty := false
-			for _, up := range ce.upstream {
-				if s.state.IsDirty(s.upstreamPath(up)) {
-					anyDirty = true
-					break
-				}
-			}
-			if !anyDirty {
-				continue
-			}
-		}
-
-		// Gather upstream values under their DECLARED port names — the
-		// artefact carries each edge's to_port (issue #79, ADR 003
-		// §3.1.1), so wiring is edge-order-independent. Pre-#79
-		// artefacts (no Inputs) fall back to positional `a..d`.
-		args := s.gatherInputs(ce)
-		fn, err := s.cmpReg.Get(ce.node.Compute)
-		if err != nil {
-			s.logger.Error("unknown compute", "compute", ce.node.Compute, "node", ce.node.ID, "err", err)
-			continue
-		}
-		val, err := fn(args, ce.node.Config)
-		if err != nil {
-			s.logger.Warn("compute error", "compute", ce.node.Compute, "node", ce.node.ID, "err", err)
-			continue
-		}
-		// Persist the result so downstream nodes can read it. A named
-		// sink/leaf (output/input/literal → Path) writes its public leaf;
-		// an INTERMEDIATE compute (core.math.*/compare/logic, Path=="")
-		// writes to its node id — the exact address upstreamPath falls
-		// back to, so a multi-stage graph (literal→add→output) actually
-		// chains. Without this an intermediate's value vanished and every
-		// downstream node read null (the real compiler gives intermediates
-		// Path==""; only hand-built test graphs assigned them a Path).
-		leaf := ce.node.Path
-		if leaf == "" {
-			leaf = ce.node.ID
-		}
-		s.state.Set(leaf, val)
+		clear(s.pending)
+		return
 	}
+	if len(s.pending) == 0 {
+		return
+	}
+	var queue topoQueue
+	queued := make(map[int]struct{})
+	push := func(idx int) {
+		if _, dup := queued[idx]; dup {
+			return
+		}
+		queued[idx] = struct{}{}
+		queue.push(idx)
+	}
+	for p := range s.pending {
+		for _, idx := range s.consumers[p] {
+			push(idx)
+		}
+	}
+	clear(s.pending)
+	for queue.len() > 0 {
+		idx := queue.pop()
+		leaf, changed := s.computeAt(idx)
+		if !changed {
+			continue
+		}
+		for _, j := range s.consumers[leaf] {
+			push(j)
+		}
+	}
+}
+
+// computeAt evaluates one computeOrder entry and persists its result.
+// Returns the state path written and whether the value changed (an
+// input-kind node, an unknown compute or a compute error all report
+// unchanged — same skip semantics as the previous loop body).
+func (s *Scene) computeAt(i int) (string, bool) {
+	ce := s.computeOrder[i]
+	if ce.node.Kind == "input" {
+		// inputs are written directly by adapters; nothing to
+		// recompute here.
+		return "", false
+	}
+	// Gather upstream values under their DECLARED port names — the
+	// artefact carries each edge's to_port (issue #79, ADR 003
+	// §3.1.1), so wiring is edge-order-independent. Pre-#79
+	// artefacts (no Inputs) fall back to positional `a..d`.
+	args := s.gatherInputs(ce)
+	fn, err := s.cmpReg.Get(ce.node.Compute)
+	if err != nil {
+		s.logger.Error("unknown compute", "compute", ce.node.Compute, "node", ce.node.ID, "err", err)
+		return "", false
+	}
+	val, err := fn(args, ce.node.Config)
+	if err != nil {
+		s.logger.Warn("compute error", "compute", ce.node.Compute, "node", ce.node.ID, "err", err)
+		return "", false
+	}
+	// Persist the result so downstream nodes can read it. A named
+	// sink/leaf (output/input/literal → Path) writes its public leaf;
+	// an INTERMEDIATE compute (core.math.*/compare/logic, Path=="")
+	// writes to its node id — the exact address upstreamPath falls
+	// back to, so a multi-stage graph (literal→add→output) actually
+	// chains. Without this an intermediate's value vanished and every
+	// downstream node read null (the real compiler gives intermediates
+	// Path==""; only hand-built test graphs assigned them a Path).
+	leaf := ce.node.Path
+	if leaf == "" {
+		leaf = ce.node.ID
+	}
+	return leaf, s.state.Set(leaf, val)
+}
+
+// topoQueue is a binary min-heap over computeOrder indexes. Popping in
+// ascending index order IS topological order (computeOrder is the
+// compiler's topo sort), which is what makes the dirty-cone walk
+// correct: every producer is evaluated before any of its consumers.
+// O(cone · log cone) total; ints only, zero allocations beyond the
+// backing slice.
+type topoQueue struct{ h []int }
+
+func (q *topoQueue) len() int { return len(q.h) }
+
+func (q *topoQueue) push(x int) {
+	q.h = append(q.h, x)
+	i := len(q.h) - 1
+	for i > 0 {
+		parent := (i - 1) / 2
+		if q.h[parent] <= q.h[i] {
+			break
+		}
+		q.h[parent], q.h[i] = q.h[i], q.h[parent]
+		i = parent
+	}
+}
+
+func (q *topoQueue) pop() int {
+	root := q.h[0]
+	n := len(q.h) - 1
+	q.h[0] = q.h[n]
+	q.h = q.h[:n]
+	i := 0
+	for {
+		l := 2*i + 1
+		if l >= n {
+			break
+		}
+		small := l
+		if r := l + 1; r < n && q.h[r] < q.h[l] {
+			small = r
+		}
+		if q.h[i] <= q.h[small] {
+			break
+		}
+		q.h[i], q.h[small] = q.h[small], q.h[i]
+		i = small
+	}
+	return root
 }
 
 // gatherInputs assembles the port-name → value map a compute reads.
@@ -409,17 +544,14 @@ func (s *Scene) gatherInputs(ce computeEntry) map[string]json.RawMessage {
 	return out
 }
 
-// upstreamPath maps an upstream node id back to a state path. v1
-// scaffold: the node's OutputAt is the path; if the upstream node
-// is itself an input (no path), we fall back to the node's id.
+// upstreamPath maps an upstream node id back to a state path: the
+// node's Path, or the node's own id when it has none (inputs and
+// unnamed intermediates). O(1) via the load-time index (issue #80,
+// ADR 003 §3.1.5) — this used to linear-scan graph.Nodes per lookup,
+// O(N²) per recompute pass at scale.
 func (s *Scene) upstreamPath(nodeID string) string {
-	for _, n := range s.graph.Nodes {
-		if n.ID == nodeID {
-			if n.Path != "" {
-				return n.Path
-			}
-			return nodeID
-		}
+	if p, ok := s.nodePath[nodeID]; ok {
+		return p
 	}
 	return nodeID
 }
