@@ -31,8 +31,16 @@ type Metrics struct {
 	// and "cap" (B8 shed of a NEW park). ResumeStale
 	// (`orion_exec_resume_stale_total`) counts resumes dropped by the
 	// version/epoch wake-key stamp after a cancellation (§3.1.4).
+	// TaskCPUSeconds (`orion_task_cpu_seconds_total`) accumulates the
+	// per-scene-version aggregate exec CPU (ADR 003 §3.1.6 B7, issue
+	// #89): time-slicing protects the scene loop, not the host, so a
+	// validated-then-pathological scene is made OBSERVABLE here. It is
+	// an incident signal — the alert threshold + runbook and the
+	// compose-level CPU isolation belong to Keeper; the engine never
+	// kills off it (doctrine §1.1).
 	EventShed      *prometheus.CounterVec
 	TaskPreempt    *prometheus.CounterVec
+	TaskCPUSeconds *prometheus.CounterVec
 	ParkedTasks    *prometheus.GaugeVec
 	TimerWheelSize *prometheus.GaugeVec
 	ParkDropped    *prometheus.CounterVec
@@ -97,6 +105,13 @@ func (m *Metrics) ExecEventShed(sceneID string) {
 // ExecTaskPreempt implements the runtime's ExecMetrics seam.
 func (m *Metrics) ExecTaskPreempt(sceneID string) {
 	m.TaskPreempt.WithLabelValues(sceneID).Inc()
+}
+
+// ExecCPUSeconds implements the runtime's ExecMetrics seam (B7, #89):
+// one exec slice's elapsed seconds, accumulated per (scene_id,
+// scene_version).
+func (m *Metrics) ExecCPUSeconds(sceneID, sceneVersion string, seconds float64) {
+	m.TaskCPUSeconds.WithLabelValues(sceneID, sceneVersion).Add(seconds)
 }
 
 // ExecParkedTasks implements the runtime's ExecMetrics seam.
@@ -170,6 +185,10 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "task", Name: "preempt_total"},
 			[]string{"scene_id"},
 		),
+		TaskCPUSeconds: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "task", Name: "cpu_seconds_total"},
+			[]string{"scene_id", "scene_version"},
+		),
 		ParkedTasks: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{Namespace: "orion", Subsystem: "parked", Name: "tasks"},
 			[]string{"scene_id"},
@@ -216,6 +235,7 @@ func NewMetrics() *Metrics {
 		m.AdapterErrors,
 		m.EventShed,
 		m.TaskPreempt,
+		m.TaskCPUSeconds,
 		m.ParkedTasks,
 		m.TimerWheelSize,
 		m.ParkDropped,

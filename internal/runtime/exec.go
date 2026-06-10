@@ -214,6 +214,16 @@ type ExecMetrics interface {
 	// report-vs-duration-fallback race (the winner consumed the key).
 	// Either way it is dropped and resumes nothing.
 	ExecResumeUnknown(sceneID string)
+	// ExecCPUSeconds accumulates the elapsed time of one exec time
+	// slice into the per-scene-version aggregate CPU counter
+	// (`orion_task_cpu_seconds_total`, ADR 003 §3.1.6 B7, issue #89).
+	// Time-slicing protects the scene LOOP; this counter is what makes
+	// a scene that burns the HOST observable. It is an incident
+	// SIGNAL: the alert threshold and the deployment-level isolation
+	// (compose CPU limits) are operated outside the engine (Keeper) —
+	// the runtime never kills, skips or bounds a task off it
+	// (doctrine §1.1).
+	ExecCPUSeconds(sceneID, sceneVersion string, seconds float64)
 }
 
 // Exec scheduling defaults (ADR 003 §3.1.3: "after a step budget —
@@ -485,6 +495,20 @@ func (s *Scene) runExecSlice() {
 	t := s.execQueue[0]
 	s.execQueue = s.execQueue[1:]
 	start := time.Now()
+	// B7 CPU accounting (ADR 003 §3.1.6, issue #89): the elapsed time
+	// of this slice is accumulated on `orion_task_cpu_seconds_total`
+	// at EVERY exit (completion or preemption). Slices never block —
+	// latent ops park and async effects run on the worker pool — so
+	// the slice's monotonic wall delta is the scene goroutine's exec
+	// CPU to a good approximation, measured without touching scene
+	// state or adding any cross-goroutine contention. time.Since is
+	// monotonic: the delta is never negative (no -0 hazard feeding
+	// the counter).
+	defer func() {
+		if s.execMetrics != nil {
+			s.execMetrics.ExecCPUSeconds(s.id, s.graph.SceneVersion, time.Since(start).Seconds())
+		}
+	}()
 	for steps := 0; ; {
 		if len(t.frames) == 0 {
 			return // task complete
