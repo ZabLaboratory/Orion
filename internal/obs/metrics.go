@@ -43,6 +43,25 @@ type Metrics struct {
 	// #84). The inbox consumes scene.Input's return and increments here
 	// instead of silently discarding the loss.
 	InboxDrop *prometheus.CounterVec
+
+	// Phase-3 async effects (ADR 003 §3.1.3, issue #85).
+	// HTTPEgressBlocked (`orion_http_egress_blocked_total`) counts
+	// `http.request` egress-policy denials (R2/B1) — the effect resumes
+	// down its `error` port, never a crash. EffectCompletionDropped
+	// (`orion_effect_completion_dropped_total`) counts worker-pool
+	// completions a persistently full scene inbox refused.
+	HTTPEgressBlock *prometheus.CounterVec
+	EffectComplDrop *prometheus.CounterVec
+}
+
+// HTTPEgressBlocked implements the runtime's EffectMetrics seam.
+func (m *Metrics) HTTPEgressBlocked(sceneID string) {
+	m.HTTPEgressBlock.WithLabelValues(sceneID).Inc()
+}
+
+// EffectCompletionDropped implements the runtime's EffectMetrics seam.
+func (m *Metrics) EffectCompletionDropped(sceneID string) {
+	m.EffectComplDrop.WithLabelValues(sceneID).Inc()
 }
 
 // InboxDropped implements the adapters' InboxMetrics seam.
@@ -151,6 +170,14 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "inbox", Name: "dropped_total"},
 			[]string{"scene_id"},
 		),
+		HTTPEgressBlock: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "http", Name: "egress_blocked_total"},
+			[]string{"scene_id"},
+		),
+		EffectComplDrop: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "effect", Name: "completion_dropped_total"},
+			[]string{"scene_id"},
+		),
 	}
 
 	r.MustRegister(
@@ -170,6 +197,8 @@ func NewMetrics() *Metrics {
 		m.ParkDropped,
 		m.ResumeStale,
 		m.InboxDrop,
+		m.HTTPEgressBlock,
+		m.EffectComplDrop,
 	)
 	return m
 }

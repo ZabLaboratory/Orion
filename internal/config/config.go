@@ -68,6 +68,31 @@ type Config struct {
 	BlueBaseURL        string
 	TickHz             int
 	PushTimeout        time.Duration
+
+	// --- phase-3 async effects (ADR 003 §3.1.3, issue #85) ---
+	// Parsed and validated here so the étage-1 contract is fixed; the
+	// runtime wiring is gated behind the phase-4 validation gate (R9 —
+	// exec stays dormant in prod until #87).
+	//
+	// HTTPEgressAllowHosts is the `http.request` host allowlist
+	// (ORION_HTTP_EGRESS_ALLOW_HOSTS, CSV of hostnames). Empty =
+	// deny-all (fail-closed).
+	HTTPEgressAllowHosts []string
+	// HTTPEgressAllowHTTP relaxes the https-only egress policy
+	// (ORION_HTTP_EGRESS_ALLOW_HTTP, default false).
+	HTTPEgressAllowHTTP bool
+	// DataSources is the parsed ORION_DATASOURCES allowlist
+	// (`<logical_name>=<zabgate_svc>`, CSV). Empty = no db.query
+	// DataSource declared (DATASOURCE_NOT_DECLARED at compile).
+	DataSources map[string]string
+	// ZabGateURL is the gateway base the `_query` delegation calls
+	// (ORION_ZABGATE_URL). Required iff DataSources is non-empty.
+	ZabGateURL string
+	// EffectWorkers / EffectQueue bound the async-effect worker pool
+	// (ORION_EFFECT_WORKERS / ORION_EFFECT_QUEUE).
+	EffectWorkers int
+	EffectQueue   int
+
 	HTTPPollUserAgent  string
 	LogLevel           string
 	LogFormat          LogFormat
@@ -141,6 +166,50 @@ func Load() (Config, error) {
 		problems = append(problems, "ORION_AUTH_CACHE_TTL_S must be >= 0")
 	} else {
 		cfg.AuthCacheTTL = time.Duration(v) * time.Second
+	}
+
+	// Phase-3 async-effect config (issue #85). Parsed fail-closed: the
+	// egress allowlist defaults to empty (deny-all), https-only.
+	cfg.HTTPEgressAllowHosts = splitCSV(getenv("ORION_HTTP_EGRESS_ALLOW_HOSTS", ""))
+	switch strings.ToLower(getenv("ORION_HTTP_EGRESS_ALLOW_HTTP", "false")) {
+	case "false", "0", "no":
+		cfg.HTTPEgressAllowHTTP = false
+	case "true", "1", "yes":
+		cfg.HTTPEgressAllowHTTP = true
+	default:
+		problems = append(problems, "ORION_HTTP_EGRESS_ALLOW_HTTP must be a boolean")
+	}
+	cfg.ZabGateURL = strings.TrimRight(getenv("ORION_ZABGATE_URL", ""), "/")
+	cfg.DataSources = map[string]string{}
+	for _, part := range splitCSV(getenv("ORION_DATASOURCES", "")) {
+		name, svc, ok := strings.Cut(part, "=")
+		name, svc = strings.TrimSpace(name), strings.TrimSpace(svc)
+		if !ok || name == "" || svc == "" {
+			problems = append(problems, fmt.Sprintf("ORION_DATASOURCES entry %q is not <name>=<svc>", part))
+			continue
+		}
+		if _, dup := cfg.DataSources[name]; dup {
+			problems = append(problems, fmt.Sprintf("ORION_DATASOURCES duplicate name %q", name))
+			continue
+		}
+		cfg.DataSources[name] = svc
+	}
+	if len(cfg.DataSources) > 0 && cfg.ZabGateURL == "" {
+		problems = append(problems, "ORION_ZABGATE_URL is required when ORION_DATASOURCES is set")
+	}
+	if v, err := getInt("ORION_EFFECT_WORKERS", 8); err != nil {
+		problems = append(problems, err.Error())
+	} else if v <= 0 {
+		problems = append(problems, "ORION_EFFECT_WORKERS must be > 0")
+	} else {
+		cfg.EffectWorkers = v
+	}
+	if v, err := getInt("ORION_EFFECT_QUEUE", 256); err != nil {
+		problems = append(problems, err.Error())
+	} else if v <= 0 {
+		problems = append(problems, "ORION_EFFECT_QUEUE must be > 0")
+	} else {
+		cfg.EffectQueue = v
 	}
 
 	if cfg.DatabaseURL == "" {
