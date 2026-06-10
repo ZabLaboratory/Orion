@@ -1,6 +1,6 @@
 # ADR 003 — Dataflow-only runtime (exec-pin rejection) + platform-event ingestion via Quasar push
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-06-10
 - **Revised**: 2026-06-10 — Bastion threat-model revision (E1/E2/E3 hardening
   in §4.5, §4.4 corrected to match `Inbox` reality, criteria 9–11 added)
@@ -9,7 +9,9 @@
   prior "existing machinery just works" was false against `sceneAcceptsPath`),
   criterion 5 made falsifiable on acceptance, criterion 10b pinned to the
   existing `scene.Input` bool return, criteria→issues mapping added (§7.13)
-- **Decided**: —
+- **Decided**: 2026-06-10 (Vigil review approved rev 2 — §4.2 binding,
+  §7.5/§7.10b/§7.13 verified against types.go:163, inbox.go:102-124,
+  scene.go:209-217; Bastion clearance held)
 - **Deciders**: @ClodoCapeo
 - **Author**: Atlas (architect agent)
 - **Supersedes**: —
