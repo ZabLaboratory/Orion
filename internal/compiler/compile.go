@@ -572,6 +572,17 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 			defaults[n.ID+"."+p.Name] = p.Default
 		}
 
+		// Carry config to the runtime for COMPUTED nodes only (issue
+		// #81): Blue's handlers receive (inputs, config) and the pure
+		// data tranche needs it (get-field/set-field `path`, aggregate
+		// `op`). input/output/literal configs are already lowered into
+		// Path / Defaults above — carrying them again would only churn
+		// the scene_version hash for nothing.
+		var cfg map[string]json.RawMessage
+		if kind == "computed" && len(n.Config) > 0 {
+			cfg = n.Config
+		}
+
 		nodes = append(nodes, GraphNode{
 			ID:        n.ID,
 			Kind:      kind,
@@ -581,6 +592,7 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 			Inputs:    inputs[n.ID],
 			IsPure:    entry.IsPure,
 			IsBounded: entry.IsBounded,
+			Config:    cfg,
 		})
 	}
 	return nodes, defaults, diags

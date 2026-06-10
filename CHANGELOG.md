@@ -11,6 +11,29 @@ publishes with empty notes.
 
 ## [Unreleased]
 
+### ✨ Features
+
+- **Pure data-node registry tranche — 27 executors** (ADR 003 §3.4
+  phase 0, issue #81). The runtime compute registry now serves
+  `core.logic.{and,or,xor}`, `core.math.{abs,min,max,clamp,lerp,round,
+  floor,ceil}`, `core.string.{concat,format,length,split,upper,lower}`,
+  `core.cast.{to-string,to-integer,to-float,to-boolean}` and
+  `core.data.{get-field,set-field,list-length,list-at,list-append,
+  aggregate}`, each faithful to Blue's reference executor
+  (`executor.py`) — Python-truthiness logic, banker's rounding,
+  first-argument-wins min/max ties (signed-zero-exact), strict
+  integer guard on `list-at`, signature defaults on unwired ports.
+  `core.data.get-field` is the phase 2 platform-payload extractor.
+  (`internal/runtime/compute_pure.go`)
+- **Node config carried into the graph artefact** (issue #81). The
+  compiler now copies a computed blueprint node's `config` object onto
+  `GraphNode.Config` (additive, `omitempty`), and `ComputeFn` receives
+  it — mirroring Blue's `handler(inputs, config, state)` contract so
+  config-bearing pure nodes (`get-field`/`set-field` `path`,
+  `aggregate` `op`) can execute. Pre-existing artefacts and
+  config-less nodes are byte-identical. (`internal/compiler/graph.go`,
+  `internal/runtime/compute.go`)
+
 ## [1.1.0] - 2026-06-10
 
 Second release of the Go runtime. v1.1.0 is the **Lumencast-convergence

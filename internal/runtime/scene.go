@@ -354,7 +354,7 @@ func (s *Scene) recompute(force bool) {
 			s.logger.Error("unknown compute", "compute", ce.node.Compute, "node", ce.node.ID, "err", err)
 			continue
 		}
-		val, err := fn(args)
+		val, err := fn(args, ce.node.Config)
 		if err != nil {
 			s.logger.Warn("compute error", "compute", ce.node.Compute, "node", ce.node.ID, "err", err)
 			continue
