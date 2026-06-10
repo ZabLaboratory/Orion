@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -349,18 +350,23 @@ func (t *validationTimer) Reset(time.Duration) {}
 // by the budget rather than spun forever on a real goroutine.
 func (s *Scene) RunValidationEntrypoint(entry string, env map[string]json.RawMessage, budget ValidationBudget) EntrypointResult {
 	res := EntrypointResult{Entrypoint: entry}
-	if s.execProg == nil {
+	if len(s.execProgs) == 0 {
 		res.FailReason = "no exec program"
 		res.WallMS = floatToJSON(0)
 		return res
 	}
-	e, ok := s.execProg.Entrypoints[entry]
+	ref, ok := s.resolveEntry(entry)
 	if !ok {
 		res.FailReason = "unknown entrypoint"
 		res.WallMS = floatToJSON(0)
 		return res
 	}
-	res.Kind, res.Event = e.Kind, e.Event
+	// The report names the entrypoint by its program-LOCAL id; the
+	// blueprint key is already carried separately on the blueprintReport
+	// (issue #105: the namespaced key is an index/firing concern, the
+	// report keeps the author-facing local id).
+	res.Entrypoint = strings.TrimPrefix(entry, ref.prog.BlueprintKey+"/")
+	res.Kind, res.Event = ref.entry.Kind, ref.entry.Event
 
 	s.validation = newValidationCapture()
 	clk, _ := s.clock.(*validationClock)

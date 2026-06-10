@@ -145,8 +145,18 @@ type Scene struct {
 	// All of the following is owned by the scene goroutine after Run
 	// starts; the Set*/Install* mutators are pre-Run only.
 	//
-	// execProg is the installed exec program (shared, read-only).
-	execProg *ExecProgram
+	// execProgs holds every installed exec program of this scene, keyed
+	// by blueprint_key (shared, read-only after InstallExec). A live
+	// scene hosts ALL of its blueprints' programs (issue #105); a
+	// validation clone hosts exactly one. nil/empty = no exec layer (every
+	// prod scene until the phase-4 activation gate — exec stays dormant).
+	execProgs map[string]*ExecProgram
+	// execEntries resolves a namespaced trigger key `<blueprint_key>/<id>`
+	// to the owning program and the program-local entrypoint. Built by
+	// InstallExec, read-only after; the firing paths look entries up here
+	// so a task is born bound to the right program (its node ids and
+	// blueprint key are program-local). Issue #105.
+	execEntries map[string]execEntryRef
 	// execQueue is the FIFO of runnable tasks: round-robin via
 	// runExecSlice (pop head, re-enqueue at tail on preemption) —
 	// deterministic order, never map-driven.
@@ -558,7 +568,7 @@ func (s *Scene) applyInput(msg InputMsg) {
 	// write, so a fired task's data pulls observe the new value. Both
 	// fire on the WRITE, not on the value change: an event carrying
 	// the same payload twice is two events.
-	if s.execProg == nil {
+	if len(s.execProgs) == 0 {
 		return
 	}
 	if len(s.execOnTick) > 0 && msg.Path == tickPath {
@@ -593,8 +603,10 @@ func (s *Scene) fireOnTick(value json.RawMessage) {
 	raw := json.RawMessage(strconv.FormatFloat(delta, 'g', -1, 64))
 	for _, k := range s.execOnTick {
 		var env map[string]json.RawMessage
-		if node := s.execProg.Entrypoints[k].Node; node != "" {
-			env = map[string]json.RawMessage{node + ".delta_seconds": raw}
+		if ref, ok := s.execEntries[k]; ok {
+			if node := ref.entry.Node; node != "" {
+				env = map[string]json.RawMessage{node + ".delta_seconds": raw}
+			}
 		}
 		s.enqueueFireEnv(k, env)
 	}

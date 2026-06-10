@@ -55,18 +55,18 @@ func NewTestSessionManager(registry *ComputeRegistry, logger *slog.Logger, grace
 // (the inputs are copies; the scene's loop runs in its own goroutine
 // without touching the live show).
 //
-// prog, when non-nil, installs the scene's exec layer (ADR 003 §3.1):
-// test sessions are where exec runs before the phase-4 gate (R9), and
-// each open fires `on-start` (§3.1.3). The API handler passes nil
-// until the compiler partition emits programs — inert until then.
-func (m *TestSessionManager) Open(ctx context.Context, sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, prog *ExecProgram) (string, *Scene) {
+// progs, when non-empty, installs the scene's exec layer — the full set
+// of the scene's blueprint programs (ADR 003 §3.1; multi-program lift,
+// ADR 006 §3.3 / issue #105): test sessions are where exec runs before
+// the phase-4 gate (R9), and each open fires every `on-start` (§3.1.3).
+// The API handler passes nil until the compiler partition emits programs
+// — inert until then.
+func (m *TestSessionManager) Open(ctx context.Context, sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, progs ...*ExecProgram) (string, *Scene) {
 	id := uuid.NewString()
 	gcopy := *graph
 	bcopy := *bundle
 	scene := NewScene(sceneID, &gcopy, &bcopy, m.registry, m.logger.With("test_session", id))
-	if prog != nil {
-		scene.InstallExec(prog)
-	}
+	scene.InstallExec(progs...)
 	go scene.Run(ctx)
 	scene.FireOnStart("system:test-session")
 
