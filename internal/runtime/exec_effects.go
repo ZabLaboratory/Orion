@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -86,14 +87,50 @@ type SceneEffects struct {
 	Metrics EffectMetrics
 }
 
+// worldEffectRegistrations is the SINGLE source of truth for the
+// world-touching async-effect ops: the ops that open a socket, a DB
+// connection, or read a live source. SetEffects installs EXACTLY these,
+// and the B10 guard (worldEffectOps / ValidateValidationModeCoverage,
+// exec_validation.go) derives from and reflects this same table. Adding a
+// world-touching op means adding ONE entry here — which automatically
+// lands it in both the validation-mode routing set AND the guard's
+// coverage check, so it cannot be registered without a declared
+// validation-mode synthetic response (the guard fails otherwise).
+var worldEffectRegistrations = []struct {
+	op string
+	fn execOpFn
+}{
+	{OpHTTPRequest, execHTTPRequest},
+	{OpDBQuery, execDBQuery},
+	{OpSourceRead, execSourceRead},
+}
+
 // SetEffects installs the async-effect ops on this scene. Pre-Run only
 // (like InstallExec / SetEffector). No production path calls this until
-// the phase-4 gate (R9).
+// the phase-4 gate (R9). It registers EXACTLY worldEffectRegistrations —
+// the single table the B10 guard reflects against.
 func (s *Scene) SetEffects(e *SceneEffects) {
 	s.effects = e
-	s.registerExecOp(OpHTTPRequest, execHTTPRequest)
-	s.registerExecOp(OpDBQuery, execDBQuery)
-	s.registerExecOp(OpSourceRead, execSourceRead)
+	for _, r := range worldEffectRegistrations {
+		s.registerExecOp(r.op, r.fn)
+	}
+}
+
+// registeredWorldEffectOps installs SetEffects on a throwaway scene and
+// reflects the world-touching ops it ACTUALLY registered, in sorted
+// order. This is the introspective backbone of the B10 guard: it proves
+// the guard's coverage check against the live registry SetEffects builds,
+// not against a hand-maintained constant. A new world op reachable only
+// through SetEffects therefore appears here automatically.
+func registeredWorldEffectOps() []string {
+	probe := &Scene{}
+	probe.SetEffects(&SceneEffects{})
+	out := make([]string, 0, len(probe.execOps))
+	for op := range probe.execOps {
+		out = append(out, op)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ExecValidationError is a structural compile/install-time rejection

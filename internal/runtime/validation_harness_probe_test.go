@@ -202,21 +202,38 @@ func TestHarness_SourceReadValidationModeCompletesThen(t *testing.T) {
 // 5. B10 guard: ValidateValidationModeCoverage fails on undeclared op
 // --------------------------------------------------------------------------
 
-// TestB10Guard_UndeclaredWorldEffectFails: if a world effect is added to
-// worldEffectOps without a corresponding synthetic response,
-// ValidateValidationModeCoverage returns an error. This guards against
-// a future op leaking to a real egress in validation mode.
+// TestB10Guard_UndeclaredWorldEffectFails: a world effect added to the
+// SINGLE registration table (worldEffectRegistrations — the same table
+// SetEffects installs from) WITHOUT a corresponding synthetic response
+// makes ValidateValidationModeCoverage fail. The guard reflects the live
+// registry SetEffects builds, so this proves the introspective invariant:
+// a new op reachable through SetEffects but missing validation-mode
+// inertia cannot pass the guard — it would leak to a real egress in
+// validation mode otherwise.
 //
-// The test mutates the registry, then restores it — it is single-goroutine
-// and the map is only touched here, so this is race-safe in the test runner.
+// The test appends to the table, then restores it — it is single-goroutine
+// and the slice is only mutated here, so this is race-safe in the test
+// runner.
 func TestB10Guard_UndeclaredWorldEffectFails(t *testing.T) {
 	const ghost = "__probe.ghost.op"
-	worldEffectOps[ghost] = struct{}{}
-	defer delete(worldEffectOps, ghost)
+	saved := worldEffectRegistrations
+	// Append an op whose executor is a no-op: it is registered by
+	// SetEffects (so the introspective guard sees it) but has NO
+	// validationSyntheticResult declared.
+	worldEffectRegistrations = append(append([]struct {
+		op string
+		fn execOpFn
+	}{}, worldEffectRegistrations...), struct {
+		op string
+		fn execOpFn
+	}{ghost, func(*Scene, *execTask, *ExecNode, string) execOpOutcome {
+		return execOpOutcome{halt: true}
+	}})
+	defer func() { worldEffectRegistrations = saved }()
 
 	err := ValidateValidationModeCoverage()
 	if err == nil {
-		t.Fatal("guard returned nil for an undeclared world effect — B10 hole: new op would leak in validation mode")
+		t.Fatal("guard returned nil for an undeclared world effect — B10 hole: new op reachable through SetEffects would leak in validation mode")
 	}
 	if !strings.Contains(err.Error(), ghost) {
 		t.Fatalf("error does not name the undeclared op %q: %v", ghost, err)

@@ -124,7 +124,7 @@ func TestHarness_OneFailingEntrypointFailsScene(t *testing.T) {
 	prog := &ExecProgram{
 		BlueprintKey: "bp",
 		Nodes: map[string]*ExecNode{
-			"ok":   varSet("ok", "counter", nil, nil),
+			"ok": varSet("ok", "counter", nil, nil),
 			"while": {ID: "while", Op: OpWhile,
 				Data: []ExecDataInput{{Port: "condition", From: "lit.true"}},
 				Next: map[string]ExecTarget{"body": {Node: "ok"}}},
@@ -268,10 +268,11 @@ func TestHarness_ValidationEffectRunsNoClosure(t *testing.T) {
 }
 
 // TestHarness_B10GuardEnumeratesRegistry (criterion 14, guard test): the
-// world-effect registry the harness enumerates EQUALS the set of ops
-// SetEffects registers. If a phase-N op is added to SetEffects without a
-// validation-mode declaration, this guard fails — an effect added later
-// cannot silently leak to a real egress in validation mode.
+// world-effect registry the harness enumerates EQUALS the ops SetEffects
+// ACTUALLY registers, reflected from a live scene — no hand-maintained
+// list. If a phase-N op is added to SetEffects without a validation-mode
+// declaration, the introspective guard fails — an effect added later cannot
+// silently leak to a real egress in validation mode.
 func TestHarness_B10GuardEnumeratesRegistry(t *testing.T) {
 	if err := ValidateValidationModeCoverage(); err != nil {
 		t.Fatalf("validation-mode coverage guard failed: %v", err)
@@ -282,18 +283,19 @@ func TestHarness_B10GuardEnumeratesRegistry(t *testing.T) {
 			t.Fatalf("world effect %q has no synthetic response", op)
 		}
 	}
-	// The enumerated set must EQUAL the ops SetEffects registers — drift in
-	// either direction is a B10 hole. SetEffects registers exactly
-	// http.request / db.query / source.read (exec_effects.go).
-	registered := map[string]struct{}{
-		OpHTTPRequest: {}, OpDBQuery: {}, OpSourceRead: {},
-	}
+	// The enumerated set must EQUAL the ops SetEffects ACTUALLY registers,
+	// reflected from a live scene — drift in either direction is a B10 hole.
+	// No hardcoded expectation: the live registry IS the source of truth.
 	world := map[string]struct{}{}
 	for _, op := range EnumerateWorldEffects() {
 		world[op] = struct{}{}
 	}
+	registered := map[string]struct{}{}
+	for _, op := range registeredWorldEffectOps() {
+		registered[op] = struct{}{}
+	}
 	if len(registered) != len(world) {
-		t.Fatalf("world-effect set %v != SetEffects ops %v", world, registered)
+		t.Fatalf("world-effect guard set %v != ops SetEffects registers %v", world, registered)
 	}
 	for op := range registered {
 		if _, ok := world[op]; !ok {
