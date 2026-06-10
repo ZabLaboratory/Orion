@@ -1,0 +1,44 @@
+# Conformance allowlist — ADR 003 §3.4 phase 5 / §6 criterion 1 (master)
+#
+# Every Blue compute-manifest node id (internal/conformance/manifest.json)
+# must have a registered Orion executor AND a passing execution test
+# through the real engine. A node id that does not — yet — is tolerated
+# ONLY if it is listed here, with a reason. The CI conformance matrix
+# (internal/conformance/conformance_test.go) HARD-FAILS if:
+#   - a manifest id is neither served nor listed here, or
+#   - this list GROWS beyond its committed size (the ratchet).
+#
+# Doctrine (ADR 003 §1.1): Orion serves the ENTIRETY of Blue. This list
+# only ever shrinks; the accepted end state is EMPTY. A line here is a
+# debt, not a restriction — the node is never rejected at compile.
+#
+# Format: one `node_id` per line. `#` starts a comment. Blank lines OK.
+#
+# -----------------------------------------------------------------------
+# core.db.* query-builder ATOMIC sub-nodes (6).
+#
+# These are NOT standalone executable nodes. Per Blue's reference
+# executor (Blue/src/blue/services/executor.py:251-305) the
+# core.db.{from,where,join,select,order,limit}@1 atoms are *only* legal
+# INSIDE a core.db.query@1 node's `config.inline_graph`; placed in the
+# main graph, Blue itself raises `db_node_outside_query`. They have no
+# independent runtime semantics: they are a query plan that QueryMe (on
+# the DataSource-owning service) compiles into SQL when Orion's
+# core.db.query@1 executor delegates the inline_graph via
+# `POST /<svc>/api/v1/_query` (ADR 003 Amendment 1, topology A — Orion
+# holds no DB credential, no pgx, no SQL).
+#
+# core.db.query@1 IS served (exec effect OpDBQuery, tests in
+# internal/runtime/exec_effects_test.go::TestEffects_DBQueryTopologyA),
+# which transitively serves these atoms. They sit here because they are
+# manifest ids without a *standalone* Orion executor — a structural
+# fact, not a capability gap. Removing them from the allowlist requires
+# an executor that compiles an inline_graph standalone, which by Blue's
+# own contract is invalid; the maintainer's call (→ Atlas) is whether to
+# instead drop them from the conformance manifest as inline-only nodes.
+core.db.from@1
+core.db.where@1
+core.db.join@1
+core.db.select@1
+core.db.order@1
+core.db.limit@1

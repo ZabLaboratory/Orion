@@ -121,9 +121,9 @@ type ExecEntry struct {
 type ExecProgram struct {
 	// BlueprintKey namespaces `__vars.<key>.<name>` and the
 	// `__debug.<key>.print` ring (ADR 001 §3.3 / ADR 003 §3.1.3).
-	BlueprintKey string                `json:"blueprint_key"`
-	Nodes        map[string]*ExecNode  `json:"nodes"`
-	Entrypoints  map[string]ExecEntry  `json:"entrypoints"`
+	BlueprintKey string               `json:"blueprint_key"`
+	Nodes        map[string]*ExecNode `json:"nodes"`
+	Entrypoints  map[string]ExecEntry `json:"entrypoints"`
 }
 
 // Effector is the single seam through which the exec layer touches the
@@ -339,6 +339,22 @@ func (s *Scene) SetExecSlicing(steps int, dur time.Duration) {
 // validation harness installs its structurally inert implementation
 // through this (B10).
 func (s *Scene) SetEffector(e Effector) { s.effector = e }
+
+// ExecOps is the canonical set of exec-layer op names the runtime
+// serves — the built-in ops dispatched in exec_interpreter.go plus the
+// extension ops every live scene installs (OpDelay + OpAnimationPlay in
+// the constructor, the SetEffects trio at boot). It is the runtime side
+// of the conformance matrix (ADR 003 §6 criterion 1): the conformance
+// package maps Blue manifest ids onto these ops and asserts every op it
+// claims served is in this list — so a manifest node mapped to a
+// non-existent op fails CI, not air. EntryOnStart/OnTick/OnEvent are
+// NOT here: they are entrypoints (firing sources), not value/effect
+// executors — the conformance package classifies them separately.
+var ExecOps = []string{
+	OpBranch, OpSequence, OpGate, OpForLoop, OpForEach, OpWhile,
+	OpVariableSet, OpPrint, OpDelay,
+	OpAnimationPlay, OpHTTPRequest, OpDBQuery, OpSourceRead,
+}
 
 // registerExecOp installs an additional exec op. Pre-Run only. This is
 // the seam issue #83 (`delay` + timer wheel) and phase 3 (async
