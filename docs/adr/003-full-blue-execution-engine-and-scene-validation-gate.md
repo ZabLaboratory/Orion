@@ -192,7 +192,16 @@ edge into data pin — already Blue-validated), never node-type capability.
   `animation.play` `completed`): the effect executes off-goroutine (bounded
   worker pool, per-effect timeout as *effect semantics*, with the `error`
   output port carrying failures); the task parks on a wake key; completion is
-  delivered as an inbox message and the continuation resumes. `db.query`
+  delivered as an inbox message and the continuation resumes.
+  **Completion delivery is a dedicated, authenticated path — not a free
+  `__system.*` write** (Bastion B-syswrite): the wake key is **version-stamped
+  AND token-stamped**; an externally-reported completion (e.g. the renderer's
+  animation report) requires the **control-mode role** and a token that
+  matches a **parked continuation of that very scene** — a forged or stale
+  completion is dropped (logged, counted), never resumes anything, and can
+  never resume continuations parked by another scene. The exact wire contract
+  is a **Conduit contract task** with **Bastion re-clearance at phase 3**.
+  `db.query`
   executes the compiled `QueryDescriptor` (Blue's plan-builder atomics) via
   pgx against a declared DataSource — the DataSource resolution contract
   (which DB, credentials from étage 1) is a **Conduit contract task**
@@ -202,11 +211,12 @@ edge into data pin — already Blue-validated), never node-type capability.
   generation counter) so it travels the normal delta pipe and is rendered by
   Solar/CEF — per the platform doctrine, animations are rendered by our
   engine, never OBS-native. `then` fires immediately; `completed` resumes on
-  the renderer's completion report (`__system.anim.<token>.completed`, a
-  scoped system input from the control-mode client) with a server-side
-  duration-based fallback when no reporting client is attached (broadcast
-  viewers cannot input). The exact report contract is a **Conduit task**
-  (phase 3).
+  the renderer's completion report, delivered through the **dedicated
+  completion path above** (control-mode role, version+token-stamped wake key
+  matched against this scene's parked continuations — never a free-form
+  `__system.*` write), with a server-side duration-based fallback when no
+  reporting client is attached (broadcast viewers cannot input). The exact
+  report contract is a **Conduit task** (phase 3, Bastion re-clearance).
 
 #### 3.1.4 Interruption / cancellation
 
@@ -226,7 +236,37 @@ the restart-reseed model.
   (the existing guarantee, restated at scale); a synthetic 20 k benchmark
   graph lives in the repo and runs in CI (regression-gated).
 
-#### 3.1.6 Alternatives rejected
+#### 3.1.6 Resource bounds & isolation at the scheduling/effect seams (Bastion-required)
+
+None of the following restricts the Blue language; they harden the seams
+around the interpreter (doctrine §1.1 intact — no kill, no skip, no
+amputation):
+
+- **Event fan-out is bounded** (B5/B8): per-message UGC events (chat) can each
+  instantiate an exec task; E2 coalesces the *leaf*, not the number of
+  on-event fires. Bounds: (a) E2 producer-side coalescing; (b) a **per-scene
+  concurrent exec-task budget** with back-pressure — beyond it, *new fires*
+  are coalesced/shed (`orion_event_shed_total`), **a running task is never
+  killed**; (c) a **per-scene cap on parked timers/continuations**, with
+  `orion_parked_tasks` and `orion_timer_wheel_size` exported.
+- **Aggregate CPU is observed, and the machine is isolated** (B7):
+  time-slicing protects the scene *loop*, not the host. Per-scene-version
+  aggregate CPU is exported (`orion_task_cpu_seconds_total`) with an alert
+  threshold treated as an incident signal; deployment-level isolation
+  (cgroup/CPU limits in the prod compose, framed by **Keeper**) ensures a
+  runaway scene degrades *its* scene, not the show or the host. Residual
+  accepted per doctrine (no kill).
+- **`__vars` isolation is structural** (B9): `variable.set` writes the state
+  of **its own scene instance only** — intra-goroutine, through the effect
+  interface, never via the inbox fan-out and never cross-scene. Two scene
+  instances sharing a `blueprint_key` (e.g. live + test session) have fully
+  disjoint `__vars` state.
+- **`print` is inert and scoped** (B11): `print` never has access to
+  DataSource credentials or any resolved secret (it formats already-pulled
+  pin values only); the `__debug.<blueprint_key>.print` ring is delivered to
+  **test-session and operator roles only**, never to viewers.
+
+#### 3.1.7 Alternatives rejected
 
 - **Reject exec at compile** (the reverted ADR): excluded by doctrine §1.1 —
   not re-argued, not weakened, not re-proposed in any form.
@@ -259,6 +299,15 @@ the effect interface runs in *validation mode*: `http.request`/`db.query`/
 synthetic responses (and the report lists every attempted call);
 `animation.play` completes via its duration fallback; `print` captures.
 
+**Validation-mode inertia is structural, not per-effect** (Bastion B10): it
+is a property of the **effect interface itself**, not an opt-in flag each
+effect remembers to honour. In validation mode **no effect touches the
+world**: `http.request` provably opens no socket (asserted by a test that
+would fail if any egress occurred), `db.query` opens no real pgx connection,
+`source.read` reads no live source. A **guard test** enumerates the effect
+registry: any registered effect that does not declare its validation-mode
+behaviour fails the harness — an effect added later cannot silently leak.
+
 For **each blueprint** of the scene, for **each event entrypoint**
 (`on-start`; `on-tick` × N frames; each `on-event` topic; each `quasar.*` node
 fed the canonical fixture for its event type; each operator input at default +
@@ -285,10 +334,25 @@ lost nothing.
   validated|failed, report jsonb, harness_version, created_at)`.
 - `POST /api/v1/scenes/{id}/validate` runs the campaign on the latest pushed
   version (async; `GET /api/v1/scenes/{id}/validation?v=` returns status+report).
-- **Enforcement**: `POST /show/active-scene` (and the push-swap path for an
-  already-live scene) refuses any version without a `validated` record —
-  `SCENE_NOT_VALIDATED`, alongside the existing `SCENE_NOT_PUSHED`. Test
-  sessions remain free (that's where authors iterate).
+- **Enforcement covers EVERY path that activates or mutates the live graph**
+  (Bastion B3, critical — today `Show.Load` in `scenes_push.go:160` swaps a
+  live scene's graph with no check): the `SCENE_NOT_VALIDATED` refusal applies
+  to `POST /show/active-scene`, to the **push-swap of an already-active
+  scene**, and to **rollback** — not just to explicit activation. A re-push
+  of an active scene with a non-validated version **persists the version**
+  (authoring is never blocked) but **the antenna keeps running the last
+  validated version** until the new one validates; the response surfaces
+  `SCENE_NOT_VALIDATED` so the author knows air did not move. Test sessions
+  remain free (that's where authors iterate).
+- **Rollback is air-eligible only against a validated record** (Bastion
+  B-rollback, critical — today `handleRollback` in `scenes_push.go:61`
+  re-points without recompile *and without any check*): `{rollback_to}`
+  succeeds **without recompile** iff the target version carries a
+  `scene_validations.status = validated` record **for the current
+  `harness_version`**; otherwise it is refused (`SCENE_NOT_VALIDATED`).
+  **Archive purge deletes the validation records coherently** with the
+  artefacts: a later re-push of the same content re-mints the hash but does
+  **not** resurrect a purged record — it must re-validate.
 - **Invalidation by construction**: the record is keyed by `scene_version`
   (the artefact hash — blueprints, layout, channel config all participate).
   Any change ⇒ new version ⇒ no record ⇒ not air-eligible. No staleness
@@ -353,6 +417,17 @@ Gate enforcement (phase 4) becomes mandatory for go-live as soon as it lands;
 phases 1–3 grow what the harness can prove. The conformance allowlist exists
 from phase 0 and **only shrinks** (CI ratchet); phase 5 ends with it empty.
 
+**Hard sequencing constraint (Bastion, R9 reinforced — non-negotiable):**
+until the validation gate is live, **no scene containing exec nodes goes to
+air**. The `SCENE_NOT_VALIDATED` enforcement — on **all** activation/mutation
+paths, including push-swap of an active scene and rollback (§3.2.2, B3 +
+B-rollback) — must land **before or together with** the first change that
+lets an exec node execute in a live (non-test-session) scene. Concretely:
+phases 1–3 may merge and run in test sessions, but the live-activation paths
+refuse exec-bearing versions until phase 4's enforcement is in place. This is
+a phase-ordering contract, not a capability restriction: the language loses
+nothing; air waits for proof.
+
 ## 4. Consequences
 
 - The accept-then-ignore class stays dead — by **execution**, not rejection:
@@ -378,44 +453,108 @@ from phase 0 and **only shrinks** (CI ratchet); phase 5 ends with it empty.
 
 ## 5. Risks
 
-Security-surfaced risks → **Bastion** (no self-clearance).
+Security-surfaced risks → **Bastion** (no self-clearance). Bastion's threat
+model (design clearance **conditional**, 2026-06-10) is incorporated below;
+its B-identifiers are kept for traceability. None of the B-requirements
+restricts the Blue language — they harden the enforcement and effect seams.
 
 - **R1 — Interpreter complexity** (continuations, latent semantics,
   cancellation). Highest engineering risk. Mitigation: explicit task state
   (no goroutine state), fake-clock tests, UE-documented semantics per node,
   phase 1 lands behind the conformance matrix.
-- **R2 — `http.request` SSRF / egress** (blueprint-authored URLs executed from
-  inside the infra). **Bastion decision required** at phase 3: egress policy
-  (allowlist / deny-internal-ranges / proxy) is *deployment policy on the
-  effect executor*, not a language restriction. Validation mode performs no
-  real calls.
-- **R3 — `db.query` credential surface**: DataSource credentials at étage 1,
-  resolved by Orion config, never in blueprints/artefacts; read-only roles.
-  Conduit contract + **Bastion review** (phase 3).
+- **R2 / B1 — `http.request` SSRF / egress** (blueprint-authored URLs executed
+  from inside the infra). **Bastion phase-3 veto, maintained**: no
+  `http.request` executor merges to a live-reachable path without Bastion's
+  egress-policy decision (allowlist / deny-internal-ranges / egress proxy) —
+  *deployment policy on the effect executor*, not a language restriction.
+  Validation mode performs no real calls (B10, structural).
+- **R3 / B2 — `db.query` credential surface**. **Bastion phase-3 veto,
+  maintained**: DataSource credentials at étage 1, resolved by Orion config,
+  never in blueprints/artefacts; **read-only DB roles**; **parameterized SQL
+  only** (the compiled `QueryDescriptor` binds values as parameters, never by
+  string interpolation); **declared-DataSource allowlist** (a blueprint can
+  only reference DataSources explicitly declared to Orion). Conduit contract
+  + **Bastion clearance** gate the phase-3 merge.
+- **B3 — push-swap bypasses the gate (CRITICAL)**: `Show.Load`
+  (`scenes_push.go:160`) replaces a live scene's graph with no validation
+  check. Requirement (now normative in §3.2.2): the `SCENE_NOT_VALIDATED`
+  enforcement applies to **every** path that activates or mutates the live
+  graph — `POST /show/active-scene`, push-swap of an active scene, rollback.
+  A non-validated re-push of an active scene persists the version but the
+  antenna **keeps the last validated version** until validation. Dedicated
+  resolution criterion (#15).
+- **B-rollback — rollback re-points without proof (CRITICAL)**:
+  `handleRollback` (`scenes_push.go:61`) re-points with no recompile and no
+  check. Requirement (§3.2.2): rollback is air-eligible **only** if the
+  target carries `scene_validations.status = validated` for the **current
+  `harness_version`**; archive purge deletes validation records coherently —
+  a re-push of the same content re-mints the hash but does **not** resurrect
+  a purged record. Dedicated resolution criterion (#16).
+- **B-syswrite — forged async completions (HIGH)**: `__system.*` is accepted
+  unconditionally (`inbox.go:118-121`) and bypasses scope checks
+  (`inbox.go:55-60`); a forged animation-completion could resume parked
+  continuations of **another scene**. Requirement (§3.1.3): async-effect
+  completion is **not** a free `__system.*` write — dedicated delivery path,
+  wake key **version-stamped and token-stamped**, **control-mode role**
+  required, token must match a parked continuation of **that scene**; forged
+  or stale completions are dropped. Conduit contract + **Bastion
+  re-clearance, phase 3**. Resolution criterion #19.
 - **R4 — Path injection via channel/type** (reverted-ADR R2): closed
   fail-closed at both ends (compiler §3.3.3 + Quasar E1). **Bastion
   re-clearance** on the ingestion surface (phase 2).
-- **R5 — UGC fan-out** (chat text → subscribers, and now → exec triggers):
-  reaches only author-wired leaves (`sceneAcceptsPath` filtering is the
-  implementation); rendering safety is Solar/Lumencast escape-by-default;
-  exec reactions to UGC are author-authored logic, proven at the gate.
-  Residual accepted, documented.
+- **R5 / B5 — UGC → exec amplification (HIGH)**: a per-message chat event can
+  each instantiate an exec task; E2 coalesces the *leaf*, not the number of
+  on-event fires — a hype train is a memory/CPU collapse the gate does not
+  prove against (the gate proves per-entrypoint termination, not flood
+  behaviour). Requirement (§3.1.6): fan-out is bounded by (a) E2, (b) a
+  per-scene concurrent-task budget with back-pressure — beyond it, fires are
+  coalesced/shed (`orion_event_shed_total`), **never a killed task** — and
+  (c) a per-scene cap on parked timers/continuations (**B8** merged here:
+  `orion_parked_tasks`, `orion_timer_wheel_size`). Rendering safety stays
+  Solar/Lumencast escape-by-default; exec reactions to UGC are
+  author-authored logic, proven at the gate. **Residual accepted,
+  documented**: under flood, latest-value semantics may drop intermediate
+  fires — overlays show latest state by design. Resolution criterion #17.
 - **R6 — Validation theatre** (fixtures diverge from live traffic; a validated
   scene still misbehaves live). Mitigations: same interpreter for harness and
   live; canonical fixtures shared with Quasar's contract tests;
   `harness_version` re-validation lever; live observability metrics (§3.2.2).
   Residual accepted: validation proves termination/budgets under
   representative inputs, not total correctness — that is the stated contract.
-- **R7 — Live starvation by a validated-but-heavy scene**: time-slicing keeps
-  the loop responsive; budget-crossing metrics make it visible; no kill.
-  Residual accepted per doctrine (no amputation).
+- **R7 / B7 — time-slicing protects the loop, not the machine (HIGH)**:
+  slicing keeps the scene loop responsive but a validated-then-pathological
+  scene can still burn the host. Requirement (§3.1.6): per-scene-version
+  aggregate CPU observed (`orion_task_cpu_seconds_total`) with an incident
+  alert threshold, plus deployment isolation (cgroup/CPU limits in the prod
+  compose, framed by **Keeper**) so a runaway scene degrades **its** scene,
+  not the show. **Residual accepted per doctrine (no kill).**
 - **R8 — At-most-once platform loss windows** (reverted-ADR R5): unchanged,
   accepted, documented — overlays show latest state; ledgers come from a
   queryable source of truth.
-- **R9 — Phase risk**: a long transitional window where some node types are
-  on the allowlist. Mitigated by the ratchet (never grows), per-phase issue
-  ordering, and the gate landing at phase 4 (safety does not wait for
-  phase 5 completeness).
+- **B9 — `__vars` cross-scene bleed**: graph variables are keyed by
+  `blueprint_key`, which two scene instances can share. Requirement (§3.1.6):
+  `variable.set` writes **its own scene instance's state only** —
+  intra-goroutine through the effect interface, never via the cross-scene
+  inbox fan-out. Resolution criterion #18.
+- **B10 — validation-mode leakage (HIGH)**: a per-effect "validation flag"
+  rots; one forgotten effect makes the gate theatre **and** a real-egress
+  hole. Requirement (§3.2.1): inertia is a **structural property of the
+  effect interface** — no effect touches the world in validation mode (http:
+  no socket, proven by a test that fails if one opens; db: no real pgx
+  connection; source.read: no live read; animation: fallback) — plus a guard
+  test failing the harness for any registered effect without a declared
+  validation-mode behaviour. Resolution criterion #14 (widened).
+- **B11 — `print` / debug-ring exposure (hardening)**: `print` never has
+  access to DataSource credentials or resolved secrets; the `__debug.*` ring
+  is served to **test-session/operator roles only**, never to viewers
+  (§3.1.6).
+- **R9 — Phase risk (REINFORCED, Bastion)**: a long transitional window where
+  some node types are on the allowlist. Mitigated by the ratchet (never
+  grows) and per-phase issue ordering — **and by the hard sequencing
+  constraint of §3.4**: until the gate (phase 4) is live, **no exec-bearing
+  scene reaches the antenna**; the `SCENE_NOT_VALIDATED` enforcement
+  (including the B3/B-rollback paths) precedes or accompanies the activation
+  of any exec node in a live scene.
 - **R10 — http-poll / pg-listen layout adapters still undeclared in prod**
   (`extractAdapters` stub) — out of scope, still tracked against the
   Canvas-extensions chantier.
@@ -479,10 +618,57 @@ Testable; CI-enforced where possible. **Criterion 1 is the master criterion.**
     fixes and re-pushes, validation passes and activation succeeds.
 13. **Gate — invalidation by construction.** Re-pushing any change yields a
     version with no validation record; activation refuses until re-validated.
-14. **Gate — no side effects in validation.** A blueprint with `http.request`
-    validates without any real egress (asserted via the effect interface in
-    validation mode); the report lists the attempted call.
-15. **Org gates.** Orion/Blue/Quasar CIs green; review **Vigil** (who flips
+14. **Gate — validation-mode inertia is structural (seam-level, B10).** A
+    blueprint with `http.request` validates without any real egress —
+    asserted by a test that **fails if any socket is opened** during
+    validation, not by trusting a flag; `db.query` opens no real pgx
+    connection; `source.read` performs no live read; `animation.play`
+    completes via its duration fallback. The report lists every attempted
+    call. A **guard test enumerates the effect registry**: any registered
+    effect without a declared validation-mode behaviour fails the harness.
+15. **Gate — enforcement on every live-mutation path (B3).** With a scene
+    **active on air**, a re-push of a **non-validated** version: the version
+    is persisted (authoring never blocked), the response surfaces
+    `SCENE_NOT_VALIDATED`, and the antenna **does not mutate** — the live
+    graph observably keeps serving the last validated version (subscriber
+    deltas still reflect the old version; no `scene_changed`/`snapshot` for
+    the new one). Once that version validates, the swap proceeds normally.
+16. **Gate — rollback requires proof (B-rollback).** `{rollback_to}` toward a
+    version **without** a `scene_validations.status = validated` record for
+    the **current `harness_version`** is refused with `SCENE_NOT_VALIDATED`;
+    toward a validated version it succeeds **without recompile** (existing
+    criterion preserved). After an archive purge deletes a version's
+    validation record, re-pushing byte-identical content re-mints the same
+    hash but activation still refuses until re-validation.
+17. **Back-pressure, not amputation (B5/B8).** A flood of distinct UGC events
+    (hype-train simulation) against a scene whose budget of concurrent exec
+    tasks is saturated: excess fires are coalesced/shed and
+    `orion_event_shed_total` increments; **no running task is killed**; the
+    scene loop stays responsive (interleaved deltas observed). The per-scene
+    cap on parked timers/continuations holds, and `orion_parked_tasks`,
+    `orion_timer_wheel_size` and `orion_task_cpu_seconds_total` are exported
+    on the metrics endpoint.
+18. **`__vars` isolation (B9).** Two scene instances sharing a
+    `blueprint_key` (e.g. a live scene and a test session of the same
+    scene): a `variable.set` executed in one is visible to `variable.get`
+    and subscribers of **that instance only** — the other instance's state
+    is bit-identical before/after.
+19. **Async completion is authenticated (B-syswrite).** An effect-completion
+    message that is (a) missing the control-mode role, (b) token-stamped for
+    a continuation that is not parked, (c) stamped for another scene's
+    continuation, or (d) stamped with a stale version, is **dropped**
+    (logged, counted) and resumes nothing; a legitimate completion (correct
+    role + token matching a parked continuation of that scene and version)
+    resumes exactly that continuation. A raw free-form `__system.*` write
+    can no longer resume any continuation.
+20. **Phase-ordering contract (R9 reinforced).** Until the §3.2.2 enforcement
+    is live on all paths (B3 + B-rollback included), the live-activation
+    paths refuse any exec-bearing version — asserted by a test in the
+    pre-phase-4 tree: pushing+activating an exec-bearing scene outside a test
+    session is refused.
+21. **Org gates.** Orion/Blue/Quasar CIs green; review **Vigil** (who flips
     this ADR to `accepted`); **Bastion** clearance on phase 2 (ingestion
-    surface) and phase 3 (R2 egress policy, R3 DataSource) before the
-    corresponding merges.
+    surface) and phase 3 (B1/R2 egress policy, B2/R3 DataSource contract,
+    B-syswrite completion contract — re-clearance) before the corresponding
+    merges. Bastion's design clearance is **conditional** on the
+    B-requirements above; the phase-3 vetoes (B1, B2) stand until lifted.
