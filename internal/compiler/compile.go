@@ -266,6 +266,12 @@ func prefixGraphNodes(nodes []GraphNode, key string) {
 		for j := range nodes[i].Upstream {
 			nodes[i].Upstream[j] = key + "." + nodes[i].Upstream[j]
 		}
+		// Named inputs reference the same sibling node ids (issue #79) —
+		// they take the same prefix; port names are never prefixed (they
+		// address the node's own port set, not the state namespace).
+		for j := range nodes[i].Inputs {
+			nodes[i].Inputs[j].From = key + "." + nodes[i].Inputs[j].From
+		}
 	}
 }
 
@@ -494,9 +500,15 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 	defaults := map[string]json.RawMessage{}
 	nodes := make([]GraphNode, 0, len(b.Nodes))
 
+	// Upstream ids and named inputs are built off the SAME edge walk so
+	// they stay zipped 1:1 (issue #79): Upstream[i] == Inputs[i].From for
+	// every i. Inputs carries the edge's to_port verbatim — the runtime
+	// delivers each upstream value under that declared name.
 	upstreams := make(map[string][]string)
+	inputs := make(map[string][]GraphInput)
 	for _, e := range b.Edges {
 		upstreams[e.ToNode] = append(upstreams[e.ToNode], e.FromNode)
+		inputs[e.ToNode] = append(inputs[e.ToNode], GraphInput{From: e.FromNode, Port: e.ToPort})
 	}
 
 	for _, n := range b.Nodes {
@@ -566,6 +578,7 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 			Path:      path,
 			Compute:   n.Compute,
 			Upstream:  upstreams[n.ID],
+			Inputs:    inputs[n.ID],
 			IsPure:    entry.IsPure,
 			IsBounded: entry.IsBounded,
 		})
