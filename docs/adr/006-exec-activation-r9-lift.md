@@ -286,6 +286,18 @@ emitted but never installed; the invariant holds vacuously).
 | R-5 | **Boot-path omission** airs a validated scene with dead logic after restart | §6 #7 |
 | R-6 | **`http.request` egress** live while B1 unconfirmed | P-5 — explicit Bastion confirmation or documented deployment-policy hold |
 
+**Résidu R-matchPath (accepté, faible/théorique, Bastion #108).** `auth.matchPath`
+traite un scope parent **nu** (sans `.*`) comme couvrant ses enfants
+(`HasPrefix(path, pattern+".")`). Aucune surface live ne l'expose : la
+complétion B-syswrite (`__system.anim.report`) exige le scope exact par
+set-membership (`hasExactScope`), et l'inbox rejette tout `__system.*` au gate
+namespace **avant** `matchPath`. **Garde-fou contractuel : aucun token parent-nu
+ne doit être minté.** Les scopes mintés actuels sont tous feuilles ou wildcard
+explicites (`quasar.credentials.read`, `query.read.<svc>`,
+`__inputs.platform.twitch.*`). Toute introduction future d'un scope parent-nu
+requiert une re-clearance Bastion ; `identity_test.go::TestMatchPath_AnimScope_ParentScope_DEFECT`
+fige la sémantique.
+
 Detailed threat model = **Bastion at implementation stage** (per the gated
 campaign), with R-2/R-3/R-6 as the entry points.
 
