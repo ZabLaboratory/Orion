@@ -104,7 +104,7 @@ type Scene struct {
 
 type computeEntry struct {
 	node     compiler.GraphNode
-	upstream []string // input port name -> upstream node id; zipped 1:1 with node.Upstream for v1
+	upstream []string // upstream node ids — from node.Inputs when carried (issue #79), else node.Upstream
 }
 
 // NewScene constructs a Scene from compiled artefacts and seeds its
@@ -126,7 +126,19 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 	}
 	s.state.Seed(graph.Defaults)
 	for _, n := range graph.Nodes {
-		s.computeOrder = append(s.computeOrder, computeEntry{node: n, upstream: n.Upstream})
+		// The dirty-check upstream set derives from the NAMED wiring when
+		// the artefact carries it (issue #79) — Inputs is authoritative;
+		// the compiler keeps Upstream zipped 1:1 with it, so for compiled
+		// graphs the two are identical. Pre-#79 artefacts carry only
+		// Upstream and keep working unchanged.
+		up := n.Upstream
+		if len(n.Inputs) > 0 {
+			up = make([]string, len(n.Inputs))
+			for i, in := range n.Inputs {
+				up[i] = in.From
+			}
+		}
+		s.computeOrder = append(s.computeOrder, computeEntry{node: n, upstream: up})
 	}
 	// Cold-start compute: Seed only fills constant/input leaves, so without
 	// an initial forced pass every COMPUTED leaf (math/compare/logic/output)
@@ -332,11 +344,10 @@ func (s *Scene) recompute(force bool) {
 			}
 		}
 
-		// Gather upstream values. v1 wires by upstream node id; the
-		// compute reads them as port values via a name convention.
-		// Edges' to_port names aren't carried into the graph artefact
-		// in v1 — the runtime just uses sequential numeric ports
-		// (`a`, `b`, …) which matches the v1 stdlib's port set.
+		// Gather upstream values under their DECLARED port names — the
+		// artefact carries each edge's to_port (issue #79, ADR 003
+		// §3.1.1), so wiring is edge-order-independent. Pre-#79
+		// artefacts (no Inputs) fall back to positional `a..d`.
 		args := s.gatherInputs(ce)
 		fn, err := s.cmpReg.Get(ce.node.Compute)
 		if err != nil {
@@ -364,9 +375,31 @@ func (s *Scene) recompute(force bool) {
 	}
 }
 
+// gatherInputs assembles the port-name → value map a compute reads.
+// Named wiring (issue #79, ADR 003 §3.1.1): when the artefact carries
+// the edges' to_port names (GraphNode.Inputs), each upstream value is
+// delivered under its DECLARED port name, so shuffled edge order wires
+// correctly. The positional `a..d` convention survives only as the
+// fallback for pre-#79 persisted artefacts (no Inputs field), which
+// re-mint named wiring at their next push. A carried entry with an
+// empty port name (malformed authoring Blue should have validated)
+// still receives its positional name so the value is never dropped.
 func (s *Scene) gatherInputs(ce computeEntry) map[string]json.RawMessage {
-	out := make(map[string]json.RawMessage, len(ce.upstream))
 	portNames := []string{"a", "b", "c", "d"}
+	if ins := ce.node.Inputs; len(ins) > 0 {
+		out := make(map[string]json.RawMessage, len(ins))
+		for i, in := range ins {
+			name := in.Port
+			if name == "" {
+				name = portNames[i%len(portNames)]
+			}
+			if v, ok := s.state.Get(s.upstreamPath(in.From)); ok {
+				out[name] = v
+			}
+		}
+		return out
+	}
+	out := make(map[string]json.RawMessage, len(ce.upstream))
 	for i, up := range ce.upstream {
 		name := portNames[i%len(portNames)]
 		if v, ok := s.state.Get(s.upstreamPath(up)); ok {

@@ -94,14 +94,15 @@ func (r *ComputeRegistry) Register(id string, fn ComputeFn) {
 	r.fns[id] = fn
 }
 
-// passthrough returns the node's single inbound value. Selection order
-// is deterministic (ADR 004 §7.3): the positional port `a` first —
-// `gatherInputs` (`scene.go`) delivers a sink's one upstream under `a`
-// regardless of the stdlib port name — then the conventional `value` /
-// `in` ports, then any remaining input, else `null`. A `core.output@1`
-// sink has exactly one inbound edge (stdlib `value` data input), so the
-// choice is unambiguous in practice; the fallback chain keeps it
-// deterministic if the port convention ever shifts.
+// passthrough returns the node's single inbound value. Since issue #79
+// (ADR 003 §3.1.1) `gatherInputs` delivers a compiled sink's one
+// upstream under its DECLARED port name — the stdlib `value` input —
+// so the name chain is no longer load-bearing for compiled artefacts.
+// It survives as the deterministic fallback for pre-#79 persisted
+// graphs (positional `a`) and for any port-convention drift: `a`,
+// then `value` / `in`, then any remaining input, else `null`. A
+// `core.output@1` sink has exactly one inbound edge, so the choice is
+// unambiguous in practice.
 func passthrough(inputs map[string]json.RawMessage) (json.RawMessage, error) {
 	for _, name := range []string{"a", "value", "in"} {
 		if v, ok := inputs[name]; ok {
@@ -147,8 +148,10 @@ func comparator(op func(a, b float64) bool) ComputeFn {
 }
 
 // notFn implements `core.logic.not@1`. The stdlib declares a single
-// `a` port (`stdlib_seeder.py`); v1 gatherInputs delivers that upstream
-// positionally under `a`. The extra names are tolerated fallbacks.
+// `a` port (`stdlib_seeder.py`); since issue #79 gatherInputs delivers
+// the upstream under that declared name (which coincides with the
+// positional fallback pre-#79 artefacts get). The extra names are
+// tolerated, non-load-bearing fallbacks.
 func notFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
 	v, err := readBool(inputs, "a", "x", "value", "in")
 	if err != nil {
@@ -160,12 +163,13 @@ func notFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
 
 // selectFn implements `core.flow.select@1` (stdlib `core.flow.select`,
 // `stdlib_seeder.py`): return `when_true` if `condition` is true, else
-// `when_false`. Pure data, no exec pin. It reads each port by its
-// stdlib name (`condition`/`when_true`/`when_false`) and falls back to
-// the positional ports `gatherInputs` (`scene.go`) actually delivers
-// (`a`/`b`/`c`) — v1 wires upstreams positionally, so a real graph
-// arrives under `a`,`b`,`c` zipped to the edge order
-// condition,when_true,when_false (ADR 004 §7.2).
+// `when_false`. Pure data, no exec pin. Since issue #79 (ADR 003
+// §3.1.1) gatherInputs delivers each upstream under its DECLARED
+// stdlib port name (`condition`/`when_true`/`when_false`) regardless
+// of edge order — the primary names below are the load-bearing path.
+// The positional names (`a`/`b`/`c`) remain only as the fallback for
+// pre-#79 persisted artefacts, whose edges arrived zipped in authored
+// order condition,when_true,when_false (ADR 004 §7.2).
 func selectFn(inputs map[string]json.RawMessage) (json.RawMessage, error) {
 	cond, err := readBool(inputs, "condition", "a", "cond")
 	if err != nil {

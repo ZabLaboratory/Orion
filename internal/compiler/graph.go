@@ -42,10 +42,28 @@ type GraphNode struct {
 	Compute  string   `json:"compute,omitempty"`
 	Upstream []string `json:"upstream,omitempty"`
 
+	// Inputs carries the NAMED wiring (ADR 003 §3.1.1, issue #79):
+	// one entry per inbound data edge, pairing the upstream node id
+	// with the blueprint edge's declared `to_port` name. The runtime's
+	// gatherInputs delivers each upstream value under exactly that
+	// name, so wiring is edge-order-independent. Entries are zipped
+	// 1:1 with Upstream (same edges, same order). Pre-#79 persisted
+	// artefacts lack the field — the runtime falls back to positional
+	// `a..d` for them until their next push recompiles.
+	Inputs []GraphInput `json:"inputs,omitempty"`
+
 	// IsPure / IsBounded are mirrored from Blue's manifest at compile
 	// time so the runtime can trust them without re-querying Blue.
 	IsPure    bool `json:"is_pure,omitempty"`
 	IsBounded bool `json:"is_bounded,omitempty"`
+}
+
+// GraphInput is one inbound data edge on a GraphNode: the upstream
+// node id plus the destination port name (the blueprint edge's
+// `to_port`, carried verbatim into the artefact — ADR 003 §3.1.1).
+type GraphInput struct {
+	From string `json:"from"`
+	Port string `json:"port"`
 }
 
 // RenderBundle is the Solar-facing artefact. Same shape as ADR 003 § 3.
