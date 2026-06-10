@@ -747,21 +747,13 @@ func TestPartitionProbe_MultiBlueprint_Deterministic(t *testing.T) {
 // TestPartitionProbe_OnEvent_ConfigKeyContract verifies the cross-repo contract
 // between Blue's on-event config schema and Orion's compiler.
 //
-// DEFECT (return to Forge — cross-repo contract divergence):
-//   Blue's stdlib_seeder.py declares the on-event config param as "event_name"
-//   (line 122: {"name": "event_name", ...}).
-//   Orion's execEntryEventConfigKey = "event" (exec_partition.go:66).
+// Blue's stdlib_seeder.py declares the on-event config param as "event_name"
+// (line 122: {"name": "event_name", ...}).
+// execEntryEventConfigKey = "event_name" (exec_partition.go:66) must match.
 //
-//   Consequence: when Prism authors an on-event node, it sets config.event_name.
-//   The compiler finds config["event"] missing → raises EXEC_OP_UNMAPPED and
-//   REJECTS the push. Real on-event blueprints are currently broken at compile.
-//
-//   Fix required in Forge: change execEntryEventConfigKey to "event_name".
-//
-// This test documents both the observed broken behaviour (compile fails on a
-// "event_name"-only node) and the expected correct behaviour (compile succeeds,
-// entry.Event = "goal"). It encodes the CORRECT expectation so it flips from
-// FAIL to PASS when Forge applies the fix. Do NOT patch exec_partition.go here.
+// A blueprint with only config.event_name (the Blue canonical key) must compile
+// successfully and produce an ExecEntry with Kind=="on-event" and Event=="goal".
+// Any regression to "event" would cause EXEC_OP_UNMAPPED on all on-event pushes.
 func TestPartitionProbe_OnEvent_ConfigKeyContract(t *testing.T) {
 	bp := &BlueprintGraph{
 		ID: "bp-1",
@@ -770,7 +762,6 @@ func TestPartitionProbe_OnEvent_ConfigKeyContract(t *testing.T) {
 				ID:      "ev",
 				Compute: "core.event.on-event@1",
 				// Only "event_name" — the Blue canonical key (stdlib_seeder.py:122).
-				// Current code reads "event" → finds nothing → EXEC_OP_UNMAPPED.
 				Config:  map[string]json.RawMessage{"event_name": json.RawMessage(`"goal"`)},
 				Outputs: []BlueprintPort{execOut("then")},
 			},
@@ -784,32 +775,26 @@ func TestPartitionProbe_OnEvent_ConfigKeyContract(t *testing.T) {
 		},
 	}
 
-	_, err := compileExecScene(t, bp)
+	g, err := compileExecScene(t, bp)
+	if err != nil {
+		t.Fatalf("compile error: %v — execEntryEventConfigKey must be \"event_name\" to match Blue contract (stdlib_seeder.py:122)", err)
+	}
 
-	// CURRENT BROKEN BEHAVIOUR: the compiler finds config["event"] missing
-	// and raises EXEC_OP_UNMAPPED, rejecting a valid on-event blueprint.
-	// This test PINS the defect so it is visible in CI rather than silent.
-	//
-	// Once Forge fixes execEntryEventConfigKey → "event_name":
-	//   - This assertion (err != nil / EXEC_OP_UNMAPPED) will FAIL.
-	//   - Replace with: compile must succeed + entry.Event == "goal".
-	//
-	// CORRECT POST-FIX BEHAVIOUR (do not merge until Forge lands the fix):
-	//   g, err := compileExecScene(t, bp)
-	//   if err != nil { t.Fatalf("compile error: %v", err) }
-	//   p := decodeProgram(t, g.ExecPrograms[0])
-	//   entry := p.Entrypoints["ev"]
-	//   if entry.Event != "goal" { t.Fatalf("entry.Event = %q, want goal", entry.Event) }
-	if err == nil {
-		t.Fatal("DEFECT FIXED — update this test: on-event config.event_name now compiles correctly (remove this assertion, add entry.Event==\"goal\" check)")
+	p := decodeProgram(t, g.ExecPrograms[0])
+
+	entry, ok := p.Entrypoints["ev"]
+	if !ok {
+		t.Fatalf("entry \"ev\" missing from exec program; entrypoints = %+v", p.Entrypoints)
 	}
-	var ce *CompileError
-	if !errors.As(err, &ce) || !ce.HasCode(ErrExecOpUnmapped) {
-		t.Fatalf("on-event defect changed shape: expected EXEC_OP_UNMAPPED, got %v", err)
+	if entry.Kind != "on-event" {
+		t.Fatalf("entry.Kind = %q, want \"on-event\"", entry.Kind)
 	}
-	// If we reach here, the defect is confirmed present and the test passes.
-	// The error message in t.Log ensures visibility in verbose runs.
-	t.Logf("DEFECT CONFIRMED (Forge fix needed): config.event_name ignored, EXEC_OP_UNMAPPED raised — execEntryEventConfigKey must be \"event_name\" (exec_partition.go:66)")
+	if entry.Event != "goal" {
+		t.Fatalf("entry.Event = %q, want \"goal\" — config.event_name not read correctly", entry.Event)
+	}
+	if entry.Target.Node != "set" {
+		t.Fatalf("entry.Target.Node = %q, want \"set\"", entry.Target.Node)
+	}
 }
 
 // ---------------------------------------------------------------------------

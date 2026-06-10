@@ -63,7 +63,7 @@ var execEntryKind = map[string]string{
 // under: the entry listens to `__events.<event>`. If a real
 // Prism-authored on-event node ever names this differently, this one
 // constant changes, not the partition shape.
-const execEntryEventConfigKey = "event"
+const execEntryEventConfigKey = "event_name"
 
 // execMirror structs mirror the runtime exec program wire shape
 // (runtime.ExecProgram/ExecEntry/ExecNode/ExecTarget/ExecDataInput)
