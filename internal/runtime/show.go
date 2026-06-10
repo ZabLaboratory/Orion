@@ -34,8 +34,21 @@ type Show struct {
 	// wire.
 	mirrors MirrorRegistry
 
+	// execMetrics, when non-nil, is handed to every loaded scene so
+	// the exec layer (ADR 003 §3.1.6, issue #82) reports shed /
+	// preempt / parked counts. Installed once at boot.
+	execMetrics ExecMetrics
+
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+// SetExecMetrics installs the exec-layer metrics sink (implemented by
+// *obs.Metrics). Called once at boot, before any scene is loaded.
+func (sh *Show) SetExecMetrics(m ExecMetrics) {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	sh.execMetrics = m
 }
 
 // MirrorRegistry is the Show-side handle on the LSDP/1.1 wire
@@ -102,6 +115,9 @@ func (sh *Show) Load(id string, graph *compiler.Graph, bundle *compiler.RenderBu
 		existing.Stop()
 	}
 	scene := NewScene(id, graph, bundle, sh.registry, sh.logger)
+	if sh.execMetrics != nil {
+		scene.SetExecMetrics(sh.execMetrics)
+	}
 	// ADR 007 §C.3b: in dual/lsdp mode, pair the scene with a kit
 	// scene and tap its output port. The mirror is seeded with the
 	// freshly-seeded snapshot inside SetMirror before Run starts.

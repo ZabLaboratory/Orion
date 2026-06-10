@@ -20,6 +20,17 @@ type InputMsg struct {
 	Source      string // server-trusted identity prefix per ADR 002 § 6
 	ClientMsgID string
 	IsSystem    bool // true for tick / __system writes — bypass scope checks
+
+	// FireExec / ResumeExec route exec-layer control through the SAME
+	// inbox as state writes (ADR 003 §3.1, issue #82): arrival order
+	// between fires, resumes and writes is the processing order, and
+	// the budget check / task creation happen on the scene goroutine —
+	// single-writer by construction. INTERNAL ONLY: no wire surface
+	// (ws/adapters) ever populates these; the phase-3 authenticated
+	// completion contract (B-syswrite) is the only future external
+	// producer of resumes, behind its own role+token checks.
+	FireExec   string // exec entrypoint id to fire
+	ResumeExec string // wake key of a parked continuation to resume
 }
 
 // SubscriberMsg is the union of messages a subscription receives.
@@ -116,6 +127,43 @@ type Scene struct {
 	// wire (LSDP/1.1 via lumencast-go — ADR 007 §C.3b). nil = bespoke
 	// mode, the tap is inert.
 	mirror SceneMirror
+
+	// nodeIdx maps a node id to its computeOrder index — the demand-
+	// evaluation entry point of the exec layer's data pulls (issue
+	// #82). Built once in NewScene, read-only afterwards.
+	nodeIdx map[string]int
+
+	// --- exec layer (ADR 003 §3.1, issue #82) -------------------------
+	// All of the following is owned by the scene goroutine after Run
+	// starts; the Set*/Install* mutators are pre-Run only.
+	//
+	// execProg is the installed exec program (shared, read-only).
+	execProg *ExecProgram
+	// execQueue is the FIFO of runnable tasks: round-robin via
+	// runExecSlice (pop head, re-enqueue at tail on preemption) —
+	// deterministic order, never map-driven.
+	execQueue []*execTask
+	// execParked holds suspended continuations by wake key. Issue #83
+	// adds the B8 cap + timer wheel on top of this map.
+	execParked map[string]*execTask
+	// execTaskSeq numbers tasks deterministically.
+	execTaskSeq uint64
+	// execBudget is the B5 per-scene concurrent-task budget; <= 0
+	// disables it. New fires beyond it are shed (counted), running
+	// tasks are never touched.
+	execBudget int
+	// execSliceSteps / execSliceDur bound one time slice (yield +
+	// re-enqueue, never kill).
+	execSliceSteps int
+	execSliceDur   time.Duration
+	// effector is the single effect seam (live: sceneEffector;
+	// phase 4 swaps a validation-mode implementation).
+	effector Effector
+	// execOps holds extension ops (issue #83 delay, phase-3 effects,
+	// test latents).
+	execOps map[string]execOpFn
+	// execMetrics is the observability sink (nil = disabled).
+	execMetrics ExecMetrics
 }
 
 type computeEntry struct {
@@ -139,7 +187,13 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 		ctx:    ctx,
 		cancel: cancel,
 		done:   make(chan struct{}),
+
+		execParked:     map[string]*execTask{},
+		execBudget:     defaultExecTaskBudget,
+		execSliceSteps: defaultExecSliceSteps,
+		execSliceDur:   defaultExecSliceDuration,
 	}
+	s.effector = &sceneEffector{s}
 	s.state.Seed(graph.Defaults)
 	// O(1) node-id → state-path index (issue #80): one pass, then
 	// every upstreamPath call is a map hit instead of an O(N) scan.
@@ -151,6 +205,9 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 			s.nodePath[n.ID] = n.ID
 		}
 	}
+	// O(1) node-id → computeOrder index, for the exec layer's
+	// demand-driven data pulls (issue #82).
+	s.nodeIdx = make(map[string]int, len(graph.Nodes))
 	for _, n := range graph.Nodes {
 		// The dirty-check upstream set derives from the NAMED wiring when
 		// the artefact carries it (issue #79) — Inputs is authoritative;
@@ -165,6 +222,7 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 			}
 		}
 		s.computeOrder = append(s.computeOrder, computeEntry{node: n, upstream: up})
+		s.nodeIdx[n.ID] = len(s.computeOrder) - 1
 	}
 	// Reverse-adjacency index (issue #80, ADR 003 §3.1.5): for each
 	// recomputable node, register it as a consumer of every upstream
@@ -247,6 +305,27 @@ func (s *Scene) Run(parentCtx context.Context) {
 	}()
 
 	for {
+		// Hybrid scheduler (ADR 003 §3.1, issue #82). With no exec
+		// work pending, the loop blocks on the inbox exactly as the
+		// dataflow-only engine did. With runnable tasks, the loop
+		// stays reactive by FAIRNESS, not by kill: poll the inbox
+		// first (inputs are never starved by exec work — the ≤ 50 ms
+		// input→delta guarantee), then run ONE time slice of the head
+		// task, recompute the dirty cone its effects seeded, and emit
+		// — deltas batch at yield/completion points (§3.1.3). A task
+		// that outlives its slice is re-enqueued, never killed.
+		if len(s.execQueue) == 0 {
+			select {
+			case <-s.ctx.Done():
+				return
+			case msg := <-s.inbox:
+				s.applyInput(msg)
+				s.drainNonBlocking()
+				s.recompute(false)
+				s.emit(&msg)
+			}
+			continue
+		}
 		select {
 		case <-s.ctx.Done():
 			return
@@ -255,6 +334,10 @@ func (s *Scene) Run(parentCtx context.Context) {
 			s.drainNonBlocking()
 			s.recompute(false)
 			s.emit(&msg)
+		default:
+			s.runExecSlice()
+			s.recompute(false)
+			s.emit(nil)
 		}
 	}
 }
@@ -354,6 +437,17 @@ func (s *Scene) SubscriberCount() int {
 // write (Set returned false) seeds nothing — exactly the writes the
 // previous IsDirty walk would have ignored.
 func (s *Scene) applyInput(msg InputMsg) {
+	// Exec-layer control messages (issue #82): a fire creates (or
+	// sheds, B5) a task; a resume wakes a parked continuation. Both
+	// execute here, on the scene goroutine — single-writer holds.
+	if msg.FireExec != "" {
+		s.enqueueFire(msg.FireExec)
+		return
+	}
+	if msg.ResumeExec != "" {
+		s.resumeParked(msg.ResumeExec)
+		return
+	}
 	if s.state.Set(msg.Path, msg.Value) {
 		s.pending[msg.Path] = struct{}{}
 	}
