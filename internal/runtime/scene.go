@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -164,6 +166,44 @@ type Scene struct {
 	execOps map[string]execOpFn
 	// execMetrics is the observability sink (nil = disabled).
 	execMetrics ExecMetrics
+
+	// --- timer wheel / triggers / cancellation (issue #83) ------------
+	// clock is the injectable time source the wheel runs on
+	// (systemClock in prod, fake clock in tests).
+	clock Clock
+	// wheel holds the armed timer entries (min-heap by deadline +
+	// park order); wheelTimer/wheelC is the single Timer pointed at
+	// the earliest deadline, consumed in Run's select. nil wheelC
+	// blocks forever — a scene that never delays pays nothing.
+	wheel      wheelHeap
+	wheelTimer Timer
+	wheelC     <-chan time.Time
+	// execWheelSeq orders same-deadline entries deterministically.
+	execWheelSeq uint64
+	// execEpoch is the cancellation epoch wake keys are stamped with
+	// (with the scene version): cancelExecTasks bumps it, so any
+	// in-flight resume minted before the cut arrives stale and is
+	// dropped + counted (ADR 003 §3.1.4).
+	execEpoch uint64
+	// execWakeSeq numbers minted wake keys.
+	execWakeSeq uint64
+	// execParkCap is the B8 cap on parked timers/continuations;
+	// <= 0 disables it. A NEW park beyond it is shed (counted) —
+	// parked/running tasks are never touched.
+	execParkCap int
+	// execCancelCh delivers CancelExec requests to the loop on a
+	// dedicated 1-buffered channel (coalescing, never lost to a full
+	// inbox).
+	execCancelCh chan struct{}
+	// execLastTickMs is the previous global-tick timestamp this scene
+	// observed, for the on-tick `delta_seconds` binding (-1 = none).
+	execLastTickMs int64
+	// execOnStart/execOnTick/execOnEvent are the trigger indexes
+	// built by InstallExec, in sorted entry-key order (deterministic
+	// firing, never map iteration). Pre-Run only; read-only after.
+	execOnStart []string
+	execOnTick  []string
+	execOnEvent map[string][]string
 }
 
 type computeEntry struct {
@@ -192,8 +232,15 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 		execBudget:     defaultExecTaskBudget,
 		execSliceSteps: defaultExecSliceSteps,
 		execSliceDur:   defaultExecSliceDuration,
+		execParkCap:    defaultExecParkCap,
+		execCancelCh:   make(chan struct{}, 1),
+		execLastTickMs: -1,
+		clock:          systemClock{},
 	}
 	s.effector = &sceneEffector{s}
+	// `delay` is a built-in latent op, registered through the same
+	// extension seam phase 3's async effects use (issue #83).
+	s.registerExecOp(OpDelay, execDelay)
 	s.state.Seed(graph.Defaults)
 	// O(1) node-id → state-path index (issue #80): one pass, then
 	// every upstreamPath call is a map hit instead of an O(N) scan.
@@ -296,6 +343,11 @@ func (s *Scene) SetMirror(m SceneMirror) {
 // goroutine below cancels each scene in turn.
 func (s *Scene) Run(parentCtx context.Context) {
 	defer close(s.done)
+	// Shutdown is a cancellation path (ADR 003 §3.1.4): every live
+	// task of this scene version is dropped, the wheel purged, the
+	// gauges zeroed. Runs before close(done) — Stop returns to a
+	// fully torn-down exec layer.
+	defer s.cancelExecTasks()
 	go func() {
 		select {
 		case <-parentCtx.Done():
@@ -314,10 +366,23 @@ func (s *Scene) Run(parentCtx context.Context) {
 		// task, recompute the dirty cone its effects seeded, and emit
 		// — deltas batch at yield/completion points (§3.1.3). A task
 		// that outlives its slice is re-enqueued, never killed.
+		//
+		// Two more sources join the select (issue #83), both consumed
+		// here on the scene goroutine — single-writer holds: the
+		// timer wheel's channel (due `delay` continuations resume in
+		// deterministic deadline order) and the dedicated cancel
+		// channel (ADR 003 §3.1.4 lifecycle cancellation).
 		if len(s.execQueue) == 0 {
 			select {
 			case <-s.ctx.Done():
 				return
+			case <-s.execCancelCh:
+				s.cancelExecTasks()
+			case <-s.wheelC:
+				s.fireDueTimers()
+				s.drainNonBlocking()
+				s.recompute(false)
+				s.emit(nil)
 			case msg := <-s.inbox:
 				s.applyInput(msg)
 				s.drainNonBlocking()
@@ -329,6 +394,12 @@ func (s *Scene) Run(parentCtx context.Context) {
 		select {
 		case <-s.ctx.Done():
 			return
+		case <-s.execCancelCh:
+			s.cancelExecTasks()
+		case <-s.wheelC:
+			s.fireDueTimers()
+			s.recompute(false)
+			s.emit(nil)
 		case msg := <-s.inbox:
 			s.applyInput(msg)
 			s.drainNonBlocking()
@@ -450,6 +521,50 @@ func (s *Scene) applyInput(msg InputMsg) {
 	}
 	if s.state.Set(msg.Path, msg.Value) {
 		s.pending[msg.Path] = struct{}{}
+	}
+	// Trigger hooks (issue #83, ADR 003 §3.1.3). After the state
+	// write, so a fired task's data pulls observe the new value. Both
+	// fire on the WRITE, not on the value change: an event carrying
+	// the same payload twice is two events.
+	if s.execProg == nil {
+		return
+	}
+	if len(s.execOnTick) > 0 && msg.Path == tickPath {
+		s.fireOnTick(msg.Value)
+		return
+	}
+	if len(s.execOnEvent) > 0 && strings.HasPrefix(msg.Path, eventsPrefix) {
+		for _, k := range s.execOnEvent[msg.Path[len(eventsPrefix):]] {
+			s.enqueueFire(k)
+		}
+	}
+}
+
+// eventsPrefix namespaces the operator/service-dispatched event topics
+// `on-event` listens to (ADR 003 §3.1.3).
+const eventsPrefix = "__events."
+
+// fireOnTick fires every on-tick entrypoint with `delta_seconds`
+// bound in the task environment under the event node's id. The first
+// observed tick binds 0 (no previous instant to diff against).
+func (s *Scene) fireOnTick(value json.RawMessage) {
+	var nowMs int64
+	if err := json.Unmarshal(value, &nowMs); err != nil {
+		s.logger.Warn("on-tick: tick payload not a number", "value", string(value))
+		return
+	}
+	delta := 0.0
+	if s.execLastTickMs >= 0 {
+		delta = float64(nowMs-s.execLastTickMs) / 1000.0
+	}
+	s.execLastTickMs = nowMs
+	raw := json.RawMessage(strconv.FormatFloat(delta, 'g', -1, 64))
+	for _, k := range s.execOnTick {
+		var env map[string]json.RawMessage
+		if node := s.execProg.Entrypoints[k].Node; node != "" {
+			env = map[string]json.RawMessage{node + ".delta_seconds": raw}
+		}
+		s.enqueueFireEnv(k, env)
 	}
 }
 

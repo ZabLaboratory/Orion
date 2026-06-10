@@ -44,6 +44,10 @@ func (t *Tick) Stop() {
 	<-t.done
 }
 
+// tickPath is the global tick leaf every scene receives (and the
+// write the exec layer's `on-tick` trigger fires on — issue #83).
+const tickPath = "__system.tick.now_ms"
+
 func (t *Tick) loop() {
 	defer close(t.done)
 	if t.hz <= 0 {
@@ -52,7 +56,6 @@ func (t *Tick) loop() {
 	interval := time.Second / time.Duration(t.hz)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	const path = "__system.tick.now_ms"
 	for {
 		select {
 		case <-t.ctx.Done():
@@ -60,7 +63,7 @@ func (t *Tick) loop() {
 		case now := <-ticker.C:
 			payload := json.RawMessage(strconv.FormatInt(now.UnixMilli(), 10))
 			t.fanout(InputMsg{
-				Path:     path,
+				Path:     tickPath,
 				Value:    payload,
 				Source:   "system:tick",
 				IsSystem: true,

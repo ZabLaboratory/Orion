@@ -20,17 +20,23 @@ type Metrics struct {
 	PushDuration   *prometheus.HistogramVec
 	AdapterErrors  *prometheus.CounterVec
 
-	// Exec-layer observability (ADR 003 §3.1.6, issue #82).
+	// Exec-layer observability (ADR 003 §3.1.6, issues #82/#83).
 	// EventShed counts B5 back-pressure sheds of NEW fires
 	// (`orion_event_shed_total`) — never a killed task. TaskPreempt
 	// counts time-slice yields (`orion_task_preempt_total`).
 	// ParkedTasks gauges parked continuations (`orion_parked_tasks`);
-	// TimerWheelSize (`orion_timer_wheel_size`) is registered now and
-	// fed by issue #83's timer wheel.
+	// TimerWheelSize (`orion_timer_wheel_size`) gauges armed timer
+	// entries. ParkDropped (`orion_exec_park_dropped_total`) counts
+	// dropped parks by reason: "duplicate_key" (C1 ordering anomaly)
+	// and "cap" (B8 shed of a NEW park). ResumeStale
+	// (`orion_exec_resume_stale_total`) counts resumes dropped by the
+	// version/epoch wake-key stamp after a cancellation (§3.1.4).
 	EventShed      *prometheus.CounterVec
 	TaskPreempt    *prometheus.CounterVec
 	ParkedTasks    *prometheus.GaugeVec
 	TimerWheelSize *prometheus.GaugeVec
+	ParkDropped    *prometheus.CounterVec
+	ResumeStale    *prometheus.CounterVec
 }
 
 // ExecEventShed implements the runtime's ExecMetrics seam.
@@ -46,6 +52,21 @@ func (m *Metrics) ExecTaskPreempt(sceneID string) {
 // ExecParkedTasks implements the runtime's ExecMetrics seam.
 func (m *Metrics) ExecParkedTasks(sceneID string, n int) {
 	m.ParkedTasks.WithLabelValues(sceneID).Set(float64(n))
+}
+
+// ExecTimerWheelSize implements the runtime's ExecMetrics seam.
+func (m *Metrics) ExecTimerWheelSize(sceneID string, n int) {
+	m.TimerWheelSize.WithLabelValues(sceneID).Set(float64(n))
+}
+
+// ExecParkDropped implements the runtime's ExecMetrics seam.
+func (m *Metrics) ExecParkDropped(sceneID, reason string) {
+	m.ParkDropped.WithLabelValues(sceneID, reason).Inc()
+}
+
+// ExecResumeStale implements the runtime's ExecMetrics seam.
+func (m *Metrics) ExecResumeStale(sceneID string) {
+	m.ResumeStale.WithLabelValues(sceneID).Inc()
 }
 
 // NewMetrics builds a fresh registry with Orion's metric set.
@@ -107,6 +128,14 @@ func NewMetrics() *Metrics {
 			prometheus.GaugeOpts{Namespace: "orion", Subsystem: "timer", Name: "wheel_size"},
 			[]string{"scene_id"},
 		),
+		ParkDropped: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "exec", Name: "park_dropped_total"},
+			[]string{"scene_id", "reason"},
+		),
+		ResumeStale: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "exec", Name: "resume_stale_total"},
+			[]string{"scene_id"},
+		),
 	}
 
 	r.MustRegister(
@@ -123,6 +152,8 @@ func NewMetrics() *Metrics {
 		m.TaskPreempt,
 		m.ParkedTasks,
 		m.TimerWheelSize,
+		m.ParkDropped,
+		m.ResumeStale,
 	)
 	return m
 }
