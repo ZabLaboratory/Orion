@@ -154,26 +154,60 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
-		// Surface the new version into the runtime: either swap the
-		// graph on a live scene (re-push of an active scene) or load
-		// the scene anew if this was its first push.
-		deps.Show.Load(sceneID.String(), graph, bundle)
-		if active := deps.Show.Active(); active != nil && active.ID() == sceneID.String() {
-			// Mid-broadcast re-push (criterion 9).
-			active.EmitSceneChanged(sceneID.String(), sceneID.String(), nil)
-			active.EmitFreshSnapshot()
+		// Surface the new version into the runtime — UNDER the validation
+		// gate (ADR 003 §3.2.2, B3 — critical). Two cases:
+		//
+		//   - the scene is NOT the active one (first push, or a push to an
+		//     off-air scene): load/swap freely. Loading an off-air scene
+		//     touches no antenna; activation is separately gated by
+		//     postActiveScene.
+		//   - the scene IS active on air (mid-broadcast re-push): the swap
+		//     mutates the LIVE graph, so it is gated. If the new version is
+		//     validated, swap normally (criterion 9). If it is NOT, the
+		//     version still PERSISTED above (authoring is never blocked),
+		//     but the antenna KEEPS the last validated version — no Load, no
+		//     scene_changed, no snapshot — and the response surfaces
+		//     SCENE_NOT_VALIDATED so the author knows air did not move.
+		notValidated := false
+		active := deps.Show.Active()
+		isActive := active != nil && active.ID() == sceneID.String()
+		if isActive {
+			eligible, gerr := isAirEligible(ctx, deps, sceneID, sceneVersion)
+			if gerr != nil {
+				deps.Metrics.PushTotal.WithLabelValues("persist_error").Inc()
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+				return
+			}
+			if eligible {
+				deps.Show.Load(sceneID.String(), graph, bundle)
+				active.EmitSceneChanged(sceneID.String(), sceneID.String(), nil)
+				active.EmitFreshSnapshot()
+			} else {
+				// Antenna unchanged: the live graph keeps serving the last
+				// validated version until the author validates this one.
+				notValidated = true
+			}
+		} else {
+			// Off-air scene: load/swap the roster instance freely.
+			deps.Show.Load(sceneID.String(), graph, bundle)
 		}
 
 		deps.Metrics.PushTotal.WithLabelValues("ok").Inc()
 		deps.Metrics.PushDuration.WithLabelValues("ok").Observe(time.Since(started).Seconds())
 
-		writeJSON(w, http.StatusOK, map[string]any{
+		resp := map[string]any{
 			"scene_version": sceneVersion,
 			"diagnostics": map[string]any{
 				"errors":   []string{},
 				"warnings": []string{},
 			},
-		})
+		}
+		if notValidated {
+			// Authoring succeeded (200); the antenna did not move.
+			resp["code"] = sceneNotValidatedCode
+			resp["air_version"] = active.Graph().SceneVersion
+		}
+		writeJSON(w, http.StatusOK, resp)
 	})
 }
 
@@ -273,6 +307,26 @@ func handleRollback(ctx context.Context, w http.ResponseWriter, deps PublicDeps,
 	if err != nil {
 		status, code := codeFromError(err)
 		writeJSON(w, status, map[string]string{"code": code})
+		return
+	}
+
+	// Validation gate (ADR 003 §3.2.2, B-rollback — critical). Rollback
+	// re-points the live graph WITHOUT recompile, so it is air-eligible
+	// only if the target version carries a `validated` record for the
+	// current harness_version. Otherwise it is refused — including a
+	// version whose record an archive purge deleted (ON DELETE CASCADE):
+	// re-pushing byte-identical content re-mints the hash but resurrects
+	// no record, so rollback to it still refuses until re-validation.
+	eligible, gerr := isAirEligible(ctx, deps, sceneID, pv.SceneVersion)
+	if gerr != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+		return
+	}
+	if !eligible {
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"code":          sceneNotValidatedCode,
+			"scene_version": pv.SceneVersion,
+		})
 		return
 	}
 

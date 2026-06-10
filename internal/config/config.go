@@ -69,6 +69,16 @@ type Config struct {
 	TickHz             int
 	PushTimeout        time.Duration
 
+	// --- scene-validation gate (ADR 003 §3.2, issue #87) ---
+	// ValidationMaxSteps / ValidationMaxWall bound one entrypoint's proof
+	// (env-tunable, ADR §3.2.1 defaults 1 M steps / 5 s). The budget
+	// bounds the PROOF, never the engine: a divergent logic crosses it,
+	// fails validation, and never reaches air. ValidationTimeout bounds a
+	// whole campaign's persist context.
+	ValidationMaxSteps uint64
+	ValidationMaxWall  time.Duration
+	ValidationTimeout  time.Duration
+
 	// --- phase-3 async effects (ADR 003 §3.1.3, issue #85) ---
 	// Parsed and validated here so the étage-1 contract is fixed; the
 	// runtime wiring is gated behind the phase-4 validation gate (R9 —
@@ -210,6 +220,30 @@ func Load() (Config, error) {
 		problems = append(problems, "ORION_EFFECT_QUEUE must be > 0")
 	} else {
 		cfg.EffectQueue = v
+	}
+
+	// Scene-validation budgets (issue #87). 0 = use the ADR default
+	// (1 M steps / 5 s). A campaign persist context defaults to 60 s.
+	if v, err := getInt("ORION_VALIDATION_MAX_STEPS", 1_000_000); err != nil {
+		problems = append(problems, err.Error())
+	} else if v < 0 {
+		problems = append(problems, "ORION_VALIDATION_MAX_STEPS must be >= 0")
+	} else {
+		cfg.ValidationMaxSteps = uint64(v)
+	}
+	if v, err := getInt("ORION_VALIDATION_MAX_WALL_S", 5); err != nil {
+		problems = append(problems, err.Error())
+	} else if v < 0 {
+		problems = append(problems, "ORION_VALIDATION_MAX_WALL_S must be >= 0")
+	} else {
+		cfg.ValidationMaxWall = time.Duration(v) * time.Second
+	}
+	if v, err := getInt("ORION_VALIDATION_TIMEOUT_S", 60); err != nil {
+		problems = append(problems, err.Error())
+	} else if v <= 0 {
+		problems = append(problems, "ORION_VALIDATION_TIMEOUT_S must be > 0")
+	} else {
+		cfg.ValidationTimeout = time.Duration(v) * time.Second
 	}
 
 	if cfg.DatabaseURL == "" {
