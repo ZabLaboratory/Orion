@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/auth"
@@ -32,19 +33,40 @@ type Write struct {
 	System      bool // true for tick / __system writes — bypass scope checks
 }
 
-// Inbox is the single write entry into the runtime.
-type Inbox struct {
-	show   *runtime.Show
-	logger *slog.Logger
-	audit  *Audit
+// InboxMetrics is the observability seam the inbox reports drops on
+// (ADR 003 §3.3 E2, issue #84): one increment per write a scene's
+// event loop refused (full inbox channel). *obs.Metrics implements it
+// (`orion_inbox_dropped_total`); tests substitute a counter double.
+type InboxMetrics interface {
+	InboxDropped(sceneID string)
 }
 
-// NewInbox builds an inbox bound to the show.
-func NewInbox(show *runtime.Show, logger *slog.Logger) *Inbox {
+// dropWarnInterval rate-limits the inbox-drop warn log: under a flood
+// (the exact condition that produces drops) one warn per interval is
+// signal, one warn per drop is its own incident. The metric counts
+// every drop regardless.
+const dropWarnInterval = time.Second
+
+// Inbox is the single write entry into the runtime.
+type Inbox struct {
+	show    *runtime.Show
+	logger  *slog.Logger
+	audit   *Audit
+	metrics InboxMetrics // nil-safe: nil disables the drop counter
+
+	// lastDropWarn is the unix-nano stamp of the last drop warn, used
+	// to rate-limit logging (never the metric).
+	lastDropWarn atomic.Int64
+}
+
+// NewInbox builds an inbox bound to the show. metrics may be nil
+// (drops are then logged but not counted).
+func NewInbox(show *runtime.Show, logger *slog.Logger, metrics InboxMetrics) *Inbox {
 	return &Inbox{
-		show:   show,
-		logger: logger.With("component", "inbox"),
-		audit:  NewAudit(2048),
+		show:    show,
+		logger:  logger.With("component", "inbox"),
+		audit:   NewAudit(2048),
+		metrics: metrics,
 	}
 }
 
@@ -83,7 +105,14 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 		if !sceneAcceptsPath(scene, w.Path) {
 			continue
 		}
-		scene.Input(msg)
+		// scene.Input's return is consumed, not discarded (ADR 003 §3.3
+		// E2, issue #84): false means the scene's event loop refused the
+		// write (full channel) — the value is LOST, which must be
+		// observable (`orion_inbox_dropped_total`) without log-spamming
+		// under the very flood that causes it.
+		if !scene.Input(msg) {
+			in.noteDrop(id, w.Path)
+		}
 	}
 
 	in.audit.Record(AuditEntry{
@@ -93,6 +122,24 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 		Timestamp: time.Now(),
 	})
 	return nil
+}
+
+// noteDrop records one refused write: the metric counts EVERY drop;
+// the warn is rate-limited to one per dropWarnInterval via a CAS on
+// the last-warn stamp (losing the race just means another goroutine
+// owns this interval's warn).
+func (in *Inbox) noteDrop(sceneID, path string) {
+	if in.metrics != nil {
+		in.metrics.InboxDropped(sceneID)
+	}
+	now := time.Now().UnixNano()
+	last := in.lastDropWarn.Load()
+	if now-last < int64(dropWarnInterval) {
+		return
+	}
+	if in.lastDropWarn.CompareAndSwap(last, now) {
+		in.logger.Warn("scene inbox full — write dropped", "scene_id", sceneID, "path", path)
+	}
 }
 
 // sceneAcceptsPath checks whether the scene's compiled graph

@@ -110,7 +110,7 @@ func run() error {
 	}
 
 	// Adapter inbox + HTTP poller + PG LISTEN/NOTIFY.
-	inbox := adapters.NewInbox(show, logger)
+	inbox := adapters.NewInbox(show, logger, metrics)
 	poller := adapters.NewPoller(inbox, logger, cfg.HTTPPollUserAgent)
 	defer poller.StopAll()
 
