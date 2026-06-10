@@ -202,6 +202,14 @@ func (s *Scene) execNode(t *execTask, id, port string) {
 					out.start()
 				}
 			}
+			// A park may ALSO continue the current task immediately:
+			// `animation.play`'s `then` fires now while `completed`
+			// waits parked (issue #86). Honoured even when the park was
+			// shed (B8/dup) — only the completion continuation is lost,
+			// counted; the immediate path is never amputated (§1.1).
+			if out.next != nil {
+				t.pushNode(*out.next)
+			}
 			return
 		}
 		if out.halt {

@@ -19,13 +19,26 @@ import (
 
 // fakeExecMetrics is a race-safe ExecMetrics sink for assertions.
 type fakeExecMetrics struct {
-	mu          sync.Mutex
-	shed        int
-	preempt     int
-	parked      int
-	wheel       int
-	parkDropped map[string]int // by reason ("duplicate_key", "cap")
-	resumeStale int
+	mu            sync.Mutex
+	shed          int
+	preempt       int
+	parked        int
+	wheel         int
+	parkDropped   map[string]int // by reason ("duplicate_key", "cap")
+	resumeStale   int
+	resumeUnknown int
+}
+
+func (f *fakeExecMetrics) ExecResumeUnknown(string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resumeUnknown++
+}
+
+func (f *fakeExecMetrics) unknown() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.resumeUnknown
 }
 
 func (f *fakeExecMetrics) ExecTimerWheelSize(_ string, n int) {
@@ -636,9 +649,14 @@ func TestExec_DeterministicInterleaving(t *testing.T) {
 		sc := execScene(t, name, buildProg())
 		// Step-budget-only slicing: wall clock out of the picture.
 		sc.SetExecSlicing(5, time.Hour)
-		startScene(t, sc)
+		// Enqueue BOTH fires before the loop starts (the inbox is
+		// buffered): arrival order is then structural, not a race
+		// between the test goroutine's second send and the scene
+		// goroutine draining the first — which could serialize task A
+		// before B even existed on a slow runner (CI flake).
 		mustFire(t, sc, "a")
 		mustFire(t, sc, "b")
+		startScene(t, sc)
 		deadline := time.Now().Add(time.Second)
 		for time.Now().Before(deadline) {
 			if v, ok := sc.state.Get("__debug.bp.print"); ok {

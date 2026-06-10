@@ -198,6 +198,10 @@ type Scene struct {
 	execEpoch uint64
 	// execWakeSeq numbers minted wake keys.
 	execWakeSeq uint64
+	// animGeneration is the per-scene monotone `animation.play`
+	// generation counter (issue #86) — scene goroutine only, never
+	// derived from map order (deterministic).
+	animGeneration uint64
 	// execParkCap is the B8 cap on parked timers/continuations;
 	// <= 0 disables it. A NEW park beyond it is shed (counted) —
 	// parked/running tasks are never touched.
@@ -252,6 +256,12 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 	// `delay` is a built-in latent op, registered through the same
 	// extension seam phase 3's async effects use (issue #83).
 	s.registerExecOp(OpDelay, execDelay)
+	// `animation.play` is a built-in latent op too (issue #86): pure
+	// scene-state machinery (state write + park + timer fallback), no
+	// external dependency — unlike the SetEffects ops. R9 holds because
+	// no production path installs an ExecProgram before the phase-4
+	// gate (#87); without a program the op can never fire.
+	s.registerExecOp(OpAnimationPlay, execAnimationPlay)
 	s.state.Seed(graph.Defaults)
 	// O(1) node-id → state-path index (issue #80): one pass, then
 	// every upstreamPath call is a map hit instead of an O(N) scan.
