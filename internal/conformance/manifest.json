@@ -196,6 +196,7 @@
       "category": "data",
       "is_pure": true,
       "is_bounded": true,
+      "inline_only": true,
       "source": "stdlib",
       "platform": null
     },
@@ -207,6 +208,7 @@
       "category": "data",
       "is_pure": true,
       "is_bounded": true,
+      "inline_only": true,
       "source": "stdlib",
       "platform": null
     },
@@ -218,6 +220,7 @@
       "category": "data",
       "is_pure": true,
       "is_bounded": true,
+      "inline_only": true,
       "source": "stdlib",
       "platform": null
     },
@@ -229,6 +232,7 @@
       "category": "data",
       "is_pure": true,
       "is_bounded": true,
+      "inline_only": true,
       "source": "stdlib",
       "platform": null
     },
@@ -251,6 +255,7 @@
       "category": "data",
       "is_pure": true,
       "is_bounded": true,
+      "inline_only": true,
       "source": "stdlib",
       "platform": null
     },
@@ -262,6 +267,7 @@
       "category": "data",
       "is_pure": true,
       "is_bounded": true,
+      "inline_only": true,
       "source": "stdlib",
       "platform": null
     },

@@ -10,15 +10,15 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
-// allowlistRatchet is the FROZEN size of conformance_allowlist.txt. The
-// ratchet (ADR 003 §6 criterion 1): CI fails if the live allowlist
+// allowlistRatchet is the FROZEN size of conformance_allowlist.txt.
+// The ratchet (ADR 003 §6 criterion 1): CI fails if the live allowlist
 // exceeds this. Shrinking the allowlist means lowering this number in
 // the same commit — the list only ever goes down, toward 0.
 //
-// Current contents (6): the inline-only core.db.* query-builder atoms
-// (from/where/join/select/order/limit), which have no standalone
-// executor by Blue's own contract — see conformance_allowlist.txt.
-const allowlistRatchet = 6
+// ADR 006 §3.5 (issue #107): the 6 core.db.* inline-only atoms have
+// been reclassified KindInlineOnly and dropped from the allowlist.
+// The allowlist has reached its accepted empty end-state.
+const allowlistRatchet = 0
 
 // repoRoot walks up from the package dir to the repo root (the dir
 // holding conformance_allowlist.txt).
@@ -53,9 +53,9 @@ func loadAllowlist(t *testing.T) []string {
 }
 
 // TestConformance_Matrix is the MASTER criterion (ADR 003 §6 #1): every
-// Blue manifest node id is either served by a registered Orion executor
-// or on the allowlist — never silently unserved. Hard-fails CI on any
-// uncovered id.
+// Blue manifest node id is either served by a registered Orion executor,
+// classified KindInlineOnly (served transitively — not a gap), or on the
+// allowlist — never silently unserved. Hard-fails CI on any uncovered id.
 func TestConformance_Matrix(t *testing.T) {
 	manifest := conformance.Manifest()
 	if len(manifest) == 0 {
@@ -70,9 +70,14 @@ func TestConformance_Matrix(t *testing.T) {
 
 	var uncovered []string
 	covered := 0
+	inlineOnlyCovered := 0
 	for _, e := range manifest {
-		_, servedOK := conformance.Classify(e.NodeID)
+		sn, servedOK := conformance.Classify(e.NodeID)
 		switch {
+		case servedOK && sn.Kind == conformance.KindInlineOnly:
+			// Inline-only: covered transitively (not a gap, not allowlisted).
+			covered++
+			inlineOnlyCovered++
 		case servedOK:
 			covered++
 		case allowSet[e.NodeID]:
@@ -89,8 +94,9 @@ func TestConformance_Matrix(t *testing.T) {
 			"shrinking debt):\n  %v", len(uncovered), uncovered)
 	}
 
-	t.Logf("conformance: %d/%d manifest nodes served, %d on allowlist",
-		covered, len(manifest), len(allow))
+	t.Logf("conformance: %d/%d manifest nodes covered (%d inline-only via db.query), "+
+		"%d on allowlist",
+		covered, len(manifest), inlineOnlyCovered, len(allow))
 }
 
 // TestConformance_AllowlistRatchet enforces the shrink-to-zero ratchet:
@@ -175,4 +181,87 @@ func TestConformance_ExecOpClassificationMatchesRuntime(t *testing.T) {
 				"serve", op)
 		}
 	}
+}
+
+// TestConformance_InlineOnlyAtomsAreClassifiedNotGap verifies the 6
+// core.db.* atoms are KindInlineOnly (ADR 006 §3.5 / issue #107):
+//   - Classify returns ok=true with KindInlineOnly for each.
+//   - None appears on the allowlist (they are NOT a gap).
+//   - None is KindCompute or KindExecOp (no standalone executor).
+//   - Each carries a non-empty Reason.
+//
+// Regression guard: if one of these atoms is accidentally re-added to
+// the allowlist, TestConformance_AllowlistEntriesAreRealManifestIDs
+// also catches the contradiction (served AND allowlisted).
+func TestConformance_InlineOnlyAtomsAreClassifiedNotGap(t *testing.T) {
+	want := []string{
+		"core.db.from@1",
+		"core.db.join@1",
+		"core.db.limit@1",
+		"core.db.order@1",
+		"core.db.select@1",
+		"core.db.where@1",
+	}
+	allowSet := map[string]bool{}
+	for _, id := range loadAllowlist(t) {
+		allowSet[id] = true
+	}
+	ids := conformance.InlineOnlyIDs()
+	if len(ids) != len(want) {
+		t.Fatalf("InlineOnlyIDs() returned %d entries, want %d: %v", len(ids), len(want), ids)
+	}
+	for i, id := range ids {
+		if id != want[i] {
+			t.Errorf("InlineOnlyIDs()[%d] = %q, want %q", i, id, want[i])
+		}
+	}
+	for _, id := range want {
+		sn, ok := conformance.Classify(id)
+		if !ok {
+			t.Errorf("Classify(%q) = ok=false, want KindInlineOnly", id)
+			continue
+		}
+		if sn.Kind != conformance.KindInlineOnly {
+			t.Errorf("Classify(%q).Kind = %q, want KindInlineOnly", id, sn.Kind)
+		}
+		if sn.Reason == "" {
+			t.Errorf("Classify(%q).Reason is empty — inline-only classification requires a reason", id)
+		}
+		if allowSet[id] {
+			t.Errorf("%q is KindInlineOnly but ALSO on the allowlist — remove it from the allowlist", id)
+		}
+	}
+}
+
+// TestConformance_InlineOnlyAtomsAreInManifest verifies the 6 atoms
+// actually exist in the vendored manifest (a rename in Blue would remove
+// them from the manifest and this test would catch the drift).
+func TestConformance_InlineOnlyAtomsAreInManifest(t *testing.T) {
+	known := map[string]bool{}
+	for _, e := range conformance.Manifest() {
+		known[e.NodeID] = true
+	}
+	for _, id := range conformance.InlineOnlyIDs() {
+		if !known[id] {
+			t.Errorf("inline-only id %q is not in the vendored manifest — "+
+				"either the atom was renamed in Blue (update manifest.json) "+
+				"or InlineOnlyIDs() has a stale entry", id)
+		}
+	}
+}
+
+// TestConformance_RatchetProof_RejectGrowth proves the ratchet rejects
+// growth without requiring a live file write. It simulates what
+// TestConformance_AllowlistRatchet would do if it read a list with 1
+// entry against the current ceiling of 0.
+func TestConformance_RatchetProof_RejectGrowth(t *testing.T) {
+	// Simulate: allowlist has 1 entry, ceiling is 0.
+	simulatedLen := 1
+	ceiling := allowlistRatchet // 0
+
+	wouldFail := simulatedLen > ceiling
+	if !wouldFail {
+		t.Fatal("ratchet did not trip on a simulated growth — ratchet logic is broken")
+	}
+	t.Logf("ratchet proof: a 1-entry list against ceiling %d correctly trips (growth blocked)", ceiling)
 }

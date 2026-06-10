@@ -59,6 +59,16 @@ const (
 	// fail-closed half of the R4 path-injection defence (Quasar E1 is the
 	// producer half). Invalid channels are rejected, never rewritten.
 	ErrPlatformChannelInvalid DiagnosticCode = "PLATFORM_CHANNEL_INVALID"
+
+	// ErrDBNodeOutsideQuery (ADR 006 §3.5 / issue #107): a
+	// core.db.{from,where,join,select,order,limit}@1 node appears in the
+	// main blueprint graph. These atoms are inline-only by Blue's own
+	// executor contract (Blue raises db_node_outside_query for the same
+	// placement); they are legal ONLY inside a core.db.query@1 node's
+	// config.inline_graph. This is a structural authoring error, NOT a
+	// capability rejection — Orion serves core.db.query@1 (OpDBQuery /
+	// topology A) which transitively covers the inline atoms.
+	ErrDBNodeOutsideQuery DiagnosticCode = "DB_NODE_OUTSIDE_QUERY"
 )
 
 // Diagnostic is a single error or warning produced during compilation.

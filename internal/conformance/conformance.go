@@ -31,15 +31,16 @@ var manifestJSON []byte
 
 // ManifestEntry mirrors one Blue compute-manifest row, vendored.
 type ManifestEntry struct {
-	NodeID    string `json:"node_id"`
-	Namespace string `json:"namespace"`
-	Name      string `json:"name"`
-	Version   int    `json:"version"`
-	Category  string `json:"category"`
-	IsPure    bool   `json:"is_pure"`
-	IsBounded bool   `json:"is_bounded"`
-	Source    string `json:"source"`
-	Platform  *struct {
+	NodeID     string `json:"node_id"`
+	Namespace  string `json:"namespace"`
+	Name       string `json:"name"`
+	Version    int    `json:"version"`
+	Category   string `json:"category"`
+	IsPure     bool   `json:"is_pure"`
+	IsBounded  bool   `json:"is_bounded"`
+	Source     string `json:"source"`
+	InlineOnly bool   `json:"inline_only,omitempty"`
+	Platform   *struct {
 		Name string `json:"name"`
 	} `json:"platform"`
 }
@@ -85,22 +86,17 @@ const (
 	// binds it to a `__inputs.platform.*` leaf + a platform-stream
 	// binding (ADR 003 §3.3); no runtime executor goroutine.
 	KindPlatformBound ExecutorKind = "platform-bound"
+	// KindInlineOnly — the node is legal ONLY inside another node's
+	// config.inline_graph (per Blue's own executor contract) and is
+	// therefore served transitively by its parent executor. A main-graph
+	// occurrence is a structural authoring error (compiler emits
+	// DB_NODE_OUTSIDE_QUERY), not a capability gap.
+	// Current members: core.db.{from,where,join,select,order,limit}@1 —
+	// served transitively by OpDBQuery / topology A (ADR 003 Amendment 1).
+	KindInlineOnly ExecutorKind = "inline-only"
 )
 
-// Served maps every served manifest id to how it is served and, for
-// KindExecOp, to the runtime op name (the cross-check key). The 6
-// inline-only core.db.* atoms are deliberately ABSENT — they live in
-// conformance_allowlist.txt (no standalone executor by Blue's own
-// contract). This map is the authoritative classification the matrix
-// asserts against; it is exhaustive over the served set.
-//
-// For each entry, `Test` documents a representative execution test that
-// exercises the executor through the real engine. The "+ a passing test
-// through the real engine" half of criterion 1 is enforced
-// EXECUTABLY by TestConformance_EveryServedNodeExecutes (runtime
-// package), which drives every KindCompute id and every KindExecOp op
-// through a real Scene — `Test` here is a documentary pointer to the
-// richer behavioural test, not the conformance proof itself.
+// ServedNode describes how Orion serves one manifest id.
 type ServedNode struct {
 	Kind ExecutorKind
 	// Op is the runtime exec op for KindExecOp (empty otherwise),
@@ -109,9 +105,24 @@ type ServedNode struct {
 	// Test is a representative real-engine test for this node's
 	// executor — documentary.
 	Test string
+	// Reason is set for KindInlineOnly: documents WHY the node is exempt
+	// from the allowlist (not a gap, served transitively).
+	Reason string
 }
 
-// served is the classification table. Keep it sorted by id for review.
+// served is the classification table for standalone-executable nodes.
+// Keep it sorted by id for review.
+//
+// The 6 inline-only core.db.* atoms are in the separate inlineOnly map
+// below — they are NOT standalone-executable by Blue's own contract.
+//
+// For each entry, `Test` documents a representative execution test that
+// exercises the executor through the real engine. The "+ a passing test
+// through the real engine" half of criterion 1 is enforced
+// EXECUTABLY by TestConformance_EveryServedNodeExecutes (runtime
+// package), which drives every KindCompute id and every KindExecOp op
+// through a real Scene — `Test` here is a documentary pointer to the
+// richer behavioural test, not the conformance proof itself.
 var served = map[string]ServedNode{
 	// --- Exec entrypoints (trigger-fired) -----------------------------
 	"core.event.on-start@1": {Kind: KindEntry, Test: "TestExec_OnStart_ActivationAndRePush"},
@@ -190,6 +201,26 @@ var served = map[string]ServedNode{
 	"core.data.aggregate@1":   {Kind: KindCompute, Test: "TestPure_DataAggregate"},
 }
 
+// inlineOnlyReason is the canonical exemption rationale recorded in
+// every KindInlineOnly ServedNode. Keep it in sync with ADR 006 §3.5.
+const inlineOnlyReason = "inline-only: legal only inside core.db.query config.inline_graph " +
+	"per Blue db_node_outside_query; served transitively by OpDBQuery / topology A"
+
+// inlineOnly holds the 6 core.db.* atoms that Blue's own executor
+// contract restricts to core.db.query's config.inline_graph. They are
+// NOT standalone-executable (Blue raises db_node_outside_query for a
+// main-graph occurrence); they are served transitively by OpDBQuery.
+// Reclassified from conformance_allowlist.txt per ADR 006 §3.5
+// (issue #107): they are NOT a gap — they count as covered.
+var inlineOnly = map[string]ServedNode{
+	"core.db.from@1":   {Kind: KindInlineOnly, Reason: inlineOnlyReason},
+	"core.db.join@1":   {Kind: KindInlineOnly, Reason: inlineOnlyReason},
+	"core.db.limit@1":  {Kind: KindInlineOnly, Reason: inlineOnlyReason},
+	"core.db.order@1":  {Kind: KindInlineOnly, Reason: inlineOnlyReason},
+	"core.db.select@1": {Kind: KindInlineOnly, Reason: inlineOnlyReason},
+	"core.db.where@1":  {Kind: KindInlineOnly, Reason: inlineOnlyReason},
+}
+
 // quasarPlatformPrefix identifies the platform-event family the compiler
 // binds (KindPlatformBound) rather than listing all 14 by hand — they
 // are uniform input leaves and adding a 15th in Blue must surface here
@@ -198,8 +229,13 @@ const quasarPlatformPrefix = "quasar.twitch."
 
 // Classify returns how a manifest id is served, or ok=false if it is
 // not in the served set (then it must be in the allowlist).
+// KindInlineOnly nodes return ok=true — they ARE covered (transitively),
+// not a gap; the conformance matrix counts them in the covered total.
 func Classify(nodeID string) (ServedNode, bool) {
 	if sn, ok := served[nodeID]; ok {
+		return sn, true
+	}
+	if sn, ok := inlineOnly[nodeID]; ok {
 		return sn, true
 	}
 	if strings.HasPrefix(nodeID, quasarPlatformPrefix) {
@@ -209,6 +245,18 @@ func Classify(nodeID string) (ServedNode, bool) {
 		}, true
 	}
 	return ServedNode{}, false
+}
+
+// InlineOnlyIDs returns the sorted list of manifest ids classified
+// KindInlineOnly. The compiler uses this set to detect a structural
+// authoring error (a db.* atom placed in the main graph).
+func InlineOnlyIDs() []string {
+	out := make([]string, 0, len(inlineOnly))
+	for id := range inlineOnly {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // ServedExecOps returns the distinct runtime op names the served table
