@@ -29,9 +29,16 @@ func seedPushedVersion(t *testing.T, st *store.Store, sceneID uuid.UUID, version
 	if _, err := st.UpsertScene(ctx, sceneID, sceneID.String()); err != nil {
 		t.Fatalf("upsert scene: %v", err)
 	}
+	// Bump the definition version per seed so two versions on the SAME
+	// scene (invalidation / re-push tests) don't collide on
+	// UNIQUE(scene_id, definition_version).
+	maxVer, err := st.MaxDefinitionVersion(ctx, sceneID)
+	if err != nil {
+		t.Fatalf("max definition version: %v", err)
+	}
 	defID := uuid.New()
 	if err := st.InsertDefinition(ctx, store.SceneDefinition{
-		ID: defID, SceneID: sceneID, DefinitionVersion: 1,
+		ID: defID, SceneID: sceneID, DefinitionVersion: maxVer + 1,
 		CanvasVersion: "v1", BlueBlueprintID: "bp-1",
 		ComponentsJSON: json.RawMessage(`[]`), CreatedAt: time.Now(),
 	}); err != nil {
