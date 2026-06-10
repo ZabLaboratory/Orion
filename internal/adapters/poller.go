@@ -131,13 +131,12 @@ func (p *Poller) run(ctx context.Context, job *pollerJob) {
 		// One write per declared target path. The compiler validated
 		// that target_paths cover the leaves the layout expects.
 		for _, tp := range job.cfg.TargetPaths {
-			_ = p.inbox.Write(ctx, Write{
+			_ = p.inbox.Write(ctx, systemWrite(Write{
 				Identity: auth.Identity{Role: auth.RoleService, UserID: "poller", Paths: []string{tp}},
 				Path:     tp,
 				Value:    val,
 				Source:   "service:poller/" + job.cfg.Key,
-				System:   true,
-			})
+			}))
 		}
 	}
 }

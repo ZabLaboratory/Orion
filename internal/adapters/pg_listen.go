@@ -123,13 +123,12 @@ func (l *PGListener) run(ctx context.Context, job *pgListenJob) {
 			val, _ = json.Marshal(notification.Payload)
 		}
 		for _, tp := range job.cfg.TargetPaths {
-			_ = l.inbox.Write(ctx, Write{
+			_ = l.inbox.Write(ctx, systemWrite(Write{
 				Identity: auth.Identity{Role: auth.RoleService, UserID: "pg-listen", Paths: []string{tp}},
 				Path:     tp,
 				Value:    val,
 				Source:   "service:pg-listen/" + job.cfg.Channel,
-				System:   true,
-			})
+			}))
 		}
 	}
 }

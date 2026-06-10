@@ -30,7 +30,24 @@ type Write struct {
 	Value       json.RawMessage
 	Source      string // server-trusted source string per ADR 002 § 6
 	ClientMsgID string
-	System      bool // true for tick / __system writes — bypass scope checks
+
+	// system marks a server-trusted internal write (tick fan-out,
+	// declared-adapter poller/pg-listen) that bypasses the scope check.
+	// UNEXPORTED ON PURPOSE (B-syswrite hardening, ADR 003 §3.1.3 /
+	// issue #85): only this package can set it — no wire surface
+	// (WS/REST handler) can ever construct a System write or smuggle a
+	// `__system.*` state write past the gate. Async-effect completions
+	// do NOT come through here at all: they travel intra-process as
+	// InputMsg.ResumeExec (runtime/exec_effects.go).
+	system bool
+}
+
+// systemWrite marks a Write as server-trusted. In-package adapters
+// (poller, pg-listen) call this on values THEY constructed — it is
+// deliberately not reachable from request-handling packages.
+func systemWrite(w Write) Write {
+	w.system = true
+	return w
 }
 
 // InboxMetrics is the observability seam the inbox reports drops on
@@ -75,7 +92,18 @@ func NewInbox(show *runtime.Show, logger *slog.Logger, metrics InboxMetrics) *In
 // caller's identity is not allowed at the target path; nil on success
 // (including the case where no scene has a binding — silent drop).
 func (in *Inbox) Write(_ context.Context, w Write) error {
-	if !w.System {
+	if !w.system {
+		// B-syswrite hardening (issue #85): the `__system.*` namespace
+		// is never writable from the wire, for ANY identity — operator
+		// and admin included. Internal producers (tick, declared
+		// adapters) carry the in-package system mark; async-effect
+		// completions never come through the inbox-as-write at all
+		// (they are intra-process InputMsg.ResumeExec messages).
+		if isSystemNamespace(w.Path) {
+			in.logger.Warn("write forbidden: __system.* is not wire-writable",
+				"path", w.Path, "user", w.Identity.UserID, "role", w.Identity.Role)
+			return ErrWriteForbidden
+		}
 		if !w.Identity.CanWritePath(w.Path) {
 			in.logger.Debug("write forbidden", "path", w.Path, "user", w.Identity.UserID, "role", w.Identity.Role)
 			return ErrWriteForbidden
@@ -83,7 +111,7 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 	}
 
 	// Test-mode paths never reach the live show.
-	if isTestNamespace(w.Path) && !w.System {
+	if isTestNamespace(w.Path) && !w.system {
 		return ErrWriteForbidden
 	}
 
@@ -92,7 +120,7 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 		Value:       w.Value,
 		Source:      w.Source,
 		ClientMsgID: w.ClientMsgID,
-		IsSystem:    w.System,
+		IsSystem:    w.system,
 	}
 
 	// Fan-out to every loaded scene that declared a binding on the
@@ -102,7 +130,7 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 		if err != nil {
 			continue
 		}
-		if !sceneAcceptsPath(scene, w.Path) {
+		if !sceneAcceptsPath(scene, w.Path, w.system) {
 			continue
 		}
 		// scene.Input's return is consumed, not discarded (ADR 003 §3.3
@@ -146,7 +174,7 @@ func (in *Inbox) noteDrop(sceneID, path string) {
 // declares the path in any of: defaults seed, operator_inputs, or
 // external_adapter target_paths. v1 rule: this is the binding
 // declaration that decides who receives the write (ADR 004 § 5).
-func sceneAcceptsPath(scene *runtime.Scene, path string) bool {
+func sceneAcceptsPath(scene *runtime.Scene, path string, system bool) bool {
 	g := scene.Graph()
 	if _, ok := g.Defaults[path]; ok {
 		return true
@@ -163,8 +191,12 @@ func sceneAcceptsPath(scene *runtime.Scene, path string) bool {
 			}
 		}
 	}
-	// __system.* fan-out unconditionally (tick lands on every scene).
-	if strings.HasPrefix(path, "__system.") {
+	// __system.* fan-out (tick lands on every scene) — for INTERNAL
+	// system writes only (B-syswrite hardening, issue #85): an external
+	// `__system.*` write is already rejected at the scope gate, and
+	// this guard keeps the fan-out shortcut unreachable for it even if
+	// a future caller misroutes one.
+	if system && isSystemNamespace(path) {
 		return true
 	}
 	return false
@@ -172,6 +204,10 @@ func sceneAcceptsPath(scene *runtime.Scene, path string) bool {
 
 func isTestNamespace(p string) bool {
 	return strings.HasPrefix(p, "__test.")
+}
+
+func isSystemNamespace(p string) bool {
+	return p == "__system" || strings.HasPrefix(p, "__system.")
 }
 
 // AuditEntry is one row in the in-memory audit ring (per ADR 002
