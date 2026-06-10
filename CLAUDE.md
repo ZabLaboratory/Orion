@@ -84,12 +84,13 @@ prefix on the way in).
 ## Resolution criteria — coverage
 
 The 18 criteria from the chantier brief (15 from ADR 004 § 12 + 3
-chantier-specific). Status as of the v2 scaffold landing:
+chantier-specific). Status updated post-#88 (conformance matrix merged,
+`c145e49`) and post-ADR 006 (exec activation + IMPURE_COMPUTE retired):
 
 | # | Criterion | Coverage |
 |---|---|---|
-| 1 | `POST /push` accepts envelope, advances `latest_pushed_version`; malformed leaves it unchanged. | `internal/api/scenes_push.go` + `tests/e2e/push_test.go` |
-| 2 | `POST /show/active-scene` rejects scenes never pushed (`SCENE_NOT_PUSHED`). | `internal/api/show.go` |
+| 1 | `POST /push` accepts envelope, advances `latest_pushed_version`; malformed leaves it unchanged. **ADR 003 #1 (master conformance) — COVERED** (#88 `c145e49`): CI job `conformance-matrix` asserts every manifest node has a registered executor + passing test; ratchet armed. | `internal/api/scenes_push.go` + `tests/e2e/push_test.go` + `internal/conformance/` (job `conformance-matrix`) |
+| 2 | `POST /show/active-scene` rejects scenes never pushed (`SCENE_NOT_PUSHED`). **ADR 003 #2 (no capability rejection) — COVERED** (#88 `c145e49`): `TestConformance_Matrix` pushes a blueprint with one node of each served type; `conformance-matrix` CI job gates it. | `internal/api/show.go` + `internal/conformance/conformance_test.go::TestConformance_Matrix` |
 | 3 | `GET /render-bundle?v=` byte-for-byte match + immutable cache header. | `internal/api/scenes_get.go` |
 | 4 | WS `/show/stream` input-to-delta ≤ 50 ms. | `internal/ws/server_test.go::TestWS_OperatorEndToEnd` (200 ms threshold via WS) + `internal/runtime/scene_test.go` (50 ms direct). |
 | 5 | Scene switch emits `scene_changed` + `snapshot` ≤ 100 ms. | `internal/runtime/scene_test.go::TestShow_SwitchMigratesLiveSubsAndEmitsSceneChanged` |
@@ -105,7 +106,7 @@ chantier-specific). Status as of the v2 scaffold landing:
 | 15 | `{rollback_to: ...}` re-points without recompile. | `internal/api/scenes_push.go::handleRollback` |
 | 16 | Solar mock-orion fixtures round-trip against the real Orion. | `internal/protocol/fixtures_test.go` (golden fixtures byte-stable). |
 | 17 | Cyclic component reject (`CYCLIC_COMPONENT`). | `internal/compiler/compile_test.go::TestCompile_CyclicComponent` |
-| 18 | Impure compute reject (`IMPURE_COMPUTE`). | `internal/compiler/compile_test.go::TestCompile_ImpureCompute` |
+| 18 | Impure compute reject (`IMPURE_COMPUTE`). **SUPERSEDED par ADR 006** : la partition exec-compilateur tue ce reject ; purity devient scheduling metadata. Les deux tests `TestCompile_ImpureCompute` sont réécrits en assertions de partition (ADR 006 §3.2 + §6 #3). | ~~`internal/compiler/compile_test.go::TestCompile_ImpureCompute`~~ → voir ADR 006 §3.2 |
 
 ## Resolution criterion (branch-level, per workspace `git.md`)
 

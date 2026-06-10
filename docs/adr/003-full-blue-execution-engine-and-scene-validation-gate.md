@@ -499,10 +499,12 @@ restricts the Blue language — they harden the enforcement and effect seams.
   ranges, https-only), anti-SSRF enforced on the address **resolved AFTER
   DNS** (not the authored hostname). A disallowed host surfaces on the
   node's `error` output port (*effect semantics*), never a crash.
-  **Bastion phase-3 veto, maintained**: the **default prod mode and the
-  post-DNS anti-SSRF resolution remain to be cleared by Bastion** — no
-  `http.request` executor merges to a live-reachable path before that
-  clearance. Validation mode performs no real calls (B10, structural).
+  **Bastion phase-3 veto — LEVÉ (#85, 2026-06-10).** Le mode prod par
+  défaut (deny-all / https-only) et l'anti-SSRF post-DNS (vetting de
+  l'IP résolue, anti-rebinding, deny metadata 169.254.169.254) sont
+  clearés — `internal/effects/egress.go`. L'exercice live de
+  `http.request` (R9-lift, ADR 006) est autorisé sous cette politique
+  fail-closed. Validation mode performs no real calls (B10, structural).
 - **R3 / B2 — `db.query` credential surface**. **RESOLVED — veto dissolved
   by topology A (Amendment 1)**: Orion never connects to a DataSource DB
   and holds **no DB credential** — `db.query` delegates via ZabGate to the
@@ -614,6 +616,23 @@ restricts the Blue language — they harden the enforcement and effect seams.
 - **R10 — http-poll / pg-listen layout adapters still undeclared in prod**
   (`extractAdapters` stub) — out of scope, still tracked against the
   Canvas-extensions chantier.
+- **R-SR — `source.read` hors egress (accepté, phase 3, Bastion #85).**
+  `source.read` fetch l'URL d'un binding `external_adapter` déclaré et figé
+  au push (même niveau de confiance et même client que le poller HTTP 5 Hz),
+  non soumis au vetting anti-SSRF post-DNS de `http.request`. Risque accepté
+  tant que `external_adapter.URL` reste opérateur/auteur-déclaré au compile
+  et jamais calculé/paramétré par une valeur runtime author-controllée.
+  Garde-fou : toute évolution permettant à un blueprint de
+  calculer/paramétrer l'URL d'un `source.read` re-déclenche une clearance
+  Bastion et exige le passage sous la politique egress.
+- **R-jti — ZabAuth service-token sans `jti` (accepté, phase 3, Bastion #85).**
+  Le scope autoritatif des service-tokens sur ZabGate (REST+WS) dépend de
+  la présence d'un `jti` : sans `jti`, ZabGate retombe sur le claim `paths`
+  signé sans vérifier la révocation via `/validate`. Token signé (non
+  forgeable) mais un service-token révoqué sans `jti` resterait accepté
+  jusqu'à expiration. Mitigation actée : ZabAuth émet systématiquement un
+  `jti` sur tout token `role=service` ; le fallback no-jti est réservé au
+  dev.
 
 ## 6. Resolution criteria
 
@@ -728,14 +747,14 @@ Testable; CI-enforced where possible. **Criterion 1 is the master criterion.**
 21. **Org gates.** Orion/Blue/Quasar CIs green; review **Vigil** (who flips
     this ADR to `accepted`); **Bastion** clearance on phase 2 (ingestion
     surface) and phase 3 before the corresponding merges — per Amendment 1
-    the phase-3 ledger is: **B1/R2 egress policy — veto maintained**
-    (default prod mode + post-DNS anti-SSRF still to clear); **B2/R3 —
+    the phase-3 ledger is: **B1/R2 egress policy — veto LEVÉ (#85)**
+    : default prod mode deny-all/https-only + anti-SSRF post-DNS clearés; **B2/R3 —
     veto dissolved by topology A**, Bastion clearance still gating the
     inter-service `_query` contract; **B-syswrite completion contract —
     condition C3 lifted by the service-token-scope contract, under Bastion
     re-clearance at phase 3**; **condition C2 (R9 phase-1 residual) due
     before phase 4**. Bastion's design clearance is **conditional** on the
-    B-requirements above; the B1 veto stands until lifted.
+    B-requirements above; le veto B1 a été levé au #85 (egress fail-closed + anti-SSRF post-DNS).
 
 ---
 
@@ -780,8 +799,8 @@ language — these are seam/deployment policies and completion contracts.
    by an executor deployment policy (étage-1 host/scheme allowlist,
    fail-closed default: deny internal/RFC1918/metadata + https-only,
    anti-SSRF on the post-DNS resolved address); disallowed host → `error`
-   port (effect semantics), never a crash. **B1 veto maintained**: default
-   prod mode + anti-SSRF resolution still to be cleared by Bastion.
+   port (effect semantics), never a crash. **B1 veto levé (#85)** :
+   default prod mode + anti-SSRF post-DNS clearés (`internal/effects/egress.go`).
 
 Amended passages: §3.1.3 (completion contract, `db.query`,
 `animation.play`), §3.4 (phase-3 row), §4 (inter-service surface added),
