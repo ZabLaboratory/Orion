@@ -98,9 +98,12 @@ func TestProbe_NonFinite_Propagation(t *testing.T) {
 		{"core.math.max@1", in("a", `1`, "b", `"inf"`), `null`},
 		// lerp with NaN alpha → NaN result → null
 		{"core.math.lerp@1", in("a", `0`, "b", `10`, "alpha", `"nan"`), `null`},
-		// clamp with NaN value: pyMax(lo, pyMin(hi, NaN))
-		// pyMin(1, NaN): NaN < 1 is false → NaN. pyMax(0, NaN): NaN > 0 false → NaN → null.
-		{"core.math.clamp@1", in("value", `"nan"`, "min", `0`, "max", `1`), `null`},
+		// clamp with NaN value: pyMax(lo, pyMin(hi, NaN)).
+		// pyMin(hi=1, NaN): `NaN < 1` is false → incumbent (hi=1) wins → returns 1 (finite).
+		// pyMax(lo=0, 1): `1 > 0` is true → returns 1 (finite).
+		// jsonNum(1) = 1 (not null — result is finite). Python: max(0, min(1, float('nan'))) = 1.
+		// The "non-finite → null" rule applies to a NON-FINITE RESULT, not to a non-finite input.
+		{"core.math.clamp@1", in("value", `"nan"`, "min", `0`, "max", `1`), `1`},
 	}
 	for _, c := range cases {
 		if got := runPure(t, c.id, c.inputs, nil); got != c.want {
@@ -268,8 +271,11 @@ func TestProbe_StringFormat_NullTemplate(t *testing.T) {
 	}
 }
 
-// TestProbe_StringFormat_DoubleClosingEscape — `}}` at end of template
-// should output `}` without error.
+// TestProbe_StringFormat_BraceEscapes — brace-escape and lone-brace error paths.
+// Python: "value: {v}}".format(v="x") raises ValueError (lone '}' after closing
+// the {v} placeholder). pyFormat scans left-to-right; after consuming {v} it hits
+// a lone '}' and returns ("", false) → fallback to raw template. Faithful to
+// executor.py's except-return-template contract.
 func TestProbe_StringFormat_BraceEscapes(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -277,7 +283,8 @@ func TestProbe_StringFormat_BraceEscapes(t *testing.T) {
 		args   string
 		want   string
 	}{
-		{"double close at end", `"value: {v}}"`, `{"v":"x"}`, `"value: x}"`},
+		// "value: {v}}" — lone '}' after {v} → Python ValueError → raw template back.
+		{"double close at end", `"value: {v}}"`, `{"v":"x"}`, `"value: {v}}"`},
 		{"double open only", `"{{only}}"`, `{}`, `"{only}"`},
 		{"both escapes", `"{{{v}}}"`, `{"v":"x"}`, `"{x}"`},
 	}
