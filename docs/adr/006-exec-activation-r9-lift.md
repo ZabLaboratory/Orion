@@ -1,8 +1,8 @@
 # ADR 006 — Exec activation : compiler partition + R9 lift (exec to air behind the validation gate)
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-06-10
-- **Decided**: —
+- **Decided**: 2026-06-10 — @ClodoCapeo
 - **Deciders**: @ClodoCapeo
 - **Author**: Atlas (architect agent)
 - **Supersedes**: — (executes and completes ADR 003 §3.1.2/§3.4 ; supersedes
