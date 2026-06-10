@@ -25,7 +25,6 @@ type DiagnosticCode string
 // Error codes (ADR 003 § 6 / ADR 004 § 12 + chantier criteria 17, 18).
 const (
 	ErrCyclicComponent      DiagnosticCode = "CYCLIC_COMPONENT"
-	ErrImpureCompute        DiagnosticCode = "IMPURE_COMPUTE"
 	ErrUnknownComponent     DiagnosticCode = "UNKNOWN_COMPONENT"
 	ErrUnknownComputeNode   DiagnosticCode = "UNKNOWN_COMPUTE_NODE"
 	ErrUnknownPath          DiagnosticCode = "UNKNOWN_PATH"

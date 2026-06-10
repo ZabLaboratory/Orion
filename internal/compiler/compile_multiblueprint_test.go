@@ -33,6 +33,15 @@ func graphNodeByPath(g *Graph, path string) (GraphNode, bool) {
 	return GraphNode{}, false
 }
 
+func graphNodeByID(g *Graph, id string) (GraphNode, bool) {
+	for _, n := range g.Nodes {
+		if n.ID == id {
+			return n, true
+		}
+	}
+	return GraphNode{}, false
+}
+
 // Criterion 1 / R4 (THE non-regression): a legacy single-field push and the
 // equivalent blueprints:[{key:"",id:X}] push compile to the BYTE-IDENTICAL
 // scene_version. The empty key's empty prefix means leaf paths, node ids and
@@ -275,35 +284,59 @@ func TestCompile_DeclaredBlueprintKeyBindingResolves(t *testing.T) {
 	}
 }
 
-// Per-blueprint purity (criterion 6): an impure compute in ANY blueprint of an
-// N-blueprint push → IMPURE_COMPUTE.
-func TestCompile_NBlueprints_PerBlueprintPurity(t *testing.T) {
-	impure := &BlueprintGraph{
-		ID: "bp-bad",
+// Per-blueprint partition (criterion 6, REWRITTEN per ADR 006 §3.2):
+// an impure DATA compute in any blueprint of an N-blueprint push is now
+// SERVED, not rejected — it stays a data node, the scene compiles. An
+// exec-pin node in another blueprint partitions to that blueprint's own
+// ExecProgram. No IMPURE_COMPUTE.
+func TestCompile_NBlueprints_ImpureServedExecPartitioned(t *testing.T) {
+	impureData := &BlueprintGraph{
+		ID: "bp-impure",
 		Nodes: []BlueprintNode{{
 			ID:      "out.x",
-			Compute: "side.effect@1",
+			Compute: "side.effect@1", // impure, NO exec pin → served as data
 			Config:  map[string]json.RawMessage{"name": json.RawMessage(`"leak"`)},
+		}},
+	}
+	execBP := &BlueprintGraph{
+		ID: "bp-exec",
+		Nodes: []BlueprintNode{{
+			ID:      "set",
+			Compute: "core.variable.set@1",
+			Config:  map[string]json.RawMessage{"name": json.RawMessage(`"c"`)},
+			Inputs:  []BlueprintPort{{Name: "exec_in", Type: "exec", Kind: "exec"}},
+			Outputs: []BlueprintPort{{Name: "then", Type: "exec", Kind: "exec"}},
 		}},
 	}
 	manifest := pureManifest()
 	manifest["side.effect@1"] = ComputeManifestEntry{IsPure: false, Version: "1"}
+	manifest["core.variable.set@1"] = ComputeManifestEntry{IsPure: true, Version: "1"}
 
 	f := &fakeFetcher{
 		layouts: map[string]*CanvasLayout{"v1": minimalLayout("v1")},
 		blueprints: map[string]*BlueprintGraph{
-			"bp-good": scoreBlueprint("bp-good", "value"),
-			"bp-bad":  impure,
+			"bp-impure": impureData,
+			"bp-exec":   execBP,
 		},
 		manifest: manifest,
 	}
-	_, _, _, err := Compile(context.Background(), "scene-1",
+	g, _, _, err := Compile(context.Background(), "scene-1",
 		PushEnvelope{CanvasVersion: "v1", Blueprints: []BlueprintRef{
-			{Key: "good", ID: "bp-good"},
-			{Key: "bad", ID: "bp-bad"},
+			{Key: "imp", ID: "bp-impure"},
+			{Key: "exc", ID: "bp-exec"},
 		}}, f)
-	var ce *CompileError
-	if !errors.As(err, &ce) || !ce.HasCode(ErrImpureCompute) {
-		t.Fatalf("want IMPURE_COMPUTE from the bad blueprint, got %v", err)
+	if err != nil {
+		t.Fatalf("ADR 006 §3.2 retired the impure reject; got %v", err)
+	}
+	if _, ok := graphNodeByID(g, "imp.out.x"); !ok {
+		t.Fatalf("impure data node missing; nodes = %+v", g.Nodes)
+	}
+	if _, ok := graphNodeByID(g, "exc.set"); ok {
+		t.Fatalf("exec node leaked into data graph; nodes = %+v", g.Nodes)
+	}
+	// Exactly one program (the exec blueprint); the impure-data blueprint
+	// emits none.
+	if len(g.ExecPrograms) != 1 {
+		t.Fatalf("want 1 exec program, got %d", len(g.ExecPrograms))
 	}
 }

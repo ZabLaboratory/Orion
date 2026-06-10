@@ -177,8 +177,12 @@ func TestCompile_CyclicComponent(t *testing.T) {
 	}
 }
 
-// Criterion 18: blueprint compute flagged is_pure: false → IMPURE_COMPUTE.
-func TestCompile_ImpureCompute(t *testing.T) {
+// Criterion 18 (SUPERSEDED by ADR 006 §3.2): purity is no longer a
+// rejection. An impure DATA compute (is_pure:false, NO exec pin) is
+// SERVED, not refused — it compiles into a normal data GraphNode.
+// Capability is total; proof of termination is the validation gate's
+// job, not the compiler's.
+func TestCompile_ImpureDataCompute_Accepted(t *testing.T) {
 	bp := &BlueprintGraph{
 		ID: "bp-1",
 		Nodes: []BlueprintNode{
@@ -190,6 +194,7 @@ func TestCompile_ImpureCompute(t *testing.T) {
 		},
 	}
 	manifest := pureManifest()
+	// Impure, but NO exec pin → stays in the data layer.
 	manifest["side.effect@1"] = ComputeManifestEntry{IsPure: false, Version: "1"}
 
 	f := &fakeFetcher{
@@ -197,14 +202,56 @@ func TestCompile_ImpureCompute(t *testing.T) {
 		blueprints: map[string]*BlueprintGraph{"bp-1": bp},
 		manifest:   manifest,
 	}
-	_, _, _, err := Compile(context.Background(), "scene-1",
+	g, _, _, err := Compile(context.Background(), "scene-1",
 		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-1"}, f)
-	if err == nil {
-		t.Fatal("expected purity error")
+	if err != nil {
+		t.Fatalf("impure data compute rejected (ADR 006 §3.2 retired the reject): %v", err)
 	}
-	var ce *CompileError
-	if !errors.As(err, &ce) || !ce.HasCode(ErrImpureCompute) {
-		t.Fatalf("want IMPURE_COMPUTE, got %v", err)
+	if _, ok := graphNodeByID(g, "out.sus"); !ok {
+		t.Fatalf("impure data node missing from data graph; nodes = %+v", g.Nodes)
+	}
+	if len(g.ExecPrograms) != 0 {
+		t.Fatalf("data-only scene emitted exec programs: %d", len(g.ExecPrograms))
+	}
+}
+
+// An impure compute carrying an EXEC pin is routed to the ExecProgram,
+// removed from the data graph — the partition, not a rejection
+// (ADR 006 §3.1).
+func TestCompile_ExecPinNode_RoutedToProgram(t *testing.T) {
+	bp := &BlueprintGraph{
+		ID: "bp-1",
+		Nodes: []BlueprintNode{
+			{
+				ID:      "set",
+				Compute: "core.variable.set@1",
+				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"counter"`)},
+				Inputs: []BlueprintPort{
+					{Name: "exec_in", Type: "exec", Kind: "exec"},
+					{Name: "value", Type: "integer", Kind: "data"},
+				},
+				Outputs: []BlueprintPort{{Name: "then", Type: "exec", Kind: "exec"}},
+			},
+		},
+	}
+	manifest := pureManifest()
+	manifest["core.variable.set@1"] = ComputeManifestEntry{IsPure: true, Version: "1"}
+
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+		blueprints: map[string]*BlueprintGraph{"bp-1": bp},
+		manifest:   manifest,
+	}
+	g, _, _, err := Compile(context.Background(), "scene-1",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-1"}, f)
+	if err != nil {
+		t.Fatalf("exec-pin scene rejected: %v", err)
+	}
+	if _, ok := graphNodeByID(g, "set"); ok {
+		t.Fatalf("exec node leaked into the data graph; nodes = %+v", g.Nodes)
+	}
+	if len(g.ExecPrograms) != 1 {
+		t.Fatalf("want 1 exec program, got %d", len(g.ExecPrograms))
 	}
 }
 
@@ -519,7 +566,7 @@ func TestBlueprintNode_BodyContract(t *testing.T) {
 	manifest := ComputeManifest{
 		"core.output@1": {IsPure: true, IsBounded: true, Version: "1"},
 	}
-	nodes, _, diags := validateBlueprint(bp, manifest)
+	nodes, _, diags := validateBlueprint(bp, manifest, nil)
 	for _, d := range diags {
 		if d.Severity == "error" {
 			t.Fatalf("unexpected diagnostic: %s %s", d.Code, d.Message)
@@ -558,7 +605,7 @@ func TestBlueprintNode_LiteralSeedsDefault(t *testing.T) {
 	manifest := ComputeManifest{
 		"core.literal@1": {IsPure: true, IsBounded: true, Version: "1"},
 	}
-	nodes, defaults, diags := validateBlueprint(bp, manifest)
+	nodes, defaults, diags := validateBlueprint(bp, manifest, nil)
 	for _, d := range diags {
 		if d.Severity == "error" {
 			t.Fatalf("unexpected diagnostic: %s %s", d.Code, d.Message)
