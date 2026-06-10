@@ -27,6 +27,30 @@ type fakeExecMetrics struct {
 	parkDropped   map[string]int // by reason ("duplicate_key", "cap")
 	resumeStale   int
 	resumeUnknown int
+	// cpuBySceneVersion accumulates ExecCPUSeconds per scene_version
+	// label (B7, issue #89); cpuCalls counts slice reports.
+	cpuBySceneVersion map[string]float64
+	cpuCalls          int
+}
+
+func (f *fakeExecMetrics) ExecCPUSeconds(_, sceneVersion string, seconds float64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.cpuBySceneVersion == nil {
+		f.cpuBySceneVersion = map[string]float64{}
+	}
+	f.cpuBySceneVersion[sceneVersion] += seconds
+	f.cpuCalls++
+}
+
+func (f *fakeExecMetrics) cpu() (byVersion map[string]float64, calls int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	byVersion = make(map[string]float64, len(f.cpuBySceneVersion))
+	for k, v := range f.cpuBySceneVersion {
+		byVersion[k] = v
+	}
+	return byVersion, f.cpuCalls
 }
 
 func (f *fakeExecMetrics) ExecResumeUnknown(string) {
