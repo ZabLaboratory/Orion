@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"strconv"
+	"time"
 )
 
 // The exec interpreter (ADR 003 §3.1, issue #82). A task is an
@@ -64,6 +65,13 @@ type execOpOutcome struct {
 	park    bool
 	parkKey string
 	resume  ExecTarget
+	// timer + deadline arm a timer-wheel entry for the parked
+	// continuation (issue #83's `delay`): at the deadline, the wheel
+	// resumes parkKey on the scene goroutine. Only honoured when the
+	// park is accepted (B8 cap / duplicate key shed nothing onto the
+	// wheel).
+	timer    bool
+	deadline time.Time
 	// next, when non-nil and !park, overrides the default
 	// `then` continuation.
 	next *ExecTarget
@@ -177,7 +185,9 @@ func (s *Scene) execNode(t *execTask, id, port string) {
 			// per-iteration pins stay correct at resume time.
 			cont := &execTask{id: t.id, env: copyEnv(t.env)}
 			cont.pushNode(out.resume)
-			s.parkTask(out.parkKey, cont)
+			if s.parkTask(out.parkKey, cont) && out.timer {
+				s.wheelAdd(out.parkKey, out.deadline)
+			}
 			return
 		}
 		if out.next != nil {

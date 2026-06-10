@@ -3,6 +3,7 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 )
 
@@ -33,6 +34,9 @@ const (
 	OpWhile       = "while"
 	OpVariableSet = "variable.set"
 	OpPrint       = "print"
+	// OpDelay is the latent timer node (issue #83): parks the chain's
+	// continuation on the scene's timer wheel (exec_timer.go).
+	OpDelay = "delay"
 )
 
 // ExecTarget addresses one end of an exec edge: a node plus the exec
@@ -82,11 +86,32 @@ func (n *ExecNode) next(names ...string) (ExecTarget, bool) {
 	return ExecTarget{}, false
 }
 
+// Entry kinds — the trigger vocabulary (ADR 003 §3.1.3, issue #83).
+// The runtime wires each kind to its firing source: `on-start` fires
+// when the scene becomes live and on each test-session open;
+// `on-tick` fires per global tick (tick.go) with `delta_seconds`
+// bound; `on-event` fires on a write to `__events.<event>`.
+const (
+	EntryOnStart = "on-start"
+	EntryOnTick  = "on-tick"
+	EntryOnEvent = "on-event"
+)
+
 // ExecEntry is one event entrypoint: the target the event node's exec
 // out pin is wired to. Phase-1 trigger nodes (`on-start`, `on-tick`,
 // `on-event`) compile down to entries; firing one creates a task.
 type ExecEntry struct {
 	Target ExecTarget `json:"target"`
+	// Kind selects the runtime trigger ("" = fired explicitly via
+	// FireExec only — tests, future operator dispatch).
+	Kind string `json:"kind,omitempty"`
+	// Event names the `__events.<event>` topic an on-event entry
+	// listens to.
+	Event string `json:"event,omitempty"`
+	// Node is the event node's id — the namespace its data out pins
+	// (`<node>.delta_seconds` for on-tick) are bound under in the
+	// task environment.
+	Node string `json:"node,omitempty"`
 }
 
 // ExecProgram is a blueprint's exec layer, ready to interpret. It is
@@ -161,9 +186,22 @@ type ExecMetrics interface {
 	// (`orion_task_preempt_total`).
 	ExecTaskPreempt(sceneID string)
 	// ExecParkedTasks gauges the parked-continuation count
-	// (`orion_parked_tasks`). Issue #83 (B8) adds the cap + the
-	// timer wheel that feeds `orion_timer_wheel_size`.
+	// (`orion_parked_tasks`).
 	ExecParkedTasks(sceneID string, n int)
+	// ExecTimerWheelSize gauges the armed timer entries
+	// (`orion_timer_wheel_size`, issue #83).
+	ExecTimerWheelSize(sceneID string, n int)
+	// ExecParkDropped counts a dropped park
+	// (`orion_exec_park_dropped_total`): reason "duplicate_key" is
+	// the C1 ordering-anomaly counter (a wake key collided — the
+	// continuation is dropped, loudly); reason "cap" is the B8
+	// back-pressure shed of a NEW park when the per-scene parked cap
+	// is full. Neither ever touches an already-parked or running task.
+	ExecParkDropped(sceneID, reason string)
+	// ExecResumeStale counts a resume dropped by the version/epoch
+	// stamp check (`orion_exec_resume_stale_total`, ADR 003 §3.1.4):
+	// a wake key minted before a cancellation resumes nothing.
+	ExecResumeStale(sceneID string)
 }
 
 // Exec scheduling defaults (ADR 003 §3.1.3: "after a step budget —
@@ -180,6 +218,11 @@ const (
 	// slice (time.Now per step would dominate small steps). The
 	// step budget itself is exact and deterministic.
 	execTimeCheckEvery = 256
+	// defaultExecParkCap is the B8 per-scene cap on parked
+	// timers/continuations (ADR 003 §3.1.6). Beyond it a NEW park is
+	// shed and counted (`orion_exec_park_dropped_total{reason="cap"}`)
+	// — tasks already parked or running are untouched.
+	defaultExecParkCap = 1024
 )
 
 // InstallExec attaches the exec program. Must be called before Run
@@ -187,12 +230,51 @@ const (
 // The program itself must stay immutable — it may be shared between
 // instances.
 func (s *Scene) InstallExec(p *ExecProgram) {
+	s.execOnStart, s.execOnTick = nil, nil
+	s.execOnEvent = nil
 	if p != nil {
 		for _, n := range p.Nodes {
 			n.seqTargets = sequenceTargets(n)
 		}
+		// Trigger indexes (issue #83), in SORTED entry-key order: the
+		// firing order of multiple entries of one kind must never
+		// derive from map iteration.
+		keys := make([]string, 0, len(p.Entrypoints))
+		for k := range p.Entrypoints {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			switch e := p.Entrypoints[k]; e.Kind {
+			case EntryOnStart:
+				s.execOnStart = append(s.execOnStart, k)
+			case EntryOnTick:
+				s.execOnTick = append(s.execOnTick, k)
+			case EntryOnEvent:
+				if e.Event == "" {
+					continue
+				}
+				if s.execOnEvent == nil {
+					s.execOnEvent = map[string][]string{}
+				}
+				s.execOnEvent[e.Event] = append(s.execOnEvent[e.Event], k)
+			}
+		}
 	}
 	s.execProg = p
+}
+
+// FireOnStart fires every `on-start` entrypoint (ADR 003 §3.1.3: the
+// scene becomes live, or a test session opens). Safe from any
+// goroutine — the fires travel the inbox; execOnStart is built pre-Run
+// and read-only afterwards. A scene without an exec program (every
+// prod scene until the phase-4 gate wires exec live) is a no-op.
+func (s *Scene) FireOnStart(source string) {
+	for _, k := range s.execOnStart {
+		if !s.Input(InputMsg{FireExec: k, Source: source}) {
+			s.logger.Warn("on-start fire dropped: inbox full", "entry", k)
+		}
+	}
 }
 
 // sequenceTargets extracts `then_0..then_N` in ascending index order,
@@ -258,7 +340,11 @@ func (s *Scene) FireExec(entry, source string) bool {
 
 // enqueueFire creates a task for an entrypoint fire — or sheds it
 // under B5 back-pressure. Scene goroutine only.
-func (s *Scene) enqueueFire(entry string) {
+func (s *Scene) enqueueFire(entry string) { s.enqueueFireEnv(entry, nil) }
+
+// enqueueFireEnv is enqueueFire with event-pin bindings seeded into
+// the task environment (on-tick's `<node>.delta_seconds`).
+func (s *Scene) enqueueFireEnv(entry string, env map[string]json.RawMessage) {
 	if s.execProg == nil {
 		s.logger.Warn("exec fire on scene without exec program", "entry", entry)
 		return
@@ -284,30 +370,67 @@ func (s *Scene) enqueueFire(entry string) {
 		id:  s.execTaskSeq,
 		env: map[string]json.RawMessage{},
 	}
+	for k, v := range env {
+		t.env[k] = v
+	}
 	t.pushNode(e.Target)
 	s.execQueue = append(s.execQueue, t)
 }
 
-// parkTask registers a parked continuation under its wake key.
-// Scene goroutine only.
-func (s *Scene) parkTask(key string, t *execTask) {
+// parkTask registers a parked continuation under its wake key and
+// reports whether the park was accepted. Scene goroutine only.
+//
+// Two drop paths, both counted on `orion_exec_park_dropped_total`:
+//   - "duplicate_key" (C1, Bastion condition inherited from #82): a
+//     wake-key collision is an ordering anomaly — dropped loudly and
+//     observable, never silent.
+//   - "cap" (B8 back-pressure, ADR 003 §3.1.6): the per-scene parked
+//     cap is full, so the NEW park is shed. The task that requested
+//     the park continues with its remaining frames; tasks already
+//     parked or running are never touched (doctrine §1.1).
+func (s *Scene) parkTask(key string, t *execTask) bool {
 	if _, dup := s.execParked[key]; dup {
+		if s.execMetrics != nil {
+			s.execMetrics.ExecParkDropped(s.id, "duplicate_key")
+		}
 		s.logger.Error("exec park: duplicate wake key — continuation dropped", "key", key)
-		return
+		return false
+	}
+	if s.execParkCap > 0 && len(s.execParked) >= s.execParkCap {
+		if s.execMetrics != nil {
+			s.execMetrics.ExecParkDropped(s.id, "cap")
+		}
+		s.logger.Warn("exec park shed (B8 parked cap full)",
+			"key", key, "cap", s.execParkCap)
+		return false
 	}
 	s.execParked[key] = t
 	s.reportParked()
+	return true
 }
 
 // resumeParked re-enqueues the continuation parked under key. Scene
 // goroutine only; cross-goroutine resumes travel the inbox
-// (InputMsg.ResumeExec) — the seam issue #83's timer wheel and the
-// phase-3 authenticated completion path (B-syswrite: version- and
-// token-stamped wake keys) build on.
+// (InputMsg.ResumeExec); timer-wheel resumes call this directly from
+// fireDueTimers. The phase-3 authenticated completion path
+// (B-syswrite) adds the token stamp + role check ABOVE this gate; the
+// version/epoch staleness check below stays as the inner gate.
 func (s *Scene) resumeParked(key string) {
+	if ver, epoch, stamped := parseWakeStamp(key); stamped &&
+		(ver != s.graph.SceneVersion || epoch != s.execEpoch) {
+		// Version-stamped wake key of a cancelled epoch / another
+		// version (ADR 003 §3.1.4): the in-flight result is discarded
+		// on arrival — dropped, counted, resumes nothing.
+		if s.execMetrics != nil {
+			s.execMetrics.ExecResumeStale(s.id)
+		}
+		s.logger.Warn("exec resume dropped: stale wake key",
+			"key", key, "epoch", s.execEpoch)
+		return
+	}
 	t, ok := s.execParked[key]
 	if !ok {
-		// Stale/unknown wake key: dropped, logged — resumes nothing.
+		// Unknown wake key: dropped, logged — resumes nothing.
 		s.logger.Warn("exec resume for unknown wake key", "key", key)
 		return
 	}

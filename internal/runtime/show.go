@@ -109,6 +109,22 @@ func (sh *Show) Stop() {
 // (used by the push handler when a re-push lands on an already-live
 // scene — ADR 004 § 7).
 func (sh *Show) Load(id string, graph *compiler.Graph, bundle *compiler.RenderBundle) {
+	sh.LoadExec(id, graph, bundle, nil)
+}
+
+// LoadExec is Load with an exec program attached (ADR 003 §3.1, issue
+// #83). R9 dormancy note: NO production path passes a non-nil program
+// — the compiler partition and the live-activation enablement land
+// with the phase-4 validation gate. Until then this seam is exercised
+// by tests only, and every Load from the push/boot paths keeps exec
+// uninstalled (prog == nil → all trigger wiring below is inert).
+//
+// Re-push semantics (§3.1.4): swapping an already-loaded scene STOPS
+// the previous instance — its live tasks, parked continuations and
+// timers die with it (cancellation by teardown) — and the new instance
+// starts from declared defaults (restart-reseed). If the swapped scene
+// is the ACTIVE one, `on-start` fires on the fresh instance.
+func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, prog *ExecProgram) {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if existing, ok := sh.scenes[id]; ok {
@@ -118,6 +134,9 @@ func (sh *Show) Load(id string, graph *compiler.Graph, bundle *compiler.RenderBu
 	if sh.execMetrics != nil {
 		scene.SetExecMetrics(sh.execMetrics)
 	}
+	if prog != nil {
+		scene.InstallExec(prog)
+	}
 	// ADR 007 §C.3b: in dual/lsdp mode, pair the scene with a kit
 	// scene and tap its output port. The mirror is seeded with the
 	// freshly-seeded snapshot inside SetMirror before Run starts.
@@ -126,6 +145,11 @@ func (sh *Show) Load(id string, graph *compiler.Graph, bundle *compiler.RenderBu
 	}
 	sh.scenes[id] = scene
 	go scene.Run(sh.ctx)
+	if sh.active == id {
+		// Push-swap of the live scene: the fresh instance becomes
+		// live now → defaults + on-start (ADR 003 §3.1.3/§3.1.4).
+		scene.FireOnStart("system:scene-activated")
+	}
 }
 
 // Unload stops a scene and drops it from the roster.
@@ -193,6 +217,18 @@ func (sh *Show) SetActive(id string, transition json.RawMessage) error {
 	migrating := append([]*Subscription{}, sh.liveSubs...)
 	mirrors := sh.mirrors
 	sh.mu.Unlock()
+
+	// Exec-layer lifecycle (ADR 003 §3.1.3/§3.1.4, issue #83) — both
+	// calls are inert no-ops on scenes without an installed exec
+	// program, i.e. every prod scene until the phase-4 gate (R9):
+	// switch-away cancels all live tasks of the previous scene
+	// version; the destination becoming live fires `on-start`.
+	if from != id {
+		if hadPrev {
+			prev.CancelExec()
+		}
+		dest.FireOnStart("system:scene-activated")
+	}
 
 	// ADR 007 §C.3b: switch the kit's active scene too, so LSDP/1.1
 	// live subscribers get scene_changed + a fresh snapshot off the
