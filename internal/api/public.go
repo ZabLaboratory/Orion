@@ -30,6 +30,11 @@ type PublicDeps struct {
 	Store         *store.Store
 	Fetcher       compiler.Fetcher
 	WSServer      *ws.Server
+
+	// Harness runs scene-validation campaigns (ADR 003 §3.2, issue #87).
+	// ValidationRunner serialises campaigns per (scene, version).
+	Harness          *runtime.Harness
+	ValidationRunner *validationRunner
 	StaticDir     http.FileSystem // /static/solar/...
 	QuasarBaseURL string          // e.g. http://zabgate:4000/quasar
 	ServiceTokens *auth.ServiceTokenManager
@@ -50,6 +55,9 @@ type PublicDeps struct {
 // per the workspace convention (`agents/_shared/conventions.md`).
 // Same handler, two paths.
 func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
+	if deps.ValidationRunner == nil {
+		deps.ValidationRunner = newValidationRunner()
+	}
 	mux.HandleFunc("GET /health", health)
 	mux.HandleFunc("GET /ready", ready(deps))
 	mux.HandleFunc("GET /api/v1/health", health)
@@ -61,6 +69,9 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/scenes/{id}/operator-inputs", getOperatorInputs(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/graph", getGraph(deps))
 	mux.HandleFunc("POST /api/v1/scenes/{id}/status", postSceneStatus(deps))
+	// Scene-validation gate (ADR 003 §3.2.2, issue #87).
+	mux.HandleFunc("POST /api/v1/scenes/{id}/validate", postValidate(deps))
+	mux.HandleFunc("GET /api/v1/scenes/{id}/validation", getValidation(deps))
 	// External animation completion report (B-syswrite, issue #86).
 	// R9: registered but inert until the phase-4 gate — exec dormant in
 	// prod, so every report drops as an unknown wake key, 202.

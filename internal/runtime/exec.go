@@ -149,6 +149,11 @@ func (e *sceneEffector) SetLeaf(path string, value json.RawMessage) {
 	if e.s.state.Set(path, value) {
 		e.s.pending[path] = struct{}{}
 	}
+	// Validation-campaign capture (issue #87): record every leaf the
+	// scene would write so the report carries it. No-op outside a
+	// campaign (validation == nil). This is the SAME intra-goroutine
+	// write live takes — the capture is a tap, not a divergence.
+	e.s.validation.recordLeaf(path)
 }
 
 // printRingSize bounds the `__debug.<key>.print` ring (ADR 003

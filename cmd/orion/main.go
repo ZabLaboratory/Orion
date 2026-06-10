@@ -98,6 +98,13 @@ func run() error {
 	testMgr := runtime.NewTestSessionManager(registry, logger, 5*time.Minute)
 	defer testMgr.Close()
 
+	// Scene-validation harness (ADR 003 §3.2, issue #87). CPU-bound and
+	// off the live path — it builds its own isolated clone scenes per
+	// campaign and never touches the show. The budget bounds the PROOF,
+	// never the engine (a divergent logic fails validation, never airs).
+	harness := runtime.NewHarness(registry, logger,
+		runtime.ValidationBudgetFrom(cfg.ValidationMaxSteps, cfg.ValidationMaxWall))
+
 	tick := runtime.NewTick(cfg.TickHz, show)
 	tick.Run()
 	defer tick.Stop()
@@ -177,6 +184,7 @@ func run() error {
 		Store:         st,
 		Fetcher:       fetcher,
 		WSServer:      wsServer,
+		Harness:       harness,
 		StaticDir:     http.Dir(cfg.SolarRoot),
 		QuasarBaseURL: cfg.QuasarBaseURL,
 		ServiceTokens: serviceTokens,

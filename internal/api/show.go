@@ -54,6 +54,23 @@ func postActiveScene(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
+		// Validation gate (ADR 003 §3.2.2, B3 — critical). Refuse to put a
+		// version on air that has no `validated` record for the current
+		// harness_version. Fail-closed on a DB error: an unproven version
+		// never reaches the antenna.
+		eligible, err := isAirEligible(r.Context(), deps, uuid.MustParse(body.SceneID), *scene.LatestPushedVersion)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+			return
+		}
+		if !eligible {
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"code":          sceneNotValidatedCode,
+				"scene_version": *scene.LatestPushedVersion,
+			})
+			return
+		}
+
 		if err := deps.Show.SetActive(body.SceneID, body.Transition); err != nil {
 			status, code := codeFromError(err)
 			writeJSON(w, status, map[string]string{"code": code})
