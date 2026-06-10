@@ -24,11 +24,14 @@ import (
 //     code that opens a socket / a pgx connection / reads a live source)
 //     is NEVER invoked. There is no way for an op to reach the world: the
 //     seam decides, not the op.
-//   - An effect added later cannot leak: the guard (EnumerateWorldEffects
-//     + ValidateValidationModeCoverage) fails the harness for any
-//     registered world-touching op without a declared validation-mode
-//     synthetic response. A new op that forgets to declare its behaviour
-//     fails the harness rather than silently opening a socket.
+//   - An effect added later cannot leak: ValidateValidationModeCoverage is
+//     INTROSPECTIVE — it reflects the ops SetEffects ACTUALLY registers
+//     (registeredWorldEffectOps installs SetEffects on a throwaway scene)
+//     and fails the harness for any of them without a declared
+//     validation-mode synthetic response. The world-op set derives from the
+//     single worldEffectRegistrations table SetEffects installs from, so a
+//     new op that forgets to declare its behaviour fails the harness rather
+//     than silently opening a socket — there is no second list to forget.
 //   - `animation.play` is NOT a world-touching op (its "effect" is a
 //     scene-state write rendered off the delta pipe); in validation mode
 //     it completes through its existing duration fallback (the timer wheel
@@ -37,16 +40,21 @@ import (
 //     own state through the (capturing) effector — never the world.
 
 // worldEffectOps is the set of exec ops that perform EXTERNAL I/O (open a
-// socket, a DB connection, or read a live source). Every entry MUST have a
-// declared validation-mode synthetic response in validationSyntheticResult.
-// The guard test asserts this set equals the set of ops SetEffects
-// registers (exec_effects.go) — so a phase-N op added to SetEffects without
-// a validation-mode declaration fails the harness, not a live egress.
-var worldEffectOps = map[string]struct{}{
-	OpHTTPRequest: {},
-	OpDBQuery:     {},
-	OpSourceRead:  {},
-}
+// socket, a DB connection, or read a live source). It is DERIVED from
+// worldEffectRegistrations (exec_effects.go) — the SAME table SetEffects
+// installs from — so it can never drift from what SetEffects actually
+// registers. Every entry MUST have a declared validation-mode synthetic
+// response in validationSyntheticResult; the guard reflects the live
+// registry of a Scene after SetEffects and fails on any op that does not,
+// so a phase-N world op added to that table without a validation-mode
+// declaration fails the harness, not a live egress.
+var worldEffectOps = func() map[string]struct{} {
+	m := make(map[string]struct{}, len(worldEffectRegistrations))
+	for _, r := range worldEffectRegistrations {
+		m[r.op] = struct{}{}
+	}
+	return m
+}()
 
 // EnumerateWorldEffects returns the world-touching op names in sorted
 // order — the registry the guard test (criterion 14) enumerates.
@@ -82,12 +90,18 @@ func validationSyntheticResult(op string) (json.RawMessage, bool) {
 }
 
 // ValidateValidationModeCoverage is the structural guard (B10, criterion
-// 14): every op SetEffects registers as world-touching MUST declare a
-// validation-mode synthetic response. Returns an error naming the first
-// undeclared op — the harness fails the campaign on it, so an effect added
-// later cannot silently leak to a real egress in validation mode.
+// 14): every world-touching op that SetEffects registers MUST declare a
+// validation-mode synthetic response. It is INTROSPECTIVE — it installs
+// SetEffects on a throwaway scene and reflects the ops it actually
+// registered (registeredWorldEffectOps) rather than trusting a
+// hand-maintained list. A new world op added to worldEffectRegistrations
+// (the single table SetEffects installs from) without a synthetic
+// declaration therefore fails this guard automatically — there is no second
+// list to forget. Returns an error naming the first undeclared op so the
+// harness fails the campaign on it, so an effect added later cannot silently
+// leak to a real egress in validation mode.
 func ValidateValidationModeCoverage() error {
-	for op := range worldEffectOps {
+	for _, op := range registeredWorldEffectOps() {
 		if _, ok := validationSyntheticResult(op); !ok {
 			return fmt.Errorf("validation-mode coverage: world effect %q declares no synthetic response (B10)", op)
 		}
@@ -193,10 +207,10 @@ func mustEffectEnvelope(value json.RawMessage) json.RawMessage {
 // task drains. A small mutex guards it only so a defensive concurrent read
 // (none today) stays race-clean under -race.
 type validationCapture struct {
-	mu             sync.Mutex
-	leavesWritten  map[string]struct{}
-	effectsTried   []EffectAttempt
-	nodesCovered   map[string]struct{}
+	mu            sync.Mutex
+	leavesWritten map[string]struct{}
+	effectsTried  []EffectAttempt
+	nodesCovered  map[string]struct{}
 }
 
 // EffectAttempt is one attempted effect in validation mode — listed in the
@@ -318,8 +332,8 @@ func (c *validationClock) NewTimer(time.Duration) Timer { return &validationTime
 type validationTimer struct{ c *validationClock }
 
 func (t *validationTimer) C() <-chan time.Time { return t.c.c }
-func (t *validationTimer) Stop()                {}
-func (t *validationTimer) Reset(time.Duration)  {}
+func (t *validationTimer) Stop()               {}
+func (t *validationTimer) Reset(time.Duration) {}
 
 // RunValidationEntrypoint fires one entrypoint on this (validation-mode
 // clone) scene and drives it to completion ENTIRELY on the calling
