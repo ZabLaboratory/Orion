@@ -42,6 +42,16 @@ type GraphNode struct {
 	Compute  string   `json:"compute,omitempty"`
 	Upstream []string `json:"upstream,omitempty"`
 
+	// UpstreamPorts carries each inbound edge's declared `to_port` name,
+	// zipped 1:1 with Upstream (ADR 003 §3.2): UpstreamPorts[i] is the
+	// input port the value of Upstream[i] is delivered under. Empty or
+	// absent (artefacts compiled before named-port carry, or a blank
+	// to_port on the wire) → the runtime falls back to the positional
+	// a,b,c,d synthesis. `omitempty` keeps pre-003 artefacts decoding
+	// unchanged; stored scenes pick the field up on their next push
+	// recompile (no migration).
+	UpstreamPorts []string `json:"upstream_ports,omitempty"`
+
 	// IsPure / IsBounded are mirrored from Blue's manifest at compile
 	// time so the runtime can trust them without re-querying Blue.
 	IsPure    bool `json:"is_pure,omitempty"`

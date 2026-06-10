@@ -318,6 +318,77 @@ func TestScene_ColdStartComputesBlueprintLeaf(t *testing.T) {
 	}
 }
 
+// ADR 003 §3.2 / criterion §7.3 (Orion #70): inputs are delivered under
+// the to_port names carried in the graph artefact, so a core.flow.select@1
+// whose edges were authored in the shuffled order when_false, condition,
+// when_true still selects correctly. Under the old positional synthesis
+// this graph delivered a=when_false("NO"), b=condition(true),
+// c=when_true("YES") — selectFn read `a` as the condition, choked on a
+// non-bool, and the output leaf never materialised.
+func TestScene_SelectWithShuffledEdgeOrder(t *testing.T) {
+	graph := &compiler.Graph{
+		SceneID:      "scene-select",
+		SceneVersion: "sha256:select",
+		Nodes: []compiler.GraphNode{
+			{ID: "lit.cond", Kind: "input", Path: "lit.cond", Compute: "core.literal@1"},
+			{ID: "lit.yes", Kind: "input", Path: "lit.yes", Compute: "core.literal@1"},
+			{ID: "lit.no", Kind: "input", Path: "lit.no", Compute: "core.literal@1"},
+			{
+				ID: "sel", Kind: "computed", Path: "", Compute: "core.flow.select@1",
+				// Authored edge order: when_false, condition, when_true.
+				Upstream:      []string{"lit.no", "lit.cond", "lit.yes"},
+				UpstreamPorts: []string{"when_false", "condition", "when_true"},
+			},
+			{
+				ID: "out", Kind: "output", Path: "display.choice", Compute: "core.output@1",
+				Upstream:      []string{"sel"},
+				UpstreamPorts: []string{"value"},
+			},
+		},
+		Defaults: map[string]json.RawMessage{
+			"lit.cond": json.RawMessage(`true`),
+			"lit.yes":  json.RawMessage(`"YES"`),
+			"lit.no":   json.RawMessage(`"NO"`),
+		},
+	}
+	bundle := &compiler.RenderBundle{SceneVersion: "sha256:select"}
+	scene := NewScene("scene-select", graph, bundle, NewComputeRegistry(), quietLogger())
+
+	_, snap := scene.Subscribe(8)
+	if got := string(snap.State["display.choice"]); got != `"YES"` {
+		t.Fatalf(`display.choice = %s, want "YES" (condition=true must pick when_true despite shuffled edge order)`, got)
+	}
+}
+
+// Pre-ADR-003 artefacts carry no UpstreamPorts: the positional a,b,c,d
+// fallback must keep wiring them (no migration — scenes recompile on
+// their next push). Same shape as the cold-start test but asserted
+// explicitly as the fallback contract.
+func TestScene_PositionalFallbackWithoutUpstreamPorts(t *testing.T) {
+	graph := &compiler.Graph{
+		SceneID:      "scene-positional",
+		SceneVersion: "sha256:positional",
+		Nodes: []compiler.GraphNode{
+			{ID: "lit.a", Kind: "input", Path: "lit.a", Compute: "core.literal@1"},
+			{ID: "lit.b", Kind: "input", Path: "lit.b", Compute: "core.literal@1"},
+			// No UpstreamPorts — an artefact compiled before #70.
+			{ID: "add", Kind: "computed", Path: "", Compute: "core.math.add@1", Upstream: []string{"lit.a", "lit.b"}},
+			{ID: "out", Kind: "output", Path: "display.total", Compute: "core.output@1", Upstream: []string{"add"}},
+		},
+		Defaults: map[string]json.RawMessage{
+			"lit.a": json.RawMessage(`7`),
+			"lit.b": json.RawMessage(`8`),
+		},
+	}
+	bundle := &compiler.RenderBundle{SceneVersion: "sha256:positional"}
+	scene := NewScene("scene-positional", graph, bundle, NewComputeRegistry(), quietLogger())
+
+	_, snap := scene.Subscribe(8)
+	if got := string(snap.State["display.total"]); got != "15" {
+		t.Fatalf("display.total = %q, want 15 (positional fallback must still wire portless artefacts)", got)
+	}
+}
+
 func TestShow_SwitchMigratesLiveSubsAndEmitsSceneChanged(t *testing.T) {
 	logger := quietLogger()
 	show := NewShow(NewComputeRegistry(), logger)

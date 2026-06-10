@@ -55,10 +55,11 @@ func (f *fakeFetcher) FetchComputeManifest(_ context.Context) (ComputeManifest, 
 // core.input@1 / core.literal@1 whose body the §7.2 derivation reads.
 func pureManifest() ComputeManifest {
 	return ComputeManifest{
-		"core.math.add@1": {IsPure: true, IsBounded: true, Version: "1"},
-		"core.literal@1":  {IsPure: true, IsBounded: true, Version: "1"},
-		"core.input@1":    {IsPure: true, IsBounded: true, Version: "1"},
-		"core.output@1":   {IsPure: true, IsBounded: true, Version: "1"},
+		"core.math.add@1":    {IsPure: true, IsBounded: true, Version: "1"},
+		"core.flow.select@1": {IsPure: true, IsBounded: true, Version: "1"},
+		"core.literal@1":     {IsPure: true, IsBounded: true, Version: "1"},
+		"core.input@1":       {IsPure: true, IsBounded: true, Version: "1"},
+		"core.output@1":      {IsPure: true, IsBounded: true, Version: "1"},
 	}
 }
 
@@ -121,6 +122,78 @@ func TestCompile_HappyPath(t *testing.T) {
 	// Topological order: inputs precede the computed.
 	if g.Nodes[len(g.Nodes)-1].ID != "out.sum" {
 		t.Fatalf("topo order wrong, last node = %q", g.Nodes[len(g.Nodes)-1].ID)
+	}
+}
+
+// ADR 003 §3.2 / §7.3 — the graph artefact carries each edge's to_port,
+// zipped 1:1 with Upstream, in authored edge order. Edges are authored
+// in the shuffled order when_false, condition, when_true: positional
+// a,b,c,d wiring would mis-deliver them; the carried names make the
+// wiring order-independent (the runtime half is covered by
+// runtime.TestScene_SelectWithShuffledEdgeOrder).
+func TestCompile_CarriesEdgeToPortNames(t *testing.T) {
+	literal := func(id string, value string) BlueprintNode {
+		return BlueprintNode{
+			ID:      id,
+			Compute: "core.literal@1",
+			Config:  map[string]json.RawMessage{"value": json.RawMessage(value)},
+		}
+	}
+	bp := &BlueprintGraph{
+		ID: "bp-select",
+		Nodes: []BlueprintNode{
+			literal("lit.cond", `true`),
+			literal("lit.yes", `"YES"`),
+			literal("lit.no", `"NO"`),
+			{ID: "sel", Compute: "core.flow.select@1"},
+			outputNode("out", "display.choice"),
+		},
+		Edges: []BlueprintEdge{
+			// Deliberately shuffled: when_false first, condition second,
+			// when_true last (ADR 003 criterion 3).
+			{FromNode: "lit.no", FromPort: "out", ToNode: "sel", ToPort: "when_false"},
+			{FromNode: "lit.cond", FromPort: "out", ToNode: "sel", ToPort: "condition"},
+			{FromNode: "lit.yes", FromPort: "out", ToNode: "sel", ToPort: "when_true"},
+			{FromNode: "sel", FromPort: "out", ToNode: "out", ToPort: "value"},
+		},
+	}
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+		blueprints: map[string]*BlueprintGraph{"bp-select": bp},
+		components: map[ComponentRef]*UserComponent{},
+		manifest:   pureManifest(),
+	}
+	g, _, _, err := Compile(context.Background(), "scene-sel",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-select"}, f)
+	if err != nil {
+		t.Fatalf("compile error: %v", err)
+	}
+
+	byID := map[string]GraphNode{}
+	for _, n := range g.Nodes {
+		byID[n.ID] = n
+	}
+
+	sel, ok := byID["sel"]
+	if !ok {
+		t.Fatal("select node missing from graph artefact")
+	}
+	wantUp := []string{"lit.no", "lit.cond", "lit.yes"}
+	wantPorts := []string{"when_false", "condition", "when_true"}
+	if len(sel.Upstream) != len(wantUp) || len(sel.UpstreamPorts) != len(wantPorts) {
+		t.Fatalf("sel upstream/ports = %v / %v, want %v / %v",
+			sel.Upstream, sel.UpstreamPorts, wantUp, wantPorts)
+	}
+	for i := range wantUp {
+		if sel.Upstream[i] != wantUp[i] || sel.UpstreamPorts[i] != wantPorts[i] {
+			t.Fatalf("sel wiring[%d] = %s→%s, want %s→%s",
+				i, sel.Upstream[i], sel.UpstreamPorts[i], wantUp[i], wantPorts[i])
+		}
+	}
+
+	out := byID["out"]
+	if len(out.UpstreamPorts) != 1 || out.UpstreamPorts[0] != "value" {
+		t.Fatalf("out.UpstreamPorts = %v, want [value]", out.UpstreamPorts)
 	}
 }
 

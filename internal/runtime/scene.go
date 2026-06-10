@@ -104,7 +104,8 @@ type Scene struct {
 
 type computeEntry struct {
 	node     compiler.GraphNode
-	upstream []string // input port name -> upstream node id; zipped 1:1 with node.Upstream for v1
+	upstream []string // upstream node ids, in authored edge order (node.Upstream)
+	ports    []string // declared to_port names, zipped 1:1 with upstream (node.UpstreamPorts); empty → positional fallback
 }
 
 // NewScene constructs a Scene from compiled artefacts and seeds its
@@ -126,7 +127,7 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 	}
 	s.state.Seed(graph.Defaults)
 	for _, n := range graph.Nodes {
-		s.computeOrder = append(s.computeOrder, computeEntry{node: n, upstream: n.Upstream})
+		s.computeOrder = append(s.computeOrder, computeEntry{node: n, upstream: n.Upstream, ports: n.UpstreamPorts})
 	}
 	// Cold-start compute: Seed only fills constant/input leaves, so without
 	// an initial forced pass every COMPUTED leaf (math/compare/logic/output)
@@ -332,11 +333,9 @@ func (s *Scene) recompute(force bool) {
 			}
 		}
 
-		// Gather upstream values. v1 wires by upstream node id; the
-		// compute reads them as port values via a name convention.
-		// Edges' to_port names aren't carried into the graph artefact
-		// in v1 — the runtime just uses sequential numeric ports
-		// (`a`, `b`, …) which matches the v1 stdlib's port set.
+		// Gather upstream values under their declared to_port names
+		// (ADR 003 §3.2); artefacts compiled before named-port carry
+		// fall back to the positional `a`, `b`, … synthesis.
 		args := s.gatherInputs(ce)
 		fn, err := s.cmpReg.Get(ce.node.Compute)
 		if err != nil {
@@ -364,11 +363,22 @@ func (s *Scene) recompute(force bool) {
 	}
 }
 
+// gatherInputs collects the values feeding a compute, keyed by input
+// port name. The declared `to_port` carried in the graph artefact wins
+// (ADR 003 §3.2); a missing/blank port name — artefacts compiled before
+// named-port carry — falls back to the positional a,b,c,d synthesis so
+// stored scenes keep running until their next push recompiles them.
 func (s *Scene) gatherInputs(ce computeEntry) map[string]json.RawMessage {
 	out := make(map[string]json.RawMessage, len(ce.upstream))
 	portNames := []string{"a", "b", "c", "d"}
 	for i, up := range ce.upstream {
-		name := portNames[i%len(portNames)]
+		var name string
+		if i < len(ce.ports) {
+			name = ce.ports[i]
+		}
+		if name == "" {
+			name = portNames[i%len(portNames)]
+		}
 		if v, ok := s.state.Get(s.upstreamPath(up)); ok {
 			out[name] = v
 		}

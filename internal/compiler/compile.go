@@ -255,7 +255,9 @@ func prefixLeaf(key, path string) string {
 // (ADR 001 §3.3): both the node id (so two blueprints' node ids never collide
 // in the merged graph) and the public leaf Path, plus the Upstream id
 // references (which point at sibling node ids within the same blueprint, so
-// they take the same prefix). The legacy key "" is a no-op.
+// they take the same prefix). UpstreamPorts are NOT prefixed: they are port
+// names local to the node's compute signature, not addresses (ADR 003 §3.2).
+// The legacy key "" is a no-op.
 func prefixGraphNodes(nodes []GraphNode, key string) {
 	if key == "" {
 		return
@@ -494,9 +496,16 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 	defaults := map[string]json.RawMessage{}
 	nodes := make([]GraphNode, 0, len(b.Nodes))
 
+	// Upstream node ids and their declared to_port names, zipped 1:1
+	// (ADR 003 §3.2): the runtime delivers Upstream[i]'s value under
+	// UpstreamPorts[i]. Both slices follow the authored edge order — the
+	// same deterministic order Upstream already had, so scene_version
+	// stays a pure function of the pushed inputs.
 	upstreams := make(map[string][]string)
+	upstreamPorts := make(map[string][]string)
 	for _, e := range b.Edges {
 		upstreams[e.ToNode] = append(upstreams[e.ToNode], e.FromNode)
+		upstreamPorts[e.ToNode] = append(upstreamPorts[e.ToNode], e.ToPort)
 	}
 
 	for _, n := range b.Nodes {
@@ -561,13 +570,14 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 		}
 
 		nodes = append(nodes, GraphNode{
-			ID:        n.ID,
-			Kind:      kind,
-			Path:      path,
-			Compute:   n.Compute,
-			Upstream:  upstreams[n.ID],
-			IsPure:    entry.IsPure,
-			IsBounded: entry.IsBounded,
+			ID:            n.ID,
+			Kind:          kind,
+			Path:          path,
+			Compute:       n.Compute,
+			Upstream:      upstreams[n.ID],
+			UpstreamPorts: upstreamPorts[n.ID],
+			IsPure:        entry.IsPure,
+			IsBounded:     entry.IsBounded,
 		})
 	}
 	return nodes, defaults, diags
