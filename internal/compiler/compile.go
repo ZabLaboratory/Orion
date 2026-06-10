@@ -560,8 +560,18 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest, execSet map[
 	}
 
 	for _, n := range b.Nodes {
-		// Structural guard (ADR 006 §3.5): inline-only atoms placed in the
-		// main graph are a Blue authoring error (Blue raises
+		// (a) Exec-layer nodes (ADR 006 §3.1) are routed to the ExecProgram
+		// by partitionBlueprint; they are NOT data nodes and must not
+		// appear in the GraphNode list. Skipping them here (and their
+		// edges fall away in topologicalSort, which drops edges to
+		// dropped nodes) closes the silent-skip hole. This check runs
+		// FIRST so exec nodes bypass the db-inline and manifest gates.
+		if _, isExec := execSet[n.ID]; isExec {
+			continue
+		}
+
+		// (b) Structural guard (ADR 006 §3.5): inline-only atoms placed in
+		// the main graph are a Blue authoring error (Blue raises
 		// db_node_outside_query for the same). Mirror that diagnostic.
 		// This check runs BEFORE the manifest lookup so the error message
 		// is structural rather than "unknown compute".
@@ -579,6 +589,9 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest, execSet map[
 			continue
 		}
 
+		// (c) Manifest validation: the compute must be known to Blue.
+		// Purity is NO LONGER a rejection gate (ADR 006 §3.2): an impure
+		// data compute is served, not refused.
 		entry, found := manifest[n.Compute]
 		if !found {
 			diags = append(diags, Diagnostic{
@@ -587,14 +600,6 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest, execSet map[
 				Message:  fmt.Sprintf("blueprint node %s references unknown compute %q", n.ID, n.Compute),
 				Path:     n.ID,
 			})
-			continue
-		}
-		// Exec-layer nodes (ADR 006 §3.1) are routed to the ExecProgram
-		// by partitionBlueprint; they are NOT data nodes and must not
-		// appear in the GraphNode list. Skipping them here (and their
-		// edges fall away in topologicalSort, which drops edges to
-		// dropped nodes) closes the silent-skip hole.
-		if _, isExec := execSet[n.ID]; isExec {
 			continue
 		}
 
