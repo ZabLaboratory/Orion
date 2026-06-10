@@ -1,0 +1,306 @@
+package compiler
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+)
+
+// execManifest is pureManifest plus the exec ops and event entrypoints
+// this file exercises. Every exec node is is_pure:true (Blue's reality:
+// flow nodes are pure but exec) — proving the discriminator is the exec
+// PIN, not purity.
+func execManifest() ComputeManifest {
+	m := pureManifest()
+	for _, id := range []string{
+		"core.event.on-start@1", "core.event.on-tick@1", "core.event.on-event@1",
+		"core.flow.branch@1", "core.flow.for-loop@1", "core.flow.sequence@1",
+		"core.variable.set@1", "core.print@1", "core.flow.delay@1",
+	} {
+		m[id] = ComputeManifestEntry{IsPure: true, IsBounded: true, Version: "1"}
+	}
+	return m
+}
+
+func execIn(name string) BlueprintPort  { return BlueprintPort{Name: name, Type: "exec", Kind: "exec"} }
+func execOut(name string) BlueprintPort { return BlueprintPort{Name: name, Type: "exec", Kind: "exec"} }
+func dataIn(name string) BlueprintPort  { return BlueprintPort{Name: name, Type: "any", Kind: "data"} }
+
+// decodeProgram reads one emitted ExecPrograms entry back into the
+// compiler-side mirror so structure can be asserted without importing
+// the runtime (the runtime round-trip is proven in the runtime package,
+// criterion #1).
+func decodeProgram(t *testing.T, raw json.RawMessage) execProgram {
+	t.Helper()
+	var p execProgram
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatalf("decode emitted program: %v", err)
+	}
+	return p
+}
+
+// mixedExecBlueprint: on-start → branch → variable.set, with a literal
+// feeding the branch condition (data edge into an exec pin) and the
+// set's value (data edge into an exec pin). Mixes pure data, pure
+// exec-flow (branch) and effect exec (variable.set) — ADR 006 §6 #1.
+func mixedExecBlueprint() *BlueprintGraph {
+	return &BlueprintGraph{
+		ID: "bp-mixed",
+		Nodes: []BlueprintNode{
+			{ID: "start", Compute: "core.event.on-start@1",
+				Outputs: []BlueprintPort{execOut("then")}},
+			{ID: "cond", Compute: "core.literal@1",
+				Config:  map[string]json.RawMessage{"value": json.RawMessage(`true`)},
+				Outputs: []BlueprintPort{dataIn("out")}},
+			{ID: "br", Compute: "core.flow.branch@1",
+				Inputs:  []BlueprintPort{execIn("exec_in"), dataIn("condition")},
+				Outputs: []BlueprintPort{execOut("true"), execOut("false")}},
+			{ID: "val", Compute: "core.literal@1",
+				Config:  map[string]json.RawMessage{"value": json.RawMessage(`9`)},
+				Outputs: []BlueprintPort{dataIn("out")}},
+			{ID: "set", Compute: "core.variable.set@1",
+				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"counter"`)},
+				Inputs:  []BlueprintPort{execIn("exec_in"), dataIn("value")},
+				Outputs: []BlueprintPort{execOut("then")}},
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "start", FromPort: "then", ToNode: "br", ToPort: "exec_in"},
+			{FromNode: "cond", FromPort: "out", ToNode: "br", ToPort: "condition"},
+			{FromNode: "br", FromPort: "true", ToNode: "set", ToPort: "exec_in"},
+			{FromNode: "val", FromPort: "out", ToNode: "set", ToPort: "value"},
+		},
+	}
+}
+
+func compileMixed(t *testing.T) *Graph {
+	t.Helper()
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+		blueprints: map[string]*BlueprintGraph{"bp-1": mixedExecBlueprint()},
+		manifest:   execManifest(),
+	}
+	g, _, _, err := Compile(context.Background(), "scene-1",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-1"}, f)
+	if err != nil {
+		t.Fatalf("mixed exec scene rejected: %v", err)
+	}
+	return g
+}
+
+// Criterion #1 (structure half): exec nodes leave the data graph, the
+// event node becomes an entry, the exec edge becomes Next, the data
+// edges into exec pins become ExecDataInput. The pure literal that only
+// feeds the data layer stays a data node.
+func TestPartition_MixedScene_Structure(t *testing.T) {
+	g := compileMixed(t)
+
+	for _, id := range []string{"br", "set", "start"} {
+		if _, ok := graphNodeByID(g, id); ok {
+			t.Fatalf("exec node %q leaked into the data GraphNode list", id)
+		}
+	}
+	// `val` and `cond` literals feed exec data pins but are themselves
+	// pure data leaves → they stay data nodes (seed Defaults).
+	if _, ok := graphNodeByID(g, "val"); !ok {
+		t.Fatal("pure literal val dropped from the data graph")
+	}
+
+	if len(g.ExecPrograms) != 1 {
+		t.Fatalf("want 1 exec program, got %d", len(g.ExecPrograms))
+	}
+	p := decodeProgram(t, g.ExecPrograms[0])
+
+	if p.BlueprintKey != "" {
+		t.Fatalf("legacy blueprint key should be empty, got %q", p.BlueprintKey)
+	}
+	// Entry: on-start, Target = branch.
+	e, ok := p.Entrypoints["start"]
+	if !ok {
+		t.Fatalf("on-start entry missing; entries = %+v", p.Entrypoints)
+	}
+	if e.Kind != "on-start" || e.Target.Node != "br" {
+		t.Fatalf("entry = %+v, want kind on-start, target br", e)
+	}
+	// branch node: op branch, Next["true"] → set.
+	br, ok := p.Nodes["br"]
+	if !ok || br.Op != "branch" {
+		t.Fatalf("branch node = %+v, want op branch", br)
+	}
+	if tgt, ok := br.Next["true"]; !ok || tgt.Node != "set" {
+		t.Fatalf("branch Next[true] = %+v, want set", br.Next)
+	}
+	// branch condition: data edge into the exec node → ExecDataInput.
+	if len(br.Data) != 1 || br.Data[0].Port != "condition" || br.Data[0].From != "cond" {
+		t.Fatalf("branch data = %+v, want one {condition,cond}", br.Data)
+	}
+	// set node: op variable.set, config carried verbatim, value pulled.
+	set, ok := p.Nodes["set"]
+	if !ok || set.Op != "variable.set" {
+		t.Fatalf("set node = %+v, want op variable.set", set)
+	}
+	if string(set.Config["name"]) != `"counter"` {
+		t.Fatalf("set config.name = %s, want \"counter\" (verbatim)", set.Config["name"])
+	}
+	if len(set.Data) != 1 || set.Data[0].Port != "value" || set.Data[0].From != "val" {
+		t.Fatalf("set data = %+v, want one {value,val}", set.Data)
+	}
+}
+
+// Criterion #2 (golden): a pure-dataflow scene is byte-identical before
+// and after the lift — ExecPrograms stays nil (omitempty), the rest of
+// the graph and the scene_version hash are untouched.
+func TestPartition_PureDataflow_ByteIdentical(t *testing.T) {
+	// scoreBlueprint is a pure data blueprint (no exec pin).
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+		blueprints: map[string]*BlueprintGraph{"bp-1": scoreBlueprint("bp-1", "value")},
+		manifest:   pureManifest(),
+	}
+	g, _, version, err := Compile(context.Background(), "scene-1",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-1"}, f)
+	if err != nil {
+		t.Fatalf("pure scene rejected: %v", err)
+	}
+	if g.ExecPrograms != nil {
+		t.Fatalf("pure-dataflow scene carries exec programs: %v", g.ExecPrograms)
+	}
+	// The serialized graph must NOT contain an exec_programs key
+	// (omitempty) — that is the byte-identity guarantee.
+	raw, err := json.Marshal(g)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var asMap map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &asMap); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := asMap["exec_programs"]; present {
+		t.Fatalf("pure scene graph serialized an exec_programs key — not byte-identical")
+	}
+	// GOLDEN: the scene_version hash is pinned. If a future change to the
+	// partition perturbs a pure scene, this constant changes and the
+	// byte-identity invariant is broken loudly.
+	if version != pureScoreSceneVersion {
+		t.Fatalf("pure scene_version drifted: got %s, golden %s\n"+
+			"(if intentional, the partition changed a pure scene — ADR 006 §3.1 forbids it)",
+			version, pureScoreSceneVersion)
+	}
+}
+
+// pureScoreSceneVersion is the byte-identity golden for the pure-dataflow
+// score scene (ADR 006 §3.1: a scene with no exec pin must hash
+// identically to pre-lift). Captured from a clean compile; it must NOT
+// change when the exec partition lands.
+const pureScoreSceneVersion = "sha256:3ef45864bc022fd30a4bda5a9740b95f98fc607de6a413e9f0389c8aba52a4c0"
+
+// Criterion #2 (determinism): the same envelope compiled twice yields a
+// byte-identical artefact, including exec_programs order and the
+// per-program map serialization. Compiled N times to rule out
+// map-iteration order leaking in.
+func TestPartition_Deterministic(t *testing.T) {
+	var first []byte
+	for i := 0; i < 8; i++ {
+		g := compileMixed(t)
+		raw, err := json.Marshal(g)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first == nil {
+			first = raw
+			continue
+		}
+		if string(raw) != string(first) {
+			t.Fatalf("compile %d diverged from compile 0:\n got %s\nwant %s", i, raw, first)
+		}
+	}
+}
+
+// Keyed blueprint: a data-producer feeding an exec data pin is addressed
+// by its MERGED (key-prefixed) id in ExecDataInput.From — matching the
+// prefixed data-node id the runtime's demandValue resolves against. The
+// exec node id, Next targets and entry targets stay UNPREFIXED (resolved
+// within the program). This pins the cross-layer namespacing convention
+// #105/#106 depend on.
+func TestPartition_KeyedBlueprint_DataFromPrefixed(t *testing.T) {
+	bp := &BlueprintGraph{
+		ID: "bp-1",
+		Nodes: []BlueprintNode{
+			{ID: "start", Compute: "core.event.on-start@1",
+				Outputs: []BlueprintPort{execOut("then")}},
+			{ID: "lit", Compute: "core.literal@1",
+				Config:  map[string]json.RawMessage{"value": json.RawMessage(`5`)},
+				Outputs: []BlueprintPort{dataIn("out")}},
+			{ID: "set", Compute: "core.variable.set@1",
+				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"c"`)},
+				Inputs:  []BlueprintPort{execIn("exec_in"), dataIn("value")},
+				Outputs: []BlueprintPort{execOut("then")}},
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "start", FromPort: "then", ToNode: "set", ToPort: "exec_in"},
+			{FromNode: "lit", FromPort: "out", ToNode: "set", ToPort: "value"},
+		},
+	}
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+		blueprints: map[string]*BlueprintGraph{"bp-1": bp},
+		manifest:   execManifest(),
+	}
+	g, _, _, err := Compile(context.Background(), "scene-1",
+		PushEnvelope{CanvasVersion: "v1", Blueprints: []BlueprintRef{{Key: "score", ID: "bp-1"}}}, f)
+	if err != nil {
+		t.Fatalf("keyed exec scene rejected: %v", err)
+	}
+	// The data producer is merged under the key prefix.
+	if _, ok := graphNodeByID(g, "score.lit"); !ok {
+		t.Fatalf("keyed data producer missing; nodes = %+v", g.Nodes)
+	}
+	p := decodeProgram(t, g.ExecPrograms[0])
+	if p.BlueprintKey != "score" {
+		t.Fatalf("program key = %q, want score", p.BlueprintKey)
+	}
+	// Exec node id stays UNPREFIXED inside the program.
+	set, ok := p.Nodes["set"]
+	if !ok {
+		t.Fatalf("set node missing (should be unprefixed); nodes = %+v", p.Nodes)
+	}
+	// But its data From points at the PREFIXED data producer id.
+	if len(set.Data) != 1 || set.Data[0].From != "score.lit" {
+		t.Fatalf("ExecDataInput.From = %+v, want score.lit (prefixed)", set.Data)
+	}
+	// Entry target is the unprefixed exec node id.
+	if e := p.Entrypoints["start"]; e.Target.Node != "set" {
+		t.Fatalf("entry target = %q, want unprefixed set", e.Target.Node)
+	}
+}
+
+// EXEC_OP_UNMAPPED (fail-loud): a node carrying an exec pin whose
+// manifest id maps to no runtime exec op is rejected structurally — a
+// coverage gap can never silently become accept-then-ignore. This is
+// NOT a capability rejection (a conformant build never hits it).
+func TestPartition_ExecOpUnmapped_FailsLoud(t *testing.T) {
+	bp := &BlueprintGraph{
+		ID: "bp-1",
+		Nodes: []BlueprintNode{
+			{ID: "weird", Compute: "core.flow.teleport@1",
+				Inputs:  []BlueprintPort{execIn("exec_in")},
+				Outputs: []BlueprintPort{execOut("then")}},
+		},
+	}
+	m := execManifest()
+	// Manifest-known (so it passes the unknown-compute gate) but mapped
+	// to no runtime op in the conformance table.
+	m["core.flow.teleport@1"] = ComputeManifestEntry{IsPure: true, Version: "1"}
+
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+		blueprints: map[string]*BlueprintGraph{"bp-1": bp},
+		manifest:   m,
+	}
+	_, _, _, err := Compile(context.Background(), "scene-1",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-1"}, f)
+	var ce *CompileError
+	if !errors.As(err, &ce) || !ce.HasCode(ErrExecOpUnmapped) {
+		t.Fatalf("want EXEC_OP_UNMAPPED, got %v", err)
+	}
+}

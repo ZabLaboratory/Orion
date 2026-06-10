@@ -130,8 +130,21 @@ func Compile(
 	//    cross-blueprint edges, §3.4), so each graph topo-sorts independently.
 	var sorted []GraphNode
 	defaults := map[string]json.RawMessage{}
+	// execPrograms collects one compiled ExecProgram per exec-bearing
+	// blueprint (ADR 006 §3.1). keyedBlueprints is already in stable key
+	// order (ADR 001 §3.2), so appending here yields the deterministic
+	// blueprint-key order the artefact requires (criterion #2). A
+	// blueprint with no exec node contributes nothing — a pure-dataflow
+	// scene leaves execPrograms empty → graph.ExecPrograms stays nil
+	// (omitempty) → byte-identical artefact to pre-lift.
+	var execPrograms []json.RawMessage
 	for _, kb := range keyedBlueprints {
-		graphNodes, bpDefaults, validateDiags := validateBlueprint(kb.graph, manifest)
+		// Partition first: the exec node set drives both the data-node
+		// exclusion (validateBlueprint) and the ExecProgram emission.
+		execSet, prog, partDiags := partitionBlueprint(kb.graph, kb.key)
+		d.Items = append(d.Items, partDiags...)
+
+		graphNodes, bpDefaults, validateDiags := validateBlueprint(kb.graph, manifest, execSet)
 		d.Items = append(d.Items, validateDiags...)
 		if d.HasErrors() {
 			return nil, nil, "", &CompileError{Diagnostics: *d}
@@ -148,6 +161,15 @@ func Compile(
 		sorted = append(sorted, bpSorted...)
 		for path, v := range bpDefaults {
 			defaults[prefixLeaf(kb.key, path)] = v
+		}
+
+		if prog != nil {
+			raw, mErr := marshalExecProgram(prog)
+			if mErr != nil {
+				d.AddError(ErrTopologySort, "blueprint %q exec program marshal: %v", kb.key, mErr)
+				return nil, nil, "", &CompileError{Diagnostics: *d}
+			}
+			execPrograms = append(execPrograms, raw)
 		}
 	}
 
@@ -205,6 +227,11 @@ func Compile(
 		Bindings:       adapters,
 		Defaults:       defaults,
 		OperatorInputs: allInputs,
+		// ExecPrograms is nil for a pure-dataflow scene (omitempty → the
+		// artefact and its scene_version hash are byte-identical to
+		// pre-lift, ADR 006 §3.1 / criterion #2). Emit-but-never-install:
+		// the runtime install path is untouched (ADR 006 §3.7).
+		ExecPrograms: execPrograms,
 	}
 	// Lower the authoring-vocab tree (`style.*`, `size.{w,h}`, `geometry`,
 	// `cornerRadius`, nested `stroke`) into the FLAT render vocab the
@@ -507,9 +534,14 @@ func substituteComponentArgs(body LayoutNode, params []ComponentParam, args map[
 }
 
 // validateBlueprint checks every node's compute is in Blue's manifest
-// AND is flagged is_pure. Returns the runtime graph nodes plus a
-// defaults map seeded from declared inputs.
-func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode, map[string]json.RawMessage, []Diagnostic) {
+// and builds the DATA-layer graph nodes plus a defaults map seeded from
+// declared inputs. EXEC-layer nodes (those in execSet — any node with an
+// exec pin, ADR 006 §3.1) are skipped: they are routed to the blueprint's
+// ExecProgram by partitionBlueprint, never recomputed as data nodes
+// (closing the silent-skip hole, ADR 006 §1). Purity is NO LONGER a
+// rejection gate (ADR 006 §3.2): an impure data compute is served, not
+// refused — capability is total, proof is the validation gate's job.
+func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest, execSet map[string]struct{}) ([]GraphNode, map[string]json.RawMessage, []Diagnostic) {
 	var diags []Diagnostic
 	defaults := map[string]json.RawMessage{}
 	nodes := make([]GraphNode, 0, len(b.Nodes))
@@ -536,13 +568,12 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 			})
 			continue
 		}
-		if !entry.IsPure {
-			diags = append(diags, Diagnostic{
-				Code:     ErrImpureCompute,
-				Severity: "error",
-				Message:  fmt.Sprintf("blueprint node %s uses impure compute %q (manifest: is_pure=false)", n.ID, n.Compute),
-				Path:     n.ID,
-			})
+		// Exec-layer nodes (ADR 006 §3.1) are routed to the ExecProgram
+		// by partitionBlueprint; they are NOT data nodes and must not
+		// appear in the GraphNode list. Skipping them here (and their
+		// edges fall away in topologicalSort, which drops edges to
+		// dropped nodes) closes the silent-skip hole.
+		if _, isExec := execSet[n.ID]; isExec {
 			continue
 		}
 
