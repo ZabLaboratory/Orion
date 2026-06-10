@@ -53,6 +53,27 @@ services:
       resources:
         limits:
           memory: 512M
+          # CPU isolation (ADR 003 §3.1.6/§5 — R7/B7). Time-slicing protects
+          # the scene *loop*, not the host: a validated-then-pathological scene
+          # can still burn CPU. Doctrine forbids killing/amputating the scene,
+          # so the machine is protected by OS-level isolation instead — a
+          # runaway scene saturates *this* cgroup, degrading its own scene,
+          # never the show or co-tenant services on the shared VPS.
+          #
+          # docker compose (Compose Spec, not Swarm) honours
+          # deploy.resources.limits.cpus on `up` by translating it to the
+          # container's CPU quota (cgroup cpu.max). 1.0 = at most one full core.
+          #
+          # Sizing rationale: the VPS is a shared multi-service OVH host (G2 +
+          # Zab stacks on one box). 1.0 core is far above Orion's normal/idle
+          # footprint (exec is dormant in prod per R9 — near-zero CPU at boot,
+          # migrations + listener only), so it does NOT throttle boot, health,
+          # migrations, or normal serving. Yet it caps a single runaway scene
+          # at one core, leaving the rest of the host for ZabGate + the show
+          # even on the smallest plausible 2-vCPU tier. Recalibrate once the
+          # live core count is confirmed (`nproc` on the VPS) — see runbook
+          # docs/runbooks/orion-cpu-pathological-scene.md §Sizing.
+          cpus: "1.0"
         reservations:
           memory: 128M
     networks:
