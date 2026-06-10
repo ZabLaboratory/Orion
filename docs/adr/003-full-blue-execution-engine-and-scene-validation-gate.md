@@ -194,27 +194,50 @@ edge into data pin — already Blue-validated), never node-type capability.
   output port carrying failures); the task parks on a wake key; completion is
   delivered as an inbox message and the continuation resumes.
   **Completion delivery is a dedicated, authenticated path — not a free
-  `__system.*` write** (Bastion B-syswrite): the wake key is **version-stamped
-  AND token-stamped**; an externally-reported completion (e.g. the renderer's
-  animation report) requires the **control-mode role** and a token that
-  matches a **parked continuation of that very scene** — a forged or stale
-  completion is dropped (logged, counted), never resumes anything, and can
-  never resume continuations parked by another scene. The exact wire contract
-  is a **Conduit contract task** with **Bastion re-clearance at phase 3**.
-  `db.query`
-  executes the compiled `QueryDescriptor` (Blue's plan-builder atomics) via
-  pgx against a declared DataSource — the DataSource resolution contract
-  (which DB, credentials from étage 1) is a **Conduit contract task**
-  (phase 3 issue), not an open question about whether it ships.
+  `__system.*` write** (Bastion B-syswrite; wire contract fixed by
+  **Amendment 1**): the wake key is **version-stamped AND token-stamped**,
+  and the authorization is a **service-token scope** carried by
+  `X-Authenticated-Paths` (e.g. `__system.anim.report`), enforced by the
+  existing `CanWritePath` — **not a new ZabAuth JWT role**. An
+  externally-reported completion (e.g. the renderer's animation report)
+  arrives on a **dedicated authenticated endpoint** (never a free-form
+  `__system.*` state write), is routed to the precise scene, and passes
+  **ordered gates**: (1) role/scope, (2) scene match, (3) version+epoch —
+  reusing the existing `resumeParked` gate — (4) token matching a **parked
+  continuation of that very scene**. A forged or stale completion is
+  dropped (logged, counted), never resumes anything, and can never resume
+  continuations parked by another scene. A **server-side duration-based
+  fallback** (timer wheel) covers the animation case when no reporting
+  client is attached. This contract lifts **condition C3 / criterion #19**
+  under **Bastion re-clearance at phase 3**.
+  `db.query` executes by **delegation, not direct connection**
+  (**Amendment 1**, topology A): Orion calls **`POST /<svc>/api/v1/_query`
+  via ZabGate** with Orion's **service token**; the service that owns the
+  DataSource compiles the query (via QueryMe) and executes it against
+  **its own** database. Orion holds **no DB credential, no pgx pool, no
+  SQL**: QueryMe is a Python/SQLAlchemy compiler without I/O whose output
+  (`sqlalchemy.Select`) is not consumable from Go, and the segmentation
+  doctrine (one service owns its DB) points to the same seam. **Read-only
+  by construction** (QueryMe has no mutation descriptor); **parameterized
+  SQL guaranteed by the QueryMe compiler** on the owning service.
+  DataSources are an **allowlist declared to Orion** (étage-1 config, e.g.
+  `ORION_DATASOURCES`); an undeclared DataSource fails compile with
+  `DATASOURCE_NOT_DECLARED` — *structural validation of authored config,
+  not capability rejection*: `db.query` is served in full (doctrine §1.1
+  intact). This topology **dissolves the R3/B2 veto** (no DB-credential
+  surface in Orion). The `_query` wire contract (endpoint shape, token
+  scope) is a **Conduit contract task** (phase 3 issue), not an open
+  question about whether it ships.
 - **`animation.play`**: emits the animation command as a state write
   (`__anim.<overlay_id>.<token>` carrying `animation_id`, `params`,
   generation counter) so it travels the normal delta pipe and is rendered by
   Solar/CEF — per the platform doctrine, animations are rendered by our
   engine, never OBS-native. `then` fires immediately; `completed` resumes on
   the renderer's completion report, delivered through the **dedicated
-  completion path above** (control-mode role, version+token-stamped wake key
-  matched against this scene's parked continuations — never a free-form
-  `__system.*` write), with a server-side duration-based fallback when no
+  completion path above** (completion scope on the service token,
+  version+token-stamped wake key matched against this scene's parked
+  continuations — never a free-form `__system.*` write), with a
+  server-side duration-based fallback when no
   reporting client is attached (broadcast viewers cannot input). The exact
   report contract is a **Conduit task** (phase 3, Bastion re-clearance).
 
@@ -409,7 +432,7 @@ it restricted nothing in Blue. Re-adopted wholesale:
 | **0 — Fondations** | Named ports in the artefact (edge `to_port` carried; positional fallback for old artefacts); O(1) indexes + dirty-cone recompute; 20 k synthetic benchmark in CI; pure-registry tranche (logic, extended math, string, cast, data) | Orion |
 | **1 — Moteur exec** | Task interpreter (branch/sequence/gate/loops/select), continuation stack, time-slicing; timer wheel + `delay`; `variable.get/set`, `print`; triggers `on-start`/`on-tick`/`on-event`; cancellation on switch/re-push | Orion |
 | **2 — Ingestion plateforme** (parallélisable avec 1) | §3.3 : binding compilateur + `platform-stream` ; E2 côté Orion ; E1+E2+E3 côté Quasar ; alias + re-stamp côté Blue ; contract test cross-repo ; E2E ≤ 100 ms | Orion · Quasar · Blue |
-| **3 — Effets asynchrones** | Worker pool + wake keys ; `http.request`, `source.read`, `db.query` (DataSource contract → Conduit) ; `animation.play` + completion contract (→ Conduit) | Orion (+Conduit) |
+| **3 — Effets asynchrones** | Worker pool + wake keys ; `http.request` (politique egress → clearance Bastion), `source.read`, `db.query` (topologie A via ZabGate, contrat `_query` → Conduit) ; `animation.play` + completion contract scope service-token (→ Conduit) | Orion (+Conduit) |
 | **4 — Gate de validation** | Harness + validation mode of the effect interface ; `scene_validations` ; endpoints ; `SCENE_NOT_VALIDATED` enforcement ; fixtures canoniques | Orion |
 | **5 — Conformité totale** | Conformance matrix CI (manifest ↔ executor ↔ test, allowlist ratchet → **vide**) ; 20 k perf criteria green ; doc resync (CLAUDE.md, runbooks → Scribe) | Orion |
 
@@ -445,6 +468,12 @@ nothing; air waits for proof.
   the reverted design could not offer.
 - New operational surface: timer wheel, effect worker pool, validation
   campaigns (CPU-bounded, off the live path), `scene_validations` migration.
+- New inter-service surface (Amendment 1): each DataSource-owning service
+  exposes `POST /api/v1/_query` (QueryMe compile + execute against its own
+  DB), routed via ZabGate and called with Orion's service token; Orion
+  gains the `ORION_DATASOURCES` allowlist (étage-1 config) and holds no DB
+  credential. The async-completion report endpoint is authorized by a
+  service-token scope (`X-Authenticated-Paths`), not a new JWT role.
 - Prism: surfaces validation status/report and the new diagnostics; palette
   no longer needs runtime-support filtering (everything is supported) —
   follow-up UX ADR flagged, non-bloquant.
@@ -463,18 +492,30 @@ restricts the Blue language — they harden the enforcement and effect seams.
   (no goroutine state), fake-clock tests, UE-documented semantics per node,
   phase 1 lands behind the conformance matrix.
 - **R2 / B1 — `http.request` SSRF / egress** (blueprint-authored URLs executed
-  from inside the infra). **Bastion phase-3 veto, maintained**: no
-  `http.request` executor merges to a live-reachable path without Bastion's
-  egress-policy decision (allowlist / deny-internal-ranges / egress proxy) —
-  *deployment policy on the effect executor*, not a language restriction.
-  Validation mode performs no real calls (B10, structural).
-- **R3 / B2 — `db.query` credential surface**. **Bastion phase-3 veto,
-  maintained**: DataSource credentials at étage 1, resolved by Orion config,
-  never in blueprints/artefacts; **read-only DB roles**; **parameterized SQL
-  only** (the compiled `QueryDescriptor` binds values as parameters, never by
-  string interpolation); **declared-DataSource allowlist** (a blueprint can
-  only reference DataSources explicitly declared to Orion). Conduit contract
-  + **Bastion clearance** gate the phase-3 merge.
+  from inside the infra). Framing fixed (Amendment 1): `http.request` is
+  served **in full** — egress is filtered by an **executor deployment
+  policy**, never a language restriction: host/scheme allowlist in étage-1
+  config, **fail-closed by default** (deny internal/RFC1918/metadata
+  ranges, https-only), anti-SSRF enforced on the address **resolved AFTER
+  DNS** (not the authored hostname). A disallowed host surfaces on the
+  node's `error` output port (*effect semantics*), never a crash.
+  **Bastion phase-3 veto, maintained**: the **default prod mode and the
+  post-DNS anti-SSRF resolution remain to be cleared by Bastion** — no
+  `http.request` executor merges to a live-reachable path before that
+  clearance. Validation mode performs no real calls (B10, structural).
+- **R3 / B2 — `db.query` credential surface**. **RESOLVED — veto dissolved
+  by topology A (Amendment 1)**: Orion never connects to a DataSource DB
+  and holds **no DB credential** — `db.query` delegates via ZabGate to the
+  owning service's `POST /api/v1/_query`, which compiles (QueryMe) and
+  executes against its own database. **Read-only by construction** (QueryMe
+  has no mutation descriptor); **parameterized SQL guaranteed by the
+  QueryMe compiler** on the owning service, never by string interpolation;
+  **declared-DataSource allowlist** at Orion (étage-1 config,
+  `ORION_DATASOURCES`; undeclared → `DATASOURCE_NOT_DECLARED` at compile —
+  structural, not a capability refusal). Residual surface = the
+  inter-service `_query` contract (endpoint shape, scope of Orion's
+  service token): Conduit contract + **Bastion clearance** still gate the
+  phase-3 merge.
 - **B3 — push-swap bypasses the gate (CRITICAL)**: `Show.Load`
   (`scenes_push.go:160`) replaces a live scene's graph with no validation
   check. Requirement (now normative in §3.2.2): the `SCENE_NOT_VALIDATED`
@@ -493,12 +534,17 @@ restricts the Blue language — they harden the enforcement and effect seams.
 - **B-syswrite — forged async completions (HIGH)**: `__system.*` is accepted
   unconditionally (`inbox.go:118-121`) and bypasses scope checks
   (`inbox.go:55-60`); a forged animation-completion could resume parked
-  continuations of **another scene**. Requirement (§3.1.3): async-effect
-  completion is **not** a free `__system.*` write — dedicated delivery path,
-  wake key **version-stamped and token-stamped**, **control-mode role**
-  required, token must match a parked continuation of **that scene**; forged
-  or stale completions are dropped. Conduit contract + **Bastion
-  re-clearance, phase 3**. Resolution criterion #19.
+  continuations of **another scene**. Requirement (§3.1.3, wire contract
+  fixed by Amendment 1): async-effect completion is **not** a free
+  `__system.*` write — dedicated authenticated endpoint, authorization by
+  **service-token scope** in `X-Authenticated-Paths` (e.g.
+  `__system.anim.report`, enforced by the existing `CanWritePath`; **no
+  new ZabAuth JWT role**), ordered gates scope → scene → version+epoch
+  (reusing the existing `resumeParked` gate) → parked continuation of
+  **that scene**; forged or stale completions are dropped (logged,
+  counted), never resume, never cross-scene; server-side duration fallback
+  when no client reports. This contract **lifts condition C3** under
+  **Bastion re-clearance, phase 3**. Resolution criterion #19.
 - **R4 — Path injection via channel/type** (reverted-ADR R2): closed
   fail-closed at both ends (compiler §3.3.3 + Quasar E1). **Bastion
   re-clearance** on the ingestion surface (phase 2).
@@ -555,6 +601,16 @@ restricts the Blue language — they harden the enforcement and effect seams.
   scene reaches the antenna**; the `SCENE_NOT_VALIDATED` enforcement
   (including the B3/B-rollback paths) precedes or accompanies the activation
   of any exec node in a live scene.
+  **R9 phase-1 residual (Bastion condition C2, due before phase 4 —
+  Amendment 1)**: exec inertia in production currently rests on the
+  **absence of any call-site** passing a non-nil `ExecProgram` to the LIVE
+  activation paths (`Show.Load`/`LoadExec`, boot reseed) and the test path
+  (`TestSessionManager.Open`) — not on a runtime invariant. Risk
+  **accepted for phase 1** (the compiler emits no program). At phase 4,
+  activating a program on a LIVE scene must be conditioned on passing the
+  validation gate (#87); any `LoadExec(prog != nil)` outside the gate is
+  an R9 defect. Recommendation: add in phase 3/4 a negative test guarding
+  that no push/boot path installs a program outside the gate.
 - **R10 — http-poll / pg-listen layout adapters still undeclared in prod**
   (`extractAdapters` stub) — out of scope, still tracked against the
   Canvas-extensions chantier.
@@ -653,14 +709,17 @@ Testable; CI-enforced where possible. **Criterion 1 is the master criterion.**
     scene): a `variable.set` executed in one is visible to `variable.get`
     and subscribers of **that instance only** — the other instance's state
     is bit-identical before/after.
-19. **Async completion is authenticated (B-syswrite).** An effect-completion
-    message that is (a) missing the control-mode role, (b) token-stamped for
-    a continuation that is not parked, (c) stamped for another scene's
-    continuation, or (d) stamped with a stale version, is **dropped**
-    (logged, counted) and resumes nothing; a legitimate completion (correct
-    role + token matching a parked continuation of that scene and version)
-    resumes exactly that continuation. A raw free-form `__system.*` write
-    can no longer resume any continuation.
+19. **Async completion is authenticated (B-syswrite; contract per
+    Amendment 1).** An effect-completion report that is (a) missing the
+    completion scope on its service token (`X-Authenticated-Paths`, e.g.
+    `__system.anim.report`), (b) token-stamped for a continuation that is
+    not parked, (c) stamped for another scene's continuation, or (d)
+    stamped with a stale version/epoch, is **dropped** (logged, counted)
+    and resumes nothing; a legitimate completion (correct scope + token
+    matching a parked continuation of that scene and version) resumes
+    exactly that continuation; the server-side duration fallback fires
+    when no client reports. A raw free-form `__system.*` write can no
+    longer resume any continuation.
 20. **Phase-ordering contract (R9 reinforced).** Until the §3.2.2 enforcement
     is live on all paths (B3 + B-rollback included), the live-activation
     paths refuse any exec-bearing version — asserted by a test in the
@@ -668,7 +727,63 @@ Testable; CI-enforced where possible. **Criterion 1 is the master criterion.**
     session is refused.
 21. **Org gates.** Orion/Blue/Quasar CIs green; review **Vigil** (who flips
     this ADR to `accepted`); **Bastion** clearance on phase 2 (ingestion
-    surface) and phase 3 (B1/R2 egress policy, B2/R3 DataSource contract,
-    B-syswrite completion contract — re-clearance) before the corresponding
-    merges. Bastion's design clearance is **conditional** on the
-    B-requirements above; the phase-3 vetoes (B1, B2) stand until lifted.
+    surface) and phase 3 before the corresponding merges — per Amendment 1
+    the phase-3 ledger is: **B1/R2 egress policy — veto maintained**
+    (default prod mode + post-DNS anti-SSRF still to clear); **B2/R3 —
+    veto dissolved by topology A**, Bastion clearance still gating the
+    inter-service `_query` contract; **B-syswrite completion contract —
+    condition C3 lifted by the service-token-scope contract, under Bastion
+    re-clearance at phase 3**; **condition C2 (R9 phase-1 residual) due
+    before phase 4**. Bastion's design clearance is **conditional** on the
+    B-requirements above; the B1 veto stands until lifted.
+
+---
+
+## Amendment 1 — 2026-06-10 — phase-3 pre-implementation corrections
+
+Maintainer decisions (@ClodoCapeo; gaps surfaced by Conduit while preparing
+phase 3; author of the amendment: Atlas). Phases 0–2 decisions are
+untouched. **Doctrine §1.1 is intact**: nothing below restricts the Blue
+language — these are seam/deployment policies and completion contracts.
+
+1. **§3.1.3 `db.query` — topology A (delegated execution).** The original
+   wording ("executes the compiled `QueryDescriptor` via pgx against a
+   declared DataSource") was unimplementable and undesirable: QueryMe is a
+   Python/SQLAlchemy compiler **without I/O** whose output
+   (`sqlalchemy.Select`) is not consumable from Go, and Orion holding DB
+   credentials would break the one-service-owns-its-DB segmentation
+   (re-activating the R3/B2 veto). Decision: `db.query` delegates via
+   ZabGate (`POST /<svc>/api/v1/_query`, Orion service token) to the
+   DataSource-owning service, which compiles (QueryMe) and executes against
+   its own DB. Orion holds no DB credential → **R3/B2 veto dissolved**;
+   read-only + parameterized SQL by construction (QueryMe compiler on the
+   owning service). Allowlist `ORION_DATASOURCES` (étage-1 config);
+   `DATASOURCE_NOT_DECLARED` at compile is structural validation of
+   authored config, not a capability refusal — `db.query` stays served.
+2. **B-syswrite completion — service-token scope, not a new JWT role.**
+   The "control-mode role" is realized as a **service-token scope** carried
+   by `X-Authenticated-Paths` (e.g. `__system.anim.report`), enforced by
+   the existing `CanWritePath` — no new ZabAuth JWT role. Wire contract:
+   dedicated authenticated endpoint (never a free `__system.*` write);
+   routing to the precise scene; ordered gates scope → scene →
+   version+epoch (existing `resumeParked` gate) → parked continuation;
+   forged/stale dropped + counted, never resumes, never cross-scene;
+   server-side duration fallback (timer wheel). **Lifts condition C3 /
+   criterion #19** under Bastion re-clearance at phase 3.
+3. **R9 phase-1 residual recorded (Bastion condition C2, due before
+   phase 4)** — see §5 R9: live exec inertia rests on call-site absence
+   (`Show.Load`/`LoadExec`, boot reseed, `TestSessionManager.Open`), not a
+   runtime invariant; accepted for phase 1; phase 4 conditions LIVE
+   program activation on the validation gate (#87); negative test
+   recommended in phase 3/4.
+4. **R2 egress framing.** `http.request` served in full; egress filtered
+   by an executor deployment policy (étage-1 host/scheme allowlist,
+   fail-closed default: deny internal/RFC1918/metadata + https-only,
+   anti-SSRF on the post-DNS resolved address); disallowed host → `error`
+   port (effect semantics), never a crash. **B1 veto maintained**: default
+   prod mode + anti-SSRF resolution still to be cleared by Bastion.
+
+Amended passages: §3.1.3 (completion contract, `db.query`,
+`animation.play`), §3.4 (phase-3 row), §4 (inter-service surface added),
+§5 (R2, R3, B-syswrite, R9), §6 (criteria #19, #21). Original wording
+preserved in git history (`git log -p docs/adr/003-*.md`).
