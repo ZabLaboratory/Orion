@@ -67,7 +67,7 @@ func TestPoller_5HzWritesAtCadence(t *testing.T) {
 	loaded, _ := show.Get("scene-poll")
 	sub, _ := loaded.Subscribe(64)
 
-	inbox := NewInbox(show, quietLogger())
+	inbox := NewInbox(show, quietLogger(), nil)
 	poller := NewPoller(inbox, quietLogger(), "test-ua/1")
 	poller.Start(ctx, loaded)
 	t.Cleanup(poller.StopAll)
@@ -95,7 +95,7 @@ func TestPoller_5HzWritesAtCadence(t *testing.T) {
 func TestInbox_RejectsTestNamespaceFromNonSystem(t *testing.T) {
 	show := runtime.NewShow(runtime.NewComputeRegistry(), quietLogger())
 	t.Cleanup(show.Stop)
-	inbox := NewInbox(show, quietLogger())
+	inbox := NewInbox(show, quietLogger(), nil)
 
 	// Build identity that *can* write to __test.* (admin) but the
 	// inbox still rejects on the namespace gate for live show writes.

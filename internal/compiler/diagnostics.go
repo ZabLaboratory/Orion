@@ -45,6 +45,21 @@ const (
 	// a Key within one envelope — the scene-local handle must be unique or
 	// the leaf-path namespacing collides.
 	ErrDuplicateBlueprintKey DiagnosticCode = "DUPLICATE_BLUEPRINT_KEY"
+
+	// Platform-event leaf expansion (ADR 003 §3.3.3, issue #84). These are
+	// STRUCTURAL validations of a platform node's authored config — never a
+	// capability rejection of the node type itself (Orion serves all of
+	// Blue; a malformed channel is an authoring error the push surfaces).
+	//
+	// ErrPlatformChannelMissing: a `quasar.<platform>.<event>@N` node has
+	// no usable `config.channel` (absent or empty), so the leaf
+	// `__inputs.platform.<platform>.<channel>.last_<event>` cannot expand.
+	ErrPlatformChannelMissing DiagnosticCode = "PLATFORM_CHANNEL_MISSING"
+	// ErrPlatformChannelInvalid: `config.channel` is present but, AFTER
+	// casefolding (strings.ToLower), does not match `^[a-z0-9_]+$` — the
+	// fail-closed half of the R4 path-injection defence (Quasar E1 is the
+	// producer half). Invalid channels are rejected, never rewritten.
+	ErrPlatformChannelInvalid DiagnosticCode = "PLATFORM_CHANNEL_INVALID"
 )
 
 // Diagnostic is a single error or warning produced during compilation.

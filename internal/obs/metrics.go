@@ -37,6 +37,17 @@ type Metrics struct {
 	TimerWheelSize *prometheus.GaugeVec
 	ParkDropped    *prometheus.CounterVec
 	ResumeStale    *prometheus.CounterVec
+
+	// InboxDrop counts writes a scene's event loop refused (full inbox
+	// channel) — `orion_inbox_dropped_total` (ADR 003 §3.3 E2, issue
+	// #84). The inbox consumes scene.Input's return and increments here
+	// instead of silently discarding the loss.
+	InboxDrop *prometheus.CounterVec
+}
+
+// InboxDropped implements the adapters' InboxMetrics seam.
+func (m *Metrics) InboxDropped(sceneID string) {
+	m.InboxDrop.WithLabelValues(sceneID).Inc()
 }
 
 // ExecEventShed implements the runtime's ExecMetrics seam.
@@ -136,6 +147,10 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "exec", Name: "resume_stale_total"},
 			[]string{"scene_id"},
 		),
+		InboxDrop: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "inbox", Name: "dropped_total"},
+			[]string{"scene_id"},
+		),
 	}
 
 	r.MustRegister(
@@ -154,6 +169,7 @@ func NewMetrics() *Metrics {
 		m.TimerWheelSize,
 		m.ParkDropped,
 		m.ResumeStale,
+		m.InboxDrop,
 	)
 	return m
 }

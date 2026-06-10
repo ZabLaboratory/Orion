@@ -75,6 +75,11 @@ func TestMatchPath_ExactAndPrefix(t *testing.T) {
 		{"__inputs.*", "__inputs.deeply.nested.thing", true},
 		{"__inputs.platform.*", "__inputs.platform.twitch.x", true},
 		{"__inputs.platform.*", "__inputs.scheduler.x", false},
+		// Criterion 11 E3 (issue #84): the Quasar token scope Quasar#9
+		// mints — twitch in, every other platform out.
+		{"__inputs.platform.twitch.*", "__inputs.platform.twitch.zabchannel.last_chat", true},
+		{"__inputs.platform.twitch.*", "__inputs.platform.youtube.zabchannel.last_chat", false},
+		{"__inputs.platform.twitch.*", "__inputs.platform.twitchfake.x.last_chat", false},
 	}
 	for _, c := range cases {
 		if got := matchPath(c.pattern, c.path); got != c.match {

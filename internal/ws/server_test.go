@@ -59,7 +59,7 @@ func newLiveRig(t *testing.T) *liveTestRig {
 		t.Fatal(err)
 	}
 
-	inbox := adapters.NewInbox(show, logger)
+	inbox := adapters.NewInbox(show, logger, nil)
 	metrics := obs.NewMetrics()
 	srv := &Server{Show: show, Inbox: inbox, Test: test, Logger: logger, Metrics: metrics}
 

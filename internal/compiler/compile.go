@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -186,6 +187,12 @@ func Compile(
 	//    compiler echoes them through after validation.
 	adapters := extractAdapters(layout, &allInputs, d)
 
+	// 6b) Synthesize one `platform-stream` binding per distinct platform
+	//     leaf the blueprints expanded (ADR 003 §3.3.3, issue #84) so the
+	//     inbox's sceneAcceptsPath accepts Quasar's writes. Acceptance
+	//     declaration only — no goroutine is ever spawned for this Kind.
+	adapters = append(adapters, platformStreamBindings(sorted)...)
+
 	if d.HasErrors() {
 		return nil, nil, "", &CompileError{Diagnostics: *d}
 	}
@@ -262,7 +269,14 @@ func prefixGraphNodes(nodes []GraphNode, key string) {
 	}
 	for i := range nodes {
 		nodes[i].ID = key + "." + nodes[i].ID
-		nodes[i].Path = prefixLeaf(key, nodes[i].Path)
+		// Platform leaves are exempt from key-prefixing (issue #84):
+		// `__inputs.platform.*` is the GLOBAL address Quasar writes to —
+		// a cross-repo byte-contract with Blue/Quasar that a scene-local
+		// blueprint key must not rewrite. The node id above still takes
+		// the prefix (ids are scene-internal).
+		if !strings.HasPrefix(nodes[i].Path, platformLeafPrefix) {
+			nodes[i].Path = prefixLeaf(key, nodes[i].Path)
+		}
 		for j := range nodes[i].Upstream {
 			nodes[i].Upstream[j] = key + "." + nodes[i].Upstream[j]
 		}
@@ -539,7 +553,24 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest) ([]GraphNode
 		// blueprint editor authors for an output name). If that ever
 		// diverges from the stdlib signature, this one function changes,
 		// not the struct shape.
-		path := nodeLeafPath(n)
+		//
+		// Platform-event nodes (`quasar.<platform>.<event>@N`, ADR 003
+		// §3.3.3 / issue #84) take the dedicated expansion instead: their
+		// leaf is the GLOBAL Quasar-written address derived from the node
+		// name + authored config.channel, byte-identical to Blue's
+		// declared `signature.platform.leaf_path` and to Quasar's
+		// `leaf_path(event)`.
+		var path string
+		if platform, event, isPlatform := platformNodeRef(n.Compute); isPlatform {
+			leaf, pd := platformLeafPath(n, platform, event)
+			if pd != nil {
+				diags = append(diags, *pd)
+				continue
+			}
+			path = leaf
+		} else {
+			path = nodeLeafPath(n)
+		}
 
 		kind := "computed"
 		switch {
@@ -639,6 +670,127 @@ func nodeLeafPath(n BlueprintNode) string {
 	default:
 		return ""
 	}
+}
+
+// Platform-event leaf binding (ADR 003 §3.3.3, issue #84).
+//
+// platformLeafPrefix is the global namespace Quasar writes into. Leaves
+// under it are NEVER blueprint-key-prefixed (prefixGraphNodes skips
+// them): the address is a cross-repo contract — Blue declares it,
+// Quasar computes it, Orion must expand to the byte-identical string —
+// so it cannot vary with a scene-local blueprint key.
+const platformLeafPrefix = "__inputs.platform."
+
+// platformChannelRE is the canonical channel charset (ADR 005 §9 /
+// ADR 003 §3.3). Validation runs AFTER casefolding: pure-case variants
+// of a valid handle are folded, anything else is rejected — never
+// rewritten. The regex guarantees the folded channel is ASCII, on which
+// Go's strings.ToLower and Python's str.lower agree byte-for-byte, so
+// Orion's expansion matches Quasar's.
+var platformChannelRE = regexp.MustCompile(`^[a-z0-9_]+$`)
+
+// platformNodeRef reports whether compute names a quasar platform-event
+// node (`quasar.<platform>.<event>@<version>`) and, if so, returns its
+// platform and event-type segments. The event list itself is owned by
+// Blue's manifest (CANONICAL_EVENT_TYPES → the 14 `quasar.twitch.*@1`
+// entries today); validateBlueprint's manifest gate has already
+// rejected unknown computes before this runs, so no Orion-side
+// allowlist is duplicated here.
+func platformNodeRef(compute string) (platform, event string, ok bool) {
+	rest, found := strings.CutPrefix(compute, "quasar.")
+	if !found {
+		return "", "", false
+	}
+	rest, _, _ = strings.Cut(rest, "@")
+	platform, event, found = strings.Cut(rest, ".")
+	if !found || platform == "" || event == "" {
+		return "", "", false
+	}
+	return platform, event, true
+}
+
+// platformLeafPath expands one platform node's authored config.channel
+// into the canonical leaf `__inputs.platform.<platform>.<channel>.last_<event>`
+// (ADR 003 §3.3.2). Channel handling is casefold-THEN-validate: a
+// `ZabChannel` folds to `zabchannel`; a `Zab-Channel` is rejected
+// (PLATFORM_CHANNEL_INVALID), not rewritten. Both diagnostics are
+// structural authoring errors on the node's config — not capability
+// rejections of the node type (§3.3.3).
+func platformLeafPath(n BlueprintNode, platform, event string) (string, *Diagnostic) {
+	raw, ok := n.Config["channel"]
+	if !ok {
+		return "", &Diagnostic{
+			Code:     ErrPlatformChannelMissing,
+			Severity: "error",
+			Message:  fmt.Sprintf("platform node %s (%s) declares no config.channel — cannot expand its %s<%s>.last_%s leaf", n.ID, n.Compute, platformLeafPrefix, platform, event),
+			Path:     n.ID,
+		}
+	}
+	var channel string
+	if err := json.Unmarshal(raw, &channel); err != nil {
+		return "", &Diagnostic{
+			Code:     ErrPlatformChannelInvalid,
+			Severity: "error",
+			Message:  fmt.Sprintf("platform node %s (%s): config.channel must be a JSON string", n.ID, n.Compute),
+			Path:     n.ID,
+		}
+	}
+	if channel == "" {
+		return "", &Diagnostic{
+			Code:     ErrPlatformChannelMissing,
+			Severity: "error",
+			Message:  fmt.Sprintf("platform node %s (%s): config.channel is empty", n.ID, n.Compute),
+			Path:     n.ID,
+		}
+	}
+	folded := strings.ToLower(channel)
+	if !platformChannelRE.MatchString(folded) {
+		return "", &Diagnostic{
+			Code:     ErrPlatformChannelInvalid,
+			Severity: "error",
+			Message:  fmt.Sprintf("platform node %s (%s): config.channel %q is not a valid channel handle (after casefold it must match %s)", n.ID, n.Compute, channel, platformChannelRE.String()),
+			Path:     n.ID,
+		}
+	}
+	return platformLeafPrefix + platform + "." + folded + ".last_" + event, nil
+}
+
+// platformStreamBindings synthesizes one
+// ExternalAdapter{Kind:"platform-stream"} per DISTINCT platform leaf in
+// the compiled node set (ADR 003 §3.3.3, normative). The binding is a
+// PURE acceptance declaration: it exists so sceneAcceptsPath routes
+// Quasar's scoped service-token writes to the scene — without it the
+// write is silently absorbed. NO adapter goroutine is ever spawned for
+// it (the poller / pg-listen starters filter on their own Kind), and
+// none of the goroutine-bearing fields (URL, FrequencyHz, Channel) is
+// set. Leaves are sorted for scene_version hash determinism.
+func platformStreamBindings(nodes []GraphNode) []ExternalAdapter {
+	seen := map[string]struct{}{}
+	var leaves []string
+	for _, n := range nodes {
+		if _, _, ok := platformNodeRef(n.Compute); !ok {
+			continue
+		}
+		if n.Path == "" {
+			continue
+		}
+		if _, dup := seen[n.Path]; dup {
+			continue
+		}
+		seen[n.Path] = struct{}{}
+		leaves = append(leaves, n.Path)
+	}
+	sort.Strings(leaves)
+	out := make([]ExternalAdapter, 0, len(leaves))
+	for _, leaf := range leaves {
+		out = append(out, ExternalAdapter{
+			Key:         leaf,
+			Label:       "Quasar platform stream",
+			Kind:        "platform-stream",
+			TargetPaths: []string{leaf},
+		})
+	}
+	return out
 }
 
 // wiredPorts returns the set of input port names on nodeID that have an
