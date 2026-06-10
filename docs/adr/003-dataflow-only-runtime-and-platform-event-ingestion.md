@@ -2,6 +2,8 @@
 
 - **Status**: proposed
 - **Date**: 2026-06-10
+- **Revised**: 2026-06-10 — Bastion threat-model revision (E1/E2/E3 hardening
+  in §4.5, §4.4 corrected to match `Inbox` reality, criteria 9–11 added)
 - **Decided**: —
 - **Deciders**: @ClodoCapeo
 - **Author**: Atlas (architect agent)
@@ -237,6 +239,12 @@ leaf_path` the authoring-time source of truth the compiler reads. The `last_`
 prefix is semantic, not cosmetic: the leaf holds the **latest** event, per the
 state model (§4.4).
 
+The convention is enforced **at both ends, fail-closed**: compile-side on the
+authored channel (§4.2) and producer-side in Quasar on every outgoing event
+(§4.5 — Bastion E1). The compiler check alone is insufficient: the runtime
+leaf address is built by Quasar from wire-derived data, not from the compiled
+artefact.
+
 ### 4.2 Compiler binding + channel expansion
 
 For any manifest entry carrying a `platform` block (`types.go:310`),
@@ -248,7 +256,7 @@ For any manifest entry carrying a `platform` block (`types.go:310`),
    connected account) — casefolded, validated against `[a-z0-9_]+`;
    missing → `PLATFORM_CHANNEL_MISSING`, invalid → `PLATFORM_CHANNEL_INVALID`
    (fail-closed; an unvalidated channel string would otherwise inject dots
-   into the leaf namespace);
+   into the leaf namespace) — mirrored producer-side in Quasar, §4.5 E1;
 3. emits the node as `Kind: "input"`, `Path: <expanded leaf>` — from there the
    existing machinery just works: Quasar's `Inbox.Write` lands on that leaf,
    the dirty walk recomputes downstream, deltas fan out.
@@ -277,6 +285,10 @@ nothing for it to declare).
   re-stamps the 14 `quasar.twitch.*` definitions (idempotent update of
   `signature.platform.leaf_path`; same backfill discipline as the purity
   migration `b1u3a0000004`).
+- **Quasar — ingestion hardening (§4.5)**: fail-closed `leaf_path` validation
+  (E1), per-leaf chat coalescing (E2.1), token scope narrowed to
+  `__inputs.platform.twitch.*` (E3), reconnect-buffer drop counter
+  (recommended). Orion side of E2: `orion_inbox_dropped_total`.
 - **Quasar ↔ Blue contract test**: a shared fixture asserts, for every entry
   of `CANONICAL_EVENT_TYPES`, that Quasar's `leaf_path(event)` byte-equals
   Blue's declared `signature.platform.leaf_path` with `<channel>` expanded —
@@ -296,17 +308,80 @@ nothing for it to declare).
   affirmed). No replay, no persistence; Orion restart reseeds defaults
   (criterion 11 intact).
 - **No backpressure propagation to Twitch**: Quasar reads ack frames to avoid
-  TCP backpressure; Orion's inbox absorbs bursts; overload degrades to
-  coalescing, never to blocking the EventSub/IRC readers.
+  TCP backpressure; Quasar coalesces chat-class bursts at the producer (§4.5,
+  E2); Orion's inbox absorbs what remains; overload degrades to coalescing —
+  observable, never silent (§4.5) — never to blocking the EventSub/IRC readers.
 - **Out of scope, explicit**: counting/aggregating events over time (sub
   counters, hype trains) needs stateful reducer nodes — a future ADR. Authors
   get "react to the latest event" in v1, which is what overlays
   (alerts, last-sub banners) actually need.
-- **Writes to undeclared leaves**: a scoped service write to a platform leaf
-  no active-scene node declares is accepted into state (current `Inbox`
-  behavior) and broadcast as a delta. Kept in v1 for simplicity; flagged to
-  Bastion (R4) — chat payloads are user-generated content reaching all
-  subscribers.
+- **Writes to undeclared leaves are dropped** (corrected per Bastion review —
+  the first draft of this section stated the inverse). `Inbox.Write`
+  (`inbox.go:78-124`) fans out **only** to scenes whose compiled graph
+  declares the path (`sceneAcceptsPath`: defaults, operator inputs, adapter
+  target paths); a scoped write to a leaf no loaded scene declares reaches
+  neither state nor broadcast — it is scope-checked, audited, and silently
+  absorbed. This declared-leaf filtering **is** the v1 behavior and is kept:
+  it means UGC (chat payloads) can only ever reach subscribers through a leaf
+  an author explicitly wired into an on-air scene. No "fallback filtering"
+  follow-up exists — the filter is already the implementation.
+
+### 4.5 Ingestion hardening (Bastion threat-model revision, 2026-06-10)
+
+Three decisions added on Bastion's required revision of this ADR. All three
+are part of the v1 scope — not follow-ups.
+
+**E1 — Producer-side fail-closed leaf validation (Quasar).** Today
+`leaf_path` (`quasar/src/quasar/core/normalizer.py:27`) only casefolds;
+`event.channel` originates from the raw IRC line
+(`integrations/twitch/normalizer.py:144`), and Orion's scope matcher
+(`auth/identity.go:109-116`) is a prefix match — a channel containing `.`
+(e.g. `b.evil`) would fabricate a leaf addressing **another
+platform/channel/event-type** under `__inputs.platform.*`, inside the token's
+scope. Decision: `leaf_path` becomes the validation choke point, fail-closed,
+**before any `ws.send`**:
+
+- `platform` ∈ the canonical platform enum (`{twitch, youtube, kick}`),
+- `type` ∈ `CANONICAL_EVENT_TYPES`,
+- `channel` post-casefold matches `^[a-z0-9_]+$`.
+
+Any failure → the event is **dropped** (never sent, never buffered) with a
+structured warning log carrying platform/type and a redacted channel. This is
+defense-in-depth with §4.2's compile-side check, and it closes by
+construction the symmetric future hole of a hostile `event_type` from a new
+integration. Compile-side validation stays — the two layers protect different
+inputs (authored config vs wire-derived data).
+
+**E2 — Chat-storm handling: producer coalescing + observable drops
+(corrective, not risk acceptance).** Today every PRIVMSG is a 1:1 push, and
+Orion's per-scene inbox (chan 256, `scene.go:122`) **drops silently** when
+full (`Inbox.Write` ignores `scene.Input`'s `false` return). Decision, both
+halves mandatory:
+
+1. *Producer coalescing (Quasar)*: chat-class events (`chat`; extensible to
+   any high-rate type) coalesce **per leaf** — at most one push per leaf per
+   window (default 100 ms, env-tunable `QUASAR_ORION_COALESCE_MS`), last
+   event wins. Semantically lossless under the latest-value model (§4.4): the
+   leaf would have held only the last value anyway. Low-rate events
+   (subs, raids, follows) pass through unthrottled.
+2. *Observable drops (Orion)*: `Inbox.Write` counts every refused
+   `scene.Input` into a new metric `orion_inbox_dropped_total`
+   (labels: scene) + a rate-limited warn log. **Silent drop is dead**; drop
+   under genuine overload remains acceptable (LWW model) but must be visible.
+
+**E3 — Service-token scope narrowed to the only producer (Bastion's
+preferred option, adopted).** Quasar requests its service token scoped
+`__inputs.platform.twitch.*` — not `__inputs.platform.*` — as long as Twitch
+is the only live integration. The unused write surface on `youtube.*`/
+`kick.*` disappears instead of being accepted as risk. Widening the scope is
+an explicit step of the ADR that lands the second platform integration (one
+config change + that ADR's Bastion review). No Orion change: scope matching
+is already generic.
+
+**Recommended hardening (non-blocking, bundled with the Quasar issue).** The
+reconnect buffer (`orion_client.py`, `deque(maxlen=1000)`) evicts oldest
+silently; add a drop counter (metric or counter exposed on `/ready`) so
+reconnect-window loss is observable too.
 
 ## 5. Consequences
 
@@ -338,20 +413,24 @@ Security-surfaced risks → **Bastion** (do not self-clear).
   blueprint using exec nodes fails its next push. Accepted (it never worked on
   air; failing loudly is the fix). Mitigation: the diagnostic names the node
   and the data-flow alternative.
-- **R2 — Channel string is author-controlled input entering a state path.**
-  Mitigated fail-closed by charset validation + casefold (§4.2). → Bastion:
-  confirm the validation closes path-injection / scope-escape (a crafted
-  channel must not produce a leaf outside `__inputs.platform.<platform>.*`).
-- **R3 — Service-token scope breadth.** Quasar's token is scoped
-  `__inputs.platform.*` (all platforms, all channels). Bounded by ZabAuth
-  path-scoping and the gateway; → Bastion: confirm scope granularity is
-  acceptable or should narrow to per-platform.
-- **R4 — UGC fan-out.** Chat payloads (arbitrary viewer text) land in state
-  and broadcast to every subscriber, including for leaves no scene declares
-  (§4.4). Rendering safety is Solar/Lumencast's job, but the *transport* of
-  unsolicited UGC is new surface. → Bastion: assess; if rejected, the fallback
-  is compile-declared-leaf filtering in `Inbox` (cheap follow-up, an
-  allowlist Orion already has at scene load).
+- **R2 — Path injection via channel/type strings (Bastion: confirmed real,
+  E1).** The channel is not only author-controlled (compile path) but
+  **wire-derived** at the producer (raw IRC line → `event.channel`), and the
+  scope match is a prefix check — dots in the channel forge leaves of other
+  platforms/channels/types within scope. Closed fail-closed at **both**
+  layers: compiler validation (§4.2) + producer validation in `leaf_path`
+  before any send (§4.5 E1, criterion 9). E1 also pre-closes hostile
+  `event_type` from future integrations.
+- **R3 — Service-token scope breadth. Resolved by narrowing (§4.5 E3).**
+  Scope is `__inputs.platform.twitch.*` in v1; no unused write surface on
+  `youtube.*`/`kick.*`. Widening requires the second-integration ADR and its
+  Bastion review.
+- **R4 — UGC fan-out.** Chat payloads (arbitrary viewer text) reach
+  subscribers **only through leaves an on-air scene explicitly declares** —
+  `Inbox` filtering by declared paths is the implemented behavior (§4.4,
+  corrected). Rendering safety of that text remains Solar/Lumencast's job
+  (escape-by-default in render). Residual surface = leaves authors wire on
+  purpose; accepted.
 - **R5 — At-most-once loss windows.** Reconnects can drop events (>1 000
   buffered). Accepted and documented (§4.4); overlays show latest state, they
   are not ledgers. Anything money-adjacent (sub counts) must come from a
@@ -362,6 +441,13 @@ Security-surfaced risks → **Bastion** (do not self-clear).
 - **R7 — http-poll / pg-listen bindings still undeclared in prod**
   (`extractAdapters` stub). Out of scope here, **tracked** as a follow-up to
   the Canvas-extensions chantier so it is not lost (audit §Incertitudes).
+- **R8 — Chat storm / inbox overflow (Bastion E2).** A raid-scale chat burst
+  could fill a scene inbox (chan 256) and drop writes. Mitigated by producer
+  coalescing (≤ 1 push/leaf/window, lossless under LWW) and made observable
+  by `orion_inbox_dropped_total` + warn log (§4.5 E2, criterion 10).
+  Residual: drops under extreme overload remain possible and are acceptable
+  for a latest-value model — but never silent. Reconnect-buffer eviction
+  (Quasar, 1 000) gets a drop counter (recommended hardening).
 
 ## 7. Resolution criteria
 
@@ -399,7 +485,22 @@ Testable; CI-enforced where possible.
 8. **Restart semantics intact.** After restart, platform leaves are reseeded
    from defaults (no persisted live state) — existing criterion 11 test
    extended to a platform leaf.
-9. **Org gates.** Orion CI green (vet/test/build/staticcheck/golangci/
-   trufflehog); Blue + Quasar CI green (ruff/mypy/pytest/pip-audit); review
-   approved by **Vigil**; **Bastion** clearance on R2/R3/R4 before any merge
-   touching the ingestion surface.
+9. **Producer-side leaf validation (E1).** A `CanonicalEvent` with a hostile
+   channel (e.g. `b.evil` — post-casefold failing `^[a-z0-9_]+$`), an
+   off-enum platform, or a type outside `CANONICAL_EVENT_TYPES` is rejected
+   by Quasar's `leaf_path` and dropped with a structured log **before any
+   `ws.send`** (never sent, never buffered). Unit test on the hostile-channel
+   case asserting no send occurs; green in Quasar CI.
+10. **Storm handling observable (E2).** (a) Quasar unit test: N chat events
+    for one leaf within one coalescing window produce exactly one push
+    carrying the **last** event. (b) Orion test: flooding a scene inbox past
+    capacity increments `orion_inbox_dropped_total` and emits a rate-limited
+    warn — no silent drop path remains in `Inbox.Write`.
+11. **Token scope (E3).** Quasar requests its service token scoped
+    `__inputs.platform.twitch.*`; an Orion test asserts a write to
+    `__inputs.platform.youtube.x.last_chat` under that scope gets
+    `WRITE_FORBIDDEN`.
+12. **Org gates.** Orion CI green (vet/test/build/staticcheck/golangci/
+    trufflehog); Blue + Quasar CI green (ruff/mypy/pytest/pip-audit); review
+    approved by **Vigil**; **Bastion** re-clearance on the revised ingestion
+    surface (E1/E2/E3, R2/R3/R4/R8) before any merge touching it.
