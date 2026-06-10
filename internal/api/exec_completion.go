@@ -18,8 +18,11 @@ import (
 // Ordered gates; ANY failure is a silent drop (counted + logged,
 // resumes nothing) answered with the SAME 202 as a legitimate report,
 // so a caller can never probe whether a continuation exists:
-//  1. scope — role=service + `__system.anim.report` in the token's
-//     `X-Authenticated-Paths`, enforced by the existing CanWritePath.
+//  1. scope — role=service + the EXACT scope `__system.anim.report`
+//     present in the token's `X-Authenticated-Paths` (set membership).
+//     Deliberately NOT the hierarchical CanWritePath/matchPath rule: a
+//     parent or wildcard scope (`__system.anim`, `__system.*`) must
+//     not satisfy this gate (contract §2.3 — exact leaf scope only).
 //  2. scene — `{scene_id}` routes to exactly that scene; the parked
 //     map is per-scene, so a wake key of another scene can never
 //     resolve (no cross-scene resume, no fan-out).
@@ -68,9 +71,11 @@ func postExecCompletion(deps PublicDeps) http.HandlerFunc {
 			completionAccepted(w) // identical to success — no leak
 		}
 
-		// Gate 1 — role + scope (existing CanWritePath enforcement).
+		// Gate 1 — role + EXACT scope. The token must carry the literal
+		// `__system.anim.report` scope; hierarchical matching (parent or
+		// wildcard scopes) is intentionally not honored here.
 		id := auth.FromHeaders(r.Header)
-		if id.Role != auth.RoleService || !id.CanWritePath(animReportScope) {
+		if id.Role != auth.RoleService || !hasExactScope(id, animReportScope) {
 			reject("role")
 			return
 		}
@@ -108,6 +113,20 @@ func postExecCompletion(deps PublicDeps) http.HandlerFunc {
 		}
 		completionAccepted(w)
 	}
+}
+
+// hasExactScope reports whether the identity's `paths` claim contains
+// the scope as an EXACT element. Unlike Identity.CanWritePath, no
+// parent-prefix or wildcard matching applies: `__system.anim`,
+// `__system.*` or `__system` do NOT grant `__system.anim.report`
+// (contract §2.3 — the renderer token carries the exact leaf scope).
+func hasExactScope(id auth.Identity, scope string) bool {
+	for _, p := range id.Paths {
+		if p == scope {
+			return true
+		}
+	}
+	return false
 }
 
 // completionAccepted writes the single 202 shape every outcome shares

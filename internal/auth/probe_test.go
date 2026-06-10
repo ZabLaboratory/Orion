@@ -6,12 +6,14 @@ package auth
 //
 // Axes:
 //  1. Token scope that is a strict PARENT of the required scope
-//     (`__system.anim`) must NOT grant access to `__system.anim.report`.
-//     *** DEFECT FOUND: matchPath("__system.anim", "__system.anim.report")
-//     returns true because the `strings.HasPrefix(path, pattern+".")` rule
-//     lets any parent scope pass. This violates the contract (§2.3): the
-//     renderer token carries the EXACT scope string, and a broader token
-//     (`__system.anim`) must not be treated as sufficient. Returned to Forge.
+//     (`__system.anim`) — matchPath remains hierarchical BY DESIGN (it is
+//     shared auth code for service-token path scoping, e.g. adapters
+//     inbox). The completion endpoint's gate-1 does NOT rely on it any
+//     more: it enforces the EXACT scope via set membership (see
+//     api/exec_completion.go hasExactScope and the API-level probe
+//     tests). The parent-scope behaviour of matchPath is documented
+//     here, not treated as a defect; its permissiveness for OTHER
+//     scopes is flagged to Bastion.
 //  2. Token scope extension (`__system.anim.report.x`) — correctly rejected.
 //  3. Exact scope (`__system.anim.report`) — correctly accepted (regression guard).
 //  4. Gate-1 via Identity.CanWritePath end-to-end.
@@ -52,31 +54,24 @@ func TestMatchPath_AnimScope_ExactAndSuperstring(t *testing.T) {
 	}
 }
 
-// TestMatchPath_AnimScope_ParentScope_DEFECT: documents the confirmed
-// defect in matchPath — a parent scope (`__system.anim`) is incorrectly
-// accepted for the child path `__system.anim.report` because the prefix
-// rule `strings.HasPrefix(path, pattern+".")` is satisfied.
+// TestMatchPath_AnimScope_ParentScope_DEFECT: documents that matchPath
+// is hierarchical — a parent scope (`__system.anim`) matches the child
+// path `__system.anim.report` via `strings.HasPrefix(path, pattern+".")`.
 //
-// CONTRACT: `__system.anim.report` is a leaf scope (§2.3). A token with
-// only `__system.anim` must NOT pass gate-1. This test asserts the
-// CURRENT (wrong) behavior to pin the defect; it must become `false` after
-// Forge fixes matchPath.
+// This is matchPath's intended semantics for general service-token path
+// scoping and is deliberately NOT changed (shared auth code). The
+// completion endpoint's gate-1 (#86, contract §2.3) instead enforces the
+// EXACT `__system.anim.report` scope by set membership in
+// api/exec_completion.go (hasExactScope), bypassing this hierarchy.
+// The rejection of parent scopes at the endpoint is asserted in
+// api/exec_completion_probe_test.go.
 //
-// DEFECT RETURNED TO FORGE: auth/identity.go matchPath prefix rule grants
-// parent scopes over children, violating the exact-scope enforcement
-// requirement for B-syswrite (criterion #19).
+// NOTE for Bastion: matchPath's parent-prefix permissiveness on OTHER
+// scopes (e.g. `__inputs.platform`) remains to be evaluated.
 func TestMatchPath_AnimScope_ParentScope_DEFECT(t *testing.T) {
-	// Current behavior: true (BUG — parent grants child access).
-	// Expected after fix: false.
-	got := matchPath("__system.anim", "__system.anim.report")
-	if !got {
-		// If this passes false, the bug has been fixed — upgrade to a
-		// proper positive assertion.
-		t.Log("DEFECT RESOLVED: matchPath parent-scope bug is fixed")
-		return
+	if !matchPath("__system.anim", "__system.anim.report") {
+		t.Fatalf("matchPath(%q, %q) = false; matchPath is expected to stay hierarchical — if this changed, re-audit all service-token path scoping", "__system.anim", "__system.anim.report")
 	}
-	// Pin the defect: test passes but documents the wrong behavior.
-	t.Logf("DEFECT CONFIRMED: matchPath(%q, %q) = true; want false after fix", "__system.anim", "__system.anim.report")
 }
 
 // TestCanWritePath_AnimReport_ServiceToken: gate-1 checks via the exported
@@ -114,10 +109,12 @@ func TestCanWritePath_AnimReport_ServiceToken(t *testing.T) {
 		}
 	}
 
-	// DEFECT: parent scope — documents incorrect current behavior.
-	// Must be false after Forge fixes matchPath. See TestMatchPath_AnimScope_ParentScope_DEFECT.
+	// Parent scope: CanWritePath remains hierarchical (true here) BY
+	// DESIGN; the completion endpoint does not use it for gate-1 — it
+	// requires the exact scope (see api/exec_completion.go and
+	// TestMatchPath_AnimScope_ParentScope_DEFECT above).
 	parentID := Identity{UserID: "renderer", Role: RoleService, Paths: []string{"__system.anim"}}
-	if parentID.CanWritePath(scope) {
-		t.Logf("DEFECT: CanWritePath with parent scope __system.anim grants __system.anim.report — must be fixed in matchPath")
+	if !parentID.CanWritePath(scope) {
+		t.Fatalf("CanWritePath parent-scope hierarchy unexpectedly changed — re-audit service-token scoping")
 	}
 }

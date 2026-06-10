@@ -5,9 +5,10 @@ package api
 //
 // Axes:
 //  1. Scope substring gate-1 hardening: a token whose paths contain a
-//     PARENT scope (`__system.anim`) passes gate-1 due to the matchPath
-//     prefix rule — DEFECT in auth/identity.go returned to Forge.
-//     This test pins the behaviour and will catch the fix.
+//     PARENT scope (`__system.anim`) must NOT pass gate-1. Originally a
+//     DEFECT (CanWritePath's parent-prefix rule); fixed by Forge: gate-1
+//     now requires the EXACT scope via set membership (hasExactScope),
+//     not the hierarchical matchPath. These tests assert the rejection.
 //  2. Double-report idempotency: the SAME wake key sent twice. First
 //     report resumes the continuation; second is an unknown drop
 //     (counted, resumes nothing). The body is byte-identical on both.
@@ -31,46 +32,33 @@ import (
 // --- 1. Scope parent / substring gate-1 hardening -------------------------
 
 // TestCompletion_Gate1_ScopeParentIsDefect: a service token carrying
-// `__system.anim` (parent of the required `__system.anim.report`) currently
-// PASSES gate-1 because matchPath's prefix rule treats parents as
-// sufficient. This is a security defect (contract §2.3 requires the exact
-// scope). The test pins the current behaviour so the fix in
-// auth/identity.go is detectable.
-//
-// After the fix, `got` will be false and the "DEFECT CONFIRMED" log will
-// not appear — the continuation-resume path will be unreachable with a
-// parent-scope token.
+// `__system.anim` (parent of the required `__system.anim.report`) must be
+// REJECTED at gate-1 (contract §2.3 requires the exact scope). Originally
+// pinned a defect (CanWritePath's parent-prefix rule let parents through);
+// gate-1 now uses exact set membership, so this asserts the fix: 202 drop,
+// reason=role, continuation never resumed. Wildcard and root parents
+// (`__system.*`, `__system`) are covered as variants.
 func TestCompletion_Gate1_ScopeParentIsDefect(t *testing.T) {
-	f := newAnimFixture(t, "scope-parent-defect")
+	for _, scope := range []string{"__system.anim", "__system.*", "__system"} {
+		t.Run(scope, func(t *testing.T) {
+			f := newAnimFixture(t, "scope-parent-"+scope)
 
-	parentScopeHeaders := map[string]string{
-		"X-Authenticated-User":  "bad-renderer",
-		"X-Authenticated-Role":  "service",
-		"X-Authenticated-Paths": "__system.anim", // parent — must not pass
-	}
-	w := postCompletion(t, f, f.sceneID, reportBody(f.wakeKey), parentScopeHeaders)
-	if w.Code != http.StatusAccepted {
-		t.Fatalf("status = %d, want 202", w.Code)
-	}
+			parentScopeHeaders := map[string]string{
+				"X-Authenticated-User":  "bad-renderer",
+				"X-Authenticated-Role":  "service",
+				"X-Authenticated-Paths": scope, // parent/wildcard — must not pass
+			}
+			w := postCompletion(t, f, f.sceneID, reportBody(f.wakeKey), parentScopeHeaders)
+			if w.Code != http.StatusAccepted {
+				t.Fatalf("status = %d, want 202", w.Code)
+			}
 
-	// Detect whether the parent scope passed gate-1 (defect) or was
-	// correctly rejected (fixed).
-	time.Sleep(30 * time.Millisecond)
-	roleDrops := testutil.ToFloat64(f.metrics.ComplRejected.WithLabelValues(f.sceneID, "role"))
-	doneVal := f.doneLeaf(t)
-
-	switch {
-	case roleDrops == 0 && doneVal != `null`:
-		t.Logf("DEFECT CONFIRMED: parent scope __system.anim bypassed gate-1, continuation resumed")
-		t.Logf("DEFECT: auth/identity.go matchPath must not grant parent scopes — return to Forge")
-	case roleDrops == 1:
-		t.Log("gate-1 correctly rejected parent scope (defect resolved)")
-	default:
-		// Ambiguous: give the inbox a beat then re-check.
-		time.Sleep(50 * time.Millisecond)
-		if testutil.ToFloat64(f.metrics.ComplRejected.WithLabelValues(f.sceneID, "role")) == 0 {
-			t.Logf("DEFECT CONFIRMED: parent scope __system.anim bypassed gate-1 — return to Forge")
-		}
+			roleDrops := testutil.ToFloat64(f.metrics.ComplRejected.WithLabelValues(f.sceneID, "role"))
+			if roleDrops != 1 {
+				t.Fatalf("parent scope %q must be rejected at gate-1: role drops = %v, want 1", scope, roleDrops)
+			}
+			notResumed(t, f)
+		})
 	}
 }
 
@@ -99,10 +87,10 @@ func TestCompletion_Gate1_ScopeExtension_Rejected(t *testing.T) {
 }
 
 // TestCompletion_Gate1_ScopeSubstring_Rejected: `__system.anim` is a
-// SUBSTRING of the required scope — must not pass. Currently a DEFECT
-// (same root as TestCompletion_Gate1_ScopeParentIsDefect); this test
-// cross-checks via a slightly different angle (single-scope header, no
-// other scopes in the list).
+// SUBSTRING of the required scope — must not pass gate-1 (exact-match
+// enforcement). Cross-checks the parent-scope rejection via a slightly
+// different angle (single-scope header, no other scopes in the list).
+// Also verifies the exact scope still passes when mixed into a CSV.
 func TestCompletion_Gate1_ScopeSubstring_Rejected(t *testing.T) {
 	f := newAnimFixture(t, "scope-substring")
 	headers := map[string]string{
@@ -115,15 +103,30 @@ func TestCompletion_Gate1_ScopeSubstring_Rejected(t *testing.T) {
 		t.Fatalf("status = %d, want 202", w.Code)
 	}
 
-	time.Sleep(30 * time.Millisecond)
 	roleDrops := testutil.ToFloat64(f.metrics.ComplRejected.WithLabelValues(f.sceneID, "role"))
-	if roleDrops == 0 {
-		// Defect: the parent scope bypassed gate-1.
-		t.Logf("DEFECT: __system.anim (parent) bypassed gate-1 for __system.anim.report — return to Forge")
+	if roleDrops != 1 {
+		t.Fatalf("substring scope __system.anim must be rejected at gate-1: role drops = %v, want 1", roleDrops)
 	}
-	// Do not fatal here — this is a defect pin, not a passing assertion.
-	// The test does NOT resume the continuation via the correct key, so
-	// even if the defect is present the continuation is not consumed.
+	notResumed(t, f)
+
+	// Positive control: exact scope among other scopes in the CSV passes.
+	f2 := newAnimFixture(t, "scope-csv-exact")
+	csvHeaders := map[string]string{
+		"X-Authenticated-User":  "renderer",
+		"X-Authenticated-Role":  "service",
+		"X-Authenticated-Paths": "__inputs.foo.*, __system.anim.report, __system.anim",
+	}
+	w2 := postCompletion(t, f2, f2.sceneID, reportBody(f2.wakeKey), csvHeaders)
+	if w2.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", w2.Code)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for f2.doneLeaf(t) != `"done"` {
+		if !time.Now().Before(deadline) {
+			t.Fatalf("exact scope in CSV: continuation never resumed")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
 }
 
 // --- 2. Double-report idempotency ----------------------------------------
