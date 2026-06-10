@@ -56,7 +56,6 @@ const (
 	CodeTestSessionExpired = "TEST_SESSION_EXPIRED"
 	CodeInternal           = "INTERNAL"
 	CodeCyclicComponent    = "CYCLIC_COMPONENT"
-	CodeImpureCompute      = "IMPURE_COMPUTE"
 )
 
 // envelope is the minimal shape used to peek at `type` on incoming

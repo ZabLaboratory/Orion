@@ -268,7 +268,7 @@ func TestBlueprintNode_DecodesDefinitionWireField(t *testing.T) {
 		t.Fatalf("manifest fixture missing core.math.add@1 — the test premise is broken")
 	}
 
-	_, _, diags := validateBlueprint(&bp, manifest)
+	_, _, diags := validateBlueprint(&bp, manifest, nil)
 	if len(diags) != 0 {
 		t.Fatalf("validateBlueprint emitted %d diagnostic(s) for a valid pure node, want 0: %+v", len(diags), diags)
 	}
