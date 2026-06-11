@@ -25,6 +25,15 @@ type sceneMirror struct {
 	wire    *Wire
 	sceneID string
 	scene   *lserver.Scene
+	// bound is the renderable leaf surface of the active scene's bundle.
+	// When active() it is the PRIMARY wire gate: only bound leaves (and
+	// their descendants) are emitted, so every compute intermediate
+	// (object rows, clause descriptors, empty WHERE literals, scalar work
+	// leaves) is dropped at the tap regardless of its JSON shape. When
+	// NOT active (no bindings in the bundle) the gate is disabled and the
+	// isLSDPScalar shape filter alone backstops the wire — never an
+	// all-drop black screen.
+	bound boundLeafSet
 }
 
 var _ runtime.SceneMirror = (*sceneMirror)(nil)
@@ -39,15 +48,7 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 		}
 		patches := make(map[string]any, len(v.State))
 		for path, val := range v.State {
-			// LSDP §3.2.1: only scalar / array-of-scalar values are
-			// wire-legal. The reactive store also holds db.query
-			// intermediates (rows, clause descriptors) as object/array
-			// leaves; emitting them makes @lumencast/protocol reject the
-			// ENTIRE snapshot (INVALID_VALUE → reconnect loop → black
-			// screen). Drop non-scalar leaves here — they are internal
-			// compute, never renderable. The bespoke /show/stream wire
-			// (ADR 002) is untouched: it does not go through this tap.
-			if !isLSDPScalar(val) {
+			if !m.wireLegal(path, val) {
 				continue
 			}
 			patches[path] = val
@@ -69,10 +70,7 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 		}
 		patches := make(map[string]any, len(v.Patches))
 		for _, p := range v.Patches {
-			// Same §3.2.1 filter as the snapshot path: a delta updating a
-			// db.query intermediate (e.g. row_k = [{...}]) must not put an
-			// object on the LSDP wire. Scalar board/var leaves pass through.
-			if !isLSDPScalar(p.Value) {
+			if !m.wireLegal(p.Path, p.Value) {
 				continue
 			}
 			patches[p.Path] = p.Value
@@ -88,6 +86,36 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 		// Wire.SetActive (kit Server.SetActive migrates live subs with
 		// its own scene_changed + snapshot). Nothing to do per-scene.
 	}
+}
+
+// wireLegal is the single wire-emission decision for a leaf, combining
+// the two filters in priority order:
+//
+//  1. The BOUND-LEAF surface gate (primary, when the bundle binds at
+//     least one leaf): emit a leaf only if the active scene's layout
+//     binds it — or binds an ancestor of it (so `repeat.items` children
+//     `items.{i}.field` survive). Every `__vars..` compute intermediate
+//     that no node binds (object rows, clause descriptors, the empty
+//     WHERE literals `whereEmptyN=[]`, the scalar work leaves
+//     `catA0`/`getScore0`) is dropped here regardless of shape — the
+//     definitive hygiene contract that ends present and future leakage.
+//
+//  2. The §3.2.1 SHAPE filter (defense-in-depth, always): even a bound
+//     leaf must be scalar / array-of-scalar to be wire-legal — a bound
+//     leaf that somehow holds an object must never reach
+//     @lumencast/protocol (which would reject the whole frame). When the
+//     bound gate is DISABLED (no bindings — passthrough/operator-only
+//     scene, or a bundle that was not threaded), this shape filter is
+//     the SOLE gate, exactly as before this change (fail-open, no
+//     black screen).
+//
+// The bespoke /show/stream wire (ADR 002) does not go through this tap
+// and is untouched.
+func (m *sceneMirror) wireLegal(path string, val json.RawMessage) bool {
+	if m.bound.active() && !m.bound.renderable(path) {
+		return false
+	}
+	return isLSDPScalar(val)
 }
 
 // isLSDPScalar reports whether a raw-JSON leaf value is legal on the
