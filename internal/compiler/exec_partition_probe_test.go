@@ -798,16 +798,25 @@ func TestPartitionProbe_OnEvent_ConfigKeyContract(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 8. Dormant: scenes_push.go must not call InstallExec or LoadExec
+// 8. R9 lift (issue #106): scenes_push.go installs exec ONLY via execForAir
 // ---------------------------------------------------------------------------
 
-// TestPartitionProbe_Dormant_NoPushInstall: a structural source-level check
-// that the production scenes_push.go handler does NOT call InstallExec or
-// LoadExec. Exec stays dormant until issue #106.
+// TestPartitionProbe_PushInstallsExecThroughGate: a structural source-level
+// check that, post-R9-lift (ADR 006 §3.4, issue #106), the production
+// scenes_push.go handler installs exec — but ONLY through the gated seam
+// execForAir, never by resolving programs itself (ExecProgramsFromGraph)
+// and never by handing programs to LoadExec down a path that skips the
+// validation gate. The invariant is: every install is keyed on the #87
+// validation record, which execForAir is the single composer of.
+//
+// This SUPERSEDES the pre-lift dormancy guard (exec was dormant until
+// #106): the lift's whole point is that a VALIDATED scene installs its
+// exec. The guard now protects the franchissement's safety property — no
+// bypass of the gate — rather than its dormancy.
 //
 // The source is read at test run time from the adjacent api/ package using
 // runtime.Caller to anchor the path correctly regardless of test working dir.
-func TestPartitionProbe_Dormant_NoPushInstall(t *testing.T) {
+func TestPartitionProbe_PushInstallsExecThroughGate(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Skip("runtime.Caller failed — cannot locate scenes_push.go")
@@ -817,12 +826,18 @@ func TestPartitionProbe_Dormant_NoPushInstall(t *testing.T) {
 	pushPath := filepath.Join(filepath.Dir(thisFile), "..", "api", "scenes_push.go")
 	src, err := os.ReadFile(pushPath)
 	if err != nil {
-		t.Skipf("cannot read scenes_push.go (%v) — dormant check skipped", err)
+		t.Skipf("cannot read scenes_push.go (%v) — gate check skipped", err)
 	}
 	content := string(src)
-	for _, forbidden := range []string{"InstallExec", "LoadExec"} {
-		if strings.Contains(content, forbidden) {
-			t.Errorf("scenes_push.go calls %q — exec must stay dormant until issue #106", forbidden)
-		}
+
+	// The lift requires the push path to install exec through execForAir.
+	if !strings.Contains(content, "execForAir") {
+		t.Error("scenes_push.go no longer calls execForAir — the R9 lift's gated install seam is missing (ADR 006 §3.4)")
+	}
+	// The push handler must NEVER resolve programs itself: that would be a
+	// path around the validation gate. ExecProgramsFromGraph is only legal
+	// INSIDE execForAir (gate.go), which gates it on the validation record.
+	if strings.Contains(content, "ExecProgramsFromGraph") {
+		t.Error("scenes_push.go calls ExecProgramsFromGraph directly — exec install must go through execForAir, never around the #87 gate")
 	}
 }

@@ -33,6 +33,16 @@ type InputMsg struct {
 	// producer of resumes, behind its own role+token checks.
 	FireExec   string // exec entrypoint id to fire
 	ResumeExec string // wake key of a parked continuation to resume
+	// SetOnAir toggles the scene instance's on-air flag (ADR 006 §3.4,
+	// issue #106). It routes through the SAME inbox as fires and state
+	// writes so the flag is owned by the scene goroutine alone
+	// (single-writer): the Show flips it true on the destination and
+	// false on the previous scene at SetActive, ordered against the
+	// on-start fire and the tick stream by inbox arrival. nil = not an
+	// on-air control message. The on-air flag gates on-tick/on-event
+	// firing of a live roster instance so an off-air, validated, loaded
+	// scene runs ZERO exec effects backstage (criterion #6).
+	SetOnAir *bool
 	// ResumeEnv carries the completion bindings of an async effect
 	// (phase 3, issue #85): merged into the parked continuation's
 	// environment on the scene goroutine, just before re-enqueue.
@@ -240,6 +250,29 @@ type Scene struct {
 	// node coverage) while a validation campaign fires entrypoints.
 	// nil outside a campaign — every record* call is then a no-op.
 	validation *validationCapture
+
+	// --- on-air trigger scope (ADR 006 §3.4, issue #106) -------------
+	// The global tick fans out to EVERY loaded scene (tick.go), and an
+	// off-air scene may be loaded, validated and carrying exec programs
+	// (it sits in the roster awaiting activation). Without gating, its
+	// `on-tick`/`on-event` chains would fire REAL effects backstage —
+	// the franchissement leak risk R-4. So a LIVE ROSTER instance fires
+	// those triggers only while on air.
+	//
+	// triggersGated marks an instance whose on-tick/on-event firing is
+	// gated on onAir. The Show sets it on every roster instance at Load.
+	// A test-session / validation clone leaves it false: authors iterate
+	// freely (ADR §3.4 — test sessions untouched), so their triggers
+	// always fire. `on-start` is NEVER gated here: it is fired explicitly
+	// only at activation (Show.SetActive / FireOnStart) — an off-air
+	// scene's on-start is never requested.
+	//
+	// Both fields are owned by the scene goroutine: triggersGated is set
+	// pre-Run (like the other Install/Set mutators); onAir is flipped
+	// ONLY via the SetOnAir inbox message, applied on the scene goroutine
+	// — single-writer, race-free under -race with no concurrent read.
+	triggersGated bool
+	onAir         bool
 }
 
 type computeEntry struct {
@@ -348,6 +381,31 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 
 // ID returns the scene's id.
 func (s *Scene) ID() string { return s.id }
+
+// GateTriggers marks this instance a LIVE ROSTER member whose
+// on-tick/on-event firing is gated on the on-air flag (ADR 006 §3.4,
+// issue #106). Pre-Run only, like the other exec mutators — the Show
+// calls it at Load before scene.Run starts. A scene left ungated (test
+// session / validation clone) fires its triggers freely. on-start is
+// never affected (it is fired explicitly only at activation).
+func (s *Scene) GateTriggers() { s.triggersGated = true }
+
+// SeedOnAir sets the on-air flag directly, pre-Run only (the scene
+// goroutine is not yet running, so this is a plain assignment with no
+// concurrent reader — same contract as InstallExec/SetMirror). The Show
+// uses it for a push-swap of the ACTIVE scene: the fresh instance
+// replaces an on-air one, so it must START on air or its on-tick chain
+// would stay dead until the next SetActive. The runtime swap path
+// guarantees Run has not started when this is called.
+func (s *Scene) SeedOnAir(onAir bool) { s.onAir = onAir }
+
+// SetOnAir requests the on-air flag flip through the inbox so the scene
+// goroutine is the sole writer (single-writer, ADR 006 §3.4). Returns
+// false if the inbox is full. Safe from any goroutine; the Show calls it
+// at SetActive (true on the destination, false on the previous scene).
+func (s *Scene) SetOnAir(onAir bool) bool {
+	return s.Input(InputMsg{SetOnAir: &onAir})
+}
 
 // Graph exposes the compiled graph artefact (used by adapters to
 // read declared bindings).
@@ -561,6 +619,16 @@ func (s *Scene) applyInput(msg InputMsg) {
 		s.resumeParkedWith(msg.ResumeExec, msg.ResumeEnv)
 		return
 	}
+	if msg.SetOnAir != nil {
+		// On-air toggle (ADR 006 §3.4): applied on the scene goroutine so
+		// the flag the tick-firing path below reads is never racing a
+		// writer. Going off air does NOT cancel tasks here — switch-away
+		// cancellation is a separate, explicit CancelExec from the Show
+		// (ADR 003 §3.1.4); this flag only governs FUTURE on-tick/on-event
+		// fires of this instance.
+		s.onAir = *msg.SetOnAir
+		return
+	}
 	if s.state.Set(msg.Path, msg.Value) {
 		s.pending[msg.Path] = struct{}{}
 	}
@@ -569,6 +637,16 @@ func (s *Scene) applyInput(msg InputMsg) {
 	// fire on the WRITE, not on the value change: an event carrying
 	// the same payload twice is two events.
 	if len(s.execProgs) == 0 {
+		return
+	}
+	// Air-only trigger scope (ADR 006 §3.4, issue #106, criterion #6).
+	// A live roster instance (triggersGated) fires on-tick/on-event ONLY
+	// while on air: the tick fans out to every loaded scene, so an
+	// off-air validated scene must stay exec-quiescent backstage (zero
+	// effects). A test-session / validation clone is never gated. The
+	// check is read by the single scene-goroutine writer of onAir — no
+	// concurrent access.
+	if s.triggersGated && !s.onAir {
 		return
 	}
 	if len(s.execOnTick) > 0 && msg.Path == tickPath {

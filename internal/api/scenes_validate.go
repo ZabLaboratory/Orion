@@ -24,10 +24,13 @@ import (
 // Enforcement of SCENE_NOT_VALIDATED lives on the activation/mutation
 // paths (postActiveScene, pushScene push-swap, handleRollback) — see
 // gate.go. The gate is the capstone that lets a VALIDATED exec-bearing
-// scene reach air; this file does NOT wire any ExecProgram emission into
-// the live activation path (R9): the campaign proves the programs the
-// artefact carries, the enforcement refuses unproven versions, and nothing
-// here installs a program onto a live scene.
+// scene reach air. Post-R9-lift (ADR 006 §3.4, issue #106) this file is
+// ALSO one of the activation paths: on validation SUCCESS, runCampaign
+// re-loads the roster instance through execForAir (reloadAfterValidation)
+// — both arming an off-air scene's exec ahead of activation AND executing
+// the deferred swap of an active scene (ADR 003 criterion #15). The
+// install stays keyed on the validation record the campaign just wrote;
+// no path bypasses the #87 gate.
 
 // validationRunner serialises campaigns per scene so two concurrent
 // POST /validate on the same scene don't both run the (CPU-bound)
@@ -135,6 +138,63 @@ func runCampaign(deps PublicDeps, sceneID uuid.UUID, sceneVersion string, graph 
 	deps.Logger.Info("validation campaign complete",
 		"scene_id", sceneID.String(), "scene_version", sceneVersion,
 		"harness_version", runtime.HarnessVersion, "status", status)
+
+	// R9 lift — arm the live instance on validation success (ADR 006 §3.4
+	// path 2, criterion #8). The record now exists, so execForAir resolves
+	// the program set; re-loading the roster instance through it both (a)
+	// arms an OFF-AIR scene's programs ahead of its later activation and
+	// (b) is the DEFERRED SWAP for an ACTIVE scene — once the version
+	// validates, it takes the antenna with scene_changed + a fresh
+	// snapshot, no second push (completes ADR 003 criterion #15).
+	if status == runtime.StatusValidated {
+		reloadAfterValidation(ctx, deps, sceneID, sceneVersion, graph, bundle)
+	}
+}
+
+// reloadAfterValidation re-loads the roster instance with its exec
+// installed, but ONLY if the just-validated version is still the scene's
+// latest_pushed_version AND the scene is in the roster. The guard avoids
+// resurrecting a superseded version (a newer push may have landed during
+// the campaign) and avoids loading a scene that was never live. The swap
+// is keyed on the SAME validation record execForAir reads — no path
+// around #87. If the active scene is the one re-loaded, the swap emits
+// scene_changed + a fresh snapshot (the deferred swap, criterion #8).
+func reloadAfterValidation(ctx context.Context, deps PublicDeps, sceneID uuid.UUID, sceneVersion string, graph *compiler.Graph, bundle *compiler.RenderBundle) {
+	scene, err := deps.Store.GetScene(ctx, sceneID)
+	if err != nil {
+		deps.Logger.Warn("post-validation reload: scene lookup failed",
+			"scene_id", sceneID.String(), "err", err)
+		return
+	}
+	if scene.LatestPushedVersion == nil || *scene.LatestPushedVersion != sceneVersion {
+		// A newer version superseded this one during the campaign — do not
+		// resurrect the stale version onto the antenna.
+		return
+	}
+	if _, err := deps.Show.Get(sceneID.String()); err != nil {
+		// Not in the roster (never loaded / archived): nothing live to
+		// arm. A future push or activation will load it through execForAir.
+		return
+	}
+
+	progs, _, err := execForAir(ctx, deps, sceneID, sceneVersion, graph)
+	if err != nil {
+		// Fail-closed/loud: a DB error or a corrupt artefact of a version
+		// that just validated. Leave the roster instance as it is rather
+		// than air an unresolved program set.
+		deps.Logger.Error("post-validation reload: execForAir failed",
+			"scene_id", sceneID.String(), "scene_version", sceneVersion, "err", err)
+		return
+	}
+	deps.Show.LoadExec(sceneID.String(), graph, bundle, progs...)
+
+	// If this scene is the active one, the swap moves the antenna now: the
+	// deferred swap proceeds with scene_changed + a fresh snapshot, just
+	// like the mid-broadcast re-push of an already-validated version.
+	if active := deps.Show.Active(); active != nil && active.ID() == sceneID.String() {
+		active.EmitSceneChanged(sceneID.String(), sceneID.String(), nil)
+		active.EmitFreshSnapshot()
+	}
 }
 
 // computeCampaign builds the report + verdict. Separated so tests drive it
