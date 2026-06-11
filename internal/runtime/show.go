@@ -39,6 +39,16 @@ type Show struct {
 	// preempt / parked counts. Installed once at boot.
 	execMetrics ExecMetrics
 
+	// effects is the shared async-effect executor bundle (ADR 003
+	// §3.1.3 / R9 lift ADR 006 §3.4). Built once at boot from config +
+	// the service-token manager, installed on a scene ONLY when that
+	// scene loads with a non-empty exec program set — i.e. a validated,
+	// exec-bearing version (see LoadExec). nil = effects unconfigured
+	// (dev / a deploy without the effect env): every world-effect op
+	// then fails to its error port, fail-closed. The R9 invariant lives
+	// in LoadExec's `len(progs) > 0` guard, NOT here.
+	effects *SceneEffects
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -49,6 +59,17 @@ func (sh *Show) SetExecMetrics(m ExecMetrics) {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	sh.execMetrics = m
+}
+
+// SetEffects installs the shared async-effect executor bundle (R9 lift,
+// ADR 006 §3.4). Called once at boot, before any scene is loaded. The
+// bundle itself confers NO capability: a scene only ever registers the
+// world-effect ops when it loads with a non-empty validated exec set
+// (LoadExec's guard). A nil bundle keeps effects unconfigured.
+func (sh *Show) SetEffects(e *SceneEffects) {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	sh.effects = e
 }
 
 // MirrorRegistry is the Show-side handle on the LSDP/1.1 wire
@@ -141,6 +162,21 @@ func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.Rend
 		scene.SetExecMetrics(sh.execMetrics)
 	}
 	scene.InstallExec(progs...)
+	// R9 world-effect install (ADR 006 §3.4, load-bearing). The
+	// world-touching ops (http.request / db.query / source.read) are
+	// registered ONLY when this scene loads with a non-empty exec set —
+	// which `execForAir` returns IFF the scene_version carries a
+	// `validated` record for the current harness_version. This is the
+	// SAME validation-keyed seam that gates InstallExec above (the
+	// program set is the single source of truth). A non-validated or
+	// pure-dataflow scene gets len(progs)==0 → SetEffects is never
+	// called → the ops are not in the registry → an authored
+	// http.request/db.query/source.read halts-at-node with ZERO egress
+	// or query (ADR 006 §3.4 résidu, Bastion #106). An unconfigured
+	// bundle (sh.effects == nil) likewise never registers anything.
+	if len(progs) > 0 && sh.effects != nil {
+		scene.SetEffects(sh.effects)
+	}
 	// Air-only trigger scope (ADR 006 §3.4, issue #106): every roster
 	// instance gates its on-tick/on-event firing on the on-air flag, so
 	// a loaded-but-off-air validated scene stays exec-quiescent backstage

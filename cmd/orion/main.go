@@ -23,6 +23,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/auth"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/config"
+	"github.com/ZabLaboratory/Orion/internal/effects"
 	"github.com/ZabLaboratory/Orion/internal/lsdp"
 	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
@@ -109,9 +110,64 @@ func run() error {
 	tick.Run()
 	defer tick.Stop()
 
+	_ = auth.NewValidator(cfg.ZabAuthValidateURL, cfg.ServiceToken, cfg.AuthCacheTTL)
+
+	// Service-token manager — mints + rotates the Bearer token Orion
+	// presents on outbound calls through ZabGate (the stream-key proxy,
+	// the compiler fetcher, and the `db.query` `_query` delegation).
+	// Static mode (no operator token) keeps backward-compat with the
+	// existing `ORION_SERVICE_TOKEN` env-only pattern. Built BEFORE
+	// cold-start because the effect bundle the show installs on validated
+	// scenes reads its `_query` bearer live from it.
+	authBase := strings.TrimSuffix(cfg.ZabAuthValidateURL, "/tokens")
+	serviceTokens := &auth.ServiceTokenManager{
+		MintURL:       authBase + "/service-tokens",
+		RefreshURL:    authBase + "/service-tokens/refresh",
+		OperatorToken: cfg.OperatorToken,
+		StaticToken:   cfg.ServiceToken,
+		ServiceName:   "orion",
+		Paths:         cfg.ServicePaths,
+		Logger:        logger,
+	}
+	if err := serviceTokens.Start(ctx); err != nil {
+		logger.Warn("service token manager start failed; falling back to static mode", "err", err)
+	}
+	defer serviceTokens.Stop()
+
+	// Async-effect bundle (ADR 003 §3.1.3 / R9 lift ADR 006 §3.4).
+	// Installed on the show so a VALIDATED, exec-bearing scene registers
+	// the world-effect ops on load (the show's len(progs) > 0 seam). The
+	// bundle confers no capability on its own. `db.query` rides topology A
+	// (POST $ZABGATE/<svc>/api/v1/_query, service token via serviceTokens
+	// — zero DB credential in Orion); `http.request` is bounded by the
+	// fail-closed egress policy (anti-SSRF, post-DNS). The worker pool
+	// starts here and drains on shutdown.
+	effectRunner := effects.NewRunner(cfg.EffectWorkers, cfg.EffectQueue, logger)
+	effectRunner.Start()
+	defer effectRunner.Stop()
+	dataSources := map[string]effects.DataSource{}
+	for name, svc := range cfg.DataSources {
+		dataSources[name] = effects.DataSource{Name: name, Svc: svc}
+	}
+	sceneEffects := &runtime.SceneEffects{
+		Runner:      effectRunner,
+		Egress:      effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP),
+		DB:          effects.NewDBQueryClientWithTokenFunc(cfg.ZabGateURL, serviceTokens.Token, nil),
+		DataSources: dataSources,
+		Metrics:     metrics,
+	}
+	show.SetEffects(sceneEffects)
+	logger.Info("async effects configured",
+		"workers", cfg.EffectWorkers,
+		"queue", cfg.EffectQueue,
+		"datasources", len(dataSources),
+		"egress_allow_hosts", len(cfg.HTTPEgressAllowHosts),
+	)
+
 	// Cold-start: enumerate every active scene with a non-null
 	// latest_pushed_version and load its compiled artefacts into
-	// the show. ADR 004 § 4.4.
+	// the show. ADR 004 § 4.4. Runs AFTER SetEffects so a validated exec
+	// scene reseeded here arms its effects on boot (criterion #7).
 	if err := loadActiveScenes(ctx, st, show, logger); err != nil {
 		logger.Error("scene cold start failed", "err", err)
 	}
@@ -131,28 +187,6 @@ func run() error {
 			pgListen.Start(ctx, scene)
 		}
 	}
-
-	_ = auth.NewValidator(cfg.ZabAuthValidateURL, cfg.ServiceToken, cfg.AuthCacheTTL)
-
-	// Service-token manager — mints + rotates the Bearer token Orion
-	// presents on outbound calls through ZabGate (currently the
-	// stream-key proxy ; future: any other Orion → ZabGate call).
-	// Static mode (no operator token) keeps backward-compat with the
-	// existing `ORION_SERVICE_TOKEN` env-only pattern.
-	authBase := strings.TrimSuffix(cfg.ZabAuthValidateURL, "/tokens")
-	serviceTokens := &auth.ServiceTokenManager{
-		MintURL:       authBase + "/service-tokens",
-		RefreshURL:    authBase + "/service-tokens/refresh",
-		OperatorToken: cfg.OperatorToken,
-		StaticToken:   cfg.ServiceToken,
-		ServiceName:   "orion",
-		Paths:         cfg.ServicePaths,
-		Logger:        logger,
-	}
-	if err := serviceTokens.Start(ctx); err != nil {
-		logger.Warn("service token manager start failed; falling back to static mode", "err", err)
-	}
-	defer serviceTokens.Stop()
 
 	// HTTP compiler fetcher — its outbound service token is read LIVE
 	// from the manager on every Canvas/Blue fetch (Bastion C1), so a

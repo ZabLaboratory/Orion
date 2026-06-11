@@ -66,18 +66,35 @@ type QueryResult struct {
 // operator deployment config, never a blueprint-authored destination.
 type DBQueryClient struct {
 	gatewayURL string // e.g. http://zabgate:4000 (no trailing slash)
-	token      string
-	client     *http.Client
+	// tokenFn returns the CURRENT service token on every call so a
+	// rotation by the ServiceTokenManager is reflected immediately. A
+	// frozen boot token would 401 every `_query` once it rotated — the
+	// same C1 bug class the compiler fetcher hit
+	// (NewHTTPFetcherWithTokenFunc).
+	tokenFn func() string
+	client  *http.Client
 }
 
-// NewDBQueryClient builds the client. httpClient nil = http.DefaultClient.
+// NewDBQueryClient builds the client with a STATIC token. Kept for tests
+// and static-mode callers. httpClient nil = http.DefaultClient.
 func NewDBQueryClient(gatewayURL, serviceToken string, httpClient *http.Client) *DBQueryClient {
+	return NewDBQueryClientWithTokenFunc(gatewayURL, func() string { return serviceToken }, httpClient)
+}
+
+// NewDBQueryClientWithTokenFunc builds the client reading its bearer LIVE
+// from tokenFn on every request (prod wiring: tokenFn =
+// ServiceTokenManager.Token). tokenFn nil = no Authorization header.
+// httpClient nil = http.DefaultClient.
+func NewDBQueryClientWithTokenFunc(gatewayURL string, tokenFn func() string, httpClient *http.Client) *DBQueryClient {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
+	if tokenFn == nil {
+		tokenFn = func() string { return "" }
+	}
 	return &DBQueryClient{
 		gatewayURL: strings.TrimRight(gatewayURL, "/"),
-		token:      serviceToken,
+		tokenFn:    tokenFn,
 		client:     httpClient,
 	}
 }
@@ -96,8 +113,8 @@ func (c *DBQueryClient) Query(ctx context.Context, ds DataSource, descriptor jso
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if tok := c.tokenFn(); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
