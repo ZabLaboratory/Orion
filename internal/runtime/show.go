@@ -273,15 +273,27 @@ func (sh *Show) SetActive(id string, transition json.RawMessage) error {
 	}
 	// Step 2: attach to destination, sending scene_changed first then
 	// the fresh snapshot per ADR 002 § 5/7.
+	//
+	// Exception — the detached writer (ADR 002 § 11 writer-vs-viewer):
+	// a sub with no prior scene (scene == nil, e.g. a service writer that
+	// connected with the show idle) is not *transitioning* from one scene
+	// to another. `scene_changed` is the A→B viewer transition signal;
+	// there is no "from" scene here (from == ""). Its first activation is
+	// an initial BIND, so it receives only the fresh `snapshot` — emitting
+	// a `scene_changed{from:""}` would be a phantom transition. A sub that
+	// WAS on a previous scene keeps the full scene_changed + snapshot pair.
 	for _, sub := range migrating {
+		wasDetached := sub.scene == nil
 		snap := dest.AttachExisting(sub)
-		select {
-		case sub.Out <- &protocol.SceneChanged{
-			FromSceneID: from,
-			ToSceneID:   id,
-			Transition:  transition,
-		}:
-		default:
+		if !wasDetached {
+			select {
+			case sub.Out <- &protocol.SceneChanged{
+				FromSceneID: from,
+				ToSceneID:   id,
+				Transition:  transition,
+			}:
+			default:
+			}
 		}
 		// Reset the destination scene's sequence so the snapshot
 		// reseeds it (ADR 002 § 7).

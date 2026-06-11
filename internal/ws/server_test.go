@@ -364,33 +364,22 @@ func TestWS_ServiceWriterConnectsWithoutActiveScene(t *testing.T) {
 	// path, so the inbox accepts and fans it out. The write must not
 	// draw a WRITE_FORBIDDEN nor a SCENE_NOT_FOUND, and the socket must
 	// not be closed by the server.
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"input","v":1,"path":"score.team_a","value":7}`)); err != nil {
-		t.Fatalf("writer push failed (connection closed?): %v", err)
-	}
-
-	// scene-1 is loaded but not active → it has subscribers only via
-	// migration, which hasn't happened. The writer is detached, so it
-	// receives no delta. Assert the server did NOT push an error frame
-	// and did NOT close: a short read must time out, not return a close
-	// or an Error envelope.
-	rctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
-	defer cancel()
-	_, raw, err := c.Read(rctx)
-	if err == nil {
-		// Any frame here would be unexpected; if it's an Error, fail loud.
-		var errMsg protocol.Error
-		if json.Unmarshal(raw, &errMsg) == nil && errMsg.Type == protocol.TypeError {
-			t.Fatalf("writer with no active scene got error frame: %s", raw)
+	//
+	// Liveness is proved by REPEATED writes spread over time, NOT by a
+	// timed-out Read: coder/websocket fails (and closes) the whole conn
+	// on ANY Read error — including a context deadline — so reading "to
+	// check the conn is still alive" would itself kill the client conn
+	// and mask a perfectly healthy server. Instead, since a detached
+	// writer receives no frames, we only ever write: if the server had
+	// closed (the prod reconnect-loop bug), a subsequent Write fails.
+	for i, val := range []string{"7", "8", "9"} {
+		payload := []byte(`{"type":"input","v":1,"path":"score.team_a","value":` + val + `}`)
+		if err := c.Write(ctx, websocket.MessageText, payload); err != nil {
+			t.Fatalf("writer push #%d failed (server closed the conn?): %v", i+1, err)
 		}
-		t.Fatalf("unexpected frame for detached writer: %s", raw)
-	}
-	if websocket.CloseStatus(err) != -1 {
-		t.Fatalf("server closed the writer connection (status %v); contract requires it stays open", websocket.CloseStatus(err))
-	}
-	// A deadline-exceeded read is the expected outcome: connection alive,
-	// no deltas, no error. Confirm the writer can still push afterwards.
-	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"input","v":1,"path":"score.team_a","value":8}`)); err != nil {
-		t.Fatalf("writer push after idle failed (connection closed): %v", err)
+		// Let the server drain the read and run the inbox fan-out before
+		// the next push, so a close (if any) surfaces on the next Write.
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -431,8 +420,14 @@ func TestWS_ViewerRejectedWithoutActiveScene(t *testing.T) {
 
 // Writer migration: a service writer connected with no active scene is
 // migrated onto a scene when one is activated (SetActive), and from
-// then on receives that scene's deltas — proving the detached
-// subscription is wired into the live subscriber set.
+// then on is wired into the live subscriber set of that scene.
+//
+// Contract (ADR 002 §11 writer-vs-viewer): the detached writer had NO
+// prior scene, so its first activation is an initial BIND, not an A→B
+// transition. It therefore receives a fresh `snapshot` only — NOT a
+// `scene_changed{from:""}`, which would be a phantom transition. The
+// scene_changed pair is reserved for a sub migrating off a real previous
+// scene (the viewer A→B path, covered by the runtime switch test).
 func TestWS_ServiceWriterMigratedOnActivate(t *testing.T) {
 	rig := newIdleRig(t)
 	defer rig.cleanup()
@@ -450,8 +445,8 @@ func TestWS_ServiceWriterMigratedOnActivate(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Activate scene-1 — the detached writer must be migrated and
-	// receive scene_changed + a fresh snapshot on the destination.
+	// Activate scene-1 — the detached writer must be migrated onto the
+	// destination and receive a fresh snapshot proving it is now bound.
 	if err := rig.show.SetActive("scene-1", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -462,9 +457,13 @@ func TestWS_ServiceWriterMigratedOnActivate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writer received nothing after activate (not migrated): %v", err)
 	}
-	// First frame after migration is scene_changed (ADR 002 §5/§7).
-	var sc protocol.SceneChanged
-	if err := json.Unmarshal(raw, &sc); err != nil || sc.Type != protocol.TypeSceneChanged {
-		t.Fatalf("expected scene_changed after activate, got %s", raw)
+	// First frame after a from-detached migration is a snapshot, not a
+	// scene_changed (the detached writer was on no prior scene).
+	var snap protocol.Snapshot
+	if err := json.Unmarshal(raw, &snap); err != nil || snap.Type != protocol.TypeSnapshot {
+		t.Fatalf("expected snapshot after activate of a detached writer, got %s", raw)
+	}
+	if snap.SceneID != "scene-1" {
+		t.Fatalf("snapshot is for the wrong scene: %s", raw)
 	}
 }
