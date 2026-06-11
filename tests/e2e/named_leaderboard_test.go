@@ -58,14 +58,15 @@ const (
 )
 
 // playerNames maps each ranking player_id (the M2 top-5 UUIDs) to the
-// display_name ZabTruth's /truth/_query returns for that id. The static
-// unroll must reproduce THIS mapping positionally, rank by rank.
+// summoner_name ZabTruth's /truth/_query returns for that id — the LoL
+// in-game name (NOT NULL). The static unroll must reproduce THIS mapping
+// positionally, rank by rank. These are the REAL top-5 in-game names.
 var playerNames = map[string]string{
-	"11111111-1111-1111-1111-111111111111": "Caps",
-	"22222222-2222-2222-2222-222222222222": "Jankos",
-	"33333333-3333-3333-3333-333333333333": "Wunder",
-	"44444444-4444-4444-4444-444444444444": "Perkz",
-	"55555555-5555-5555-5555-555555555555": "Mikyx",
+	"11111111-1111-1111-1111-111111111111": "GIDEON",
+	"22222222-2222-2222-2222-222222222222": "Teddy",
+	"33333333-3333-3333-3333-333333333333": "Loki",
+	"44444444-4444-4444-4444-444444444444": "Gumayusi",
+	"55555555-5555-5555-5555-555555555555": "Namgung",
 }
 
 // playerIDsByRank is the score-desc order the ranking query returns —
@@ -227,7 +228,9 @@ func namedLeaderboardBlueprint() *compiler.BlueprintGraph {
 			Outputs: []compiler.BlueprintPort{ePort("then")}})
 		edge(s("query"), "rows", s("setRow"), "value")
 		add(inputNode(s("inRow"), fmt.Sprintf("__vars..row_%d", k)))
-		add(getFieldNode(s("name"), "0.display_name"))
+		// the pseudo reads summoner_name (NOT NULL; the LoL in-game name) —
+		// display_name is nullable and the real top-5 carry a NULL one.
+		add(getFieldNode(s("name"), "0.summoner_name"))
 		edge(s("inRow"), "out", s("name"), "record")
 
 		// compose "<k+1>. <pseudo> — <score>"
@@ -407,11 +410,15 @@ func namedGateway(t *testing.T, truthCalls *[]truthCall, mu *sync.Mutex) *httpte
 			mu.Unlock()
 			name, ok := playerNames[id]
 			if !ok {
-				// Unknown id → empty rows (the display_name fallback path).
+				// Unknown id → empty rows.
 				_, _ = w.Write([]byte(`{"rows":[],"count":0,"elapsed_ms":1}`))
 				return
 			}
-			fmt.Fprintf(w, `{"rows":[{"display_name":%q,"summoner_name":%q}],"count":1,"elapsed_ms":1}`, name, name)
+			// The real top-5 carry a NULL display_name; only summoner_name is
+			// filled. Returning display_name:null here proves the board maps
+			// summoner_name positionally — a regression to display_name would
+			// render blank pseudos and fail the expectedLeaderboard assertion.
+			fmt.Fprintf(w, `{"rows":[{"display_name":null,"summoner_name":%q}],"count":1,"elapsed_ms":1}`, name)
 		default:
 			t.Errorf("unexpected gateway path: %s", r.URL.Path)
 			http.Error(w, "not found", http.StatusNotFound)

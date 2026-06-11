@@ -42,7 +42,11 @@ var nlbIDs = []string{
 	"44444444-4444-4444-4444-444444444444",
 	"55555555-5555-5555-5555-555555555555",
 }
-var nlbNames = []string{"Caps", "Jankos", "Wunder", "Perkz", "Mikyx"}
+
+// summoner_names (the LoL in-game name, NOT NULL) the stub /truth/_query
+// returns per id — the displayed pseudo reads this column, not the
+// nullable display_name. The real top-5 in-game names.
+var nlbNames = []string{"GIDEON", "Teddy", "Loki", "Gumayusi", "Namgung"}
 var nlbScores = []string{"9", "8", "7", "6", "4"}
 
 func nlbRankingResponse() string {
@@ -186,7 +190,9 @@ func nlbBlueprint() *compiler.BlueprintGraph {
 		edge(s("query"), "rows", s("setRow"), "value")
 
 		add(nlbInput(s("inRow"), fmt.Sprintf("__vars..row_%d", k)))
-		add(nlbGetField(s("name"), "0.display_name"))
+		// the pseudo reads summoner_name (NOT NULL; the LoL in-game name) —
+		// display_name is nullable and the real top-5 carry a NULL one.
+		add(nlbGetField(s("name"), "0.summoner_name"))
 		edge(s("inRow"), "out", s("name"), "record")
 
 		add(nlbLit(s("rankLit"), nlbStr(fmt.Sprintf("%d. ", k+1))))
@@ -301,7 +307,9 @@ func TestNamedLeaderboard_StaticUnroll_RunsLive(t *testing.T) {
 					name = nlbNames[i]
 				}
 			}
-			fmt.Fprintf(w, `{"rows":[{"display_name":%q,"summoner_name":%q}],"count":1,"elapsed_ms":1}`, name, name)
+			// display_name:null mirrors the real top-5 (only summoner_name is
+			// filled); the board must map summoner_name positionally.
+			fmt.Fprintf(w, `{"rows":[{"display_name":null,"summoner_name":%q}],"count":1,"elapsed_ms":1}`, name)
 		default:
 			t.Errorf("unexpected gateway path: %s", r.URL.Path)
 			http.Error(w, "not found", http.StatusNotFound)
