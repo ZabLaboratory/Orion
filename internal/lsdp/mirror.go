@@ -1,6 +1,9 @@
 package lsdp
 
 import (
+	"bytes"
+	"encoding/json"
+
 	lproto "github.com/Lumencast/lumencast-go/protocol"
 	lserver "github.com/Lumencast/lumencast-go/server"
 
@@ -36,7 +39,21 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 		}
 		patches := make(map[string]any, len(v.State))
 		for path, val := range v.State {
+			// LSDP §3.2.1: only scalar / array-of-scalar values are
+			// wire-legal. The reactive store also holds db.query
+			// intermediates (rows, clause descriptors) as object/array
+			// leaves; emitting them makes @lumencast/protocol reject the
+			// ENTIRE snapshot (INVALID_VALUE → reconnect loop → black
+			// screen). Drop non-scalar leaves here — they are internal
+			// compute, never renderable. The bespoke /show/stream wire
+			// (ADR 002) is untouched: it does not go through this tap.
+			if !isLSDPScalar(val) {
+				continue
+			}
 			patches[path] = val
+		}
+		if len(patches) == 0 {
+			return
 		}
 		// Set seeds the kit store and re-bases existing kit subscribers
 		// with a fresh snapshot — the right semantics for the initial
@@ -52,13 +69,64 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 		}
 		patches := make(map[string]any, len(v.Patches))
 		for _, p := range v.Patches {
+			// Same §3.2.1 filter as the snapshot path: a delta updating a
+			// db.query intermediate (e.g. row_k = [{...}]) must not put an
+			// object on the LSDP wire. Scalar board/var leaves pass through.
+			if !isLSDPScalar(p.Value) {
+				continue
+			}
 			patches[p.Path] = p.Value
+		}
+		if len(patches) == 0 {
+			// Every patch in this delta was a non-scalar intermediate.
+			// Nothing wire-legal to emit; Emit rejects empty maps anyway.
+			return
 		}
 		_ = m.scene.EmitWithCause(patches, mapCause(v.Cause))
 	case *protocol.SceneChanged:
 		// The scene switch is driven authoritatively from the Show via
 		// Wire.SetActive (kit Server.SetActive migrates live subs with
 		// its own scene_changed + snapshot). Nothing to do per-scene.
+	}
+}
+
+// isLSDPScalar reports whether a raw-JSON leaf value is legal on the
+// LSDP wire per spec §3.2.1: string / number / boolean / null, or an
+// array whose elements are (recursively) themselves legal. A JSON
+// object anywhere — at the top or nested inside an array — is forbidden
+// and makes @lumencast/protocol reject the whole snapshot/delta.
+//
+// We decode into `any` and walk the shape; this mirrors the decoder's
+// recursive assertLeafValue exactly (an array-of-object such as the
+// db.query row leaf [{"summoner_name":"GIDEON"}] is correctly rejected).
+// A malformed value (un-decodable) is treated as non-scalar — fail safe,
+// never put questionable bytes on the wire.
+func isLSDPScalar(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 {
+		return false
+	}
+	var decoded any
+	if err := json.Unmarshal(trimmed, &decoded); err != nil {
+		return false
+	}
+	return isScalarShape(decoded)
+}
+
+func isScalarShape(v any) bool {
+	switch t := v.(type) {
+	case nil, bool, float64, string, json.Number:
+		return true
+	case []any:
+		for _, e := range t {
+			if !isScalarShape(e) {
+				return false
+			}
+		}
+		return true
+	default:
+		// map[string]any (JSON object) and any other shape are forbidden.
+		return false
 	}
 }
 
