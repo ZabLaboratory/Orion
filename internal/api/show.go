@@ -99,10 +99,20 @@ func postTestSession(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, status, map[string]string{"code": code})
 			return
 		}
-		// No exec programs passed: the live-activation seam (execForAir)
-		// does not arm exec yet — exec stays dormant on every API path
-		// until the phase-4 gate (ADR 006 §3.4 / issue #106).
-		sessionID, _ := deps.Test.Open(r.Context(), body.SceneID, scene.Graph(), scene.Bundle())
+		// Test sessions are NEVER gated (ADR 006 §3.4): the author iterates
+		// freely, so exec runs in a test session WITHOUT a validation
+		// record. The session installs the scene's full program set from
+		// its compiled graph directly (no execForAir, no #87 gate) — the
+		// exec-quiescence on-air flag governs only LIVE roster instances,
+		// never a session clone (TestSessionManager.Open leaves it ungated).
+		progs, err := runtime.ExecProgramsFromGraph(scene.Graph())
+		if err != nil {
+			// A corrupt exec artefact: fail-loud rather than open a session
+			// whose exec is silently dead.
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+			return
+		}
+		sessionID, _ := deps.Test.Open(r.Context(), body.SceneID, scene.Graph(), scene.Bundle(), progs...)
 		writeJSON(w, http.StatusCreated, map[string]string{
 			"session_id": sessionID,
 			"ws_url":     "/orion/api/v1/scenes/" + body.SceneID + "/test?session=" + sessionID,

@@ -245,6 +245,14 @@ func run() error {
 
 // loadActiveScenes brings every active+pushed scene into the runtime
 // roster on cold start. Per ADR 004 § 4.4.
+//
+// R9 boot reseed (ADR 006 §3.4 path 3, criterion #7): a validated exec
+// scene must come back with its exec INSTALLED after a restart, or it
+// would air with its logic silently dead. So each scene is loaded through
+// execForAir: a validated version reinstalls its programs; an unvalidated
+// one loads pure-dataflow only (the same invariant every other path
+// holds). Fail-closed on a per-scene error — one bad scene never aborts
+// the whole cold start; it loads dataflow-only and is logged.
 func loadActiveScenes(ctx context.Context, st *store.Store, show *runtime.Show, logger *slog.Logger) error {
 	scenes, err := st.ListActiveScenesWithPush(ctx)
 	if err != nil {
@@ -266,7 +274,8 @@ func loadActiveScenes(ctx context.Context, st *store.Store, show *runtime.Show, 
 			logger.Warn("cold start: bad bundle json", "scene_id", sc.ID, "err", err)
 			continue
 		}
-		show.Load(sc.ID.String(), &graph, &bundle)
+		progs := api.ExecForBoot(ctx, st, sc.ID, pv.SceneVersion, &graph, logger)
+		show.LoadExec(sc.ID.String(), &graph, &bundle, progs...)
 	}
 	return nil
 }

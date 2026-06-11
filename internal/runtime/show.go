@@ -118,12 +118,12 @@ func (sh *Show) Load(id string, graph *compiler.Graph, bundle *compiler.RenderBu
 // `ExecProgramsFromGraph` returns; InstallExec merges their trigger
 // indexes under namespaced keys.
 //
-// R9 dormancy note: NO production path passes a non-empty set — the
-// live-activation enablement (the `execForAir` seam) lands with the
-// phase-4 validation gate (issue #106). Until then every Load from the
-// push/boot paths passes nil, so exec stays uninstalled (len(progs)==0 →
-// all trigger wiring below is inert) and the seam is exercised by tests
-// only.
+// R9 lift (ADR 006 §3.4, issue #106): the production push/boot/validate/
+// rollback paths now pass the program set resolved by the `execForAir`
+// seam — non-empty IFF the scene_version carries a `validated` record for
+// the current harness_version (the normative invariant). A non-validated
+// or pure-dataflow scene still passes nil (len(progs)==0 → all trigger
+// wiring below is inert), so authoring is never blocked.
 //
 // Re-push semantics (§3.1.4): swapping an already-loaded scene STOPS
 // the previous instance — its live tasks, parked continuations and
@@ -141,6 +141,17 @@ func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.Rend
 		scene.SetExecMetrics(sh.execMetrics)
 	}
 	scene.InstallExec(progs...)
+	// Air-only trigger scope (ADR 006 §3.4, issue #106): every roster
+	// instance gates its on-tick/on-event firing on the on-air flag, so
+	// a loaded-but-off-air validated scene stays exec-quiescent backstage
+	// (zero effects, criterion #6). A push-swap of the CURRENTLY ACTIVE
+	// scene seeds the fresh instance on air, so its on-tick chain is live
+	// immediately (it replaces an on-air instance — FireOnStart below
+	// also fires). Pre-Run, so SeedOnAir is a plain assignment.
+	scene.GateTriggers()
+	if sh.active == id {
+		scene.SeedOnAir(true)
+	}
 	// ADR 007 §C.3b: in dual/lsdp mode, pair the scene with a kit
 	// scene and tap its output port. The mirror is seeded with the
 	// freshly-seeded snapshot inside SetMirror before Run starts.
@@ -229,8 +240,19 @@ func (sh *Show) SetActive(id string, transition json.RawMessage) error {
 	// version; the destination becoming live fires `on-start`.
 	if from != id {
 		if hadPrev {
+			// Switch-away: the previous scene leaves the antenna. Cancel
+			// its live tasks (ADR 003 §3.1.4) AND clear its on-air flag so
+			// its on-tick/on-event triggers stop firing while it sits
+			// backstage in the roster (ADR 006 §3.4, criterion #6). The
+			// flag flip travels the inbox — single-writer; CancelExec
+			// travels its own coalescing channel.
 			prev.CancelExec()
+			prev.SetOnAir(false)
 		}
+		// Destination takes the antenna: flag it on air BEFORE the
+		// on-start fire (both inbox messages, FIFO arrival order), so any
+		// on-tick that lands after activation observes onAir == true.
+		dest.SetOnAir(true)
 		dest.FireOnStart("system:scene-activated")
 	}
 

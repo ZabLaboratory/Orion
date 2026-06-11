@@ -172,14 +172,20 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 		active := deps.Show.Active()
 		isActive := active != nil && active.ID() == sceneID.String()
 		if isActive {
-			eligible, gerr := isAirEligible(ctx, deps, sceneID, sceneVersion)
+			// Push-swap of the LIVE scene (B3, criterion #9). The new
+			// version mutates the antenna, so it goes through execForAir:
+			// validated → swap in with its exec installed (R9 lift); not
+			// validated → the antenna keeps the last validated version
+			// (no Load, no scene_changed) though the push still persisted
+			// above. Fail-closed: a DB error refuses the swap.
+			progs, eligible, gerr := execForAir(ctx, deps, sceneID, sceneVersion, graph)
 			if gerr != nil {
 				deps.Metrics.PushTotal.WithLabelValues("persist_error").Inc()
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
 				return
 			}
 			if eligible {
-				deps.Show.Load(sceneID.String(), graph, bundle)
+				deps.Show.LoadExec(sceneID.String(), graph, bundle, progs...)
 				active.EmitSceneChanged(sceneID.String(), sceneID.String(), nil)
 				active.EmitFreshSnapshot()
 			} else {
@@ -188,8 +194,21 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 				notValidated = true
 			}
 		} else {
-			// Off-air scene: load/swap the roster instance freely.
-			deps.Show.Load(sceneID.String(), graph, bundle)
+			// Off-air scene: load/swap the roster instance freely. A freshly
+			// pushed version is never validated yet (new hash, no record),
+			// so execForAir returns nil and exec stays uninstalled — the
+			// seam is here for the re-push of an already-validated,
+			// byte-identical version, which arms its exec now so a later
+			// activation airs it live. Loading an off-air scene touches no
+			// antenna; activation is separately gated by postActiveScene,
+			// and the instance is exec-quiescent until it goes on air.
+			progs, _, gerr := execForAir(ctx, deps, sceneID, sceneVersion, graph)
+			if gerr != nil {
+				deps.Metrics.PushTotal.WithLabelValues("persist_error").Inc()
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+				return
+			}
+			deps.Show.LoadExec(sceneID.String(), graph, bundle, progs...)
 		}
 
 		deps.Metrics.PushTotal.WithLabelValues("ok").Inc()
@@ -338,12 +357,22 @@ func handleRollback(ctx context.Context, w http.ResponseWriter, deps PublicDeps,
 		return
 	}
 
-	// Re-load the runtime scene from the rolled-back artefacts.
+	// Re-load the runtime scene from the rolled-back artefacts, WITH its
+	// exec installed (R9 lift, ADR 006 §3.4). The rollback target passed
+	// the gate above, so it is validated by definition → execForAir
+	// resolves its program set (fail-loud only if the validated artefact
+	// is corrupt). The seam keeps the install keyed on the SAME validation
+	// record the gate just checked — no path around #87.
 	graph := &compiler.Graph{}
 	bundle := &compiler.RenderBundle{}
 	if err := json.Unmarshal(pv.GraphJSON, graph); err == nil {
 		_ = json.Unmarshal(pv.BundleJSON, bundle)
-		deps.Show.Load(sceneID.String(), graph, bundle)
+		progs, _, perr := execForAir(ctx, deps, sceneID, pv.SceneVersion, graph)
+		if perr != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+			return
+		}
+		deps.Show.LoadExec(sceneID.String(), graph, bundle, progs...)
 		if active := deps.Show.Active(); active != nil && active.ID() == sceneID.String() {
 			active.EmitSceneChanged(sceneID.String(), sceneID.String(), nil)
 			active.EmitFreshSnapshot()
