@@ -264,9 +264,25 @@ func TestE2E_LiveData_FirstFlight(t *testing.T) {
 	if a := gotAuth.Load().(string); a != "Bearer orion-svc-token" {
 		t.Fatalf("db.query missing service-token bearer: %q", a)
 	}
-	if b := gotBody.Load().(string); !strings.Contains(b, `"table":"player_scores"`) ||
-		!strings.Contains(b, `"limit":5`) {
-		t.Fatalf("db.query posted wrong descriptor: %q", b)
+	// Decode the posted body structurally (Orion re-marshals the descriptor
+	// with sorted keys / standard spacing, so a byte-substring check is
+	// brittle — compare the parsed shape instead).
+	var posted struct {
+		Table  string   `json:"table"`
+		Select []string `json:"select"`
+		Order  []struct {
+			Column    string `json:"column"`
+			Direction string `json:"direction"`
+		} `json:"order"`
+		Limit int `json:"limit"`
+	}
+	if err := json.Unmarshal([]byte(gotBody.Load().(string)), &posted); err != nil {
+		t.Fatalf("db.query posted a non-JSON descriptor: %v (%q)", err, gotBody.Load())
+	}
+	if posted.Table != "player_scores" || posted.Limit != 5 ||
+		len(posted.Select) != 2 || posted.Select[0] != "player_id" || posted.Select[1] != "score" ||
+		len(posted.Order) != 1 || posted.Order[0].Column != "score" || posted.Order[0].Direction != "desc" {
+		t.Fatalf("db.query posted wrong descriptor: %+v", posted)
 	}
 
 	// Proof 2 (the M1 reactive guard): a real-shaped Twitch chat event
