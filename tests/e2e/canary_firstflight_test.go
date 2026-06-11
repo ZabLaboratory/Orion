@@ -215,12 +215,34 @@ func TestE2E_Canary_FirstFlight(t *testing.T) {
 		return strings.Contains(v, "canary") && v != "[]" && v != "null"
 	})
 
-	// Proof 3: on-tick fires ON AIR (air-only trigger + tick wheel live) →
-	// ticks climbs past zero within a few global ticks.
+	// Proof 3: on-tick fires ON AIR (air-only trigger). The e2e harness
+	// does not run the process-level Tick ticker (cmd/orion wires it; the
+	// httptest Show does not), so drive the global tick leaf directly into
+	// the active scene the same way the ticker fans it out. The scene is
+	// on air (just activated), so its triggersGated on-tick chain fires and
+	// ticks climbs. An OFF-air scene would ignore these (that gating is
+	// proven elsewhere); here we prove the on-tick chain runs once live.
+	active := show.Active()
+	if active == nil {
+		t.Fatal("no active scene after activation")
+	}
+	for i := 0; i < 4; i++ {
+		active.Input(runtime.InputMsg{
+			Path:     tickLeaf,
+			Value:    json.RawMessage("1"),
+			Source:   "system:tick",
+			IsSystem: true,
+		})
+	}
 	assertCanaryLeaf(t, show, "__vars.canary.ticks", func(v string) bool {
 		return v != "" && v != "0"
 	})
 }
+
+// tickLeaf is the global tick path the runtime's Tick ticker fans out and
+// on-tick triggers fire on (runtime/tick.go, unexported there). The e2e
+// harness has no ticker, so the canary flight injects it directly.
+const tickLeaf = "__system.tick.now_ms"
 
 // assertCanaryLeaf polls the active scene's snapshot until the given leaf
 // satisfies pred. Mirrors assertCounter but probes a single exact key (the

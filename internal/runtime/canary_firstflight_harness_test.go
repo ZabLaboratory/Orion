@@ -183,14 +183,42 @@ func TestCanary_CompilesEmitsExecAndRunsLive(t *testing.T) {
 	// The print line landed in the __debug ring (observable in snapshot).
 	debugKey := canaryDebugKey(progs)
 	deadline := time.Now().Add(3 * time.Second)
+	printed := false
 	for time.Now().Before(deadline) {
 		if v, ok := sc.state.Get(debugKey); ok && strings.Contains(string(v), "canary") {
+			printed = true
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !printed {
+		v, _ := sc.state.Get(debugKey)
+		t.Fatalf("print never landed in %s; last = %q", debugKey, v)
+	}
+
+	// on-tick fires live: this scene is on air (a NewScene roster instance
+	// is not triggersGated, so its on-tick chain fires on the tick leaf),
+	// so injecting the global tick the runtime's ticker would fan out makes
+	// the ticks counter climb — proving the on-tick → variable.get →
+	// math.add → variable.set chain runs live.
+	for i := 0; i < 4; i++ {
+		sc.Input(InputMsg{
+			Path:     "__system.tick.now_ms",
+			Value:    json.RawMessage("1"),
+			Source:   "system:tick",
+			IsSystem: true,
+		})
+	}
+	ticksKey := canaryLeafKey(progs, "ticks")
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if v, ok := sc.state.Get(ticksKey); ok && string(v) != "" && string(v) != "0" {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	v, _ := sc.state.Get(debugKey)
-	t.Fatalf("print never landed in %s; last = %q", debugKey, v)
+	v, _ := sc.state.Get(ticksKey)
+	t.Fatalf("on-tick never advanced %s past 0 on air; last = %q", ticksKey, v)
 }
 
 // canaryLeafKey returns __vars.<key>.<name> for the (single) blueprint key
