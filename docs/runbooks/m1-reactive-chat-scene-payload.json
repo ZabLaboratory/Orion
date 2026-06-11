@@ -1,0 +1,5 @@
+{
+  "_comment": "Milestone 1 reactive Twitch chat scene — body of POST /api/v1/scenes/{SCENE_ID}/push. LEGACY single-blueprint envelope (compiler.PushEnvelope): canvas_version (a sha256 layout hash served by ZabCanvas, NOT the literal 'v1') + blue_blueprint_id (the Blue blueprint UUID, NOT the slug 'bp-m1-reactive-chat'). The reactive logic lives in Blue and is fetched by Orion's compiler at push time. The blueprint declares quasar.twitch.chat@1(channel=g2nmathias), so the compiler synthesizes a platform-stream binding on __inputs.platform.twitch.g2nmathias.last_chat and the inbox fans Quasar's chat writes into this scene. See Blue/docs/runbooks/m1-reactive-chat.md for the activation sequence and the Blue blueprint graph + Canvas layout fixtures.",
+  "canvas_version": "<sha256 layout hash from ZabCanvas — see runbook §3>",
+  "blue_blueprint_id": "<Blue blueprint UUID from POST /blueprints — see runbook §2>"
+}
