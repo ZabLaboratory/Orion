@@ -82,7 +82,7 @@ func TestLSDP_SnapshotEmitsOnlyScalars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
-	m := wire.MirrorFor("scene-1", "sha256:test-1").(*sceneMirror)
+	m := wire.MirrorFor("scene-1", "sha256:test-1", nil).(*sceneMirror)
 
 	m.Forward(&protocol.Snapshot{
 		SceneID:      "scene-1",
@@ -106,7 +106,7 @@ func TestLSDP_DeltaEmitsOnlyScalars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
-	m := wire.MirrorFor("scene-1", "sha256:test-1").(*sceneMirror)
+	m := wire.MirrorFor("scene-1", "sha256:test-1", nil).(*sceneMirror)
 
 	// Seed a baseline scalar so the scene store is non-empty.
 	m.Forward(&protocol.Snapshot{
@@ -150,7 +150,7 @@ func TestLSDP_AllNonScalarDeltaIsDropped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
-	m := wire.MirrorFor("scene-1", "sha256:test-1").(*sceneMirror)
+	m := wire.MirrorFor("scene-1", "sha256:test-1", nil).(*sceneMirror)
 	m.Forward(&protocol.Snapshot{
 		SceneID:      "scene-1",
 		SceneVersion: "sha256:test-1",
@@ -185,7 +185,7 @@ func TestLSDP_RealDecoderAcceptsFilteredSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
-	m := wire.MirrorFor("scene-1", "sha256:test-1").(*sceneMirror)
+	m := wire.MirrorFor("scene-1", "sha256:test-1", nil).(*sceneMirror)
 	m.Forward(&protocol.Snapshot{
 		SceneID:      "scene-1",
 		SceneVersion: "sha256:test-1",

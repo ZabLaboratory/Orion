@@ -32,6 +32,7 @@ import (
 	lserver "github.com/Lumencast/lumencast-go/server"
 
 	"github.com/ZabLaboratory/Orion/internal/auth"
+	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
@@ -93,7 +94,7 @@ func (w *Wire) Handler() http.Handler {
 // registered scene becomes the kit's active scene (matching the kit's
 // own NewScene semantics), so a single-scene live show needs no
 // explicit SetActive.
-func (w *Wire) MirrorFor(sceneID, sceneVersion string) runtime.SceneMirror {
+func (w *Wire) MirrorFor(sceneID, sceneVersion string, bundle *compiler.RenderBundle) runtime.SceneMirror {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	sc, ok := w.scenes[sceneID]
@@ -103,7 +104,12 @@ func (w *Wire) MirrorFor(sceneID, sceneVersion string) runtime.SceneMirror {
 	} else {
 		sc.SetVersion(sceneVersion)
 	}
-	return &sceneMirror{wire: w, sceneID: sceneID, scene: sc}
+	return &sceneMirror{
+		wire:    w,
+		sceneID: sceneID,
+		scene:   sc,
+		bound:   boundLeavesFromBundle(bundle),
+	}
 }
 
 // SetActive points the kit's live endpoint at sceneID and migrates its

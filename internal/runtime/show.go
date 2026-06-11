@@ -79,8 +79,13 @@ type MirrorRegistry interface {
 	// MirrorFor returns the SceneMirror for the given scene id,
 	// registering a paired kit scene if needed. sceneVersion is the
 	// LSML/graph content address echoed on snapshot/scene_changed
-	// frames.
-	MirrorFor(sceneID, sceneVersion string) SceneMirror
+	// frames. bundle is the active scene's render bundle — the wire
+	// reads its bindings to emit ONLY the renderable leaf surface
+	// (ADR 007 §C.3b hygiene; the compute intermediates never leave the
+	// tap). A nil bundle disables the bound-leaf gate (fail-open to the
+	// scalar filter), so a passthrough/operator-only scene is never
+	// blacked out.
+	MirrorFor(sceneID, sceneVersion string, bundle *compiler.RenderBundle) SceneMirror
 	// SetActive tells the wire which scene the live endpoint serves,
 	// mirroring Show.SetActive so the kit migrates its live subscribers.
 	SetActive(sceneID string)
@@ -192,7 +197,7 @@ func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.Rend
 	// scene and tap its output port. The mirror is seeded with the
 	// freshly-seeded snapshot inside SetMirror before Run starts.
 	if sh.mirrors != nil {
-		scene.SetMirror(sh.mirrors.MirrorFor(id, graph.SceneVersion))
+		scene.SetMirror(sh.mirrors.MirrorFor(id, graph.SceneVersion, bundle))
 	}
 	sh.scenes[id] = scene
 	go scene.Run(sh.ctx)
