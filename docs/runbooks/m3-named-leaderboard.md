@@ -42,7 +42,7 @@ per rank k (pure cone, demand-pulled):
   score_k = get-field(ranking_rows, path="k.score")
   desc_k  = {table:"players", select:["display_name","summoner_name"],
              where:[{column:"id", op:"=", value:id_k}]}    # built from data
-  name_k  = get-field(row_k, path="0.display_name")
+  name_k  = get-field(row_k, path="0.summoner_name")   # NOT NULL; LoL in-game name
   line_k  = concat(concat(concat("<k+1>. ", name_k), " — "), to-string(score_k))
 
 DATAFLOW tranche (M1 reactive guard — unchanged):
@@ -69,15 +69,16 @@ R9 half of the runtime proof).
    `variable.set` wrote — **not `core.variable.get`**, which has no
    data-layer leaf and never resolves in the pure demand cone.
 
-### Null-fallback (signalled — content note)
+### Pseudo column (the M3b fix — content note)
 
-The engine has **no value-coalesce op**, so a pure-graph
-`display_name ?? summoner_name ?? uuid` is not expressible. The descriptor
-selects BOTH names; the displayed name reads `display_name`. ZabTruth's
-`players.summoner_name` is NOT NULL and `display_name` is nullable — if a
-player has no `display_name`, the line shows an empty pseudo until a
-`core.data.coalesce@1` primitive lands (flagged to Atlas). Seed the five
-top players with a `display_name` for a clean board.
+The displayed name reads **`summoner_name`** — the LoL in-game name,
+**NOT NULL** in ZabTruth's `players` table — NOT `display_name`. The real
+top-5 carry a NULL `display_name` (only `summoner_name` is filled:
+`GIDEON, Teddy, Loki, Gumayusi, Namgung`), which previously rendered blank
+lines. The descriptor still selects BOTH columns. The engine has no
+value-coalesce op, so a pure-graph `display_name ?? summoner_name` is not
+expressible (flagged to Atlas) — but `summoner_name` is the correct,
+robust choice for a LoL leaderboard regardless, and needs no seeding.
 
 ### Two values that are NOT literals (the canary lesson)
 
@@ -250,8 +251,9 @@ leaderboard — five player_ids resolved to pseudos through five **sequential
 truth queries** — AND `chat.display` reflects a **real Twitch chat event**.
 
 > If `__vars..leaderboard_display` shows blank pseudos (`"1.  — 9"`): the
-> five players lack a `display_name` in ZabTruth (the null-fallback gap, §0)
-> — seed them. If it stays `""` entirely: check (a) `ORION_DATASOURCES`
+> five players lack a `summoner_name` in ZabTruth — but `summoner_name` is
+> NOT NULL (§0), so this should not happen; check the catalog actually
+> returns it. If it stays `""` entirely: check (a) `ORION_DATASOURCES`
 > declares `truth=truth`, (b) Orion's token carries `query.read.truth`
 > (else ZabTruth 403 → the error halts that rank's chain), (c)
 > `/truth/health` 200 via ZabGate. A failed query halts-at-node (loudly
