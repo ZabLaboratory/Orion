@@ -91,3 +91,30 @@ func TestDBQuery_400CarriesIssues(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// TestDBQuery_TokenFuncReadLive: the bearer is read from tokenFn on
+// EVERY request, so a rotation by the ServiceTokenManager is reflected
+// without rebuilding the client. A frozen boot token would 401 every
+// _query after the first rotation (the C1 bug class).
+func TestDBQuery_TokenFuncReadLive(t *testing.T) {
+	var seen []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = append(seen, r.Header.Get("Authorization"))
+		_, _ = w.Write([]byte(`{"rows":[],"count":0,"elapsed_ms":0}`))
+	}))
+	defer srv.Close()
+
+	token := "tok-v1"
+	c := NewDBQueryClientWithTokenFunc(srv.URL, func() string { return token }, nil)
+	ds := DataSource{Name: "truth", Svc: "truth"}
+	if _, err := c.Query(context.Background(), ds, json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	token = "tok-v2" // simulate a rotation between calls
+	if _, err := c.Query(context.Background(), ds, json.RawMessage(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if len(seen) != 2 || seen[0] != "Bearer tok-v1" || seen[1] != "Bearer tok-v2" {
+		t.Fatalf("token not read live per request: %v", seen)
+	}
+}
