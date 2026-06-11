@@ -1,0 +1,3640 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "definition": "core.event.on-start@1",
+      "config": {},
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "start:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "qRank",
+      "definition": "core.db.query@1",
+      "config": {
+        "datasource": "ranking",
+        "descriptor": {
+          "table": "player_scores",
+          "select": [
+            "player_id",
+            "score"
+          ],
+          "order": [
+            {
+              "column": "score",
+              "direction": "desc"
+            }
+          ],
+          "limit": 5
+        }
+      },
+      "inputs": [
+        {
+          "id": "qRank:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "qRank:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "qRank:error",
+          "name": "error",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "qRank:rows",
+          "name": "rows",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "qRank:count",
+          "name": "count",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "setRows",
+      "definition": "core.variable.set@1",
+      "config": {
+        "name": "ranking_rows"
+      },
+      "inputs": [
+        {
+          "id": "setRows:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "setRows:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "setRows:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "inRows",
+      "definition": "core.input@1",
+      "config": {
+        "name": "__vars..ranking_rows"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "inRows:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getId0",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "0.player_id"
+      },
+      "inputs": [
+        {
+          "id": "getId0:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getId0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getScore0",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "0.score"
+      },
+      "inputs": [
+        {
+          "id": "getScore0:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getScore0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clauseLit0",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "column": "id",
+          "op": "="
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "clauseLit0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clause0",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "value"
+      },
+      "inputs": [
+        {
+          "id": "clause0:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "clause0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "clause0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "whereEmpty0",
+      "definition": "core.literal@1",
+      "config": {
+        "value": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "whereEmpty0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "where0",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "where0:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "where0:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "where0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "descLit0",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "table": "players",
+          "select": [
+            "display_name",
+            "summoner_name"
+          ]
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "descLit0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "desc0",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "where"
+      },
+      "inputs": [
+        {
+          "id": "desc0:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "desc0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "desc0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "query0",
+      "definition": "core.db.query@1",
+      "config": {
+        "datasource": "truth"
+      },
+      "inputs": [
+        {
+          "id": "query0:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query0:descriptor",
+          "name": "descriptor",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "query0:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query0:error",
+          "name": "error",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query0:rows",
+          "name": "rows",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "query0:count",
+          "name": "count",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "setRow0",
+      "definition": "core.variable.set@1",
+      "config": {
+        "name": "row_0"
+      },
+      "inputs": [
+        {
+          "id": "setRow0:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "setRow0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "setRow0:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "inRow0",
+      "definition": "core.input@1",
+      "config": {
+        "name": "__vars..row_0"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "inRow0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "name0",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "0.summoner_name"
+      },
+      "inputs": [
+        {
+          "id": "name0:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "name0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "rankLit0",
+      "definition": "core.literal@1",
+      "config": {
+        "value": "1. "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "rankLit0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "dashLit0",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " \u2014 "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "dashLit0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "scoreStr0",
+      "definition": "core.cast.to-string@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "scoreStr0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "scoreStr0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "catA0",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "catA0:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "catA0:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "catA0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "catB0",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "catB0:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "catB0:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "catB0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line0",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line0:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line0:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getId1",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "1.player_id"
+      },
+      "inputs": [
+        {
+          "id": "getId1:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getId1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getScore1",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "1.score"
+      },
+      "inputs": [
+        {
+          "id": "getScore1:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getScore1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clauseLit1",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "column": "id",
+          "op": "="
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "clauseLit1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clause1",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "value"
+      },
+      "inputs": [
+        {
+          "id": "clause1:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "clause1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "clause1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "whereEmpty1",
+      "definition": "core.literal@1",
+      "config": {
+        "value": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "whereEmpty1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "where1",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "where1:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "where1:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "where1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "descLit1",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "table": "players",
+          "select": [
+            "display_name",
+            "summoner_name"
+          ]
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "descLit1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "desc1",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "where"
+      },
+      "inputs": [
+        {
+          "id": "desc1:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "desc1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "desc1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "query1",
+      "definition": "core.db.query@1",
+      "config": {
+        "datasource": "truth"
+      },
+      "inputs": [
+        {
+          "id": "query1:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query1:descriptor",
+          "name": "descriptor",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "query1:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query1:error",
+          "name": "error",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query1:rows",
+          "name": "rows",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "query1:count",
+          "name": "count",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "setRow1",
+      "definition": "core.variable.set@1",
+      "config": {
+        "name": "row_1"
+      },
+      "inputs": [
+        {
+          "id": "setRow1:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "setRow1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "setRow1:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "inRow1",
+      "definition": "core.input@1",
+      "config": {
+        "name": "__vars..row_1"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "inRow1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "name1",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "0.summoner_name"
+      },
+      "inputs": [
+        {
+          "id": "name1:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "name1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "rankLit1",
+      "definition": "core.literal@1",
+      "config": {
+        "value": "2. "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "rankLit1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "dashLit1",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " \u2014 "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "dashLit1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "scoreStr1",
+      "definition": "core.cast.to-string@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "scoreStr1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "scoreStr1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "catA1",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "catA1:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "catA1:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "catA1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "catB1",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "catB1:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "catB1:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "catB1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line1",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line1:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line1:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getId2",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "2.player_id"
+      },
+      "inputs": [
+        {
+          "id": "getId2:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getId2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getScore2",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "2.score"
+      },
+      "inputs": [
+        {
+          "id": "getScore2:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getScore2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clauseLit2",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "column": "id",
+          "op": "="
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "clauseLit2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clause2",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "value"
+      },
+      "inputs": [
+        {
+          "id": "clause2:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "clause2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "clause2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "whereEmpty2",
+      "definition": "core.literal@1",
+      "config": {
+        "value": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "whereEmpty2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "where2",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "where2:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "where2:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "where2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "descLit2",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "table": "players",
+          "select": [
+            "display_name",
+            "summoner_name"
+          ]
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "descLit2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "desc2",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "where"
+      },
+      "inputs": [
+        {
+          "id": "desc2:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "desc2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "desc2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "query2",
+      "definition": "core.db.query@1",
+      "config": {
+        "datasource": "truth"
+      },
+      "inputs": [
+        {
+          "id": "query2:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query2:descriptor",
+          "name": "descriptor",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "query2:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query2:error",
+          "name": "error",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query2:rows",
+          "name": "rows",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "query2:count",
+          "name": "count",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "setRow2",
+      "definition": "core.variable.set@1",
+      "config": {
+        "name": "row_2"
+      },
+      "inputs": [
+        {
+          "id": "setRow2:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "setRow2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "setRow2:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "inRow2",
+      "definition": "core.input@1",
+      "config": {
+        "name": "__vars..row_2"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "inRow2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "name2",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "0.summoner_name"
+      },
+      "inputs": [
+        {
+          "id": "name2:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "name2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "rankLit2",
+      "definition": "core.literal@1",
+      "config": {
+        "value": "3. "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "rankLit2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "dashLit2",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " \u2014 "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "dashLit2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "scoreStr2",
+      "definition": "core.cast.to-string@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "scoreStr2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "scoreStr2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "catA2",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "catA2:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "catA2:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "catA2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "catB2",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "catB2:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "catB2:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "catB2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line2",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line2:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line2:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getId3",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "3.player_id"
+      },
+      "inputs": [
+        {
+          "id": "getId3:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getId3:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getScore3",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "3.score"
+      },
+      "inputs": [
+        {
+          "id": "getScore3:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getScore3:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clauseLit3",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "column": "id",
+          "op": "="
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "clauseLit3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clause3",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "value"
+      },
+      "inputs": [
+        {
+          "id": "clause3:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "clause3:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "clause3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "whereEmpty3",
+      "definition": "core.literal@1",
+      "config": {
+        "value": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "whereEmpty3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "where3",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "where3:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "where3:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "where3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "descLit3",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "table": "players",
+          "select": [
+            "display_name",
+            "summoner_name"
+          ]
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "descLit3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "desc3",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "where"
+      },
+      "inputs": [
+        {
+          "id": "desc3:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "desc3:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "desc3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "query3",
+      "definition": "core.db.query@1",
+      "config": {
+        "datasource": "truth"
+      },
+      "inputs": [
+        {
+          "id": "query3:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query3:descriptor",
+          "name": "descriptor",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "query3:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query3:error",
+          "name": "error",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query3:rows",
+          "name": "rows",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "query3:count",
+          "name": "count",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "setRow3",
+      "definition": "core.variable.set@1",
+      "config": {
+        "name": "row_3"
+      },
+      "inputs": [
+        {
+          "id": "setRow3:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "setRow3:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "setRow3:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "inRow3",
+      "definition": "core.input@1",
+      "config": {
+        "name": "__vars..row_3"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "inRow3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "name3",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "0.summoner_name"
+      },
+      "inputs": [
+        {
+          "id": "name3:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "name3:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "rankLit3",
+      "definition": "core.literal@1",
+      "config": {
+        "value": "4. "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "rankLit3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "dashLit3",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " \u2014 "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "dashLit3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "scoreStr3",
+      "definition": "core.cast.to-string@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "scoreStr3:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "scoreStr3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "catA3",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "catA3:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "catA3:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "catA3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "catB3",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "catB3:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "catB3:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "catB3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line3",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line3:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line3:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getId4",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "4.player_id"
+      },
+      "inputs": [
+        {
+          "id": "getId4:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getId4:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getScore4",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "4.score"
+      },
+      "inputs": [
+        {
+          "id": "getScore4:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getScore4:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clauseLit4",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "column": "id",
+          "op": "="
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "clauseLit4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clause4",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "value"
+      },
+      "inputs": [
+        {
+          "id": "clause4:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "clause4:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "clause4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "whereEmpty4",
+      "definition": "core.literal@1",
+      "config": {
+        "value": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "whereEmpty4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "where4",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "where4:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "where4:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "where4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "descLit4",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "table": "players",
+          "select": [
+            "display_name",
+            "summoner_name"
+          ]
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "descLit4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "desc4",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "where"
+      },
+      "inputs": [
+        {
+          "id": "desc4:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "desc4:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "desc4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "query4",
+      "definition": "core.db.query@1",
+      "config": {
+        "datasource": "truth"
+      },
+      "inputs": [
+        {
+          "id": "query4:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query4:descriptor",
+          "name": "descriptor",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "query4:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query4:error",
+          "name": "error",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query4:rows",
+          "name": "rows",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "query4:count",
+          "name": "count",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "setRow4",
+      "definition": "core.variable.set@1",
+      "config": {
+        "name": "row_4"
+      },
+      "inputs": [
+        {
+          "id": "setRow4:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "setRow4:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "setRow4:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "inRow4",
+      "definition": "core.input@1",
+      "config": {
+        "name": "__vars..row_4"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "inRow4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "name4",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "0.summoner_name"
+      },
+      "inputs": [
+        {
+          "id": "name4:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "name4:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "rankLit4",
+      "definition": "core.literal@1",
+      "config": {
+        "value": "5. "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "rankLit4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "dashLit4",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " \u2014 "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "dashLit4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "scoreStr4",
+      "definition": "core.cast.to-string@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "scoreStr4:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "scoreStr4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "catA4",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "catA4:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "catA4:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "catA4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "catB4",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "catB4:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "catB4:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "catB4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line4",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line4:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line4:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "nl",
+      "definition": "core.literal@1",
+      "config": {
+        "value": "\n"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "nl:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "joinSep1",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "joinSep1:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "joinSep1:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "joinSep1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "joinLine1",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "joinLine1:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "joinLine1:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "joinLine1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "joinSep2",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "joinSep2:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "joinSep2:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "joinSep2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "joinLine2",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "joinLine2:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "joinLine2:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "joinLine2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "joinSep3",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "joinSep3:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "joinSep3:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "joinSep3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "joinLine3",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "joinLine3:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "joinLine3:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "joinLine3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "joinSep4",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "joinSep4:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "joinSep4:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "joinSep4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "joinLine4",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "joinLine4:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "joinLine4:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "joinLine4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "boardOut",
+      "definition": "core.output@1",
+      "config": {
+        "name": "__vars..leaderboard_display"
+      },
+      "inputs": [
+        {
+          "id": "boardOut:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "id": "chat",
+      "definition": "quasar.twitch.chat@1",
+      "config": {
+        "channel": "g2nmathias"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "chat:payload",
+          "name": "payload",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "chat:actor",
+          "name": "actor",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "author",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "actor.display_name"
+      },
+      "inputs": [
+        {
+          "id": "author:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "author:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "text",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "payload.text"
+      },
+      "inputs": [
+        {
+          "id": "text:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "text:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "sep",
+      "definition": "core.literal@1",
+      "config": {
+        "value": ": "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "sep:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "authorSep",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "authorSep:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "authorSep:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "authorSep:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "chatLine",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "chatLine:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "chatLine:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "chatLine:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "chatOut",
+      "definition": "core.output@1",
+      "config": {
+        "name": "chat.display"
+      },
+      "inputs": [
+        {
+          "id": "chatOut:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "r_e1",
+      "from_node": "start",
+      "from_port": "then",
+      "to_node": "qRank",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "r_e2",
+      "from_node": "qRank",
+      "from_port": "then",
+      "to_node": "setRows",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "r_e3",
+      "from_node": "qRank",
+      "from_port": "rows",
+      "to_node": "setRows",
+      "to_port": "value"
+    },
+    {
+      "id": "k0_1",
+      "from_node": "inRows",
+      "from_port": "out",
+      "to_node": "getId0",
+      "to_port": "record"
+    },
+    {
+      "id": "k0_2",
+      "from_node": "inRows",
+      "from_port": "out",
+      "to_node": "getScore0",
+      "to_port": "record"
+    },
+    {
+      "id": "k0_3",
+      "from_node": "clauseLit0",
+      "from_port": "out",
+      "to_node": "clause0",
+      "to_port": "record"
+    },
+    {
+      "id": "k0_4",
+      "from_node": "getId0",
+      "from_port": "value",
+      "to_node": "clause0",
+      "to_port": "value"
+    },
+    {
+      "id": "k0_5",
+      "from_node": "whereEmpty0",
+      "from_port": "out",
+      "to_node": "where0",
+      "to_port": "list"
+    },
+    {
+      "id": "k0_6",
+      "from_node": "clause0",
+      "from_port": "out",
+      "to_node": "where0",
+      "to_port": "element"
+    },
+    {
+      "id": "k0_7",
+      "from_node": "descLit0",
+      "from_port": "out",
+      "to_node": "desc0",
+      "to_port": "record"
+    },
+    {
+      "id": "k0_8",
+      "from_node": "where0",
+      "from_port": "out",
+      "to_node": "desc0",
+      "to_port": "value"
+    },
+    {
+      "id": "k0_9",
+      "from_node": "desc0",
+      "from_port": "out",
+      "to_node": "query0",
+      "to_port": "descriptor"
+    },
+    {
+      "id": "k0_10",
+      "from_node": "query0",
+      "from_port": "rows",
+      "to_node": "setRow0",
+      "to_port": "value"
+    },
+    {
+      "id": "k0_11",
+      "from_node": "inRow0",
+      "from_port": "out",
+      "to_node": "name0",
+      "to_port": "record"
+    },
+    {
+      "id": "k0_12",
+      "from_node": "getScore0",
+      "from_port": "value",
+      "to_node": "scoreStr0",
+      "to_port": "value"
+    },
+    {
+      "id": "k0_13",
+      "from_node": "rankLit0",
+      "from_port": "out",
+      "to_node": "catA0",
+      "to_port": "a"
+    },
+    {
+      "id": "k0_14",
+      "from_node": "name0",
+      "from_port": "value",
+      "to_node": "catA0",
+      "to_port": "b"
+    },
+    {
+      "id": "k0_15",
+      "from_node": "catA0",
+      "from_port": "out",
+      "to_node": "catB0",
+      "to_port": "a"
+    },
+    {
+      "id": "k0_16",
+      "from_node": "dashLit0",
+      "from_port": "out",
+      "to_node": "catB0",
+      "to_port": "b"
+    },
+    {
+      "id": "k0_17",
+      "from_node": "catB0",
+      "from_port": "out",
+      "to_node": "line0",
+      "to_port": "a"
+    },
+    {
+      "id": "k0_18",
+      "from_node": "scoreStr0",
+      "from_port": "out",
+      "to_node": "line0",
+      "to_port": "b"
+    },
+    {
+      "id": "k1_1",
+      "from_node": "inRows",
+      "from_port": "out",
+      "to_node": "getId1",
+      "to_port": "record"
+    },
+    {
+      "id": "k1_2",
+      "from_node": "inRows",
+      "from_port": "out",
+      "to_node": "getScore1",
+      "to_port": "record"
+    },
+    {
+      "id": "k1_3",
+      "from_node": "clauseLit1",
+      "from_port": "out",
+      "to_node": "clause1",
+      "to_port": "record"
+    },
+    {
+      "id": "k1_4",
+      "from_node": "getId1",
+      "from_port": "value",
+      "to_node": "clause1",
+      "to_port": "value"
+    },
+    {
+      "id": "k1_5",
+      "from_node": "whereEmpty1",
+      "from_port": "out",
+      "to_node": "where1",
+      "to_port": "list"
+    },
+    {
+      "id": "k1_6",
+      "from_node": "clause1",
+      "from_port": "out",
+      "to_node": "where1",
+      "to_port": "element"
+    },
+    {
+      "id": "k1_7",
+      "from_node": "descLit1",
+      "from_port": "out",
+      "to_node": "desc1",
+      "to_port": "record"
+    },
+    {
+      "id": "k1_8",
+      "from_node": "where1",
+      "from_port": "out",
+      "to_node": "desc1",
+      "to_port": "value"
+    },
+    {
+      "id": "k1_9",
+      "from_node": "desc1",
+      "from_port": "out",
+      "to_node": "query1",
+      "to_port": "descriptor"
+    },
+    {
+      "id": "k1_10",
+      "from_node": "query1",
+      "from_port": "rows",
+      "to_node": "setRow1",
+      "to_port": "value"
+    },
+    {
+      "id": "k1_11",
+      "from_node": "inRow1",
+      "from_port": "out",
+      "to_node": "name1",
+      "to_port": "record"
+    },
+    {
+      "id": "k1_12",
+      "from_node": "getScore1",
+      "from_port": "value",
+      "to_node": "scoreStr1",
+      "to_port": "value"
+    },
+    {
+      "id": "k1_13",
+      "from_node": "rankLit1",
+      "from_port": "out",
+      "to_node": "catA1",
+      "to_port": "a"
+    },
+    {
+      "id": "k1_14",
+      "from_node": "name1",
+      "from_port": "value",
+      "to_node": "catA1",
+      "to_port": "b"
+    },
+    {
+      "id": "k1_15",
+      "from_node": "catA1",
+      "from_port": "out",
+      "to_node": "catB1",
+      "to_port": "a"
+    },
+    {
+      "id": "k1_16",
+      "from_node": "dashLit1",
+      "from_port": "out",
+      "to_node": "catB1",
+      "to_port": "b"
+    },
+    {
+      "id": "k1_17",
+      "from_node": "catB1",
+      "from_port": "out",
+      "to_node": "line1",
+      "to_port": "a"
+    },
+    {
+      "id": "k1_18",
+      "from_node": "scoreStr1",
+      "from_port": "out",
+      "to_node": "line1",
+      "to_port": "b"
+    },
+    {
+      "id": "k2_1",
+      "from_node": "inRows",
+      "from_port": "out",
+      "to_node": "getId2",
+      "to_port": "record"
+    },
+    {
+      "id": "k2_2",
+      "from_node": "inRows",
+      "from_port": "out",
+      "to_node": "getScore2",
+      "to_port": "record"
+    },
+    {
+      "id": "k2_3",
+      "from_node": "clauseLit2",
+      "from_port": "out",
+      "to_node": "clause2",
+      "to_port": "record"
+    },
+    {
+      "id": "k2_4",
+      "from_node": "getId2",
+      "from_port": "value",
+      "to_node": "clause2",
+      "to_port": "value"
+    },
+    {
+      "id": "k2_5",
+      "from_node": "whereEmpty2",
+      "from_port": "out",
+      "to_node": "where2",
+      "to_port": "list"
+    },
+    {
+      "id": "k2_6",
+      "from_node": "clause2",
+      "from_port": "out",
+      "to_node": "where2",
+      "to_port": "element"
+    },
+    {
+      "id": "k2_7",
+      "from_node": "descLit2",
+      "from_port": "out",
+      "to_node": "desc2",
+      "to_port": "record"
+    },
+    {
+      "id": "k2_8",
+      "from_node": "where2",
+      "from_port": "out",
+      "to_node": "desc2",
+      "to_port": "value"
+    },
+    {
+      "id": "k2_9",
+      "from_node": "desc2",
+      "from_port": "out",
+      "to_node": "query2",
+      "to_port": "descriptor"
+    },
+    {
+      "id": "k2_10",
+      "from_node": "query2",
+      "from_port": "rows",
+      "to_node": "setRow2",
+      "to_port": "value"
+    },
+    {
+      "id": "k2_11",
+      "from_node": "inRow2",
+      "from_port": "out",
+      "to_node": "name2",
+      "to_port": "record"
+    },
+    {
+      "id": "k2_12",
+      "from_node": "getScore2",
+      "from_port": "value",
+      "to_node": "scoreStr2",
+      "to_port": "value"
+    },
+    {
+      "id": "k2_13",
+      "from_node": "rankLit2",
+      "from_port": "out",
+      "to_node": "catA2",
+      "to_port": "a"
+    },
+    {
+      "id": "k2_14",
+      "from_node": "name2",
+      "from_port": "value",
+      "to_node": "catA2",
+      "to_port": "b"
+    },
+    {
+      "id": "k2_15",
+      "from_node": "catA2",
+      "from_port": "out",
+      "to_node": "catB2",
+      "to_port": "a"
+    },
+    {
+      "id": "k2_16",
+      "from_node": "dashLit2",
+      "from_port": "out",
+      "to_node": "catB2",
+      "to_port": "b"
+    },
+    {
+      "id": "k2_17",
+      "from_node": "catB2",
+      "from_port": "out",
+      "to_node": "line2",
+      "to_port": "a"
+    },
+    {
+      "id": "k2_18",
+      "from_node": "scoreStr2",
+      "from_port": "out",
+      "to_node": "line2",
+      "to_port": "b"
+    },
+    {
+      "id": "k3_1",
+      "from_node": "inRows",
+      "from_port": "out",
+      "to_node": "getId3",
+      "to_port": "record"
+    },
+    {
+      "id": "k3_2",
+      "from_node": "inRows",
+      "from_port": "out",
+      "to_node": "getScore3",
+      "to_port": "record"
+    },
+    {
+      "id": "k3_3",
+      "from_node": "clauseLit3",
+      "from_port": "out",
+      "to_node": "clause3",
+      "to_port": "record"
+    },
+    {
+      "id": "k3_4",
+      "from_node": "getId3",
+      "from_port": "value",
+      "to_node": "clause3",
+      "to_port": "value"
+    },
+    {
+      "id": "k3_5",
+      "from_node": "whereEmpty3",
+      "from_port": "out",
+      "to_node": "where3",
+      "to_port": "list"
+    },
+    {
+      "id": "k3_6",
+      "from_node": "clause3",
+      "from_port": "out",
+      "to_node": "where3",
+      "to_port": "element"
+    },
+    {
+      "id": "k3_7",
+      "from_node": "descLit3",
+      "from_port": "out",
+      "to_node": "desc3",
+      "to_port": "record"
+    },
+    {
+      "id": "k3_8",
+      "from_node": "where3",
+      "from_port": "out",
+      "to_node": "desc3",
+      "to_port": "value"
+    },
+    {
+      "id": "k3_9",
+      "from_node": "desc3",
+      "from_port": "out",
+      "to_node": "query3",
+      "to_port": "descriptor"
+    },
+    {
+      "id": "k3_10",
+      "from_node": "query3",
+      "from_port": "rows",
+      "to_node": "setRow3",
+      "to_port": "value"
+    },
+    {
+      "id": "k3_11",
+      "from_node": "inRow3",
+      "from_port": "out",
+      "to_node": "name3",
+      "to_port": "record"
+    },
+    {
+      "id": "k3_12",
+      "from_node": "getScore3",
+      "from_port": "value",
+      "to_node": "scoreStr3",
+      "to_port": "value"
+    },
+    {
+      "id": "k3_13",
+      "from_node": "rankLit3",
+      "from_port": "out",
+      "to_node": "catA3",
+      "to_port": "a"
+    },
+    {
+      "id": "k3_14",
+      "from_node": "name3",
+      "from_port": "value",
+      "to_node": "catA3",
+      "to_port": "b"
+    },
+    {
+      "id": "k3_15",
+      "from_node": "catA3",
+      "from_port": "out",
+      "to_node": "catB3",
+      "to_port": "a"
+    },
+    {
+      "id": "k3_16",
+      "from_node": "dashLit3",
+      "from_port": "out",
+      "to_node": "catB3",
+      "to_port": "b"
+    },
+    {
+      "id": "k3_17",
+      "from_node": "catB3",
+      "from_port": "out",
+      "to_node": "line3",
+      "to_port": "a"
+    },
+    {
+      "id": "k3_18",
+      "from_node": "scoreStr3",
+      "from_port": "out",
+      "to_node": "line3",
+      "to_port": "b"
+    },
+    {
+      "id": "k4_1",
+      "from_node": "inRows",
+      "from_port": "out",
+      "to_node": "getId4",
+      "to_port": "record"
+    },
+    {
+      "id": "k4_2",
+      "from_node": "inRows",
+      "from_port": "out",
+      "to_node": "getScore4",
+      "to_port": "record"
+    },
+    {
+      "id": "k4_3",
+      "from_node": "clauseLit4",
+      "from_port": "out",
+      "to_node": "clause4",
+      "to_port": "record"
+    },
+    {
+      "id": "k4_4",
+      "from_node": "getId4",
+      "from_port": "value",
+      "to_node": "clause4",
+      "to_port": "value"
+    },
+    {
+      "id": "k4_5",
+      "from_node": "whereEmpty4",
+      "from_port": "out",
+      "to_node": "where4",
+      "to_port": "list"
+    },
+    {
+      "id": "k4_6",
+      "from_node": "clause4",
+      "from_port": "out",
+      "to_node": "where4",
+      "to_port": "element"
+    },
+    {
+      "id": "k4_7",
+      "from_node": "descLit4",
+      "from_port": "out",
+      "to_node": "desc4",
+      "to_port": "record"
+    },
+    {
+      "id": "k4_8",
+      "from_node": "where4",
+      "from_port": "out",
+      "to_node": "desc4",
+      "to_port": "value"
+    },
+    {
+      "id": "k4_9",
+      "from_node": "desc4",
+      "from_port": "out",
+      "to_node": "query4",
+      "to_port": "descriptor"
+    },
+    {
+      "id": "k4_10",
+      "from_node": "query4",
+      "from_port": "rows",
+      "to_node": "setRow4",
+      "to_port": "value"
+    },
+    {
+      "id": "k4_11",
+      "from_node": "inRow4",
+      "from_port": "out",
+      "to_node": "name4",
+      "to_port": "record"
+    },
+    {
+      "id": "k4_12",
+      "from_node": "getScore4",
+      "from_port": "value",
+      "to_node": "scoreStr4",
+      "to_port": "value"
+    },
+    {
+      "id": "k4_13",
+      "from_node": "rankLit4",
+      "from_port": "out",
+      "to_node": "catA4",
+      "to_port": "a"
+    },
+    {
+      "id": "k4_14",
+      "from_node": "name4",
+      "from_port": "value",
+      "to_node": "catA4",
+      "to_port": "b"
+    },
+    {
+      "id": "k4_15",
+      "from_node": "catA4",
+      "from_port": "out",
+      "to_node": "catB4",
+      "to_port": "a"
+    },
+    {
+      "id": "k4_16",
+      "from_node": "dashLit4",
+      "from_port": "out",
+      "to_node": "catB4",
+      "to_port": "b"
+    },
+    {
+      "id": "k4_17",
+      "from_node": "catB4",
+      "from_port": "out",
+      "to_node": "line4",
+      "to_port": "a"
+    },
+    {
+      "id": "k4_18",
+      "from_node": "scoreStr4",
+      "from_port": "out",
+      "to_node": "line4",
+      "to_port": "b"
+    },
+    {
+      "id": "j0",
+      "from_node": "line0",
+      "from_port": "out",
+      "to_node": "joinSep1",
+      "to_port": "a"
+    },
+    {
+      "id": "j1",
+      "from_node": "nl",
+      "from_port": "out",
+      "to_node": "joinSep1",
+      "to_port": "b"
+    },
+    {
+      "id": "j2",
+      "from_node": "joinSep1",
+      "from_port": "out",
+      "to_node": "joinLine1",
+      "to_port": "a"
+    },
+    {
+      "id": "j3",
+      "from_node": "line1",
+      "from_port": "out",
+      "to_node": "joinLine1",
+      "to_port": "b"
+    },
+    {
+      "id": "j4",
+      "from_node": "joinLine1",
+      "from_port": "out",
+      "to_node": "joinSep2",
+      "to_port": "a"
+    },
+    {
+      "id": "j5",
+      "from_node": "nl",
+      "from_port": "out",
+      "to_node": "joinSep2",
+      "to_port": "b"
+    },
+    {
+      "id": "j6",
+      "from_node": "joinSep2",
+      "from_port": "out",
+      "to_node": "joinLine2",
+      "to_port": "a"
+    },
+    {
+      "id": "j7",
+      "from_node": "line2",
+      "from_port": "out",
+      "to_node": "joinLine2",
+      "to_port": "b"
+    },
+    {
+      "id": "j8",
+      "from_node": "joinLine2",
+      "from_port": "out",
+      "to_node": "joinSep3",
+      "to_port": "a"
+    },
+    {
+      "id": "j9",
+      "from_node": "nl",
+      "from_port": "out",
+      "to_node": "joinSep3",
+      "to_port": "b"
+    },
+    {
+      "id": "j10",
+      "from_node": "joinSep3",
+      "from_port": "out",
+      "to_node": "joinLine3",
+      "to_port": "a"
+    },
+    {
+      "id": "j11",
+      "from_node": "line3",
+      "from_port": "out",
+      "to_node": "joinLine3",
+      "to_port": "b"
+    },
+    {
+      "id": "j12",
+      "from_node": "joinLine3",
+      "from_port": "out",
+      "to_node": "joinSep4",
+      "to_port": "a"
+    },
+    {
+      "id": "j13",
+      "from_node": "nl",
+      "from_port": "out",
+      "to_node": "joinSep4",
+      "to_port": "b"
+    },
+    {
+      "id": "j14",
+      "from_node": "joinSep4",
+      "from_port": "out",
+      "to_node": "joinLine4",
+      "to_port": "a"
+    },
+    {
+      "id": "j15",
+      "from_node": "line4",
+      "from_port": "out",
+      "to_node": "joinLine4",
+      "to_port": "b"
+    },
+    {
+      "id": "x_board",
+      "from_node": "joinLine4",
+      "from_port": "out",
+      "to_node": "boardOut",
+      "to_port": "value"
+    },
+    {
+      "id": "x_0",
+      "from_node": "setRows",
+      "from_port": "then",
+      "to_node": "query0",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_q0",
+      "from_node": "query0",
+      "from_port": "then",
+      "to_node": "setRow0",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_s0",
+      "from_node": "setRow0",
+      "from_port": "then",
+      "to_node": "query1",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_q1",
+      "from_node": "query1",
+      "from_port": "then",
+      "to_node": "setRow1",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_s1",
+      "from_node": "setRow1",
+      "from_port": "then",
+      "to_node": "query2",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_q2",
+      "from_node": "query2",
+      "from_port": "then",
+      "to_node": "setRow2",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_s2",
+      "from_node": "setRow2",
+      "from_port": "then",
+      "to_node": "query3",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_q3",
+      "from_node": "query3",
+      "from_port": "then",
+      "to_node": "setRow3",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_s3",
+      "from_node": "setRow3",
+      "from_port": "then",
+      "to_node": "query4",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_q4",
+      "from_node": "query4",
+      "from_port": "then",
+      "to_node": "setRow4",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "c_e1",
+      "from_node": "chat",
+      "from_port": "payload",
+      "to_node": "author",
+      "to_port": "record"
+    },
+    {
+      "id": "c_e2",
+      "from_node": "chat",
+      "from_port": "payload",
+      "to_node": "text",
+      "to_port": "record"
+    },
+    {
+      "id": "c_e3",
+      "from_node": "author",
+      "from_port": "value",
+      "to_node": "authorSep",
+      "to_port": "a"
+    },
+    {
+      "id": "c_e4",
+      "from_node": "sep",
+      "from_port": "out",
+      "to_node": "authorSep",
+      "to_port": "b"
+    },
+    {
+      "id": "c_e5",
+      "from_node": "authorSep",
+      "from_port": "out",
+      "to_node": "chatLine",
+      "to_port": "a"
+    },
+    {
+      "id": "c_e6",
+      "from_node": "text",
+      "from_port": "value",
+      "to_node": "chatLine",
+      "to_port": "b"
+    },
+    {
+      "id": "c_e7",
+      "from_node": "chatLine",
+      "from_port": "out",
+      "to_node": "chatOut",
+      "to_port": "value"
+    }
+  ],
+  "variables": [
+    {
+      "id": "v_rows",
+      "name": "ranking_rows",
+      "type": "core.primitive.json",
+      "value": null
+    },
+    {
+      "id": "v_row0",
+      "name": "row_0",
+      "type": "core.primitive.json",
+      "value": null
+    },
+    {
+      "id": "v_row1",
+      "name": "row_1",
+      "type": "core.primitive.json",
+      "value": null
+    },
+    {
+      "id": "v_row2",
+      "name": "row_2",
+      "type": "core.primitive.json",
+      "value": null
+    },
+    {
+      "id": "v_row3",
+      "name": "row_3",
+      "type": "core.primitive.json",
+      "value": null
+    },
+    {
+      "id": "v_row4",
+      "name": "row_4",
+      "type": "core.primitive.json",
+      "value": null
+    },
+    {
+      "id": "v_board",
+      "name": "leaderboard_display",
+      "type": "core.primitive.string",
+      "value": ""
+    }
+  ]
+}

@@ -33,11 +33,15 @@ EXEC spine (strictly sequential — each db.query parks/resumes before the next)
            ─→ query0(truth, id_0) ─→ variable.set(row_0)
            ─→ query1(truth, id_1) ─→ variable.set(row_1)
            ─→ …
-           ─→ query4(truth, id_4) ─→ variable.set(row_4)
-           ─→ variable.set(leaderboard_display = "1. …\n2. …\n…")
-  → the multi-line board lands on  __vars..leaderboard_display
+           ─→ query4(truth, id_4) ─→ variable.set(row_4)   # spine ENDS here
+  → each row_k lands on  __vars..row_k
 
-per rank k (pure cone, demand-pulled):
+DATAFLOW (REACTIVE — recomputes whenever any row_k leaf changes):
+  line_k  = concat(...) reads row_k back via inRow_k (core.input on __vars..row_k)
+  board   = join(line_0..line_4, "\n") ─→ output("__vars..leaderboard_display")
+  → the multi-line board recomputes on every row_k write, deterministically.
+
+per rank k (pure cone, reactive):
   id_k    = get-field(ranking_rows, path="k.player_id")   # STATIC config path
   score_k = get-field(ranking_rows, path="k.score")
   desc_k  = {table:"players", select:["display_name","summoner_name"],
@@ -48,6 +52,15 @@ per rank k (pure cone, demand-pulled):
 DATAFLOW tranche (M1 reactive guard — unchanged):
   quasar.twitch.chat(g2nmathias) → … → output("chat.display")
 ```
+
+> **The board is a REACTIVE output, not a one-shot exec write.** The earlier
+> M3 used a `variable.set(leaderboard_display)` exec node fired at the spine
+> tail, which demand-pulled the join cone at a SINGLE instant and assumed
+> every `row_k` leaf was already populated. When that assumption did not hold
+> (the prod blank-pseudo bug: scores OK, pseudos empty), the board froze with
+> the empty value forever. Making the board a `core.output@1` (passthrough)
+> fed by the join cone removes the coupling: it recomputes on every `row_k`
+> write, so a row that lands late still repaints the board with its pseudo.
 
 The six `db.query` nodes are **exec-bearing**, so the scene goes through
 the **#87 validation gate**: an unvalidated scene fires **no** query
