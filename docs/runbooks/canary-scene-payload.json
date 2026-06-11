@@ -1,0 +1,5 @@
+{
+  "_comment": "R9 canary first-flight push envelope (issue #106). Body of POST /api/v1/scenes/{CANARY_ID}/push. This is the LEGACY single-blueprint envelope shape (compiler.PushEnvelope): canvas_version + blue_blueprint_id. The blueprint logic itself (bp-canary) is authored in Blue and fetched by Orion's compiler at push time (it is NOT inlined in this envelope). See canary-scene-payload.md for the Blue blueprint graph that bp-canary must resolve to, and the live-ops invariant.",
+  "canvas_version": "v1",
+  "blue_blueprint_id": "bp-canary"
+}
