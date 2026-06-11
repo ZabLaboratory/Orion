@@ -162,6 +162,71 @@ func TestE2E_R9_BootReseedInstallsExec(t *testing.T) {
 	assertCounter(t, show2, "9")
 }
 
+// TestE2E_BootRestoresActiveScene is the regression guard for the
+// black-screen-after-deploy bug (chantier boot-reactivate-active-scene):
+// a scene activated via the REAL API persists the antenna pointer
+// (migrations/0004); after a restart, loadActiveScenes must re-LOAD AND
+// re-ACTIVATE that scene, so the rebooted show's `active` pointer is set
+// and a viewer receives a snapshot instead of `scene not found`. Leaf
+// VALUES reseed to declared defaults (criterion #11) — only the SELECTION
+// survives.
+func TestE2E_BootRestoresActiveScene(t *testing.T) {
+	st := requireDB(t)
+	sceneID := uuid.New()
+	if _, err := st.CreateScene(context.Background(), sceneID, "antenna"); err != nil {
+		t.Fatal(err)
+	}
+	srv, show := gateTestServer(t, st, loopFetcher())
+	base := srv.URL + "/api/v1/scenes/" + sceneID.String()
+
+	// Push + validate + activate through the real API — activation now
+	// persists show_state.active_scene_id (the fix's write side).
+	if code, body := operatorPost(t, base+"/push",
+		`{"canvas_version":"v1","blue_blueprint_id":"bp-loop"}`); code != 200 {
+		t.Fatalf("push = %d %v", code, body)
+	}
+	operatorPost(t, base+"/validate", `{}`)
+	waitValidated(t, base)
+	if code, body := operatorPost(t, srv.URL+"/api/v1/show/active-scene",
+		`{"scene_id":"`+sceneID.String()+`"}`); code != 200 {
+		t.Fatalf("activate = %d %v", code, body)
+	}
+	// The pointer is persisted in the DB, independent of the in-memory show.
+	if pid, err := st.GetActiveSceneID(context.Background()); err != nil || pid == nil ||
+		pid.String() != sceneID.String() {
+		t.Fatalf("active pointer not persisted: id=%v err=%v", pid, err)
+	}
+	_ = show // pre-reboot show; the proof is the rebooted one.
+
+	// RESTART: a brand-new show cold-started through the same boot path the
+	// binary runs (load roster + re-activate persisted pointer). Pre-fix this
+	// returned a show with active == "" → every viewer closed `scene not found`.
+	show2 := bootReseed(t, st)
+
+	// 1. The antenna survived: active pointer is the same scene.
+	if a := show2.Active(); a == nil || a.ID() != sceneID.String() {
+		t.Fatalf("antenna dark after reboot: Active()=%v, want %s", a, sceneID)
+	}
+
+	// 2. A viewer gets a snapshot, NOT scene-not-found. SubscribeLive is the
+	// exact path the WS /show/stream viewer takes; pre-fix it returned
+	// ErrSceneNotFound because active was empty.
+	sub, snap, err := show2.SubscribeLive(8)
+	if err != nil {
+		t.Fatalf("viewer SubscribeLive after reboot = %v, want a snapshot", err)
+	}
+	defer show2.UnsubscribeLive(sub)
+	if snap == nil {
+		t.Fatalf("viewer got nil snapshot after reboot")
+	}
+
+	// 3. Leaves reseeded to declared defaults (criterion #11): the exec
+	// loop re-ran on boot-activation from defaults and reached counter == 9.
+	// The SELECTION survived; the VALUES came from the declared defaults, not
+	// from any persisted live state.
+	assertCounter(t, show2, "9")
+}
+
 // TestE2E_R9_DeferredSwapOnValidationSuccess (criterion #8, completes
 // ADR 003 #15): scene active on air (v1), re-push v2 (different content,
 // no record) → antenna stays v1; then /validate v2 succeeds → the swap
@@ -290,6 +355,21 @@ func bootReseed(t *testing.T, st *store.Store) *runtime.Show {
 		_ = json.Unmarshal(pv.BundleJSON, &bundle)
 		progs := bootProgs(ctx, st, sc.ID, pv.SceneVersion, &graph)
 		show.LoadExec(sc.ID.String(), &graph, &bundle, progs...)
+	}
+	// Mirror loadActiveScenes: re-activate the persisted antenna pointer so
+	// the rebooted show comes back on the SAME scene (the fix). Leaf VALUES
+	// are not restored (LoadExec reseeds defaults — criterion #11); only the
+	// SELECTION is durable.
+	activeID, err := st.GetActiveSceneID(ctx)
+	if err != nil {
+		t.Fatalf("boot: read active scene pointer: %v", err)
+	}
+	if activeID != nil {
+		if _, gerr := show.Get(activeID.String()); gerr == nil {
+			if serr := show.SetActive(activeID.String(), nil); serr != nil {
+				t.Fatalf("boot: re-activate persisted scene: %v", serr)
+			}
+		}
 	}
 	return show
 }

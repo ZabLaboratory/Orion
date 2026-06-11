@@ -71,10 +71,37 @@ func postActiveScene(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
+		// Bonus coherence (chantier #4): a scene that is pushed+validated but
+		// not yet in the roster (never loaded this process — e.g. activated
+		// before its first push landed in-memory, or a stale roster) cannot be
+		// SetActive (ErrSceneNotFound → WS `scene not found`). Load it from its
+		// validated pushed version first so SetActive always finds it. Load is
+		// idempotent: a no-op swap if the scene is already loaded. After the
+		// boot fix every active+pushed scene is loaded at startup, so this is a
+		// belt-and-braces path, but it aligns activate with push (which also
+		// loads on demand) and removes the last "scene not found on activate".
+		if _, err := deps.Show.Get(body.SceneID); err != nil {
+			if lerr := loadSceneFromStore(r.Context(), deps, uuid.MustParse(body.SceneID)); lerr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+				return
+			}
+		}
+
 		if err := deps.Show.SetActive(body.SceneID, body.Transition); err != nil {
 			status, code := codeFromError(err)
 			writeJSON(w, status, map[string]string{"code": code})
 			return
+		}
+
+		// Persist the antenna selection so it survives a restart/redeploy
+		// (the bug this chantier fixes). Best-effort after the in-memory
+		// switch: the live antenna already moved; a DB write failure must not
+		// 500 a successful on-air switch, but it is logged so a persistence
+		// outage is visible (the next boot would then fall back to the prior
+		// persisted pointer).
+		sid := uuid.MustParse(body.SceneID)
+		if err := deps.Store.SetActiveSceneID(r.Context(), &sid); err != nil {
+			deps.Logger.Error("persist active scene failed", "scene_id", body.SceneID, "err", err)
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"active_scene_id": body.SceneID})
 	})

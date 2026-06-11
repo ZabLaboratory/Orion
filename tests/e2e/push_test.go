@@ -58,6 +58,7 @@ func applyMigration(ctx context.Context, pool *pgxpool.Pool) error {
 		"../../migrations/0001_init.sql",
 		"../../migrations/0002_lsml_bundle.sql",
 		"../../migrations/0003_scene_validations.sql",
+		"../../migrations/0004_show_state.sql",
 	} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
