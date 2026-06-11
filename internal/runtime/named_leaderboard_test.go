@@ -212,9 +212,9 @@ func nlbBlueprint() *compiler.BlueprintGraph {
 		edge(s("scoreStr"), "out", s("line"), "b")
 	}
 
-	// Join line_0..line_4 with "\n" — pull each line_k pure node directly
-	// (its cone re-reads query_k.rows from the task env, all present once
-	// the spine reaches setBoard).
+	// Join line_0..line_4 with "\n" — each line_k pure cone reads its row_k
+	// back off the __vars..row_k state leaf (via inRow_k), so the folded
+	// board recomputes reactively as each row lands (boardOut below).
 	add(nlbLit("nl", nlbStr("\n")))
 	prev := "line0"
 	for k := 1; k < nlbTopN; k++ {
@@ -228,24 +228,28 @@ func nlbBlueprint() *compiler.BlueprintGraph {
 		edge(fmt.Sprintf("line%d", k), "out", lineCat, "b")
 		prev = lineCat
 	}
-	// the final exec node: variable.set(leaderboard_display = folded join),
-	// fired LAST so every query_k.rows is bound in the env when it pulls.
-	add(compiler.BlueprintNode{ID: "setBoard", Compute: "core.variable.set@1",
-		Config:  map[string]json.RawMessage{"name": nlbStr("leaderboard_display")},
-		Inputs:  []compiler.BlueprintPort{ePin("exec_in"), dPin("value")},
-		Outputs: []compiler.BlueprintPort{ePin("then")}})
-	edge(prev, "out", "setBoard", "value")
+	// the board is a REACTIVE dataflow output (core.output@1, passthrough):
+	// it recomputes its leaf whenever ANY upstream leaf in its cone changes —
+	// i.e. every time a truth query lands its row_k via setRow_k. This makes
+	// the named board DETERMINISTIC and independent of exec-spine completion
+	// ordering. The previous one-shot variable.set demand-pulled the join
+	// cone at a single instant (the spine tail) and assumed every row_k leaf
+	// was already populated — a fragile coupling that left blank pseudos when
+	// the assumption did not hold in prod.
+	add(compiler.BlueprintNode{ID: "boardOut", Compute: "core.output@1",
+		Config: map[string]json.RawMessage{"name": nlbStr("__vars..leaderboard_display")},
+		Inputs: []compiler.BlueprintPort{dPin("value")}})
+	edge(prev, "out", "boardOut", "value")
 
-	// exec spine: setRows → query0 → setRow0 → query1 → setRow1 → … →
-	// query4 → setRow4 → setBoard. Each query parks/resumes before the
-	// next: five SEQUENTIAL dependent effects, zero fork.
+	// exec spine: setRows → query0 → setRow0 → query1 → … → query4 → setRow4.
+	// Each query parks/resumes before the next: five SEQUENTIAL dependent
+	// effects, zero fork. The spine ENDS at setRow4 — it only fires the six
+	// queries and lands each row_k leaf; the board is reactive (boardOut).
 	edge("setRows", "then", "query0", "exec_in")
 	for k := 0; k < nlbTopN; k++ {
 		edge(fmt.Sprintf("query%d", k), "then", fmt.Sprintf("setRow%d", k), "exec_in")
 		if k+1 < nlbTopN {
 			edge(fmt.Sprintf("setRow%d", k), "then", fmt.Sprintf("query%d", k+1), "exec_in")
-		} else {
-			edge(fmt.Sprintf("setRow%d", k), "then", "setBoard", "exec_in")
 		}
 	}
 	return g
@@ -264,6 +268,7 @@ func nlbManifest() compiler.ComputeManifest {
 		"core.cast.to-string@1":   {IsPure: true, IsBounded: true, Version: "1"},
 		"core.string.concat@1":    {IsPure: true, IsBounded: true, Version: "1"},
 		"core.input@1":            {IsPure: true, IsBounded: true, Version: "1"},
+		"core.output@1":           {IsPure: true, IsBounded: true, Version: "1"},
 	}
 }
 

@@ -266,21 +266,23 @@ func namedLeaderboardBlueprint() *compiler.BlueprintGraph {
 		prev = lineCat
 	}
 
-	// final exec node: variable.set(leaderboard_display = folded join)
-	add(compiler.BlueprintNode{ID: "setBoard", Compute: "core.variable.set@1",
-		Config:  map[string]json.RawMessage{"name": mustJSON("leaderboard_display")},
-		Inputs:  []compiler.BlueprintPort{ePort("exec_in"), dPort("value")},
-		Outputs: []compiler.BlueprintPort{ePort("then")}})
-	edge(prev, "out", "setBoard", "value")
+	// the board is a REACTIVE dataflow output (core.output@1): it recomputes
+	// its leaf whenever any row_k lands, so the named board is deterministic
+	// regardless of exec-spine completion ordering — not a one-shot exec
+	// write demand-pulled at a single instant (the prod blank-pseudo bug).
+	add(compiler.BlueprintNode{ID: "boardOut", Compute: "core.output@1",
+		Config: map[string]json.RawMessage{"name": mustJSON(leaderboardDisplayLeaf)},
+		Inputs: []compiler.BlueprintPort{dPort("value")}})
+	edge(prev, "out", "boardOut", "value")
 
-	// exec spine: setRows → query0 → setRow0 → query1 → … → setRow4 → setBoard
+	// exec spine: setRows → query0 → setRow0 → query1 → … → setRow4. The
+	// spine ENDS at setRow4 — it only fires the six queries and lands each
+	// row_k leaf; the board is reactive (boardOut).
 	edge("setRows", "then", "query0", "exec_in")
 	for k := 0; k < namedTopN; k++ {
 		edge(fmt.Sprintf("query%d", k), "then", fmt.Sprintf("setRow%d", k), "exec_in")
 		if k+1 < namedTopN {
 			edge(fmt.Sprintf("setRow%d", k), "then", fmt.Sprintf("query%d", k+1), "exec_in")
-		} else {
-			edge(fmt.Sprintf("setRow%d", k), "then", "setBoard", "exec_in")
 		}
 	}
 
