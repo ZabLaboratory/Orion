@@ -39,16 +39,6 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
-// probeGateDeps returns a minimal PublicDeps for gate-seam tests that do NOT
-// touch the store (axes 1–3 test the exec-program-resolution path only).
-// The Store field is intentionally left nil here — tests that need it must
-// build a richer deps.
-func probeGateDeps() PublicDeps {
-	return PublicDeps{
-		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-}
-
 // validatedGraph builds a compiler.Graph that carries one well-formed
 // ExecProgram (the "eligible + valid" case for execForAir axis 2).
 func validatedGraph() *compiler.Graph {
