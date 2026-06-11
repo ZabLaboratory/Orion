@@ -298,6 +298,13 @@ explicites (`quasar.credentials.read`, `query.read.<svc>`,
 requiert une re-clearance Bastion ; `identity_test.go::TestMatchPath_AnimScope_ParentScope_DEFECT`
 fige la sémantique.
 
+**Résidu halt-at-node (accepté, Bastion #106).** Sous le SetEffects-hold (R9),
+un nœud world-effect (`http.request`/`db.query`/`source.read`) d'une scène
+validée n'est pas enregistré à l'antenne : il halt-at-node (log
+« unregistered exec op »), sans egress et sans kill — strictement plus sûr que
+le routage error-port nominal. Le routage vers le port `error` du P-4/P-5 ne
+s'active qu'après le câblage `SetEffects` (phase de déploiement ultérieure).
+
 Detailed threat model = **Bastion at implementation stage** (per the gated
 campaign), with R-2/R-3/R-6 as the entry points.
 

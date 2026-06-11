@@ -3,10 +3,6 @@
 @../../docs/rules/git.md
 @../../docs/rules/security.md
 @../../docs/rules/agents.md
-@../agents/_shared/architecture.md
-@../agents/_shared/conventions.md
-@../agents/_shared/deploy.md
-@../agents/_shared/projects.md
 
 ## Status — v2 scaffold landed
 
