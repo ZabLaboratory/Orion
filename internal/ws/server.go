@@ -117,16 +117,43 @@ func (s *Server) runShowConnection(ctx context.Context, conn *connection) error 
 		return err
 	}
 
-	sub, snap, err := s.Show.SubscribeLive(256)
-	if err != nil {
-		_ = conn.sendError(ctx, protocol.CodeSceneNotFound, "no active scene", false)
-		return err
+	// Writer-vs-viewer contract on /show/stream:
+	//
+	//   - A `service`-role client (Quasar) is a scene-independent
+	//     WRITER: it pushes platform-event input leaves continuously,
+	//     outside any scene cycle. It must stay connected even with no
+	//     active scene, otherwise every event at show start / scene
+	//     switch is lost and the coupling is fragile. SubscribeLiveWriter
+	//     never errors on an empty active pointer; when a scene later
+	//     activates, SetActive migrates this subscription onto it.
+	//
+	//   - A viewer / operator needs an active scene to receive deltas;
+	//     with none, SubscribeLive returns ErrSceneNotFound and we close
+	//     with SCENE_NOT_FOUND as before.
+	var (
+		sub  *runtime.Subscription
+		snap *protocol.Snapshot
+	)
+	if conn.identity.Role == auth.RoleService {
+		sub, snap = s.Show.SubscribeLiveWriter(256)
+	} else {
+		var err error
+		sub, snap, err = s.Show.SubscribeLive(256)
+		if err != nil {
+			_ = conn.sendError(ctx, protocol.CodeSceneNotFound, "no active scene", false)
+			return err
+		}
 	}
 	defer s.Show.UnsubscribeLive(sub)
 	defer sub.Close()
 
-	if err := conn.sendMessage(ctx, snap); err != nil {
-		return err
+	// snap is nil for a writer that connected with no active scene —
+	// there is no scene to snapshot yet. Skip the initial frame; the
+	// writer receives its first snapshot when SetActive migrates it.
+	if snap != nil {
+		if err := conn.sendMessage(ctx, snap); err != nil {
+			return err
+		}
 	}
 
 	return conn.run(ctx, sub, func(inputCtx context.Context, msg *protocol.Input) error {

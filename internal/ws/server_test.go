@@ -82,6 +82,54 @@ func newLiveRig(t *testing.T) *liveTestRig {
 	}
 }
 
+// newIdleRig is newLiveRig with the scene loaded but NOT activated —
+// the show's active pointer is empty, exactly the prod state observed
+// 2026-06-11 (GET /show → active_scene_id == ""). Used to exercise the
+// writer-vs-viewer contract on /show/stream when no scene is active.
+func newIdleRig(t *testing.T) *liveTestRig {
+	t.Helper()
+	logger := quietLogger()
+	registry := runtime.NewComputeRegistry()
+	show := runtime.NewShow(registry, logger)
+	test := runtime.NewTestSessionManager(registry, logger, time.Minute)
+
+	graph := &compiler.Graph{
+		SceneID:      "scene-1",
+		SceneVersion: "sha256:test",
+		Nodes: []compiler.GraphNode{
+			{ID: "in.score", Kind: "input"},
+			{ID: "out.score", Kind: "output", Path: "score.team_a", Compute: "core.passthrough", Upstream: []string{"in.score"}},
+		},
+		Defaults:       map[string]json.RawMessage{"score.team_a": json.RawMessage(`0`)},
+		OperatorInputs: []compiler.OperatorInput{{Path: "score.team_a", Type: "number", Label: "Team A"}},
+	}
+	bundle := &compiler.RenderBundle{SceneVersion: "sha256:test"}
+	show.Load("scene-1", graph, bundle)
+	// NOTE: no SetActive — the show is idle, active pointer empty.
+
+	inbox := adapters.NewInbox(show, logger, nil)
+	metrics := obs.NewMetrics()
+	srv := &Server{Show: show, Inbox: inbox, Test: test, Logger: logger, Metrics: metrics}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/show/stream", srv.ServeShowStream)
+
+	httpSrv := httptest.NewServer(mux)
+	wsURL := "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/show/stream"
+
+	return &liveTestRig{
+		srv:   httpSrv,
+		show:  show,
+		inbox: inbox,
+		wsURL: wsURL,
+		cleanup: func() {
+			httpSrv.Close()
+			show.Stop()
+			test.Close()
+		},
+	}
+}
+
 func dialWith(t *testing.T, url string, headers http.Header) *websocket.Conn {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -286,4 +334,136 @@ func TestWS_ServiceTokenWritesScopedPaths(t *testing.T) {
 		t.Fatalf("expected WRITE_FORBIDDEN, got %s", raw)
 	}
 	_ = auth.RoleService // keep import live in case the literal moves
+}
+
+// Writer-vs-viewer contract, writer side (the Quasar→Orion tuyau):
+// a `service`-role writer connects to /show/stream with NO active
+// scene, stays connected (no close), and pushes an input leaf that is
+// accepted. This is the scene-independent writer path — platform
+// events arrive outside any scene cycle. Regression guard for the
+// reconnect loop observed in prod 2026-06-11 (active_scene_id == "").
+func TestWS_ServiceWriterConnectsWithoutActiveScene(t *testing.T) {
+	rig := newIdleRig(t)
+	defer rig.cleanup()
+
+	headers := http.Header{
+		"X-Authenticated-User":  []string{"quasar"},
+		"X-Authenticated-Role":  []string{"service"},
+		"X-Authenticated-Paths": []string{"score.team_a"},
+	}
+	c := dialWith(t, rig.wsURL, headers)
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	ctx := context.Background()
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","v":1,"since_sequence":null}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	// No snapshot is sent (no active scene). The connection must stay
+	// open: push an input leaf — scene-1 is loaded and declares the
+	// path, so the inbox accepts and fans it out. The write must not
+	// draw a WRITE_FORBIDDEN nor a SCENE_NOT_FOUND, and the socket must
+	// not be closed by the server.
+	//
+	// Liveness is proved by REPEATED writes spread over time, NOT by a
+	// timed-out Read: coder/websocket fails (and closes) the whole conn
+	// on ANY Read error — including a context deadline — so reading "to
+	// check the conn is still alive" would itself kill the client conn
+	// and mask a perfectly healthy server. Instead, since a detached
+	// writer receives no frames, we only ever write: if the server had
+	// closed (the prod reconnect-loop bug), a subsequent Write fails.
+	for i, val := range []string{"7", "8", "9"} {
+		payload := []byte(`{"type":"input","v":1,"path":"score.team_a","value":` + val + `}`)
+		if err := c.Write(ctx, websocket.MessageText, payload); err != nil {
+			t.Fatalf("writer push #%d failed (server closed the conn?): %v", i+1, err)
+		}
+		// Let the server drain the read and run the inbox fan-out before
+		// the next push, so a close (if any) surfaces on the next Write.
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// Writer-vs-viewer contract, viewer side: a viewer connecting with no
+// active scene keeps the existing behaviour — SCENE_NOT_FOUND, then the
+// server closes. The fix is scoped to the service writer; viewers are
+// unchanged.
+func TestWS_ViewerRejectedWithoutActiveScene(t *testing.T) {
+	rig := newIdleRig(t)
+	defer rig.cleanup()
+
+	headers := http.Header{
+		"X-Authenticated-User": []string{"pulsar-cef-1"},
+		"X-Authenticated-Role": []string{"viewer"},
+	}
+	c := dialWith(t, rig.wsURL, headers)
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	ctx := context.Background()
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","v":1,"since_sequence":null}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, raw, err := c.Read(rctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var errMsg protocol.Error
+	if err := json.Unmarshal(raw, &errMsg); err != nil {
+		t.Fatal(err)
+	}
+	if errMsg.Code != protocol.CodeSceneNotFound {
+		t.Fatalf("viewer with no active scene must get SCENE_NOT_FOUND, got %s", raw)
+	}
+}
+
+// Writer migration: a service writer connected with no active scene is
+// migrated onto a scene when one is activated (SetActive), and from
+// then on is wired into the live subscriber set of that scene.
+//
+// Contract (ADR 002 §11 writer-vs-viewer): the detached writer had NO
+// prior scene, so its first activation is an initial BIND, not an A→B
+// transition. It therefore receives a fresh `snapshot` only — NOT a
+// `scene_changed{from:""}`, which would be a phantom transition. The
+// scene_changed pair is reserved for a sub migrating off a real previous
+// scene (the viewer A→B path, covered by the runtime switch test).
+func TestWS_ServiceWriterMigratedOnActivate(t *testing.T) {
+	rig := newIdleRig(t)
+	defer rig.cleanup()
+
+	headers := http.Header{
+		"X-Authenticated-User":  []string{"quasar"},
+		"X-Authenticated-Role":  []string{"service"},
+		"X-Authenticated-Paths": []string{"score.team_a"},
+	}
+	c := dialWith(t, rig.wsURL, headers)
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	ctx := context.Background()
+	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","v":1,"since_sequence":null}`)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Activate scene-1 — the detached writer must be migrated onto the
+	// destination and receive a fresh snapshot proving it is now bound.
+	if err := rig.show.SetActive("scene-1", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, raw, err := c.Read(rctx)
+	if err != nil {
+		t.Fatalf("writer received nothing after activate (not migrated): %v", err)
+	}
+	// First frame after a from-detached migration is a snapshot, not a
+	// scene_changed (the detached writer was on no prior scene).
+	var snap protocol.Snapshot
+	if err := json.Unmarshal(raw, &snap); err != nil || snap.Type != protocol.TypeSnapshot {
+		t.Fatalf("expected snapshot after activate of a detached writer, got %s", raw)
+	}
+	if snap.SceneID != "scene-1" {
+		t.Fatalf("snapshot is for the wrong scene: %s", raw)
+	}
 }

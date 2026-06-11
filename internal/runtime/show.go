@@ -273,15 +273,27 @@ func (sh *Show) SetActive(id string, transition json.RawMessage) error {
 	}
 	// Step 2: attach to destination, sending scene_changed first then
 	// the fresh snapshot per ADR 002 § 5/7.
+	//
+	// Exception — the detached writer (ADR 002 § 11 writer-vs-viewer):
+	// a sub with no prior scene (scene == nil, e.g. a service writer that
+	// connected with the show idle) is not *transitioning* from one scene
+	// to another. `scene_changed` is the A→B viewer transition signal;
+	// there is no "from" scene here (from == ""). Its first activation is
+	// an initial BIND, so it receives only the fresh `snapshot` — emitting
+	// a `scene_changed{from:""}` would be a phantom transition. A sub that
+	// WAS on a previous scene keeps the full scene_changed + snapshot pair.
 	for _, sub := range migrating {
+		wasDetached := sub.scene == nil
 		snap := dest.AttachExisting(sub)
-		select {
-		case sub.Out <- &protocol.SceneChanged{
-			FromSceneID: from,
-			ToSceneID:   id,
-			Transition:  transition,
-		}:
-		default:
+		if !wasDetached {
+			select {
+			case sub.Out <- &protocol.SceneChanged{
+				FromSceneID: from,
+				ToSceneID:   id,
+				Transition:  transition,
+			}:
+			default:
+			}
 		}
 		// Reset the destination scene's sequence so the snapshot
 		// reseeds it (ADR 002 § 7).
@@ -310,6 +322,51 @@ func (sh *Show) SubscribeLive(buf int) (*Subscription, *protocol.Snapshot, error
 	sub, snap := scene.Subscribe(buf)
 	sh.liveSubs = append(sh.liveSubs, sub)
 	return sub, snap, nil
+}
+
+// SubscribeLiveWriter attaches a live-show subscription for a
+// scene-independent WRITER (a `service`-role client such as Quasar)
+// that pushes input leaves continuously, outside any scene lifecycle.
+//
+// Contract (writer vs viewer on /show/stream): a viewer needs an
+// active scene to receive deltas, so SubscribeLive returns
+// ErrSceneNotFound when none is active. A service writer does NOT —
+// platform events (Twitch chat/follow/sub) arrive continuously, hors
+// de tout cycle de scène ; gating the writer on an active scene loses
+// every event at show start / scene switch and makes the coupling
+// fragile. So this never errors on an empty active pointer.
+//
+// When no scene is active the returned subscription is DETACHED
+// (scene == nil): it carries a live Out channel but is not bound to
+// any scene, so it receives no deltas (there is nothing to mirror) and
+// no initial snapshot. It is registered in liveSubs, so the next
+// SetActive migrates it onto the freshly-activated scene exactly like
+// any other live subscriber (AttachExisting) — at which point the
+// writer also starts receiving that scene's deltas. When a scene IS
+// already active, this behaves like SubscribeLive but the caller may
+// choose to ignore the snapshot (a writer-only client does).
+//
+// Writes are unaffected by attachment: the inbox fans every accepted
+// write out to whichever loaded scenes declare the path (Inbox.Write),
+// independently of this subscription.
+func (sh *Show) SubscribeLiveWriter(buf int) (*Subscription, *protocol.Snapshot) {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	if sh.active != "" {
+		if scene := sh.scenes[sh.active]; scene != nil {
+			sub, snap := scene.Subscribe(buf)
+			sh.liveSubs = append(sh.liveSubs, sub)
+			return sub, snap
+		}
+	}
+	// No active scene: hand back a detached, live subscription so the
+	// writer stays connected and is migrated on the next SetActive.
+	if buf < 16 {
+		buf = 16
+	}
+	sub := &Subscription{Out: make(chan SubscriberMsg, buf)}
+	sh.liveSubs = append(sh.liveSubs, sub)
+	return sub, nil
 }
 
 // UnsubscribeLive detaches a live-show subscription. The caller is
