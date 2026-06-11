@@ -319,6 +319,20 @@ jobs:
           # the flip durable across code deploys (otherwise this heredoc would
           # silently revert a manual VPS flip back to bespoke).
           ORION_LSDP_MODE: ${{ vars.ORION_LSDP_MODE }}
+          # db.query topology A (ADR 003 Amdt 1). Same durability contract as
+          # ORION_LSDP_MODE: this heredoc rewrites .env on every deploy, so these
+          # MUST come from repo variables or a manual VPS edit is silently
+          # reverted. Not secrets — scope strings + an internal gateway hostname.
+          #   ORION_SERVICE_PATHS — service-token scopes minted at boot. Strict
+          #     least-privilege allowlist (Bastion R9-T1): no wildcard, no admin.
+          #     Falls back to the Quasar-only default when the var is unset.
+          #   ORION_DATASOURCES   — db.query allowlist (<name>=<svc> CSV). Empty
+          #     ⇒ every db.query node fails compile (DATASOURCE_NOT_DECLARED).
+          #   ORION_ZABGATE_URL   — gateway base for _query delegation; REQUIRED
+          #     by config validation iff ORION_DATASOURCES is non-empty.
+          ORION_SERVICE_PATHS: ${{ vars.ORION_SERVICE_PATHS }}
+          ORION_DATASOURCES: ${{ vars.ORION_DATASOURCES }}
+          ORION_ZABGATE_URL: ${{ vars.ORION_ZABGATE_URL }}
         run: |
           $SSH_CMD "cat > $APP_PATH/.env && chmod 600 $APP_PATH/.env" << EOF
           # Public surface
@@ -345,7 +359,13 @@ jobs:
           # is set, Orion mints a fresh token at boot and rotates it
           # before expiry. Empty operator token → static fallback above.
           ORION_OPERATOR_TOKEN=$ORION_OPERATOR_TOKEN
-          ORION_SERVICE_PATHS=quasar.credentials.read
+          # Default to the Quasar-only scope when the repo var is unset.
+          ORION_SERVICE_PATHS=${ORION_SERVICE_PATHS:-quasar.credentials.read}
+
+          # db.query topology A — empty unless the repo variables are set.
+          # ZABGATE_URL is required by config validation when DATASOURCES is set.
+          ORION_DATASOURCES=${ORION_DATASOURCES:-}
+          ORION_ZABGATE_URL=${ORION_ZABGATE_URL:-}
 
           # Upstream services (compile-time fetch through the gateway)
           ORION_CANVAS_BASE_URL=http://zabgate:4000/canvas
