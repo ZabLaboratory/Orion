@@ -231,7 +231,7 @@
       "id": "setDraft0",
       "definition": "core.variable.set@1",
       "config": {
-        "name": "draft_0"
+        "variable": "draft_0"
       },
       "inputs": [
         {
@@ -473,7 +473,7 @@
       "id": "setDraft1",
       "definition": "core.variable.set@1",
       "config": {
-        "name": "draft_1"
+        "variable": "draft_1"
       },
       "inputs": [
         {
@@ -715,7 +715,7 @@
       "id": "setDraft2",
       "definition": "core.variable.set@1",
       "config": {
-        "name": "draft_2"
+        "variable": "draft_2"
       },
       "inputs": [
         {

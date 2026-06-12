@@ -51,6 +51,23 @@ def main() -> int:
     # classified KindCompute by the conformance matrix — no special-casing
     # in the generated manifest.
 
+    # Port/config signature fixture for the exec-port-parity gate
+    # (internal/conformance/signatures.json). For each core node id we
+    # emit the SET of port and config names the seed declares, so the
+    # offline parity test can assert every string the Orion runtime
+    # hardcodes exists in the authoring contract. Only names matter (the
+    # gate checks identifiers, not types), so the fixture stays a flat set
+    # per id — stable under type/description churn.
+    signatures: dict[str, dict[str, list[str]]] = {}
+
+    def _names(ports: object) -> list[str]:
+        out = []
+        if isinstance(ports, list):
+            for p in ports:
+                if isinstance(p, dict) and isinstance(p.get("name"), str):
+                    out.append(p["name"])
+        return sorted(set(out))
+
     entries = []
     for n in stdlib_seeder._CORE_NODES:
         pur = purity_for(n["namespace"], n["name"])
@@ -67,6 +84,12 @@ def main() -> int:
             "platform": None,
         }
         entries.append(entry)
+        sig = n.get("signature") or {}
+        signatures[node_id] = {
+            "inputs": _names(sig.get("inputs")),
+            "outputs": _names(sig.get("outputs")),
+            "config": _names(sig.get("config")),
+        }
     for event_type, _model in CANONICAL_EVENT_TYPES:
         entries.append(
             {
@@ -88,6 +111,13 @@ def main() -> int:
         json.dump({"count": len(entries), "entries": entries}, f, indent=2)
         f.write("\n")
     print(f"wrote {len(entries)} entries to {out_path}")
+
+    sig_path = os.path.join(repo, "internal", "conformance", "signatures.json")
+    sig_sorted = {k: signatures[k] for k in sorted(signatures)}
+    with open(sig_path, "w", encoding="utf-8") as f:
+        json.dump({"count": len(sig_sorted), "signatures": sig_sorted}, f, indent=2)
+        f.write("\n")
+    print(f"wrote {len(sig_sorted)} signatures to {sig_path}")
     return 0
 
 

@@ -1,0 +1,15 @@
+{
+  "table": "players",
+  "where": [
+    { "column": "summoner_name", "op": "=", "value": "GIDEON" },
+    { "column": "deleted_at", "op": "IS NULL", "value": null }
+  ],
+  "joins": [
+    { "table": "scores", "on": ["id", "player_id"], "select": ["points"] }
+  ],
+  "select": ["summoner_name", "region"],
+  "order": [
+    { "column": "points", "direction": "desc" }
+  ],
+  "limit": 5
+}

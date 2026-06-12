@@ -180,7 +180,7 @@ func TestWiring_HTTPRequestAntiSSRFThroughShow(t *testing.T) {
 					"then":  {Node: "set.out"},
 					"error": {Node: "set.err"},
 				}},
-			"set.out": setFromPin("set.out", "out", "req", "response", nil),
+			"set.out": setFromPin("set.out", "out", "req", "body", nil),
 			"set.err": setFromPin("set.err", "err", "req", "error", nil),
 		},
 		Entrypoints: map[string]ExecEntry{

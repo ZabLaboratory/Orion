@@ -130,16 +130,16 @@ func execOpProbeProgram(op string) *ExecProgram {
 			Next: map[string]ExecTarget{"then_0": {Node: "reached"}}}
 	case OpGate:
 		// gate defaults open (start_closed absent); the default `enter`
-		// pin passes through to `exit` (exec_interpreter.go execGate).
+		// pin passes through to `then` (the seed's exec out pin).
 		head = &ExecNode{ID: "op", Op: OpGate,
-			Next: map[string]ExecTarget{"exit": {Node: "reached"}}}
+			Next: map[string]ExecTarget{"then": {Node: "reached"}}}
 	case OpForLoop:
 		head = &ExecNode{ID: "op", Op: OpForLoop,
 			Config: map[string]json.RawMessage{"first": raw(`0`), "last": raw(`0`)},
 			Next:   map[string]ExecTarget{"completed": {Node: "reached"}}}
 	case OpForEach:
 		head = &ExecNode{ID: "op", Op: OpForEach,
-			Data: []ExecDataInput{{Port: "list", From: "lit.one"}},
+			Data: []ExecDataInput{{Port: "items", From: "lit.one"}},
 			Next: map[string]ExecTarget{"completed": {Node: "reached"}}}
 	case OpWhile:
 		// condition unwired → false → loop body never runs, completed fires.
@@ -150,7 +150,7 @@ func execOpProbeProgram(op string) *ExecProgram {
 		head.Config["value"] = raw(`1`)
 	case OpPrint:
 		head = &ExecNode{ID: "op", Op: OpPrint,
-			Config: map[string]json.RawMessage{"message": raw(`"conf"`)}, Next: mark}
+			Config: map[string]json.RawMessage{"value": raw(`"conf"`)}, Next: mark}
 	case OpDelay:
 		head = &ExecNode{ID: "op", Op: OpDelay,
 			Config: map[string]json.RawMessage{"seconds": raw(`0`)}, Next: mark}
@@ -159,6 +159,8 @@ func execOpProbeProgram(op string) *ExecProgram {
 			Config: map[string]json.RawMessage{"overlay_id": raw(`"ov"`), "animation_id": raw(`"a"`)},
 			Next:   mark} // `then` fires immediately (criterion: then-immediate)
 	case OpHTTPRequest:
+		// url/method are DATA inputs (seed core.http.request@1); pullData
+		// falls back to config under the same name when unwired.
 		head = &ExecNode{ID: "op", Op: OpHTTPRequest,
 			Config: map[string]json.RawMessage{"method": raw(`"GET"`), "url": raw(`"https://example.com/"`)},
 			Next:   mark}
@@ -167,7 +169,7 @@ func execOpProbeProgram(op string) *ExecProgram {
 			Config: map[string]json.RawMessage{"datasource": raw(`"ds"`)}, Next: mark}
 	case OpSourceRead:
 		head = &ExecNode{ID: "op", Op: OpSourceRead,
-			Config: map[string]json.RawMessage{"source": raw(`"src"`)}, Next: mark}
+			Config: map[string]json.RawMessage{"source_id": raw(`"src"`)}, Next: mark}
 	default:
 		// Unknown op: a single mark via on-start direct — will fail the
 		// op assertion loudly rather than silently passing.

@@ -499,7 +499,7 @@ func TestExec_Gate_ToggleAndClose(t *testing.T) {
 		Nodes: map[string]*ExecNode{
 			"gate": {ID: "gate", Op: OpGate,
 				Config: map[string]json.RawMessage{"start_closed": raw(`true`)},
-				Next:   map[string]ExecTarget{"exit": {Node: "set.pass"}}},
+				Next:   map[string]ExecTarget{"then": {Node: "set.pass"}}},
 			"set.pass": varSet("set.pass", "pass_count", nil, nil),
 		},
 		Entrypoints: map[string]ExecEntry{

@@ -191,9 +191,9 @@ func TestExecDelay_InLoop_ParkIsFork(t *testing.T) {
 				}},
 			"d": delayNode("d", `5`, map[string]ExecTarget{"then": {Node: "p.idx"}}),
 			"p.idx": {ID: "p.idx", Op: OpPrint,
-				Data: []ExecDataInput{{Port: "message", From: "loop", FromPort: "index"}}},
+				Data: []ExecDataInput{{Port: "value", From: "loop", FromPort: "index"}}},
 			"p.done": {ID: "p.done", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"loop-done"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"loop-done"`)}},
 		},
 		Entrypoints: map[string]ExecEntry{"e": {Target: ExecTarget{Node: "loop"}}},
 	}
@@ -601,7 +601,7 @@ func TestExec_B8_ParkCap_ShedsNewParkOnly(t *testing.T) {
 		Nodes: map[string]*ExecNode{
 			"d": delayNode("d", `5`, map[string]ExecTarget{"then": {Node: "p"}}),
 			"p": {ID: "p", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"woke"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"woke"`)}},
 		},
 		Entrypoints: map[string]ExecEntry{"e": {Target: ExecTarget{Node: "d"}}},
 	}

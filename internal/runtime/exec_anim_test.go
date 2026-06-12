@@ -34,7 +34,7 @@ func constSet(id, name, valueJSON string) *ExecNode {
 	return &ExecNode{
 		ID: id, Op: OpVariableSet,
 		Config: map[string]json.RawMessage{
-			"name": raw(`"` + name + `"`), "value": raw(valueJSON),
+			"variable": raw(`"` + name + `"`), "value": raw(valueJSON),
 		},
 	}
 }

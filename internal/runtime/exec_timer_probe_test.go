@@ -42,11 +42,11 @@ func TestExecDelay_MultipleDeadlines_FiringOrderIsByDeadline(t *testing.T) {
 			"d5":  delayNode("d5", `5`, map[string]ExecTarget{"then": {Node: "p5"}}),
 			"d1":  delayNode("d1", `1`, map[string]ExecTarget{"then": {Node: "p1"}}),
 			"p10": {ID: "p10", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"t10"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"t10"`)}},
 			"p5": {ID: "p5", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"t5"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"t5"`)}},
 			"p1": {ID: "p1", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"t1"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"t1"`)}},
 		},
 		Entrypoints: map[string]ExecEntry{
 			"e10": {Target: ExecTarget{Node: "d10"}},
@@ -106,9 +106,9 @@ func TestExecDelay_IdenticalDeadline_TieBreakByParkOrder(t *testing.T) {
 			"dA": delayNode("dA", `5`, map[string]ExecTarget{"then": {Node: "pA"}}),
 			"dB": delayNode("dB", `5`, map[string]ExecTarget{"then": {Node: "pB"}}),
 			"pA": {ID: "pA", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"A"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"A"`)}},
 			"pB": {ID: "pB", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"B"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"B"`)}},
 		},
 		Entrypoints: map[string]ExecEntry{
 			"eA": {Target: ExecTarget{Node: "dA"}},
@@ -151,9 +151,9 @@ func TestExecDelay_RearmWhenCloserParkArrives(t *testing.T) {
 			"d10": delayNode("d10", `10`, map[string]ExecTarget{"then": {Node: "p10"}}),
 			"d2":  delayNode("d2", `2`, map[string]ExecTarget{"then": {Node: "p2"}}),
 			"p10": {ID: "p10", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"t10"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"t10"`)}},
 			"p2": {ID: "p2", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"t2"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"t2"`)}},
 		},
 		Entrypoints: map[string]ExecEntry{
 			"e10": {Target: ExecTarget{Node: "d10"}},
@@ -211,7 +211,7 @@ func TestExec_B8_CapDisabled_AllParksAccepted(t *testing.T) {
 		Nodes: map[string]*ExecNode{
 			"d": delayNode("d", `100`, map[string]ExecTarget{"then": {Node: "p"}}),
 			"p": {ID: "p", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"woke"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"woke"`)}},
 		},
 		Entrypoints: map[string]ExecEntry{"e": {Target: ExecTarget{Node: "d"}}},
 	}
@@ -245,7 +245,7 @@ func TestExec_B8_CapExactBoundary(t *testing.T) {
 		Nodes: map[string]*ExecNode{
 			"d": delayNode("d", `5`, map[string]ExecTarget{"then": {Node: "p"}}),
 			"p": {ID: "p", Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"woke"`)}},
+				Config: map[string]json.RawMessage{"value": raw(`"woke"`)}},
 		},
 		Entrypoints: map[string]ExecEntry{"e": {Target: ExecTarget{Node: "d"}}},
 	}

@@ -31,11 +31,11 @@ const (
 // execFrame is one continuation frame. The mutable fields (idx) are
 // task-local: programs are shared read-only, frames are not.
 type execFrame struct {
-	kind execFrameKind
-	node string // frameNode: node to execute; frameSeq/frameLoop: owner
-	port string // frameNode: exec in-pin the edge lands on
-	idx  int    // frameSeq: next sibling; frameLoop: next index
-	last int    // for-loop: inclusive end
+	kind  execFrameKind
+	node  string            // frameNode: node to execute; frameSeq/frameLoop: owner
+	port  string            // frameNode: exec in-pin the edge lands on
+	idx   int               // frameSeq: next sibling; frameLoop: next index
+	last  int               // for-loop: inclusive end
 	items []json.RawMessage // for-each: snapshot of the iterated list
 }
 
@@ -232,7 +232,10 @@ func (s *Scene) execNode(t *execTask, id, port string) {
 		t.frames = append(t.frames, execFrame{kind: frameLoop, node: id, idx: first, last: last})
 
 	case OpForEach:
-		items := s.pullArray(t, node, "list")
+		// Seed `core.flow.for-each@1` declares the iterated data input as
+		// `items` (stdlib_seeder.py) — the compiler wires the edge into
+		// ExecDataInput.Port="items", so the pull must read that name.
+		items := s.pullArray(t, node, "items")
 		t.frames = append(t.frames, execFrame{kind: frameLoop, node: id, items: items})
 
 	case OpWhile:
@@ -301,8 +304,9 @@ func (s *Scene) applyOutcome(t *execTask, node *ExecNode, out execOpOutcome) {
 // under `__nodestate.<node_id>` (ADR 003 §3.1.3), reseeded from
 // `start_closed` on restart (the leaf is not in graph.Defaults, so a
 // cold start falls back to the config — criterion 11 holds). `enter`
-// passes through to `exit` iff open; `open`/`close`/`toggle` mutate
-// the state and fire nothing.
+// passes through to `then` iff open; `open`/`close`/`toggle` mutate
+// the state and fire nothing. Pin names are the seed's
+// (`core.flow.gate@1`: in-pins enter/open/close/toggle, out-pin then).
 func (s *Scene) execGate(t *execTask, node *ExecNode, port string) {
 	leaf := "__nodestate." + node.ID
 	open := !configBool(node.Config, "start_closed")
@@ -330,7 +334,10 @@ func (s *Scene) execGate(t *execTask, node *ExecNode, port string) {
 		setOpen(!open)
 	default: // "enter" (or an unspecified pin on a pre-partition artefact)
 		if open {
-			t.pushNodeIfNext(node, "exit")
+			// Seed `core.flow.gate@1` declares its single exec out as
+			// `then` (stdlib_seeder.py) — the compiler wires the edge into
+			// Next["then"], so the pass-through must fire that pin.
+			t.pushNodeIfNext(node, "then")
 		}
 	}
 }
@@ -342,9 +349,14 @@ func (s *Scene) execGate(t *execTask, node *ExecNode, port string) {
 // and nothing ever routes the write through the cross-scene inbox
 // fan-out.
 func (s *Scene) execVariableSet(t *execTask, node *ExecNode) {
-	name := configString(node.Config, "name")
+	// Seed `core.variable.set@1` declares its config key as `variable`
+	// (stdlib_seeder.py), byte-identical to `core.variable.get@1` — both
+	// name the graph variable. variable.get reads/writes
+	// `__vars.<key>.<variable>`; set must use the same config key so an
+	// authored set/get pair targets the same leaf.
+	name := configString(node.Config, "variable")
 	if name == "" {
-		s.logger.Error("exec: variable.set without name", "node", node.ID)
+		s.logger.Error("exec: variable.set without variable", "node", node.ID)
 		return
 	}
 	val, ok := s.pullData(t, node, "value")
@@ -356,7 +368,9 @@ func (s *Scene) execVariableSet(t *execTask, node *ExecNode) {
 
 func (s *Scene) execPrint(t *execTask, node *ExecNode) {
 	var line string
-	if raw, ok := s.pullData(t, node, "message"); ok {
+	// Seed `core.print@1` declares its data input as `value`
+	// (stdlib_seeder.py) — read that port, not `message`.
+	if raw, ok := s.pullData(t, node, "value"); ok {
 		var str string
 		if err := json.Unmarshal(raw, &str); err == nil {
 			line = str

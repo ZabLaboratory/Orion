@@ -10,9 +10,73 @@ package runtime
 // (the parity fixture shared with Blue per §6.1).
 
 import (
+	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 )
+
+// TestQueryDescriptor_GoldenParity is the Orion arm of the cross-repo
+// QueryDescriptor contract test (§6.1). It decodes the shared golden
+// fixture (internal/conformance/querydescriptor_golden.json) into Orion's
+// queryDescriptor struct and re-encodes it, asserting the round-trip is
+// byte-stable against the golden re-canonicalised the same way. The
+// QueryMe arm (QueryMe/tests/test_descriptor_contract.py) and the Blue
+// preview arm decode the SAME golden into their models — so all three
+// QueryDescriptor representations are pinned to one fixture. A field
+// rename or reorder on any side breaks its arm loudly.
+//
+// This proves the `on` JOIN pair stays a 2-tuple, the four clause lists
+// stay arrays, limit stays omitempty, and the field NAMES match across the
+// Go struct, the QueryMe Pydantic model, and Blue's preview emitter.
+func TestQueryDescriptor_GoldenParity(t *testing.T) {
+	root := goldenRoot(t)
+	raw, err := os.ReadFile(filepath.Join(root, "internal", "conformance", "querydescriptor_golden.json"))
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	var d queryDescriptor
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields() // a stray/renamed field fails here
+	if err := dec.Decode(&d); err != nil {
+		t.Fatalf("golden does not decode into Orion queryDescriptor (field drift?): %v", err)
+	}
+	// Re-encode and compare semantically against the golden — proves the
+	// struct emits the same field set the consumers (QueryMe validator)
+	// expect, with limit present and no spurious offset.
+	out, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	jsonEq(t, string(out), string(raw))
+	// Spot-check the load-bearing shape invariants explicitly.
+	if d.Table != "players" || len(d.Where) != 2 || len(d.Joins) != 1 || d.Joins[0].On != [2]string{"id", "player_id"} {
+		t.Fatalf("golden decoded to unexpected shape: %+v", d)
+	}
+	if d.Limit == nil || *d.Limit != 5 || d.Offset != nil {
+		t.Fatalf("limit/offset contract drift: limit=%v offset=%v", d.Limit, d.Offset)
+	}
+}
+
+// goldenRoot walks up to the Orion repo root (the dir holding go.mod).
+func goldenRoot(t *testing.T) string {
+	t.Helper()
+	wd, _ := os.Getwd()
+	dir := wd
+	for i := 0; i < 8; i++ {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+	t.Fatalf("repo root (go.mod) not found from %s", wd)
+	return ""
+}
 
 // runDB executes a db builder and returns the raw plan JSON. It is a thin
 // alias over runPure so these tests read against the shared helper.

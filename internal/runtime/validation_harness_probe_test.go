@@ -158,7 +158,7 @@ func TestHarness_SourceReadValidationModeCompletesThen(t *testing.T) {
 		BlueprintKey: "bp",
 		Nodes: map[string]*ExecNode{
 			"src": {ID: "src", Op: OpSourceRead,
-				Config: map[string]json.RawMessage{"source": raw(`"live-src"`)},
+				Config: map[string]json.RawMessage{"source_id": raw(`"live-src"`)},
 				Next:   map[string]ExecTarget{"then": {Node: "set"}, "error": {Node: "err"}}},
 			"set": varSet("set", "got-value", nil, nil),
 			"err": varSet("err", "got-error", nil, nil),

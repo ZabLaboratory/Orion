@@ -73,7 +73,7 @@
       "id": "setRows",
       "definition": "core.variable.set@1",
       "config": {
-        "name": "ranking_rows"
+        "variable": "ranking_rows"
       },
       "inputs": [
         {
@@ -353,7 +353,7 @@
       "id": "setRow0",
       "definition": "core.variable.set@1",
       "config": {
-        "name": "row_0"
+        "variable": "row_0"
       },
       "inputs": [
         {
@@ -437,7 +437,7 @@
       "id": "dashLit0",
       "definition": "core.literal@1",
       "config": {
-        "value": " \u2014 "
+        "value": " — "
       },
       "inputs": [],
       "outputs": [
@@ -790,7 +790,7 @@
       "id": "setRow1",
       "definition": "core.variable.set@1",
       "config": {
-        "name": "row_1"
+        "variable": "row_1"
       },
       "inputs": [
         {
@@ -874,7 +874,7 @@
       "id": "dashLit1",
       "definition": "core.literal@1",
       "config": {
-        "value": " \u2014 "
+        "value": " — "
       },
       "inputs": [],
       "outputs": [
@@ -1227,7 +1227,7 @@
       "id": "setRow2",
       "definition": "core.variable.set@1",
       "config": {
-        "name": "row_2"
+        "variable": "row_2"
       },
       "inputs": [
         {
@@ -1311,7 +1311,7 @@
       "id": "dashLit2",
       "definition": "core.literal@1",
       "config": {
-        "value": " \u2014 "
+        "value": " — "
       },
       "inputs": [],
       "outputs": [
@@ -1664,7 +1664,7 @@
       "id": "setRow3",
       "definition": "core.variable.set@1",
       "config": {
-        "name": "row_3"
+        "variable": "row_3"
       },
       "inputs": [
         {
@@ -1748,7 +1748,7 @@
       "id": "dashLit3",
       "definition": "core.literal@1",
       "config": {
-        "value": " \u2014 "
+        "value": " — "
       },
       "inputs": [],
       "outputs": [
@@ -2101,7 +2101,7 @@
       "id": "setRow4",
       "definition": "core.variable.set@1",
       "config": {
-        "name": "row_4"
+        "variable": "row_4"
       },
       "inputs": [
         {
@@ -2185,7 +2185,7 @@
       "id": "dashLit4",
       "definition": "core.literal@1",
       "config": {
-        "value": " \u2014 "
+        "value": " — "
       },
       "inputs": [],
       "outputs": [

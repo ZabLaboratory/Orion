@@ -29,6 +29,35 @@ import (
 //go:embed manifest.json
 var manifestJSON []byte
 
+//go:embed signatures.json
+var signaturesJSON []byte
+
+// NodeSignature is one core node's declared port/config NAME sets, as
+// authored in Blue's seed (stdlib_seeder.py) and vendored offline by
+// scripts/gen_conformance_manifest.py. Only names are carried — the
+// exec-port-parity gate asserts identifiers, not types.
+type NodeSignature struct {
+	Inputs  []string `json:"inputs"`
+	Outputs []string `json:"outputs"`
+	Config  []string `json:"config"`
+}
+
+type signatureFile struct {
+	Count      int                      `json:"count"`
+	Signatures map[string]NodeSignature `json:"signatures"`
+}
+
+// Signatures returns the vendored seed signature fixture keyed by node id
+// — the source of truth the exec-port-parity gate checks the runtime's
+// hardcoded port/config strings against.
+func Signatures() map[string]NodeSignature {
+	var f signatureFile
+	if err := json.Unmarshal(signaturesJSON, &f); err != nil {
+		panic(fmt.Sprintf("conformance: vendored signatures.json is corrupt: %v", err))
+	}
+	return f.Signatures
+}
+
 // ManifestEntry mirrors one Blue compute-manifest row, vendored.
 type ManifestEntry struct {
 	NodeID    string `json:"node_id"`
