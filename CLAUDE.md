@@ -7,6 +7,7 @@
 @../agents/_shared/conventions.md
 @../agents/_shared/deploy.md
 @../agents/_shared/projects.md
+@../agents/_shared/live-testing.md
 
 ## Status — v2 scaffold landed
 
