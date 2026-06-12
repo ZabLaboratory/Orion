@@ -1,0 +1,3319 @@
+{
+  "nodes": [
+    {
+      "id": "start",
+      "definition": "core.event.on-start@1",
+      "config": {},
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "start:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "qMatches",
+      "definition": "core.db.query@1",
+      "config": {
+        "datasource": "truth",
+        "descriptor": {
+          "table": "matches",
+          "select": [
+            "id",
+            "blue_team",
+            "red_team"
+          ],
+          "order": [
+            {
+              "column": "created_at",
+              "direction": "desc"
+            }
+          ],
+          "limit": 3
+        }
+      },
+      "inputs": [
+        {
+          "id": "qMatches:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "qMatches:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "qMatches:error",
+          "name": "error",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "qMatches:rows",
+          "name": "rows",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "qMatches:count",
+          "name": "count",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "setMatches",
+      "definition": "core.variable.set@1",
+      "config": {
+        "name": "matches_rows"
+      },
+      "inputs": [
+        {
+          "id": "setMatches:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "setMatches:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "setMatches:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "inMatches",
+      "definition": "core.input@1",
+      "config": {
+        "name": "__vars..matches_rows"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "inMatches:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "getMid0",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "0.id"
+      },
+      "inputs": [
+        {
+          "id": "getMid0:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getMid0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clauseLit0",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "column": "match_id",
+          "op": "="
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "clauseLit0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clause0",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "value"
+      },
+      "inputs": [
+        {
+          "id": "clause0:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "clause0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "clause0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "whereEmpty0",
+      "definition": "core.literal@1",
+      "config": {
+        "value": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "whereEmpty0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "where0",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "where0:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "where0:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "where0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "descLit0",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "table": "draft_picks",
+          "select": [
+            "side",
+            "champion",
+            "pick_order"
+          ],
+          "order": [
+            {
+              "column": "pick_order",
+              "direction": "asc"
+            }
+          ],
+          "limit": 6
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "descLit0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "desc0",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "where"
+      },
+      "inputs": [
+        {
+          "id": "desc0:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "desc0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "desc0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "query0",
+      "definition": "core.db.query@1",
+      "config": {
+        "datasource": "truth"
+      },
+      "inputs": [
+        {
+          "id": "query0:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query0:descriptor",
+          "name": "descriptor",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "query0:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query0:error",
+          "name": "error",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query0:rows",
+          "name": "rows",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "query0:count",
+          "name": "count",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "setDraft0",
+      "definition": "core.variable.set@1",
+      "config": {
+        "name": "draft_0"
+      },
+      "inputs": [
+        {
+          "id": "setDraft0:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "setDraft0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "setDraft0:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "getMid1",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "1.id"
+      },
+      "inputs": [
+        {
+          "id": "getMid1:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getMid1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clauseLit1",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "column": "match_id",
+          "op": "="
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "clauseLit1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clause1",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "value"
+      },
+      "inputs": [
+        {
+          "id": "clause1:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "clause1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "clause1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "whereEmpty1",
+      "definition": "core.literal@1",
+      "config": {
+        "value": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "whereEmpty1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "where1",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "where1:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "where1:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "where1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "descLit1",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "table": "draft_picks",
+          "select": [
+            "side",
+            "champion",
+            "pick_order"
+          ],
+          "order": [
+            {
+              "column": "pick_order",
+              "direction": "asc"
+            }
+          ],
+          "limit": 6
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "descLit1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "desc1",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "where"
+      },
+      "inputs": [
+        {
+          "id": "desc1:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "desc1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "desc1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "query1",
+      "definition": "core.db.query@1",
+      "config": {
+        "datasource": "truth"
+      },
+      "inputs": [
+        {
+          "id": "query1:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query1:descriptor",
+          "name": "descriptor",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "query1:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query1:error",
+          "name": "error",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query1:rows",
+          "name": "rows",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "query1:count",
+          "name": "count",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "setDraft1",
+      "definition": "core.variable.set@1",
+      "config": {
+        "name": "draft_1"
+      },
+      "inputs": [
+        {
+          "id": "setDraft1:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "setDraft1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "setDraft1:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "getMid2",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "2.id"
+      },
+      "inputs": [
+        {
+          "id": "getMid2:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "getMid2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clauseLit2",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "column": "match_id",
+          "op": "="
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "clauseLit2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "clause2",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "value"
+      },
+      "inputs": [
+        {
+          "id": "clause2:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "clause2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "clause2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "whereEmpty2",
+      "definition": "core.literal@1",
+      "config": {
+        "value": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "whereEmpty2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "where2",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "where2:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "where2:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "where2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "descLit2",
+      "definition": "core.literal@1",
+      "config": {
+        "value": {
+          "table": "draft_picks",
+          "select": [
+            "side",
+            "champion",
+            "pick_order"
+          ],
+          "order": [
+            {
+              "column": "pick_order",
+              "direction": "asc"
+            }
+          ],
+          "limit": 6
+        }
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "descLit2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "desc2",
+      "definition": "core.data.set-field@1",
+      "config": {
+        "path": "where"
+      },
+      "inputs": [
+        {
+          "id": "desc2:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "desc2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "desc2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "query2",
+      "definition": "core.db.query@1",
+      "config": {
+        "datasource": "truth"
+      },
+      "inputs": [
+        {
+          "id": "query2:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query2:descriptor",
+          "name": "descriptor",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "query2:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query2:error",
+          "name": "error",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "query2:rows",
+          "name": "rows",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "query2:count",
+          "name": "count",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "setDraft2",
+      "definition": "core.variable.set@1",
+      "config": {
+        "name": "draft_2"
+      },
+      "inputs": [
+        {
+          "id": "setDraft2:exec_in",
+          "name": "exec_in",
+          "type": "exec",
+          "kind": "exec"
+        },
+        {
+          "id": "setDraft2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "setDraft2:then",
+          "name": "then",
+          "type": "exec",
+          "kind": "exec"
+        }
+      ]
+    },
+    {
+      "id": "chat",
+      "definition": "quasar.twitch.chat@1",
+      "config": {
+        "channel": "g2nmathias"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "chat:payload",
+          "name": "payload",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "chat:actor",
+          "name": "actor",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "author",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "actor.display_name"
+      },
+      "inputs": [
+        {
+          "id": "author:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "author:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "text",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "payload.text"
+      },
+      "inputs": [
+        {
+          "id": "text:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "text:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "sep",
+      "definition": "core.literal@1",
+      "config": {
+        "value": ": "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "sep:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "authorSep",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "authorSep:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "authorSep:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "authorSep:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "chatLine",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "chatLine:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "chatLine:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "chatLine:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "chatOut",
+      "definition": "core.output@1",
+      "config": {
+        "name": "chat.display"
+      },
+      "inputs": [
+        {
+          "id": "chatOut:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": []
+    },
+    {
+      "id": "selText",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "payload.text"
+      },
+      "inputs": [
+        {
+          "id": "selText:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "selText:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "selLen",
+      "definition": "core.string.length@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "selLen:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "selLen:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "modN",
+      "definition": "core.literal@1",
+      "config": {
+        "value": 3
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "modN:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "draftIndex",
+      "definition": "core.math.mod@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "draftIndex:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "draftIndex:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "draftIndex:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "draftsEmpty",
+      "definition": "core.literal@1",
+      "config": {
+        "value": []
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "draftsEmpty:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "inDraft0",
+      "definition": "core.input@1",
+      "config": {
+        "name": "__vars..draft_0"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "inDraft0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "draftsApp0",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "draftsApp0:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "draftsApp0:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "draftsApp0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "inDraft1",
+      "definition": "core.input@1",
+      "config": {
+        "name": "__vars..draft_1"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "inDraft1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "draftsApp1",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "draftsApp1:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "draftsApp1:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "draftsApp1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "inDraft2",
+      "definition": "core.input@1",
+      "config": {
+        "name": "__vars..draft_2"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "inDraft2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "draftsApp2",
+      "definition": "core.data.list-append@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "draftsApp2:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "draftsApp2:element",
+          "name": "element",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "draftsApp2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "selDraft",
+      "definition": "core.data.list-at@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "selDraft:list",
+          "name": "list",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "selDraft:index",
+          "name": "index",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "selDraft:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "one",
+      "definition": "core.literal@1",
+      "config": {
+        "value": 1
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "one:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "humanIdx",
+      "definition": "core.math.add@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "humanIdx:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "humanIdx:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "humanIdx:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "idxStr",
+      "definition": "core.cast.to-string@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "idxStr:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "idxStr:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "hdrLit",
+      "definition": "core.literal@1",
+      "config": {
+        "value": "Draft #"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "hdrLit:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "header",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "header:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "header:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "header:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "side0",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "0.side"
+      },
+      "inputs": [
+        {
+          "id": "side0:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "side0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "champ0",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "0.champion"
+      },
+      "inputs": [
+        {
+          "id": "champ0:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "champ0:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "sp0",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "sp0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "lineCat0",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "lineCat0:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "lineCat0:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "lineCat0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line0",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line0:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line0:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "side1",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "1.side"
+      },
+      "inputs": [
+        {
+          "id": "side1:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "side1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "champ1",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "1.champion"
+      },
+      "inputs": [
+        {
+          "id": "champ1:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "champ1:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "sp1",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "sp1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "lineCat1",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "lineCat1:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "lineCat1:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "lineCat1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line1",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line1:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line1:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "side2",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "2.side"
+      },
+      "inputs": [
+        {
+          "id": "side2:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "side2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "champ2",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "2.champion"
+      },
+      "inputs": [
+        {
+          "id": "champ2:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "champ2:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "sp2",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "sp2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "lineCat2",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "lineCat2:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "lineCat2:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "lineCat2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line2",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line2:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line2:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "side3",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "3.side"
+      },
+      "inputs": [
+        {
+          "id": "side3:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "side3:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "champ3",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "3.champion"
+      },
+      "inputs": [
+        {
+          "id": "champ3:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "champ3:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "sp3",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "sp3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "lineCat3",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "lineCat3:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "lineCat3:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "lineCat3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line3",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line3:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line3:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "side4",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "4.side"
+      },
+      "inputs": [
+        {
+          "id": "side4:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "side4:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "champ4",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "4.champion"
+      },
+      "inputs": [
+        {
+          "id": "champ4:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "champ4:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "sp4",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "sp4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "lineCat4",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "lineCat4:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "lineCat4:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "lineCat4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line4",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line4:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line4:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "side5",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "5.side"
+      },
+      "inputs": [
+        {
+          "id": "side5:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "side5:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "champ5",
+      "definition": "core.data.get-field@1",
+      "config": {
+        "path": "5.champion"
+      },
+      "inputs": [
+        {
+          "id": "champ5:record",
+          "name": "record",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "champ5:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "sp5",
+      "definition": "core.literal@1",
+      "config": {
+        "value": " "
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "sp5:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "lineCat5",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "lineCat5:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "lineCat5:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "lineCat5:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "line5",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "line5:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "line5:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "line5:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "nl",
+      "definition": "core.literal@1",
+      "config": {
+        "value": "\n"
+      },
+      "inputs": [],
+      "outputs": [
+        {
+          "id": "nl:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldSep0",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldSep0:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldSep0:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldSep0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldLine0",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldLine0:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldLine0:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldLine0:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldSep1",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldSep1:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldSep1:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldSep1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldLine1",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldLine1:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldLine1:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldLine1:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldSep2",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldSep2:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldSep2:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldSep2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldLine2",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldLine2:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldLine2:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldLine2:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldSep3",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldSep3:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldSep3:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldSep3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldLine3",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldLine3:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldLine3:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldLine3:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldSep4",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldSep4:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldSep4:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldSep4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldLine4",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldLine4:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldLine4:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldLine4:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldSep5",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldSep5:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldSep5:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldSep5:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "foldLine5",
+      "definition": "core.string.concat@1",
+      "config": {},
+      "inputs": [
+        {
+          "id": "foldLine5:a",
+          "name": "a",
+          "type": "any",
+          "kind": "data"
+        },
+        {
+          "id": "foldLine5:b",
+          "name": "b",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": [
+        {
+          "id": "foldLine5:out",
+          "name": "out",
+          "type": "any",
+          "kind": "data"
+        }
+      ]
+    },
+    {
+      "id": "draftOut",
+      "definition": "core.output@1",
+      "config": {
+        "name": "__vars..draft_display"
+      },
+      "inputs": [
+        {
+          "id": "draftOut:value",
+          "name": "value",
+          "type": "any",
+          "kind": "data"
+        }
+      ],
+      "outputs": []
+    }
+  ],
+  "edges": [
+    {
+      "id": "m_e1",
+      "from_node": "start",
+      "from_port": "then",
+      "to_node": "qMatches",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "m_e2",
+      "from_node": "qMatches",
+      "from_port": "then",
+      "to_node": "setMatches",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "m_e3",
+      "from_node": "qMatches",
+      "from_port": "rows",
+      "to_node": "setMatches",
+      "to_port": "value"
+    },
+    {
+      "id": "p0_1",
+      "from_node": "inMatches",
+      "from_port": "out",
+      "to_node": "getMid0",
+      "to_port": "record"
+    },
+    {
+      "id": "p0_2",
+      "from_node": "clauseLit0",
+      "from_port": "out",
+      "to_node": "clause0",
+      "to_port": "record"
+    },
+    {
+      "id": "p0_3",
+      "from_node": "getMid0",
+      "from_port": "value",
+      "to_node": "clause0",
+      "to_port": "value"
+    },
+    {
+      "id": "p0_4",
+      "from_node": "whereEmpty0",
+      "from_port": "out",
+      "to_node": "where0",
+      "to_port": "list"
+    },
+    {
+      "id": "p0_5",
+      "from_node": "clause0",
+      "from_port": "out",
+      "to_node": "where0",
+      "to_port": "element"
+    },
+    {
+      "id": "p0_6",
+      "from_node": "descLit0",
+      "from_port": "out",
+      "to_node": "desc0",
+      "to_port": "record"
+    },
+    {
+      "id": "p0_7",
+      "from_node": "where0",
+      "from_port": "out",
+      "to_node": "desc0",
+      "to_port": "value"
+    },
+    {
+      "id": "p0_8",
+      "from_node": "desc0",
+      "from_port": "out",
+      "to_node": "query0",
+      "to_port": "descriptor"
+    },
+    {
+      "id": "p0_9",
+      "from_node": "query0",
+      "from_port": "rows",
+      "to_node": "setDraft0",
+      "to_port": "value"
+    },
+    {
+      "id": "p1_1",
+      "from_node": "inMatches",
+      "from_port": "out",
+      "to_node": "getMid1",
+      "to_port": "record"
+    },
+    {
+      "id": "p1_2",
+      "from_node": "clauseLit1",
+      "from_port": "out",
+      "to_node": "clause1",
+      "to_port": "record"
+    },
+    {
+      "id": "p1_3",
+      "from_node": "getMid1",
+      "from_port": "value",
+      "to_node": "clause1",
+      "to_port": "value"
+    },
+    {
+      "id": "p1_4",
+      "from_node": "whereEmpty1",
+      "from_port": "out",
+      "to_node": "where1",
+      "to_port": "list"
+    },
+    {
+      "id": "p1_5",
+      "from_node": "clause1",
+      "from_port": "out",
+      "to_node": "where1",
+      "to_port": "element"
+    },
+    {
+      "id": "p1_6",
+      "from_node": "descLit1",
+      "from_port": "out",
+      "to_node": "desc1",
+      "to_port": "record"
+    },
+    {
+      "id": "p1_7",
+      "from_node": "where1",
+      "from_port": "out",
+      "to_node": "desc1",
+      "to_port": "value"
+    },
+    {
+      "id": "p1_8",
+      "from_node": "desc1",
+      "from_port": "out",
+      "to_node": "query1",
+      "to_port": "descriptor"
+    },
+    {
+      "id": "p1_9",
+      "from_node": "query1",
+      "from_port": "rows",
+      "to_node": "setDraft1",
+      "to_port": "value"
+    },
+    {
+      "id": "p2_1",
+      "from_node": "inMatches",
+      "from_port": "out",
+      "to_node": "getMid2",
+      "to_port": "record"
+    },
+    {
+      "id": "p2_2",
+      "from_node": "clauseLit2",
+      "from_port": "out",
+      "to_node": "clause2",
+      "to_port": "record"
+    },
+    {
+      "id": "p2_3",
+      "from_node": "getMid2",
+      "from_port": "value",
+      "to_node": "clause2",
+      "to_port": "value"
+    },
+    {
+      "id": "p2_4",
+      "from_node": "whereEmpty2",
+      "from_port": "out",
+      "to_node": "where2",
+      "to_port": "list"
+    },
+    {
+      "id": "p2_5",
+      "from_node": "clause2",
+      "from_port": "out",
+      "to_node": "where2",
+      "to_port": "element"
+    },
+    {
+      "id": "p2_6",
+      "from_node": "descLit2",
+      "from_port": "out",
+      "to_node": "desc2",
+      "to_port": "record"
+    },
+    {
+      "id": "p2_7",
+      "from_node": "where2",
+      "from_port": "out",
+      "to_node": "desc2",
+      "to_port": "value"
+    },
+    {
+      "id": "p2_8",
+      "from_node": "desc2",
+      "from_port": "out",
+      "to_node": "query2",
+      "to_port": "descriptor"
+    },
+    {
+      "id": "p2_9",
+      "from_node": "query2",
+      "from_port": "rows",
+      "to_node": "setDraft2",
+      "to_port": "value"
+    },
+    {
+      "id": "c_e1",
+      "from_node": "chat",
+      "from_port": "payload",
+      "to_node": "author",
+      "to_port": "record"
+    },
+    {
+      "id": "c_e2",
+      "from_node": "chat",
+      "from_port": "payload",
+      "to_node": "text",
+      "to_port": "record"
+    },
+    {
+      "id": "c_e3",
+      "from_node": "author",
+      "from_port": "value",
+      "to_node": "authorSep",
+      "to_port": "a"
+    },
+    {
+      "id": "c_e4",
+      "from_node": "sep",
+      "from_port": "out",
+      "to_node": "authorSep",
+      "to_port": "b"
+    },
+    {
+      "id": "c_e5",
+      "from_node": "authorSep",
+      "from_port": "out",
+      "to_node": "chatLine",
+      "to_port": "a"
+    },
+    {
+      "id": "c_e6",
+      "from_node": "text",
+      "from_port": "value",
+      "to_node": "chatLine",
+      "to_port": "b"
+    },
+    {
+      "id": "c_e7",
+      "from_node": "chatLine",
+      "from_port": "out",
+      "to_node": "chatOut",
+      "to_port": "value"
+    },
+    {
+      "id": "s_e1",
+      "from_node": "chat",
+      "from_port": "payload",
+      "to_node": "selText",
+      "to_port": "record"
+    },
+    {
+      "id": "s_e2",
+      "from_node": "selText",
+      "from_port": "value",
+      "to_node": "selLen",
+      "to_port": "value"
+    },
+    {
+      "id": "s_e3",
+      "from_node": "selLen",
+      "from_port": "out",
+      "to_node": "draftIndex",
+      "to_port": "a"
+    },
+    {
+      "id": "s_e4",
+      "from_node": "modN",
+      "from_port": "out",
+      "to_node": "draftIndex",
+      "to_port": "b"
+    },
+    {
+      "id": "dl0_1",
+      "from_node": "draftsEmpty",
+      "from_port": "out",
+      "to_node": "draftsApp0",
+      "to_port": "list"
+    },
+    {
+      "id": "dl0_2",
+      "from_node": "inDraft0",
+      "from_port": "out",
+      "to_node": "draftsApp0",
+      "to_port": "element"
+    },
+    {
+      "id": "dl1_1",
+      "from_node": "draftsApp0",
+      "from_port": "out",
+      "to_node": "draftsApp1",
+      "to_port": "list"
+    },
+    {
+      "id": "dl1_2",
+      "from_node": "inDraft1",
+      "from_port": "out",
+      "to_node": "draftsApp1",
+      "to_port": "element"
+    },
+    {
+      "id": "dl2_1",
+      "from_node": "draftsApp1",
+      "from_port": "out",
+      "to_node": "draftsApp2",
+      "to_port": "list"
+    },
+    {
+      "id": "dl2_2",
+      "from_node": "inDraft2",
+      "from_port": "out",
+      "to_node": "draftsApp2",
+      "to_port": "element"
+    },
+    {
+      "id": "sd_1",
+      "from_node": "draftsApp2",
+      "from_port": "out",
+      "to_node": "selDraft",
+      "to_port": "list"
+    },
+    {
+      "id": "sd_2",
+      "from_node": "draftIndex",
+      "from_port": "out",
+      "to_node": "selDraft",
+      "to_port": "index"
+    },
+    {
+      "id": "hdr_1",
+      "from_node": "draftIndex",
+      "from_port": "out",
+      "to_node": "humanIdx",
+      "to_port": "a"
+    },
+    {
+      "id": "hdr_2",
+      "from_node": "one",
+      "from_port": "out",
+      "to_node": "humanIdx",
+      "to_port": "b"
+    },
+    {
+      "id": "hdr_3",
+      "from_node": "humanIdx",
+      "from_port": "out",
+      "to_node": "idxStr",
+      "to_port": "value"
+    },
+    {
+      "id": "hdr_4",
+      "from_node": "hdrLit",
+      "from_port": "out",
+      "to_node": "header",
+      "to_port": "a"
+    },
+    {
+      "id": "hdr_5",
+      "from_node": "idxStr",
+      "from_port": "out",
+      "to_node": "header",
+      "to_port": "b"
+    },
+    {
+      "id": "ln0_1",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "side0",
+      "to_port": "record"
+    },
+    {
+      "id": "ln0_2",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "champ0",
+      "to_port": "record"
+    },
+    {
+      "id": "ln0_3",
+      "from_node": "side0",
+      "from_port": "value",
+      "to_node": "lineCat0",
+      "to_port": "a"
+    },
+    {
+      "id": "ln0_4",
+      "from_node": "sp0",
+      "from_port": "out",
+      "to_node": "lineCat0",
+      "to_port": "b"
+    },
+    {
+      "id": "ln0_5",
+      "from_node": "lineCat0",
+      "from_port": "out",
+      "to_node": "line0",
+      "to_port": "a"
+    },
+    {
+      "id": "ln0_6",
+      "from_node": "champ0",
+      "from_port": "value",
+      "to_node": "line0",
+      "to_port": "b"
+    },
+    {
+      "id": "ln1_1",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "side1",
+      "to_port": "record"
+    },
+    {
+      "id": "ln1_2",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "champ1",
+      "to_port": "record"
+    },
+    {
+      "id": "ln1_3",
+      "from_node": "side1",
+      "from_port": "value",
+      "to_node": "lineCat1",
+      "to_port": "a"
+    },
+    {
+      "id": "ln1_4",
+      "from_node": "sp1",
+      "from_port": "out",
+      "to_node": "lineCat1",
+      "to_port": "b"
+    },
+    {
+      "id": "ln1_5",
+      "from_node": "lineCat1",
+      "from_port": "out",
+      "to_node": "line1",
+      "to_port": "a"
+    },
+    {
+      "id": "ln1_6",
+      "from_node": "champ1",
+      "from_port": "value",
+      "to_node": "line1",
+      "to_port": "b"
+    },
+    {
+      "id": "ln2_1",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "side2",
+      "to_port": "record"
+    },
+    {
+      "id": "ln2_2",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "champ2",
+      "to_port": "record"
+    },
+    {
+      "id": "ln2_3",
+      "from_node": "side2",
+      "from_port": "value",
+      "to_node": "lineCat2",
+      "to_port": "a"
+    },
+    {
+      "id": "ln2_4",
+      "from_node": "sp2",
+      "from_port": "out",
+      "to_node": "lineCat2",
+      "to_port": "b"
+    },
+    {
+      "id": "ln2_5",
+      "from_node": "lineCat2",
+      "from_port": "out",
+      "to_node": "line2",
+      "to_port": "a"
+    },
+    {
+      "id": "ln2_6",
+      "from_node": "champ2",
+      "from_port": "value",
+      "to_node": "line2",
+      "to_port": "b"
+    },
+    {
+      "id": "ln3_1",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "side3",
+      "to_port": "record"
+    },
+    {
+      "id": "ln3_2",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "champ3",
+      "to_port": "record"
+    },
+    {
+      "id": "ln3_3",
+      "from_node": "side3",
+      "from_port": "value",
+      "to_node": "lineCat3",
+      "to_port": "a"
+    },
+    {
+      "id": "ln3_4",
+      "from_node": "sp3",
+      "from_port": "out",
+      "to_node": "lineCat3",
+      "to_port": "b"
+    },
+    {
+      "id": "ln3_5",
+      "from_node": "lineCat3",
+      "from_port": "out",
+      "to_node": "line3",
+      "to_port": "a"
+    },
+    {
+      "id": "ln3_6",
+      "from_node": "champ3",
+      "from_port": "value",
+      "to_node": "line3",
+      "to_port": "b"
+    },
+    {
+      "id": "ln4_1",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "side4",
+      "to_port": "record"
+    },
+    {
+      "id": "ln4_2",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "champ4",
+      "to_port": "record"
+    },
+    {
+      "id": "ln4_3",
+      "from_node": "side4",
+      "from_port": "value",
+      "to_node": "lineCat4",
+      "to_port": "a"
+    },
+    {
+      "id": "ln4_4",
+      "from_node": "sp4",
+      "from_port": "out",
+      "to_node": "lineCat4",
+      "to_port": "b"
+    },
+    {
+      "id": "ln4_5",
+      "from_node": "lineCat4",
+      "from_port": "out",
+      "to_node": "line4",
+      "to_port": "a"
+    },
+    {
+      "id": "ln4_6",
+      "from_node": "champ4",
+      "from_port": "value",
+      "to_node": "line4",
+      "to_port": "b"
+    },
+    {
+      "id": "ln5_1",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "side5",
+      "to_port": "record"
+    },
+    {
+      "id": "ln5_2",
+      "from_node": "selDraft",
+      "from_port": "out",
+      "to_node": "champ5",
+      "to_port": "record"
+    },
+    {
+      "id": "ln5_3",
+      "from_node": "side5",
+      "from_port": "value",
+      "to_node": "lineCat5",
+      "to_port": "a"
+    },
+    {
+      "id": "ln5_4",
+      "from_node": "sp5",
+      "from_port": "out",
+      "to_node": "lineCat5",
+      "to_port": "b"
+    },
+    {
+      "id": "ln5_5",
+      "from_node": "lineCat5",
+      "from_port": "out",
+      "to_node": "line5",
+      "to_port": "a"
+    },
+    {
+      "id": "ln5_6",
+      "from_node": "champ5",
+      "from_port": "value",
+      "to_node": "line5",
+      "to_port": "b"
+    },
+    {
+      "id": "fold0_1",
+      "from_node": "header",
+      "from_port": "out",
+      "to_node": "foldSep0",
+      "to_port": "a"
+    },
+    {
+      "id": "fold0_2",
+      "from_node": "nl",
+      "from_port": "out",
+      "to_node": "foldSep0",
+      "to_port": "b"
+    },
+    {
+      "id": "fold0_3",
+      "from_node": "foldSep0",
+      "from_port": "out",
+      "to_node": "foldLine0",
+      "to_port": "a"
+    },
+    {
+      "id": "fold0_4",
+      "from_node": "line0",
+      "from_port": "out",
+      "to_node": "foldLine0",
+      "to_port": "b"
+    },
+    {
+      "id": "fold1_1",
+      "from_node": "foldLine0",
+      "from_port": "out",
+      "to_node": "foldSep1",
+      "to_port": "a"
+    },
+    {
+      "id": "fold1_2",
+      "from_node": "nl",
+      "from_port": "out",
+      "to_node": "foldSep1",
+      "to_port": "b"
+    },
+    {
+      "id": "fold1_3",
+      "from_node": "foldSep1",
+      "from_port": "out",
+      "to_node": "foldLine1",
+      "to_port": "a"
+    },
+    {
+      "id": "fold1_4",
+      "from_node": "line1",
+      "from_port": "out",
+      "to_node": "foldLine1",
+      "to_port": "b"
+    },
+    {
+      "id": "fold2_1",
+      "from_node": "foldLine1",
+      "from_port": "out",
+      "to_node": "foldSep2",
+      "to_port": "a"
+    },
+    {
+      "id": "fold2_2",
+      "from_node": "nl",
+      "from_port": "out",
+      "to_node": "foldSep2",
+      "to_port": "b"
+    },
+    {
+      "id": "fold2_3",
+      "from_node": "foldSep2",
+      "from_port": "out",
+      "to_node": "foldLine2",
+      "to_port": "a"
+    },
+    {
+      "id": "fold2_4",
+      "from_node": "line2",
+      "from_port": "out",
+      "to_node": "foldLine2",
+      "to_port": "b"
+    },
+    {
+      "id": "fold3_1",
+      "from_node": "foldLine2",
+      "from_port": "out",
+      "to_node": "foldSep3",
+      "to_port": "a"
+    },
+    {
+      "id": "fold3_2",
+      "from_node": "nl",
+      "from_port": "out",
+      "to_node": "foldSep3",
+      "to_port": "b"
+    },
+    {
+      "id": "fold3_3",
+      "from_node": "foldSep3",
+      "from_port": "out",
+      "to_node": "foldLine3",
+      "to_port": "a"
+    },
+    {
+      "id": "fold3_4",
+      "from_node": "line3",
+      "from_port": "out",
+      "to_node": "foldLine3",
+      "to_port": "b"
+    },
+    {
+      "id": "fold4_1",
+      "from_node": "foldLine3",
+      "from_port": "out",
+      "to_node": "foldSep4",
+      "to_port": "a"
+    },
+    {
+      "id": "fold4_2",
+      "from_node": "nl",
+      "from_port": "out",
+      "to_node": "foldSep4",
+      "to_port": "b"
+    },
+    {
+      "id": "fold4_3",
+      "from_node": "foldSep4",
+      "from_port": "out",
+      "to_node": "foldLine4",
+      "to_port": "a"
+    },
+    {
+      "id": "fold4_4",
+      "from_node": "line4",
+      "from_port": "out",
+      "to_node": "foldLine4",
+      "to_port": "b"
+    },
+    {
+      "id": "fold5_1",
+      "from_node": "foldLine4",
+      "from_port": "out",
+      "to_node": "foldSep5",
+      "to_port": "a"
+    },
+    {
+      "id": "fold5_2",
+      "from_node": "nl",
+      "from_port": "out",
+      "to_node": "foldSep5",
+      "to_port": "b"
+    },
+    {
+      "id": "fold5_3",
+      "from_node": "foldSep5",
+      "from_port": "out",
+      "to_node": "foldLine5",
+      "to_port": "a"
+    },
+    {
+      "id": "fold5_4",
+      "from_node": "line5",
+      "from_port": "out",
+      "to_node": "foldLine5",
+      "to_port": "b"
+    },
+    {
+      "id": "draft_out",
+      "from_node": "foldLine5",
+      "from_port": "out",
+      "to_node": "draftOut",
+      "to_port": "value"
+    },
+    {
+      "id": "x_0",
+      "from_node": "setMatches",
+      "from_port": "then",
+      "to_node": "query0",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_q0",
+      "from_node": "query0",
+      "from_port": "then",
+      "to_node": "setDraft0",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_s0",
+      "from_node": "setDraft0",
+      "from_port": "then",
+      "to_node": "query1",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_q1",
+      "from_node": "query1",
+      "from_port": "then",
+      "to_node": "setDraft1",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_s1",
+      "from_node": "setDraft1",
+      "from_port": "then",
+      "to_node": "query2",
+      "to_port": "exec_in"
+    },
+    {
+      "id": "x_q2",
+      "from_node": "query2",
+      "from_port": "then",
+      "to_node": "setDraft2",
+      "to_port": "exec_in"
+    }
+  ],
+  "variables": [
+    {
+      "id": "v_matches",
+      "name": "matches_rows",
+      "type": "core.primitive.json",
+      "value": null
+    },
+    {
+      "id": "v_draft0",
+      "name": "draft_0",
+      "type": "core.primitive.json",
+      "value": null
+    },
+    {
+      "id": "v_draft1",
+      "name": "draft_1",
+      "type": "core.primitive.json",
+      "value": null
+    },
+    {
+      "id": "v_draft2",
+      "name": "draft_2",
+      "type": "core.primitive.json",
+      "value": null
+    },
+    {
+      "id": "v_display",
+      "name": "draft_display",
+      "type": "core.primitive.string",
+      "value": ""
+    }
+  ]
+}
