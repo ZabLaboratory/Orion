@@ -209,16 +209,14 @@ func TestCanary_CompilesEmitsExecAndRunsLive(t *testing.T) {
 			IsSystem: true,
 		})
 	}
+	// HARDENED (variable-get cross-tick bug): require the counter to reach
+	// EXACTLY 4 — one increment per tick across 4 ticks. The old assertion
+	// (`!= "0"`) passed even when the counter froze at 1, masking the bug
+	// where variable.get read a never-written leaf (0) every tick so
+	// add(0,1) produced a constant 1. A real cross-tick read makes the chain
+	// on-tick → get(ticks) → add(+1) → set(ticks) climb 1,2,3,4.
 	ticksKey := canaryLeafKey(progs, "ticks")
-	deadline = time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		if v, ok := sc.state.Get(ticksKey); ok && string(v) != "" && string(v) != "0" {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	v, _ := sc.state.Get(ticksKey)
-	t.Fatalf("on-tick never advanced %s past 0 on air; last = %q", ticksKey, v)
+	waitForState(t, sc, ticksKey, `4`, 3*time.Second)
 }
 
 // canaryLeafKey returns __vars.<key>.<name> for the (single) blueprint key

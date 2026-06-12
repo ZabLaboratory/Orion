@@ -301,7 +301,19 @@ func prefixGraphNodes(nodes []GraphNode, key string) {
 		// a cross-repo byte-contract with Blue/Quasar that a scene-local
 		// blueprint key must not rewrite. The node id above still takes
 		// the prefix (ids are scene-internal).
-		if !strings.HasPrefix(nodes[i].Path, platformLeafPrefix) {
+		switch {
+		case strings.HasPrefix(nodes[i].Path, platformLeafPrefix):
+			// Platform leaves are exempt (see above) — global Quasar address.
+		case strings.HasPrefix(nodes[i].Path, varsLeafPrefix):
+			// `__vars` leaves (variable.get) namespace the blueprint key
+			// INSIDE the prefix so the read matches execVariableSet's write
+			// `__vars.<key>.<name>`, not the front-prefixed
+			// `<key>.__vars.<name>` that prefixLeaf would produce. nodeLeafPath
+			// emitted the empty-key form `__vars..<name>` (leading "." after
+			// the prefix); we substitute the real key into that empty segment.
+			rest := nodes[i].Path[len(varsLeafPrefix):] // ".<name>"
+			nodes[i].Path = varsLeafPrefix + key + rest
+		default:
 			nodes[i].Path = prefixLeaf(key, nodes[i].Path)
 		}
 		for j := range nodes[i].Upstream {
@@ -674,10 +686,27 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest, execSet map[
 // Stdlib node references whose body carries a state-leaf-bearing config
 // (ADR 004 §7.2, source: Blue/src/blue/services/stdlib_seeder.py).
 const (
-	coreOutput  = "core.output@1"  // config.name → the leaf the runtime writes
-	coreInput   = "core.input@1"   // config.name → the interface input name
-	coreLiteral = "core.literal@1" // config.value → seeds graph.Defaults
+	coreOutput      = "core.output@1"       // config.name → the leaf the runtime writes
+	coreInput       = "core.input@1"        // config.name → the interface input name
+	coreLiteral     = "core.literal@1"      // config.value → seeds graph.Defaults
+	coreVariableGet = "core.variable.get@1" // config.name → reads __vars.<key>.<name>
 )
+
+// varsLeafPrefix is the namespace `variable.set`/`variable.get` share for
+// blueprint-local state. The runtime's execVariableSet writes
+// `__vars.<blueprint_key>.<name>` (exec_interpreter.go execVariableSet) — the
+// key sits INSIDE the prefix, with the empty legacy key collapsing to the
+// double-dot form `__vars..<name>`. variable.get must READ the byte-identical
+// address, so nodeLeafPath emits exactly that empty-key form `__vars..<name>`
+// (correct as-is for a single-blueprint push, key ""), and prefixGraphNodes
+// rewrites the empty key segment to a real key for multi-blueprint scenes —
+// never front-prefixing (`<key>.__vars.<name>`), which would NOT match set.
+const varsLeafPrefix = "__vars."
+
+// varsLeaf builds the empty-key leaf form a variable.get binds to:
+// `__vars..<name>` — byte-identical to execVariableSet's write with an empty
+// BlueprintKey. prefixGraphNodes substitutes the key for a keyed blueprint.
+func varsLeaf(name string) string { return varsLeafPrefix + "." + name }
 
 // nodeLeafPath returns the state leaf a blueprint node's result is
 // written to, or "" for an intermediate compute whose outputs only feed
@@ -709,6 +738,23 @@ func nodeLeafPath(n BlueprintNode) string {
 		// A literal seeds Defaults at its own output leaf; the runtime
 		// addresses an unnamed upstream by node id (scene.go:362-371).
 		return n.ID
+	case coreVariableGet:
+		// variable.get is leaf-bound (conformance KindLeafBound): it has no
+		// runtime executor, it READS the `__vars` leaf that variable.set
+		// wrote. The pre-prefix form `__vars.<name>` becomes
+		// `__vars.<key>.<name>` after prefixGraphNodes inserts the blueprint
+		// key inside the prefix — byte-identical to execVariableSet's write
+		// (`__vars.<BlueprintKey>.<name>`). Without this, the node fell into
+		// the default ("" path) → classified input → demandValue read the
+		// node id leaf (never written) → 0 → cross-tick reads froze (the
+		// counter-stuck-at-1 bug observed on air).
+		if raw, ok := n.Config["name"]; ok {
+			var name string
+			if err := json.Unmarshal(raw, &name); err == nil && name != "" {
+				return varsLeaf(name)
+			}
+		}
+		return ""
 	default:
 		return ""
 	}
