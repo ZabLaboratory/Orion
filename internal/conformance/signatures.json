@@ -1,0 +1,716 @@
+{
+  "count": 67,
+  "signatures": {
+    "core.animation.play@1": {
+      "inputs": [
+        "animation_id",
+        "in",
+        "overlay_id",
+        "params"
+      ],
+      "outputs": [
+        "completed",
+        "then"
+      ],
+      "config": []
+    },
+    "core.cast.to-boolean@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.cast.to-float@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "ok",
+        "result"
+      ],
+      "config": []
+    },
+    "core.cast.to-integer@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "ok",
+        "result"
+      ],
+      "config": []
+    },
+    "core.cast.to-string@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.compare.equal@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.compare.greater-equal@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.compare.greater-than@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.compare.less-equal@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.compare.less-than@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.compare.not-equal@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.data.aggregate@1": {
+      "inputs": [
+        "items"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": [
+        "op"
+      ]
+    },
+    "core.data.get-field@1": {
+      "inputs": [
+        "record"
+      ],
+      "outputs": [
+        "value"
+      ],
+      "config": [
+        "path"
+      ]
+    },
+    "core.data.list-append@1": {
+      "inputs": [
+        "element",
+        "list"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.data.list-at@1": {
+      "inputs": [
+        "index",
+        "list"
+      ],
+      "outputs": [
+        "element"
+      ],
+      "config": []
+    },
+    "core.data.list-length@1": {
+      "inputs": [
+        "list"
+      ],
+      "outputs": [
+        "count"
+      ],
+      "config": []
+    },
+    "core.data.set-field@1": {
+      "inputs": [
+        "record",
+        "value"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": [
+        "path"
+      ]
+    },
+    "core.db.from@1": {
+      "inputs": [],
+      "outputs": [
+        "plan"
+      ],
+      "config": [
+        "table"
+      ]
+    },
+    "core.db.join@1": {
+      "inputs": [
+        "plan"
+      ],
+      "outputs": [
+        "plan"
+      ],
+      "config": [
+        "foreign_column",
+        "local_column",
+        "select",
+        "table"
+      ]
+    },
+    "core.db.limit@1": {
+      "inputs": [
+        "n",
+        "plan"
+      ],
+      "outputs": [
+        "plan"
+      ],
+      "config": [
+        "n"
+      ]
+    },
+    "core.db.order@1": {
+      "inputs": [
+        "plan"
+      ],
+      "outputs": [
+        "plan"
+      ],
+      "config": [
+        "column",
+        "direction"
+      ]
+    },
+    "core.db.query@1": {
+      "inputs": [
+        "descriptor",
+        "exec_in",
+        "timeout_seconds"
+      ],
+      "outputs": [
+        "count",
+        "elapsed_ms",
+        "error",
+        "rows",
+        "then"
+      ],
+      "config": [
+        "datasource"
+      ]
+    },
+    "core.db.select@1": {
+      "inputs": [
+        "plan"
+      ],
+      "outputs": [
+        "plan"
+      ],
+      "config": [
+        "columns"
+      ]
+    },
+    "core.db.where@1": {
+      "inputs": [
+        "plan",
+        "value"
+      ],
+      "outputs": [
+        "plan"
+      ],
+      "config": [
+        "column",
+        "op"
+      ]
+    },
+    "core.event.on-event@1": {
+      "inputs": [],
+      "outputs": [
+        "payload",
+        "then"
+      ],
+      "config": [
+        "event_name"
+      ]
+    },
+    "core.event.on-start@1": {
+      "inputs": [],
+      "outputs": [
+        "then"
+      ],
+      "config": []
+    },
+    "core.event.on-tick@1": {
+      "inputs": [],
+      "outputs": [
+        "delta_seconds",
+        "then"
+      ],
+      "config": []
+    },
+    "core.flow.branch@1": {
+      "inputs": [
+        "condition",
+        "in"
+      ],
+      "outputs": [
+        "false",
+        "true"
+      ],
+      "config": []
+    },
+    "core.flow.delay@1": {
+      "inputs": [
+        "in",
+        "seconds"
+      ],
+      "outputs": [
+        "then"
+      ],
+      "config": []
+    },
+    "core.flow.for-each@1": {
+      "inputs": [
+        "in",
+        "items"
+      ],
+      "outputs": [
+        "body",
+        "completed",
+        "element",
+        "index"
+      ],
+      "config": []
+    },
+    "core.flow.for-loop@1": {
+      "inputs": [
+        "first",
+        "in",
+        "last"
+      ],
+      "outputs": [
+        "body",
+        "completed",
+        "index"
+      ],
+      "config": []
+    },
+    "core.flow.gate@1": {
+      "inputs": [
+        "close",
+        "enter",
+        "open",
+        "start_closed",
+        "toggle"
+      ],
+      "outputs": [
+        "then"
+      ],
+      "config": []
+    },
+    "core.flow.select@1": {
+      "inputs": [
+        "condition",
+        "when_false",
+        "when_true"
+      ],
+      "outputs": [
+        "value"
+      ],
+      "config": []
+    },
+    "core.flow.sequence@1": {
+      "inputs": [
+        "in"
+      ],
+      "outputs": [
+        "then_0",
+        "then_1",
+        "then_2"
+      ],
+      "config": []
+    },
+    "core.flow.while@1": {
+      "inputs": [
+        "condition",
+        "in"
+      ],
+      "outputs": [
+        "body",
+        "completed"
+      ],
+      "config": []
+    },
+    "core.http-request@1": {
+      "inputs": [
+        "body",
+        "in"
+      ],
+      "outputs": [
+        "response",
+        "status",
+        "then"
+      ],
+      "config": [
+        "method",
+        "path"
+      ]
+    },
+    "core.http.request@1": {
+      "inputs": [
+        "body",
+        "headers",
+        "method",
+        "query",
+        "timeout_ms",
+        "url"
+      ],
+      "outputs": [
+        "body",
+        "error",
+        "headers",
+        "ok",
+        "status"
+      ],
+      "config": []
+    },
+    "core.input@1": {
+      "inputs": [],
+      "outputs": [
+        "value"
+      ],
+      "config": [
+        "name"
+      ]
+    },
+    "core.literal@1": {
+      "inputs": [],
+      "outputs": [
+        "value"
+      ],
+      "config": [
+        "value"
+      ]
+    },
+    "core.logic.and@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.logic.not@1": {
+      "inputs": [
+        "a"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.logic.or@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.logic.xor@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.math.abs@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.math.add@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "sum"
+      ],
+      "config": []
+    },
+    "core.math.ceil@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.math.clamp@1": {
+      "inputs": [
+        "max",
+        "min",
+        "value"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.math.div@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "quotient"
+      ],
+      "config": []
+    },
+    "core.math.floor@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.math.lerp@1": {
+      "inputs": [
+        "a",
+        "alpha",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.math.max@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.math.min@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.math.mod@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "remainder"
+      ],
+      "config": []
+    },
+    "core.math.mul@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "product"
+      ],
+      "config": []
+    },
+    "core.math.round@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.math.sub@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "diff"
+      ],
+      "config": []
+    },
+    "core.output@1": {
+      "inputs": [
+        "in",
+        "value"
+      ],
+      "outputs": [
+        "then"
+      ],
+      "config": [
+        "name"
+      ]
+    },
+    "core.print@1": {
+      "inputs": [
+        "in",
+        "value"
+      ],
+      "outputs": [
+        "then"
+      ],
+      "config": []
+    },
+    "core.source.read@1": {
+      "inputs": [],
+      "outputs": [
+        "config",
+        "descriptor",
+        "kind",
+        "name"
+      ],
+      "config": [
+        "source_id"
+      ]
+    },
+    "core.string.concat@1": {
+      "inputs": [
+        "a",
+        "b"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.string.format@1": {
+      "inputs": [
+        "args",
+        "template"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.string.length@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "count"
+      ],
+      "config": []
+    },
+    "core.string.lower@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.string.split@1": {
+      "inputs": [
+        "separator",
+        "value"
+      ],
+      "outputs": [
+        "parts"
+      ],
+      "config": []
+    },
+    "core.string.upper@1": {
+      "inputs": [
+        "value"
+      ],
+      "outputs": [
+        "result"
+      ],
+      "config": []
+    },
+    "core.variable.get@1": {
+      "inputs": [],
+      "outputs": [
+        "value"
+      ],
+      "config": [
+        "variable"
+      ]
+    },
+    "core.variable.set@1": {
+      "inputs": [
+        "in",
+        "value"
+      ],
+      "outputs": [
+        "then",
+        "value"
+      ],
+      "config": [
+        "variable"
+      ]
+    }
+  }
+}

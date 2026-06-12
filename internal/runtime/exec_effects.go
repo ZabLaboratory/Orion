@@ -295,11 +295,21 @@ func (s *Scene) effectTimeout(t *execTask, node *ExecNode) time.Duration {
 
 // --- http.request -----------------------------------------------------
 
-// execHTTPRequest is the `http.request` op. Inputs: `url` (data/config),
-// `method` (config, default GET), `body` (data/config, optional),
-// `timeout_seconds`. Outputs: `<node>.status`, `<node>.response` on
-// `then`; `<node>.error` on `error`. The egress policy is enforced in
-// the worker: URL check, then post-DNS resolved-IP vetting at dial.
+// execHTTPRequest is the `http.request` op, aligned to the canonical
+// seed node `core.http.request@1` (stdlib_seeder.py + Blue's preview
+// executor `_http_request`): `url` / `method` / `body` are DATA inputs
+// (method defaults GET); outputs bind the seed pins `status` / `ok` /
+// `body` on `then` and `error` on `error`. The egress policy is enforced
+// in the worker: URL check, then post-DNS resolved-IP vetting at dial.
+//
+// NOTE (handed to Eleven — out of this rename's scope): the seed also
+// declares `query` / `headers` DATA inputs and a `timeout_ms` integer,
+// none of which this op forwards yet (it reads the shared
+// `timeout_seconds`). Wiring query/headers is new HTTP egress surface —
+// a Bastion-cleared change, not a port rename — and is deliberately NOT
+// done here. Until then a blueprint's query/headers pins are silently
+// dropped; the parity gate flags only port-NAME drift, not this
+// behavioural gap, which is documented as a known follow-up.
 func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execOpOutcome {
 	if inPort == effectCompletePort {
 		return finishEffect(s, t, node, func(env map[string]json.RawMessage, value json.RawMessage) {
@@ -309,13 +319,23 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 			}
 			if err := json.Unmarshal(value, &out); err == nil {
 				env[node.ID+".status"] = json.RawMessage(strconv.Itoa(out.Status))
-				env[node.ID+".response"] = out.Body
+				// Seed output pins: `body` (the response) and `ok`
+				// (200..299). `response` was the legacy `core.http-request@1`
+				// pin name — not in the canonical node.
+				env[node.ID+".body"] = out.Body
+				if out.Status >= 200 && out.Status <= 299 {
+					env[node.ID+".ok"] = json.RawMessage(`true`)
+				} else {
+					env[node.ID+".ok"] = json.RawMessage(`false`)
+				}
 			}
 		})
 	}
 
 	rawURL := pullString(s, t, node, "url")
-	method := strings.ToUpper(configString(node.Config, "method"))
+	// Seed `core.http.request@1` declares `method` as a DATA input
+	// (default GET), not config — read it on demand like `url`.
+	method := strings.ToUpper(pullString(s, t, node, "method"))
 	if method == "" {
 		method = http.MethodGet
 	}
@@ -447,7 +467,7 @@ func execDBQuery(s *Scene, t *execTask, node *ExecNode, inPort string) execOpOut
 
 // execSourceRead is the `source.read` op: an on-demand fetch of a
 // DECLARED external source — the graph binding (`external_adapter`)
-// whose `key` matches the authored `source` config. The URL is the
+// whose `key` matches the authored `source_id` config. The URL is the
 // operator/author-declared binding URL (the same trust level the
 // poller already fetches on a cadence), NOT a blueprint-computed
 // destination — hence the plain client. Outputs: `<node>.value` on
@@ -461,7 +481,9 @@ func execSourceRead(s *Scene, t *execTask, node *ExecNode, inPort string) execOp
 		})
 	}
 
-	name := configString(node.Config, "source")
+	// Seed `core.source.read@1` declares its config key as `source_id`
+	// (stdlib_seeder.py) — the UUID of the data_sources row to read.
+	name := configString(node.Config, "source_id")
 	var srcURL string
 	for _, b := range s.graph.Bindings {
 		if b.Key == name && b.URL != "" {

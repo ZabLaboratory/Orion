@@ -63,7 +63,7 @@ func newAnimFixture(t *testing.T, sceneID string) *animFixture {
 				Next: map[string]runtime.ExecTarget{"completed": {Node: "set.done"}}},
 			"set.done": {ID: "set.done", Op: runtime.OpVariableSet,
 				Config: map[string]json.RawMessage{
-					"name": json.RawMessage(`"done"`), "value": json.RawMessage(`"done"`),
+					"variable": json.RawMessage(`"done"`), "value": json.RawMessage(`"done"`),
 				}},
 		},
 		Entrypoints: map[string]runtime.ExecEntry{"e": {Target: runtime.ExecTarget{Node: "anim"}}},

@@ -237,7 +237,7 @@
       "namespace": "core.db",
       "name": "query",
       "version": 1,
-      "category": "data",
+      "category": "side-effect",
       "is_pure": false,
       "is_bounded": false,
       "source": "stdlib",

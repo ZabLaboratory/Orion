@@ -233,7 +233,7 @@ func TestExec_VariableGetReadsCrossTick(t *testing.T) {
 			{ID: "tick", Compute: "core.event.on-tick@1",
 				Outputs: []compiler.BlueprintPort{ep("then"), dp("delta_seconds")}},
 			{ID: "get", Compute: "core.variable.get@1",
-				Config:  map[string]json.RawMessage{"name": raw(`"counter"`)},
+				Config:  map[string]json.RawMessage{"variable": raw(`"counter"`)},
 				Outputs: []compiler.BlueprintPort{dp("out")}},
 			{ID: "one", Compute: "core.literal@1",
 				Config:  map[string]json.RawMessage{"value": raw(`1`)},
@@ -242,7 +242,7 @@ func TestExec_VariableGetReadsCrossTick(t *testing.T) {
 				Inputs:  []compiler.BlueprintPort{dp("a"), dp("b")},
 				Outputs: []compiler.BlueprintPort{dp("out")}},
 			{ID: "set", Compute: "core.variable.set@1",
-				Config:  map[string]json.RawMessage{"name": raw(`"counter"`)},
+				Config:  map[string]json.RawMessage{"variable": raw(`"counter"`)},
 				Inputs:  []compiler.BlueprintPort{ep("exec_in"), dp("value")},
 				Outputs: []compiler.BlueprintPort{ep("then")}},
 		},
@@ -321,7 +321,8 @@ func TestExec_VariableGetReadsCrossTick(t *testing.T) {
 func varSet(id, name string, data []ExecDataInput, next map[string]ExecTarget) *ExecNode {
 	return &ExecNode{
 		ID: id, Op: OpVariableSet,
-		Config: map[string]json.RawMessage{"name": raw(`"` + name + `"`)},
+		// Seed config key for core.variable.set@1 is `variable`.
+		Config: map[string]json.RawMessage{"variable": raw(`"` + name + `"`)},
 		Data:   data, Next: next,
 	}
 }
@@ -363,7 +364,7 @@ func TestExec_BranchBothArms(t *testing.T) {
 func TestExec_SequenceOrder(t *testing.T) {
 	printNode := func(id, msg string) *ExecNode {
 		return &ExecNode{ID: id, Op: OpPrint,
-			Config: map[string]json.RawMessage{"message": raw(`"` + msg + `"`)}}
+			Config: map[string]json.RawMessage{"value": raw(`"` + msg + `"`)}}
 	}
 	prog := &ExecProgram{
 		BlueprintKey: "bp",
@@ -463,7 +464,7 @@ func TestExec_ForEach(t *testing.T) {
 		BlueprintKey: "bp",
 		Nodes: map[string]*ExecNode{
 			"each": {ID: "each", Op: OpForEach,
-				Config: map[string]json.RawMessage{"list": raw(`["x","y","z"]`)},
+				Config: map[string]json.RawMessage{"items": raw(`["x","y","z"]`)},
 				Next: map[string]ExecTarget{
 					"body":      {Node: "set.el"},
 					"completed": {Node: "set.done"},
@@ -497,7 +498,7 @@ func TestExec_GateStartClosedThenOpened(t *testing.T) {
 		Nodes: map[string]*ExecNode{
 			"gate": {ID: "gate", Op: OpGate,
 				Config: map[string]json.RawMessage{"start_closed": raw(`true`)},
-				Next:   map[string]ExecTarget{"exit": {Node: "set"}}},
+				Next:   map[string]ExecTarget{"then": {Node: "set"}}},
 			"set": varSet("set", "passed", nil, nil),
 		},
 		Entrypoints: map[string]ExecEntry{
@@ -529,7 +530,7 @@ func TestExec_GateStartClosedThenOpened(t *testing.T) {
 func TestExec_ParkSeam_SequenceContinuesWhileChildParked(t *testing.T) {
 	printNode := func(id, msg string) *ExecNode {
 		return &ExecNode{ID: id, Op: OpPrint,
-			Config: map[string]json.RawMessage{"message": raw(`"` + msg + `"`)}}
+			Config: map[string]json.RawMessage{"value": raw(`"` + msg + `"`)}}
 	}
 	prog := &ExecProgram{
 		BlueprintKey: "bp",
@@ -756,7 +757,7 @@ func TestExec_DeterministicInterleaving(t *testing.T) {
 	buildProg := func() *ExecProgram {
 		printNode := func(id, msg string) *ExecNode {
 			return &ExecNode{ID: id, Op: OpPrint,
-				Config: map[string]json.RawMessage{"message": raw(`"` + msg + `"`)}}
+				Config: map[string]json.RawMessage{"value": raw(`"` + msg + `"`)}}
 		}
 		return &ExecProgram{
 			BlueprintKey: "bp",

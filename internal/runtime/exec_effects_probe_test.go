@@ -104,8 +104,8 @@ func TestEffects_Race_TwoConcurrentEffectsResumeOwn(t *testing.T) {
 			"rB": {ID: "rB", Op: OpHTTPRequest,
 				Config: map[string]json.RawMessage{"url": raw(`"` + srv.URL + `?k=B"`)},
 				Next:   map[string]ExecTarget{"then": {Node: "sB"}}},
-			"sA": setFromPin("sA", "out", "rA", "response", nil),
-			"sB": setFromPin("sB", "out2", "rB", "response", nil),
+			"sA": setFromPin("sA", "out", "rA", "body", nil),
+			"sB": setFromPin("sB", "out2", "rB", "body", nil),
 		},
 		Entrypoints: map[string]ExecEntry{"e": {Target: ExecTarget{Node: "par"}}},
 	}

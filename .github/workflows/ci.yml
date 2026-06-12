@@ -123,6 +123,35 @@ jobs:
       - name: every served executor runs through the real engine
         run: go test -v -count=1 -run 'TestConformance_Every' ./internal/runtime/
 
+  exec-port-parity:
+    # Exec-port-parity gate (Conduit, contract-port-parity-alignment).
+    # HARD-FAILS if any port/config NAME the Orion runtime hardcodes for a
+    # served node is absent from that node's Blue seed signature
+    # (internal/conformance/signatures.json, vendored from stdlib_seeder.py
+    # by scripts/gen_conformance_manifest.py) — the class of bug where a
+    # Prism-authored node compiles and runs but the runtime reads a pin
+    # nobody wired / fires a pin nobody listens to, failing SILENTLY on
+    # air. It also asserts no seed EXEC pin is dropped by the runtime. The
+    # pinned runtime strings are double-checked against the live engine by
+    # the conformance matrix (every op is driven through a real Scene), so
+    # a pinned-but-unread string makes that probe go dark. No
+    # continue-on-error: a contract drift is a red pipeline. This job would
+    # FAIL on today's pre-fix drifts if reintroduced (for-each list/items,
+    # gate exit/then, print message/value, variable name/variable, source
+    # source/source_id, http response/body).
+    name: exec-port-parity gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: seed-vs-runtime port/config parity
+        run: go test -v -count=1 -run 'TestExecPortParity' ./internal/conformance/
+      - name: cross-repo QueryDescriptor golden parity (Orion arm)
+        run: go test -v -count=1 -run 'TestQueryDescriptor_GoldenParity' ./internal/runtime/
+
   staticcheck:
     name: staticcheck
     runs-on: ubuntu-latest
@@ -204,7 +233,7 @@ jobs:
   deploy:
     name: Deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build, e2e, perf-20k, conformance-matrix, staticcheck, golangci-lint, docker, preflight-deploy]
+    needs: [build, e2e, perf-20k, conformance-matrix, exec-port-parity, staticcheck, golangci-lint, docker, preflight-deploy]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # Job-level concurrency: a follow-up push to main lines up behind

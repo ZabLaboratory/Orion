@@ -63,7 +63,7 @@ func loopBlueprint() *compiler.BlueprintGraph {
 				Outputs: []compiler.BlueprintPort{
 					ePort("body"), ePort("completed"), dPort("index")}},
 			{ID: "set", Compute: "core.variable.set@1",
-				Config: map[string]json.RawMessage{"name": json.RawMessage(`"counter"`)},
+				Config: map[string]json.RawMessage{"variable": json.RawMessage(`"counter"`)},
 				Inputs: []compiler.BlueprintPort{
 					ePort("exec_in"), dPort("value")},
 				Outputs: []compiler.BlueprintPort{ePort("then")}},

@@ -297,7 +297,7 @@ func TestCompile_VariableGetLeafMatchesSetWrite(t *testing.T) {
 			Nodes: []BlueprintNode{{
 				ID:      "g",
 				Compute: "core.variable.get@1",
-				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"counter"`)},
+				Config:  map[string]json.RawMessage{"variable": json.RawMessage(`"counter"`)},
 				Outputs: []BlueprintPort{{Name: "out", Type: "any", Kind: "data"}},
 			}},
 		}
@@ -351,7 +351,7 @@ func TestCompile_NBlueprints_ImpureServedExecPartitioned(t *testing.T) {
 		Nodes: []BlueprintNode{{
 			ID:      "set",
 			Compute: "core.variable.set@1",
-			Config:  map[string]json.RawMessage{"name": json.RawMessage(`"c"`)},
+			Config:  map[string]json.RawMessage{"variable": json.RawMessage(`"c"`)},
 			Inputs:  []BlueprintPort{{Name: "exec_in", Type: "exec", Kind: "exec"}},
 			Outputs: []BlueprintPort{{Name: "then", Type: "exec", Kind: "exec"}},
 		}},

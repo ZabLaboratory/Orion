@@ -129,7 +129,7 @@ func nlbBlueprint() *compiler.BlueprintGraph {
 		Inputs:  []compiler.BlueprintPort{ePin("exec_in")},
 		Outputs: []compiler.BlueprintPort{ePin("then"), ePin("error"), dPin("rows"), dPin("count")}})
 	add(compiler.BlueprintNode{ID: "setRows", Compute: "core.variable.set@1",
-		Config:  map[string]json.RawMessage{"name": nlbStr("ranking_rows")},
+		Config:  map[string]json.RawMessage{"variable": nlbStr("ranking_rows")},
 		Inputs:  []compiler.BlueprintPort{ePin("exec_in"), dPin("value")},
 		Outputs: []compiler.BlueprintPort{ePin("then")}})
 	edge("start", "then", "qRank", "exec_in")
@@ -184,7 +184,7 @@ func nlbBlueprint() *compiler.BlueprintGraph {
 		// inRows). setRow_k pulls query_k.rows on its exec value pin (port
 		// preserved through pullData).
 		add(compiler.BlueprintNode{ID: s("setRow"), Compute: "core.variable.set@1",
-			Config:  map[string]json.RawMessage{"name": nlbStr(fmt.Sprintf("row_%d", k))},
+			Config:  map[string]json.RawMessage{"variable": nlbStr(fmt.Sprintf("row_%d", k))},
 			Inputs:  []compiler.BlueprintPort{ePin("exec_in"), dPin("value")},
 			Outputs: []compiler.BlueprintPort{ePin("then")}})
 		edge(s("query"), "rows", s("setRow"), "value")

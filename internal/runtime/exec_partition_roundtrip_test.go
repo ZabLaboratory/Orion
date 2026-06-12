@@ -45,7 +45,7 @@ func TestExecPartition_RoundTripFromCompiler(t *testing.T) {
 				Config:  map[string]json.RawMessage{"value": json.RawMessage(`9`)},
 				Outputs: []compiler.BlueprintPort{dataIn("out")}},
 			{ID: "set", Compute: "core.variable.set@1",
-				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"counter"`)},
+				Config:  map[string]json.RawMessage{"variable": json.RawMessage(`"counter"`)},
 				Inputs:  []compiler.BlueprintPort{execIn("exec_in"), dataIn("value")},
 				Outputs: []compiler.BlueprintPort{execOut("then")}},
 		},
@@ -107,8 +107,8 @@ func TestExecPartition_RoundTripFromCompiler(t *testing.T) {
 	if !ok || set.Op != OpVariableSet {
 		t.Fatalf("set op round-trip = %+v, want %q", set, OpVariableSet)
 	}
-	if string(set.Config["name"]) != `"counter"` {
-		t.Fatalf("set config.name round-trip = %s", set.Config["name"])
+	if string(set.Config["variable"]) != `"counter"` {
+		t.Fatalf("set config.variable round-trip = %s", set.Config["variable"])
 	}
 	if len(set.Data) != 1 || set.Data[0].Port != "value" || set.Data[0].From != "v" {
 		t.Fatalf("set data round-trip = %+v", set.Data)

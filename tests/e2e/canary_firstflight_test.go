@@ -60,7 +60,7 @@ func canaryBlueprint() *compiler.BlueprintGraph {
 				Outputs: []compiler.BlueprintPort{
 					ePort("body"), ePort("completed"), dPort("index")}},
 			{ID: "set", Compute: "core.variable.set@1",
-				Config: map[string]json.RawMessage{"name": json.RawMessage(`"counter"`)},
+				Config: map[string]json.RawMessage{"variable": json.RawMessage(`"counter"`)},
 				Inputs: []compiler.BlueprintPort{
 					ePort("exec_in"), dPort("value")},
 				Outputs: []compiler.BlueprintPort{ePort("then")}},
@@ -72,14 +72,14 @@ func canaryBlueprint() *compiler.BlueprintGraph {
 				Outputs: []compiler.BlueprintPort{dPort("out")}},
 			{ID: "print", Compute: "core.print@1",
 				Inputs: []compiler.BlueprintPort{
-					ePort("exec_in"), dPort("message")},
+					ePort("exec_in"), dPort("value")},
 				Outputs: []compiler.BlueprintPort{ePort("then")}},
 
 			// --- air-only trigger: on-tick increments a live counter ---
 			{ID: "tick", Compute: "core.event.on-tick@1",
 				Outputs: []compiler.BlueprintPort{ePort("then"), dPort("delta_seconds")}},
 			{ID: "ticksGet", Compute: "core.variable.get@1",
-				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"ticks"`)},
+				Config:  map[string]json.RawMessage{"variable": json.RawMessage(`"ticks"`)},
 				Outputs: []compiler.BlueprintPort{dPort("out")}},
 			{ID: "one", Compute: "core.literal@1",
 				Config:  map[string]json.RawMessage{"value": json.RawMessage(`1`)},
@@ -88,7 +88,7 @@ func canaryBlueprint() *compiler.BlueprintGraph {
 				Inputs:  []compiler.BlueprintPort{dPort("a"), dPort("b")},
 				Outputs: []compiler.BlueprintPort{dPort("out")}},
 			{ID: "ticksSet", Compute: "core.variable.set@1",
-				Config: map[string]json.RawMessage{"name": json.RawMessage(`"ticks"`)},
+				Config: map[string]json.RawMessage{"variable": json.RawMessage(`"ticks"`)},
 				Inputs: []compiler.BlueprintPort{
 					ePort("exec_in"), dPort("value")},
 				Outputs: []compiler.BlueprintPort{ePort("then")}},
@@ -102,7 +102,7 @@ func canaryBlueprint() *compiler.BlueprintGraph {
 			{FromNode: "loop", FromPort: "index", ToNode: "set", ToPort: "value"},
 			// print on completion
 			{FromNode: "loop", FromPort: "completed", ToNode: "print", ToPort: "exec_in"},
-			{FromNode: "doneMsg", FromPort: "out", ToNode: "print", ToPort: "message"},
+			{FromNode: "doneMsg", FromPort: "out", ToNode: "print", ToPort: "value"},
 			// on-tick → ticks = ticks + 1
 			{FromNode: "tick", FromPort: "then", ToNode: "ticksSet", ToPort: "exec_in"},
 			{FromNode: "ticksGet", FromPort: "out", ToNode: "ticksAdd", ToPort: "a"},

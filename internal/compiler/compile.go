@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/ZabLaboratory/Orion/internal/conformance"
 )
 
 // Compile turns a push envelope into a graph + bundle pair plus a
@@ -631,9 +633,20 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest, execSet map[
 		case n.Compute == coreOutput:
 			// An explicit output sink — the leaf the runtime writes to.
 			kind = "output"
-		case len(upstreams[n.ID]) == 0:
+		case len(upstreams[n.ID]) == 0 && !isSourceCompute(n.Compute):
 			// A leaf with no upstream: an adapter/operator input
 			// (core.input@1) or a constant source (core.literal@1).
+			//
+			// EXCEPTION (the `from`-table regression): a CHAIN-HEAD compute
+			// builder such as core.db.from@1 also has no upstream, yet it is
+			// a registered runtime compute (KindCompute) that derives its
+			// output ENTIRELY from config (`table`). Misclassifying it as
+			// `input` made computeAt treat it as adapter-written (it never
+			// ran dbFromFn) AND dropped its config below (config is carried
+			// for `computed` nodes only) — so the descriptor reached
+			// core.db.query@1 with an empty table → ZabRanking 422
+			// `string_too_short` on body.table → 0 rows on air. Keeping it
+			// `computed` runs the builder and carries its config.
 			kind = "input"
 		}
 
@@ -683,13 +696,26 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest, execSet map[
 	return nodes, defaults, diags
 }
 
+// isSourceCompute reports whether a node id is served by the runtime
+// COMPUTE registry (conformance KindCompute) — a pure compute with a real
+// runtime fn. Such a node must classify `computed` even with no upstream:
+// it is a chain-head builder (core.db.from@1) that derives its output from
+// config alone, NOT an adapter-written input. core.input@1 / core.literal@1
+// are KindLeafBound (not KindCompute), so they correctly stay `input`.
+// Mirrors the conformance matrix's single source of truth, the same table
+// exec_partition.go's buildExecNode consults.
+func isSourceCompute(compute string) bool {
+	sn, ok := conformance.Classify(compute)
+	return ok && sn.Kind == conformance.KindCompute
+}
+
 // Stdlib node references whose body carries a state-leaf-bearing config
 // (ADR 004 §7.2, source: Blue/src/blue/services/stdlib_seeder.py).
 const (
 	coreOutput      = "core.output@1"       // config.name → the leaf the runtime writes
 	coreInput       = "core.input@1"        // config.name → the interface input name
 	coreLiteral     = "core.literal@1"      // config.value → seeds graph.Defaults
-	coreVariableGet = "core.variable.get@1" // config.name → reads __vars.<key>.<name>
+	coreVariableGet = "core.variable.get@1" // config.variable → reads __vars.<key>.<variable>
 )
 
 // varsLeafPrefix is the namespace `variable.set`/`variable.get` share for
@@ -748,7 +774,11 @@ func nodeLeafPath(n BlueprintNode) string {
 		// the default ("" path) → classified input → demandValue read the
 		// node id leaf (never written) → 0 → cross-tick reads froze (the
 		// counter-stuck-at-1 bug observed on air).
-		if raw, ok := n.Config["name"]; ok {
+		// Seed `core.variable.get@1` declares its config key as `variable`
+		// (stdlib_seeder.py), the same key as `core.variable.set@1` — both
+		// name the graph variable. Reading the seed's key keeps a set/get
+		// pair pointed at the byte-identical `__vars.<key>.<variable>` leaf.
+		if raw, ok := n.Config["variable"]; ok {
 			var name string
 			if err := json.Unmarshal(raw, &name); err == nil && name != "" {
 				return varsLeaf(name)
