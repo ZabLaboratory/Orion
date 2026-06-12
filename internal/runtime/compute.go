@@ -82,6 +82,11 @@ func NewComputeRegistry() *ComputeRegistry {
 	// data (ADR 003 §3.4 phase 0, issue #81). compute_pure.go.
 	r.registerPureTranche()
 
+	// core.db.* descriptor-builder tranche — the six clause atomics
+	// (ADR 007 §3.1, issues #140/#141). Pure total functions over the
+	// QueryMe QueryDescriptor JSON. compute_db.go.
+	r.registerDBTranche()
+
 	return r
 }
 
