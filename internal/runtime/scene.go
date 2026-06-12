@@ -903,6 +903,18 @@ func (s *Scene) upstreamPath(nodeID string) string {
 
 // emit assembles a Delta from the dirty set and fans it out.
 func (s *Scene) emit(cause *InputMsg) {
+	// Dormant gate (ADR 008 §3.1, issue #149). A gated off-air roster
+	// instance emits NO delta backstage: it flushes and DISCARDS any dirty
+	// leaves (a stray state write still clears so it cannot accumulate and
+	// leak on reactivation — the SetActive snapshot reseeds the full state
+	// anyway). Active-only routing already keeps genuine writes from
+	// reaching a dormant scene; this is the emit-side layer 2, matching the
+	// recompute/trigger gates in applyInput. Test-session / validation
+	// clones are never gated (triggersGated == false).
+	if s.triggersGated && !s.onAir {
+		s.state.FlushDirty()
+		return
+	}
 	dirty := s.state.FlushDirty()
 	if len(dirty) == 0 && cause != nil && cause.ClientMsgID != "" {
 		// ADR 002 § 6: zero-patch delta confirms an idempotent input
