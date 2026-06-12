@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,10 +34,15 @@ import (
 // through a live Scene, and asserts the body the DB client sends carries
 // the non-empty table — exactly the threading the live exposed as broken.
 func TestDBFromWired_TableThreadsToQueryBody(t *testing.T) {
+	// gotBody is written by the httptest handler goroutine and read by the
+	// test goroutine, so it is mutex-guarded (race-clean under `go test -race`).
+	var mu sync.Mutex
 	var gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
 		gotBody = string(b)
+		mu.Unlock()
 		_, _ = w.Write([]byte(`{"rows":[{"player":"GIDEON"}],"count":1,"elapsed_ms":2}`))
 	}))
 	defer srv.Close()
@@ -123,21 +129,27 @@ func TestDBFromWired_TableThreadsToQueryBody(t *testing.T) {
 
 	// REGRESSION ASSERTION #2 (runtime): the body that reached `_query`
 	// carries the non-empty table threaded from `from`.
+	readBody := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return gotBody
+	}
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		if gotBody != "" {
+		if readBody() != "" {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if gotBody == "" {
+	body := readBody()
+	if body == "" {
 		t.Fatal("_query never received a request body")
 	}
 	var sent struct {
 		Table string `json:"table"`
 	}
-	if err := json.Unmarshal([]byte(gotBody), &sent); err != nil {
-		t.Fatalf("query body not JSON: %v (%s)", err, gotBody)
+	if err := json.Unmarshal([]byte(body), &sent); err != nil {
+		t.Fatalf("query body not JSON: %v (%s)", err, body)
 	}
 	if sent.Table != "player_scores" {
 		t.Fatalf("table did not thread from→query: body.table = %q, want \"player_scores\" (the live 422 string_too_short bug)", sent.Table)
