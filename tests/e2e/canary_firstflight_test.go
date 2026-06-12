@@ -234,8 +234,13 @@ func TestE2E_Canary_FirstFlight(t *testing.T) {
 			IsSystem: true,
 		})
 	}
+	// HARDENED (variable-get cross-tick bug): require EXACTLY 4 — one
+	// increment per tick. The old `!= "0"` predicate passed even when the
+	// counter froze at 1, because variable.get read a never-written leaf
+	// (0) every tick → add(0,1)=1 forever. A real cross-tick read makes the
+	// on-tick → get(ticks) → add(+1) → set(ticks) chain climb 1,2,3,4.
 	assertCanaryLeaf(t, show, "__vars.canary.ticks", func(v string) bool {
-		return v != "" && v != "0"
+		return v == "4"
 	})
 }
 

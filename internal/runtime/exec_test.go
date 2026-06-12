@@ -210,6 +210,114 @@ func execScene(t *testing.T, id string, prog *ExecProgram) *Scene {
 	return sc
 }
 
+// TestExec_VariableGetReadsCrossTick is the compiler→runtime end-to-end the
+// hand-built varsGraph could not give: it drives the REAL compiler on a
+// blueprint chaining variable.get + math.add + variable.set off on-tick, then
+// runs the compiled artefact through a live Scene over several ticks.
+//
+// It is the regression guard for the on-air freeze bug: variable.get fell into
+// nodeLeafPath's default (Path="") → classified input → demandValue read the
+// node-id leaf (never written) → 0 every tick → add(0,1)=1 forever. With the
+// leaf bound to `__vars..counter` (byte-identical to execVariableSet's empty-
+// key write) the read sees the prior tick's write and the counter climbs.
+func TestExec_VariableGetReadsCrossTick(t *testing.T) {
+	ep := func(n string) compiler.BlueprintPort {
+		return compiler.BlueprintPort{Name: n, Type: "exec", Kind: "exec"}
+	}
+	dp := func(n string) compiler.BlueprintPort {
+		return compiler.BlueprintPort{Name: n, Type: "any", Kind: "data"}
+	}
+	bp := &compiler.BlueprintGraph{
+		ID: "bp-xtick",
+		Nodes: []compiler.BlueprintNode{
+			{ID: "tick", Compute: "core.event.on-tick@1",
+				Outputs: []compiler.BlueprintPort{ep("then"), dp("delta_seconds")}},
+			{ID: "get", Compute: "core.variable.get@1",
+				Config:  map[string]json.RawMessage{"name": raw(`"counter"`)},
+				Outputs: []compiler.BlueprintPort{dp("out")}},
+			{ID: "one", Compute: "core.literal@1",
+				Config:  map[string]json.RawMessage{"value": raw(`1`)},
+				Outputs: []compiler.BlueprintPort{dp("out")}},
+			{ID: "add", Compute: "core.math.add@1",
+				Inputs:  []compiler.BlueprintPort{dp("a"), dp("b")},
+				Outputs: []compiler.BlueprintPort{dp("out")}},
+			{ID: "set", Compute: "core.variable.set@1",
+				Config:  map[string]json.RawMessage{"name": raw(`"counter"`)},
+				Inputs:  []compiler.BlueprintPort{ep("exec_in"), dp("value")},
+				Outputs: []compiler.BlueprintPort{ep("then")}},
+		},
+		Edges: []compiler.BlueprintEdge{
+			{FromNode: "tick", FromPort: "then", ToNode: "set", ToPort: "exec_in"},
+			{FromNode: "get", FromPort: "out", ToNode: "add", ToPort: "a"},
+			{FromNode: "one", FromPort: "out", ToNode: "add", ToPort: "b"},
+			{FromNode: "add", FromPort: "out", ToNode: "set", ToPort: "value"},
+		},
+	}
+	fetcher := &stubFetcher{
+		layout:    &compiler.CanvasLayout{Version: "v1", Root: compiler.LayoutNode{Kind: "stack", ID: "root"}},
+		blueprint: bp,
+		manifest: compiler.ComputeManifest{
+			"core.event.on-tick@1": {IsPure: true, IsBounded: true, Version: "1"},
+			"core.variable.get@1":  {IsPure: true, IsBounded: true, Version: "1"},
+			"core.variable.set@1":  {IsPure: true, IsBounded: true, Version: "1"},
+			"core.literal@1":       {IsPure: true, IsBounded: true, Version: "1"},
+			"core.math.add@1":      {IsPure: true, IsBounded: true, Version: "1"},
+		},
+	}
+
+	graph, bundle, _, err := compiler.Compile(context.Background(), "xtick-scene",
+		compiler.PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-xtick"}, fetcher)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	// The compiler must bind get's leaf byte-identically to set's write.
+	var getNode *compiler.GraphNode
+	for i := range graph.Nodes {
+		if graph.Nodes[i].Compute == "core.variable.get@1" {
+			getNode = &graph.Nodes[i]
+		}
+	}
+	if getNode == nil {
+		t.Fatal("compiled graph has no variable.get data node")
+	}
+	if getNode.Path != "__vars..counter" {
+		t.Fatalf("variable.get leaf = %q, want __vars..counter (single-blueprint empty key)", getNode.Path)
+	}
+
+	progs, err := ExecProgramsFromGraph(graph)
+	if err != nil || len(progs) == 0 {
+		t.Fatalf("exec programs: %v (n=%d)", err, len(progs))
+	}
+
+	sc := NewScene("xtick-scene", graph, bundle, NewComputeRegistry(), quietLogger())
+	for _, p := range progs {
+		sc.InstallExec(p)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go sc.Run(ctx)
+	t.Cleanup(sc.Stop)
+
+	tickEntry := ""
+	for _, p := range progs {
+		for name, e := range p.Entrypoints {
+			if e.Kind == EntryOnTick {
+				tickEntry = name
+			}
+		}
+	}
+	if tickEntry == "" {
+		t.Fatal("no on-tick entrypoint compiled")
+	}
+
+	leaf := "__vars..counter"
+	for i := 1; i <= 3; i++ {
+		mustFire(t, sc, tickEntry)
+		waitForState(t, sc, leaf, fmt.Sprintf("%d", i), time.Second)
+	}
+}
+
 func varSet(id, name string, data []ExecDataInput, next map[string]ExecTarget) *ExecNode {
 	return &ExecNode{
 		ID: id, Op: OpVariableSet,

@@ -284,6 +284,54 @@ func TestCompile_DeclaredBlueprintKeyBindingResolves(t *testing.T) {
 	}
 }
 
+// TestCompile_VariableGetLeafMatchesSetWrite pins the cross-tick fix: a
+// variable.get data node must compile to the SAME leaf the runtime's
+// execVariableSet writes — `__vars.<key>.<name>` — so a cross-tick read sees
+// the prior write. For the empty legacy key the address is `__vars..<name>`
+// (double dot); for a real blueprint key the key is namespaced INSIDE the
+// `__vars.` prefix, never in front (`<key>.__vars.<name>` would not match).
+func TestCompile_VariableGetLeafMatchesSetWrite(t *testing.T) {
+	getBP := func(id string) *BlueprintGraph {
+		return &BlueprintGraph{
+			ID: id,
+			Nodes: []BlueprintNode{{
+				ID:      "g",
+				Compute: "core.variable.get@1",
+				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"counter"`)},
+				Outputs: []BlueprintPort{{Name: "out", Type: "any", Kind: "data"}},
+			}},
+		}
+	}
+	manifest := pureManifest()
+	manifest["core.variable.get@1"] = ComputeManifestEntry{IsPure: true, Version: "1"}
+
+	cases := []struct {
+		name     string
+		refs     []BlueprintRef
+		wantLeaf string // byte-identical to execVariableSet("__vars."+key+"."+name)
+	}{
+		{"legacy empty key", []BlueprintRef{{Key: "", ID: "bp-get"}}, "__vars..counter"},
+		{"keyed blueprint", []BlueprintRef{{Key: "score", ID: "bp-get"}}, "__vars.score.counter"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeFetcher{
+				layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+				blueprints: map[string]*BlueprintGraph{"bp-get": getBP("bp-get")},
+				manifest:   manifest,
+			}
+			g, _, _, err := Compile(context.Background(), "scene-1",
+				PushEnvelope{CanvasVersion: "v1", Blueprints: tc.refs}, f)
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			if _, ok := graphNodeByPath(g, tc.wantLeaf); !ok {
+				t.Fatalf("variable.get leaf %q absent; nodes = %+v", tc.wantLeaf, g.Nodes)
+			}
+		})
+	}
+}
+
 // Per-blueprint partition (criterion 6, REWRITTEN per ADR 006 §3.2):
 // an impure DATA compute in any blueprint of an N-blueprint push is now
 // SERVED, not rejected — it stays a data node, the scene compiles. An
