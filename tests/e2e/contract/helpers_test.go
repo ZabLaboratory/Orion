@@ -80,6 +80,8 @@ func requireDB(t *testing.T) *store.Store {
 	for _, path := range []string{
 		"../../../migrations/0001_init.sql",
 		"../../../migrations/0002_lsml_bundle.sql",
+		"../../../migrations/0003_scene_validations.sql",
+		"../../../migrations/0004_show_state.sql",
 	} {
 		raw, err := os.ReadFile(path)
 		if err != nil {
