@@ -167,7 +167,7 @@ func namedLeaderboardBlueprint() *compiler.BlueprintGraph {
 		Outputs: []compiler.BlueprintPort{
 			ePort("then"), ePort("error"), dPort("rows"), dPort("count")}})
 	add(compiler.BlueprintNode{ID: "setRows", Compute: "core.variable.set@1",
-		Config:  map[string]json.RawMessage{"name": mustJSON(namedRankingRowsVar)},
+		Config:  map[string]json.RawMessage{"variable": mustJSON(namedRankingRowsVar)},
 		Inputs:  []compiler.BlueprintPort{ePort("exec_in"), dPort("value")},
 		Outputs: []compiler.BlueprintPort{ePort("then")}})
 	edge("start", "then", "qRank", "exec_in")
@@ -223,7 +223,7 @@ func namedLeaderboardBlueprint() *compiler.BlueprintGraph {
 
 		// land the returned row on a state leaf; read the pseudo back off it.
 		add(compiler.BlueprintNode{ID: s("setRow"), Compute: "core.variable.set@1",
-			Config:  map[string]json.RawMessage{"name": mustJSON(fmt.Sprintf("row_%d", k))},
+			Config:  map[string]json.RawMessage{"variable": mustJSON(fmt.Sprintf("row_%d", k))},
 			Inputs:  []compiler.BlueprintPort{ePort("exec_in"), dPort("value")},
 			Outputs: []compiler.BlueprintPort{ePort("then")}})
 		edge(s("query"), "rows", s("setRow"), "value")

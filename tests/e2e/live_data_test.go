@@ -78,7 +78,7 @@ func liveDataBlueprint() *compiler.BlueprintGraph {
 					ePort("then"), ePort("error"),
 					dPort("rows"), dPort("count")}},
 			{ID: "setRows", Compute: "core.variable.set@1",
-				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"ranking_rows"`)},
+				Config:  map[string]json.RawMessage{"variable": json.RawMessage(`"ranking_rows"`)},
 				Inputs:  []compiler.BlueprintPort{ePort("exec_in"), dPort("value")},
 				Outputs: []compiler.BlueprintPort{ePort("then")}},
 
