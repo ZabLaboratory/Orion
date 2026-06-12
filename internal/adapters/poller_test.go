@@ -62,6 +62,11 @@ func TestPoller_5HzWritesAtCadence(t *testing.T) {
 
 	show := runtime.NewShow(runtime.NewComputeRegistry(), quietLogger())
 	show.Load("scene-poll", graph, bundle)
+	// ADR 008 §3.1: the inbox routes to the ACTIVE scene only, so the
+	// polled scene must be on air for its writes to land.
+	if err := show.SetActive("scene-poll", nil); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
 	t.Cleanup(show.Stop)
 
 	loaded, _ := show.Get("scene-poll")

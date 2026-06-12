@@ -140,6 +140,14 @@ func Compile(
 	// scene leaves execPrograms empty → graph.ExecPrograms stays nil
 	// (omitempty) → byte-identical artefact to pre-lift.
 	var execPrograms []json.RawMessage
+	// eventTopics accumulates every distinct on-event topic across all
+	// exec-bearing blueprints (issue #148, ADR 008 §3.3). Each becomes a
+	// synthesized `event-topic` acceptance binding below — the mirror of
+	// platformStreamBindings — so sceneAcceptsPath routes an operator /
+	// service write to `__events.<topic>` to the scene. Topics are a flat
+	// global namespace (the runtime indexes execOnEvent by the raw event
+	// name, scene.go:657), so they are NOT key-prefixed.
+	eventTopics := map[string]struct{}{}
 	for _, kb := range keyedBlueprints {
 		// Partition first: the exec node set drives both the data-node
 		// exclusion (validateBlueprint) and the ExecProgram emission.
@@ -166,6 +174,11 @@ func Compile(
 		}
 
 		if prog != nil {
+			for _, e := range prog.Entrypoints {
+				if e.Kind == "on-event" && e.Event != "" {
+					eventTopics[e.Event] = struct{}{}
+				}
+			}
 			raw, mErr := marshalExecProgram(prog)
 			if mErr != nil {
 				d.AddError(ErrTopologySort, "blueprint %q exec program marshal: %v", kb.key, mErr)
@@ -216,6 +229,13 @@ func Compile(
 	//     inbox's sceneAcceptsPath accepts Quasar's writes. Acceptance
 	//     declaration only — no goroutine is ever spawned for this Kind.
 	adapters = append(adapters, platformStreamBindings(sorted)...)
+
+	// 6c) Synthesize one `event-topic` binding per distinct on-event topic
+	//     (issue #148, ADR 008 §3.3) — the exact mirror of (6b): pure
+	//     acceptance so sceneAcceptsPath routes a write to `__events.<topic>`
+	//     to the scene. No goroutine is ever spawned for this Kind. Topics
+	//     sorted for scene_version hash determinism (criterion #6).
+	adapters = append(adapters, eventTopicBindings(eventTopics)...)
 
 	if d.HasErrors() {
 		return nil, nil, "", &CompileError{Diagnostics: *d}
@@ -922,6 +942,45 @@ func platformStreamBindings(nodes []GraphNode) []ExternalAdapter {
 	}
 	return out
 }
+
+// eventTopicBindings synthesizes one ExternalAdapter{Kind:"event-topic"}
+// per DISTINCT on-event topic an exec-bearing blueprint declares (issue
+// #148, ADR 008 §3.3). It is the exact mirror of platformStreamBindings:
+// a PURE acceptance declaration so the inbox's sceneAcceptsPath routes an
+// operator/service write to `__events.<topic>` to the scene — without it
+// the write is silently absorbed (the gap ADR 008 closes). NO adapter
+// goroutine is ever spawned for this Kind (the poller / pg-listen
+// starters filter on their own Kind), and none of the goroutine-bearing
+// fields (URL, FrequencyHz, Channel) is set. The topic namespace is flat
+// and global (the runtime indexes execOnEvent by the raw event name), so
+// the leaf is `__events.<topic>` with no blueprint-key prefix. Topics are
+// sorted for scene_version hash determinism (criterion #6).
+func eventTopicBindings(topics map[string]struct{}) []ExternalAdapter {
+	if len(topics) == 0 {
+		return nil
+	}
+	leaves := make([]string, 0, len(topics))
+	for t := range topics {
+		leaves = append(leaves, eventsLeafPrefix+t)
+	}
+	sort.Strings(leaves)
+	out := make([]ExternalAdapter, 0, len(leaves))
+	for _, leaf := range leaves {
+		out = append(out, ExternalAdapter{
+			Key:         leaf,
+			Label:       "on-event topic",
+			Kind:        "event-topic",
+			TargetPaths: []string{leaf},
+		})
+	}
+	return out
+}
+
+// eventsLeafPrefix is the `__events.` namespace on-event entries listen
+// to (mirrors runtime.eventsPrefix, scene.go:665). The compiler cannot
+// import the runtime package (cycle), so the literal is mirrored here —
+// the same discipline execEntryKind applies to the entry-kind vocabulary.
+const eventsLeafPrefix = "__events."
 
 // wiredPorts returns the set of input port names on nodeID that have an
 // inbound edge (so their value comes from upstream, not a default).

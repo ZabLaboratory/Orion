@@ -100,6 +100,10 @@ func TestInbox_PlatformServiceScope(t *testing.T) {
 	show := runtime.NewShow(runtime.NewComputeRegistry(), quietLogger())
 	t.Cleanup(show.Stop)
 	show.Load("scene-pf", platformGraph("scene-pf"), &compiler.RenderBundle{SceneVersion: "sha256:test"})
+	// ADR 008 §3.1: writes route to the ACTIVE scene only.
+	if err := show.SetActive("scene-pf", nil); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
 	scene, _ := show.Get("scene-pf")
 	sub, _ := scene.Subscribe(16)
 
@@ -171,6 +175,11 @@ func TestInbox_DropMetricAndRateLimitedWarn(t *testing.T) {
 	show := runtime.NewShow(runtime.NewComputeRegistry(), quietLogger())
 	t.Cleanup(show.Stop)
 	show.Load("scene-pf", platformGraph("scene-pf"), &compiler.RenderBundle{SceneVersion: "sha256:test"})
+	// ADR 008 §3.1: writes route to the ACTIVE scene only. Activate
+	// before stopping so the active pointer is set and writes target it.
+	if err := show.SetActive("scene-pf", nil); err != nil {
+		t.Fatalf("SetActive: %v", err)
+	}
 	scene, _ := show.Get("scene-pf")
 	// Halt the event loop: subsequent writes pile into the scene's
 	// buffered channel until Input returns false — the refusal path.

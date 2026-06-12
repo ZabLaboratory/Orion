@@ -10,8 +10,10 @@ import (
 // Tick is the process-wide source for time-based bindings (timers,
 // schedulers). Per ADR 004 § 4.2 + tick.go note: a single goroutine
 // runs at a fixed cadence (default 60 Hz from config). It writes
-// __system.tick.now_ms into every loaded scene that declares a
-// binding on it. Scenes that don't bind it pay zero cost.
+// __system.tick.now_ms into the ACTIVE scene only (ADR 008 §3.1): a
+// dormant roster scene receives no tick, so it neither recomputes nor
+// fires on-tick. The active scene that doesn't bind the tick pays zero
+// cost (the recompute pass is dirty-driven).
 type Tick struct {
 	hz     int
 	show   *Show
@@ -72,18 +74,16 @@ func (t *Tick) loop() {
 	}
 }
 
-// fanout writes the tick to every scene that declared a binding on
-// the tick path. v1: the binding-decl awareness lives in the graph's
-// Bindings list. We iterate scenes and check their declared bindings.
+// fanout writes the tick to the ACTIVE scene only (ADR 008 §3.1). The
+// tick does NOT pass through the inbox — it routes here directly — so it
+// must follow the active pointer on its own, exactly like Inbox.Write.
+// A dormant roster scene receives no tick: zero recompute, zero on-tick
+// fire. The active scene that doesn't read __system.tick from its graph
+// never propagates it (the recompute pass is dirty-driven). A tick in
+// flight during a switch lands on whichever scene was active at the
+// Active() read — accepted, equivalent to a tick one frame earlier.
 func (t *Tick) fanout(msg InputMsg) {
-	for _, id := range t.show.IDs() {
-		scene, err := t.show.Get(id)
-		if err != nil {
-			continue
-		}
-		// In v1 we deliver the tick unconditionally; scenes that
-		// don't read __system.tick from their graph never propagate
-		// it (the recompute pass is dirty-driven). Cheap fan-out.
+	if scene := t.show.Active(); scene != nil {
 		scene.Input(msg)
 	}
 }

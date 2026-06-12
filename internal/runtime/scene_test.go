@@ -37,6 +37,56 @@ func passthroughScene(t *testing.T, id string) *Scene {
 	return NewScene(id, graph, bundle, NewComputeRegistry(), quietLogger())
 }
 
+// TestScene_DormantGatedSceneSkipsRecompute is ADR 008 §3.1 (issue #149,
+// criterion #1): a gated roster instance that is OFF AIR does no dataflow
+// recompute. A dataflow write to a declared leaf neither seeds the dirty
+// cone nor produces a delta while the scene sits backstage; once it takes
+// the antenna (on air) the same write recomputes and a delta flows. This
+// is the dataflow counterpart of the on-tick/on-event firing gate proven
+// in exec_onair_test.go.
+func TestScene_DormantGatedSceneSkipsRecompute(t *testing.T) {
+	scene := passthroughScene(t, "scene-dormant")
+	scene.GateTriggers() // roster instance; off air by default (SeedOnAir not called)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go scene.Run(ctx)
+	t.Cleanup(scene.Stop)
+
+	sub, _ := scene.Subscribe(8)
+
+	// Off air: a dataflow write must NOT produce a delta (no recompute).
+	if !scene.Input(InputMsg{Path: "score.team_a", Value: json.RawMessage(`14`), Source: "operator:u", ClientMsgID: "off-1"}) {
+		t.Fatal("inbox full")
+	}
+	select {
+	case msg := <-sub.Out:
+		if d, ok := msg.(*protocol.Delta); ok && len(d.Patches) > 0 {
+			t.Fatalf("dormant off-air scene emitted a delta %+v — recompute ran backstage", d.Patches)
+		}
+	case <-time.After(300 * time.Millisecond):
+		// No delta — the expected outcome.
+	}
+
+	// On air: the same write now recomputes and a delta flows.
+	if !scene.SetOnAir(true) {
+		t.Fatal("inbox full setting on-air")
+	}
+	if !scene.Input(InputMsg{Path: "score.team_a", Value: json.RawMessage(`21`), Source: "operator:u", ClientMsgID: "on-1"}) {
+		t.Fatal("inbox full")
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case msg := <-sub.Out:
+			if d, ok := msg.(*protocol.Delta); ok && len(d.Patches) > 0 {
+				return // delta observed on air — pass
+			}
+		case <-deadline:
+			t.Fatal("on-air scene produced no delta after dataflow write")
+		}
+	}
+}
+
 func TestScene_InputProducesDelta(t *testing.T) {
 	scene := passthroughScene(t, "scene-1")
 	ctx, cancel := context.WithCancel(context.Background())
