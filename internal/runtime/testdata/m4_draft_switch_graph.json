@@ -15,124 +15,16 @@
       ]
     },
     {
-      "id": "qMatches",
-      "definition": "core.db.query@1",
+      "id": "midLit0",
+      "definition": "core.literal@1",
       "config": {
-        "datasource": "truth",
-        "descriptor": {
-          "table": "matches",
-          "select": [
-            "id",
-            "blue_team",
-            "red_team"
-          ],
-          "order": [
-            {
-              "column": "created_at",
-              "direction": "desc"
-            }
-          ],
-          "limit": 3
-        }
-      },
-      "inputs": [
-        {
-          "id": "qMatches:exec_in",
-          "name": "exec_in",
-          "type": "exec",
-          "kind": "exec"
-        }
-      ],
-      "outputs": [
-        {
-          "id": "qMatches:then",
-          "name": "then",
-          "type": "exec",
-          "kind": "exec"
-        },
-        {
-          "id": "qMatches:error",
-          "name": "error",
-          "type": "exec",
-          "kind": "exec"
-        },
-        {
-          "id": "qMatches:rows",
-          "name": "rows",
-          "type": "any",
-          "kind": "data"
-        },
-        {
-          "id": "qMatches:count",
-          "name": "count",
-          "type": "any",
-          "kind": "data"
-        }
-      ]
-    },
-    {
-      "id": "setMatches",
-      "definition": "core.variable.set@1",
-      "config": {
-        "name": "matches_rows"
-      },
-      "inputs": [
-        {
-          "id": "setMatches:exec_in",
-          "name": "exec_in",
-          "type": "exec",
-          "kind": "exec"
-        },
-        {
-          "id": "setMatches:value",
-          "name": "value",
-          "type": "any",
-          "kind": "data"
-        }
-      ],
-      "outputs": [
-        {
-          "id": "setMatches:then",
-          "name": "then",
-          "type": "exec",
-          "kind": "exec"
-        }
-      ]
-    },
-    {
-      "id": "inMatches",
-      "definition": "core.input@1",
-      "config": {
-        "name": "__vars..matches_rows"
+        "value": "4fb6bc23-51f6-4a70-9dbc-7ba51473976d"
       },
       "inputs": [],
       "outputs": [
         {
-          "id": "inMatches:out",
+          "id": "midLit0:out",
           "name": "out",
-          "type": "any",
-          "kind": "data"
-        }
-      ]
-    },
-    {
-      "id": "getMid0",
-      "definition": "core.data.get-field@1",
-      "config": {
-        "path": "0.id"
-      },
-      "inputs": [
-        {
-          "id": "getMid0:record",
-          "name": "record",
-          "type": "any",
-          "kind": "data"
-        }
-      ],
-      "outputs": [
-        {
-          "id": "getMid0:value",
-          "name": "value",
           "type": "any",
           "kind": "data"
         }
@@ -365,23 +257,16 @@
       ]
     },
     {
-      "id": "getMid1",
-      "definition": "core.data.get-field@1",
+      "id": "midLit1",
+      "definition": "core.literal@1",
       "config": {
-        "path": "1.id"
+        "value": "1aa918cc-014e-41ca-bab3-1e7d313c66d7"
       },
-      "inputs": [
-        {
-          "id": "getMid1:record",
-          "name": "record",
-          "type": "any",
-          "kind": "data"
-        }
-      ],
+      "inputs": [],
       "outputs": [
         {
-          "id": "getMid1:value",
-          "name": "value",
+          "id": "midLit1:out",
+          "name": "out",
           "type": "any",
           "kind": "data"
         }
@@ -614,23 +499,16 @@
       ]
     },
     {
-      "id": "getMid2",
-      "definition": "core.data.get-field@1",
+      "id": "midLit2",
+      "definition": "core.literal@1",
       "config": {
-        "path": "2.id"
+        "value": "f7958e36-f646-4765-a8b1-034c1c52050e"
       },
-      "inputs": [
-        {
-          "id": "getMid2:record",
-          "name": "record",
-          "type": "any",
-          "kind": "data"
-        }
-      ],
+      "inputs": [],
       "outputs": [
         {
-          "id": "getMid2:value",
-          "name": "value",
+          "id": "midLit2:out",
+          "name": "out",
           "type": "any",
           "kind": "data"
         }
@@ -2437,34 +2315,6 @@
   ],
   "edges": [
     {
-      "id": "m_e1",
-      "from_node": "start",
-      "from_port": "then",
-      "to_node": "qMatches",
-      "to_port": "exec_in"
-    },
-    {
-      "id": "m_e2",
-      "from_node": "qMatches",
-      "from_port": "then",
-      "to_node": "setMatches",
-      "to_port": "exec_in"
-    },
-    {
-      "id": "m_e3",
-      "from_node": "qMatches",
-      "from_port": "rows",
-      "to_node": "setMatches",
-      "to_port": "value"
-    },
-    {
-      "id": "p0_1",
-      "from_node": "inMatches",
-      "from_port": "out",
-      "to_node": "getMid0",
-      "to_port": "record"
-    },
-    {
       "id": "p0_2",
       "from_node": "clauseLit0",
       "from_port": "out",
@@ -2473,8 +2323,8 @@
     },
     {
       "id": "p0_3",
-      "from_node": "getMid0",
-      "from_port": "value",
+      "from_node": "midLit0",
+      "from_port": "out",
       "to_node": "clause0",
       "to_port": "value"
     },
@@ -2521,13 +2371,6 @@
       "to_port": "value"
     },
     {
-      "id": "p1_1",
-      "from_node": "inMatches",
-      "from_port": "out",
-      "to_node": "getMid1",
-      "to_port": "record"
-    },
-    {
       "id": "p1_2",
       "from_node": "clauseLit1",
       "from_port": "out",
@@ -2536,8 +2379,8 @@
     },
     {
       "id": "p1_3",
-      "from_node": "getMid1",
-      "from_port": "value",
+      "from_node": "midLit1",
+      "from_port": "out",
       "to_node": "clause1",
       "to_port": "value"
     },
@@ -2584,13 +2427,6 @@
       "to_port": "value"
     },
     {
-      "id": "p2_1",
-      "from_node": "inMatches",
-      "from_port": "out",
-      "to_node": "getMid2",
-      "to_port": "record"
-    },
-    {
       "id": "p2_2",
       "from_node": "clauseLit2",
       "from_port": "out",
@@ -2599,8 +2435,8 @@
     },
     {
       "id": "p2_3",
-      "from_node": "getMid2",
-      "from_port": "value",
+      "from_node": "midLit2",
+      "from_port": "out",
       "to_node": "clause2",
       "to_port": "value"
     },
@@ -3243,7 +3079,7 @@
     },
     {
       "id": "x_0",
-      "from_node": "setMatches",
+      "from_node": "start",
       "from_port": "then",
       "to_node": "query0",
       "to_port": "exec_in"
@@ -3285,12 +3121,6 @@
     }
   ],
   "variables": [
-    {
-      "id": "v_matches",
-      "name": "matches_rows",
-      "type": "core.primitive.json",
-      "value": null
-    },
     {
       "id": "v_draft0",
       "name": "draft_0",
