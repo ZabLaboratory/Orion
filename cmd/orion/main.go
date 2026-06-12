@@ -292,6 +292,7 @@ func loadActiveScenes(ctx context.Context, st *store.Store, show *runtime.Show, 
 	if err != nil {
 		return err
 	}
+	loaded := map[string]bool{}
 	for _, sc := range scenes {
 		pv, err := st.GetLatestPushedVersion(ctx, sc.ID)
 		if err != nil {
@@ -310,6 +311,45 @@ func loadActiveScenes(ctx context.Context, st *store.Store, show *runtime.Show, 
 		}
 		progs := api.ExecForBoot(ctx, st, sc.ID, pv.SceneVersion, &graph, logger)
 		show.LoadExec(sc.ID.String(), &graph, &bundle, progs...)
+		loaded[sc.ID.String()] = true
+	}
+
+	// Re-activate the persisted antenna pointer (migrations/0004).
+	//
+	// The bug this fixes: loading the scenes above only fills the roster —
+	// the show's `active` pointer stays empty after a restart, so every
+	// viewer on /show/stream is closed with `scene not found` until an
+	// operator re-pushes (the workaround we retire). The scene SELECTION is
+	// persisted broadcast config (POST /show/active-scene writes it), so the
+	// antenna must come back on the same scene after a redeploy. Leaf VALUES
+	// are NOT restored — they reseed from declared defaults via LoadExec
+	// above (criterion #11): only the selection is durable, the live state
+	// stays volatile.
+	activeID, err := st.GetActiveSceneID(ctx)
+	if err != nil {
+		// Fail-soft: a persistence read failure must not abort an otherwise
+		// healthy cold start. The antenna comes back dark (the pre-fix
+		// behaviour) rather than crash-looping the process; it is logged so
+		// the degraded boot is visible.
+		logger.Error("cold start: read active scene pointer failed; antenna stays dark", "err", err)
+		return nil
+	}
+	if activeID == nil {
+		return nil // no scene was on air — nothing to re-activate
+	}
+	if !loaded[activeID.String()] {
+		// The persisted active scene is not in the active+pushed roster
+		// (archived since, or its push pointer was cleared). The FK is
+		// ON DELETE SET NULL, so a deleted scene already nulls the pointer;
+		// this guards the archived-but-not-deleted case. Leave the antenna
+		// dark rather than SetActive a scene that was never loaded.
+		logger.Warn("cold start: persisted active scene not loadable; antenna stays dark",
+			"scene_id", activeID.String())
+		return nil
+	}
+	if err := show.SetActive(activeID.String(), nil); err != nil {
+		logger.Error("cold start: re-activate persisted scene failed",
+			"scene_id", activeID.String(), "err", err)
 	}
 	return nil
 }

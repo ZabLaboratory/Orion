@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -109,4 +111,31 @@ func ExecForBoot(ctx context.Context, st *store.Store, sceneID uuid.UUID, sceneV
 		return nil
 	}
 	return progs
+}
+
+// loadSceneFromStore fetches a scene's validated pushed-version artefacts and
+// loads them into the live roster through the execForAir seam (so a validated
+// exec-bearing scene arms its exec). Used by postActiveScene to bring a
+// pushed+validated-but-not-loaded scene into the roster before SetActive, so
+// activation never fails with `scene not found` (chantier #4). Load is
+// idempotent — a no-op swap if the scene is already loaded.
+func loadSceneFromStore(ctx context.Context, deps PublicDeps, sceneID uuid.UUID) error {
+	pv, err := deps.Store.GetLatestPushedVersion(ctx, sceneID)
+	if err != nil {
+		return fmt.Errorf("load scene: latest pushed version: %w", err)
+	}
+	var graph compiler.Graph
+	var bundle compiler.RenderBundle
+	if err := json.Unmarshal(pv.GraphJSON, &graph); err != nil {
+		return fmt.Errorf("load scene: graph json: %w", err)
+	}
+	if err := json.Unmarshal(pv.BundleJSON, &bundle); err != nil {
+		return fmt.Errorf("load scene: bundle json: %w", err)
+	}
+	progs, _, err := execForAir(ctx, deps, sceneID, pv.SceneVersion, &graph)
+	if err != nil {
+		return fmt.Errorf("load scene: resolve exec: %w", err)
+	}
+	deps.Show.LoadExec(sceneID.String(), &graph, &bundle, progs...)
+	return nil
 }
