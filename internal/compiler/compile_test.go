@@ -630,96 +630,66 @@ func kindOf(nodes []GraphNode) string {
 	return nodes[0].Kind
 }
 
-// TestCompile_DBNodeOutsideQuery (ADR 006 §3.5 / issue #107): a
-// core.db.* inline-only atom placed in the main blueprint graph must
-// produce DB_NODE_OUTSIDE_QUERY — not UNKNOWN_COMPUTE_NODE and not a
-// silent pass. Tests all 6 atoms and verifies the error code.
-func TestCompile_DBNodeOutsideQuery(t *testing.T) {
-	inlineOnlyAtoms := []string{
-		"core.db.from@1",
-		"core.db.join@1",
-		"core.db.limit@1",
-		"core.db.order@1",
-		"core.db.select@1",
-		"core.db.where@1",
-	}
-	for _, atom := range inlineOnlyAtoms {
-		t.Run(atom, func(t *testing.T) {
-			bp := &BlueprintGraph{
-				ID: "bp-inline-only",
-				Nodes: []BlueprintNode{
-					{
-						ID:      "bad-node",
-						Compute: atom,
-					},
-				},
-			}
-			f := &fakeFetcher{
-				layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
-				blueprints: map[string]*BlueprintGraph{"bp-inline-only": bp},
-				manifest:   pureManifest(),
-			}
-			_, _, _, err := Compile(context.Background(), "scene-1",
-				PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-inline-only"}, f)
-			if err == nil {
-				t.Fatalf("%s in main graph: expected DB_NODE_OUTSIDE_QUERY error, got nil", atom)
-			}
-			var ce *CompileError
-			if !errors.As(err, &ce) {
-				t.Fatalf("%s in main graph: expected *CompileError, got %T: %v", atom, err, err)
-			}
-			if !ce.HasCode(ErrDBNodeOutsideQuery) {
-				t.Fatalf("%s in main graph: want DB_NODE_OUTSIDE_QUERY, got diagnostics: %v",
-					atom, ce.Diagnostics.Items)
-			}
-			// Verify it is NOT classified as UNKNOWN_COMPUTE_NODE — the
-			// diagnostic must be structural, not a capability rejection.
-			if ce.HasCode(ErrUnknownComputeNode) {
-				t.Errorf("%s in main graph: must not produce UNKNOWN_COMPUTE_NODE "+
-					"(the atom is inline-only, not unknown)", atom)
-			}
-		})
-	}
+// dataPort is a tiny helper for the db-atomics compile test.
+func dataPort(name string) BlueprintPort {
+	return BlueprintPort{Name: name, Type: "any", Kind: "data"}
 }
 
-// TestCompile_DBQueryIsServedNormally (ADR 006 §3.5 regression guard):
-// core.db.query@1 itself must NOT be treated as inline-only and must
-// compile as a normal exec-op node (no DB_NODE_OUTSIDE_QUERY diagnostic).
-func TestCompile_DBQueryIsServedNormally(t *testing.T) {
+// TestCompile_DBAtomicsCompileInMainGraph (ADR 007 §3.3 / §6.1): the six
+// core.db.* clause atomics, formerly rejected by the retired
+// DB_NODE_OUTSIDE_QUERY guard, now compile as ordinary pure data nodes in
+// the MAIN graph. A board placing all six in a from→where→join→select→
+// order→limit chain feeding a core.output sink compiles with ZERO
+// diagnostics — no inline-only error, no unknown-compute error.
+func TestCompile_DBAtomicsCompileInMainGraph(t *testing.T) {
 	manifest := pureManifest()
-	// core.db.query@1 is impure (is_pure: false in the real manifest) —
-	// add it to the test manifest as impure so validateBlueprint doesn't
-	// reject it for purity. The inline-only guard must NOT intercept it.
-	// We use IsPure:false to match the real manifest; the inline-only
-	// guard must fire BEFORE the purity check, and query@1 is not
-	// inline-only, so the purity check is what rejects it — not
-	// DB_NODE_OUTSIDE_QUERY.
-	manifest["core.db.query@1"] = ComputeManifestEntry{IsPure: false, Version: "1"}
+	for _, id := range []string{
+		"core.db.from@1", "core.db.where@1", "core.db.join@1",
+		"core.db.select@1", "core.db.order@1", "core.db.limit@1",
+	} {
+		manifest[id] = ComputeManifestEntry{IsPure: true, IsBounded: true, Version: "1"}
+	}
+	manifest["core.output@1"] = ComputeManifestEntry{IsPure: true, IsBounded: true, Version: "1"}
 
+	plan := func(id, compute string) BlueprintNode {
+		return BlueprintNode{
+			ID: id, Compute: compute,
+			Inputs:  []BlueprintPort{dataPort("plan")},
+			Outputs: []BlueprintPort{dataPort("plan")},
+		}
+	}
 	bp := &BlueprintGraph{
-		ID: "bp-query",
+		ID: "bp-db-atomics",
 		Nodes: []BlueprintNode{
-			{ID: "q", Compute: "core.db.query@1"},
+			// from is the chain head — no plan input.
+			{ID: "from", Compute: "core.db.from@1", Outputs: []BlueprintPort{dataPort("plan")}},
+			plan("where", "core.db.where@1"),
+			plan("join", "core.db.join@1"),
+			plan("select", "core.db.select@1"),
+			plan("order", "core.db.order@1"),
+			plan("limit", "core.db.limit@1"),
+			{ID: "out", Compute: "core.output@1", Inputs: []BlueprintPort{dataPort("value")}},
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "from", FromPort: "plan", ToNode: "where", ToPort: "plan"},
+			{FromNode: "where", FromPort: "plan", ToNode: "join", ToPort: "plan"},
+			{FromNode: "join", FromPort: "plan", ToNode: "select", ToPort: "plan"},
+			{FromNode: "select", FromPort: "plan", ToNode: "order", ToPort: "plan"},
+			{FromNode: "order", FromPort: "plan", ToNode: "limit", ToPort: "plan"},
+			{FromNode: "limit", FromPort: "plan", ToNode: "out", ToPort: "value"},
 		},
 	}
 	f := &fakeFetcher{
 		layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
-		blueprints: map[string]*BlueprintGraph{"bp-query": bp},
+		blueprints: map[string]*BlueprintGraph{"bp-db-atomics": bp},
 		manifest:   manifest,
 	}
-	_, _, _, err := Compile(context.Background(), "scene-1",
-		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-query"}, f)
-	if err == nil {
-		// If purity rejects it that's fine; what matters is it's not
-		// DB_NODE_OUTSIDE_QUERY.
-		return
+	_, _, version, err := Compile(context.Background(), "scene-1",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-db-atomics"}, f)
+	if err != nil {
+		t.Fatalf("db-atomics chain in main graph must compile with zero diagnostics, got: %v", err)
 	}
-	var ce *CompileError
-	if !errors.As(err, &ce) {
-		t.Fatalf("unexpected error type: %T: %v", err, err)
-	}
-	if ce.HasCode(ErrDBNodeOutsideQuery) {
-		t.Fatalf("core.db.query@1 must NOT produce DB_NODE_OUTSIDE_QUERY — " +
-			"it is a standalone exec-op, not inline-only")
+	if version == "" {
+		t.Fatal("compile minted an empty scene_version")
 	}
 }

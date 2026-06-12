@@ -45,23 +45,11 @@ def main() -> int:
     from blue.services import stdlib_seeder
     from blue.services.node_purity import purity_for
 
-    # Inline-only atoms (ADR 006 §3.5 / issue #107): core.db.*
-    # query-builder atoms that Blue's executor contract restricts to
-    # core.db.query's config.inline_graph. They are served transitively
-    # by OpDBQuery and are NOT standalone-executable (Blue raises
-    # db_node_outside_query for a main-graph placement). The generator
-    # marks them inline_only=true so the vendored manifest reflects this
-    # classification — the conformance matrix classifies them KindInlineOnly.
-    _INLINE_ONLY_IDS = frozenset(
-        {
-            "core.db.from@1",
-            "core.db.join@1",
-            "core.db.limit@1",
-            "core.db.order@1",
-            "core.db.select@1",
-            "core.db.where@1",
-        }
-    )
+    # ADR 007 §3.3: the `inline_only` flag is retired. The six core.db.*
+    # clause atomics (from/where/join/select/order/limit) are ordinary
+    # pure computes with real Orion executors (compute_db.go) and are
+    # classified KindCompute by the conformance matrix — no special-casing
+    # in the generated manifest.
 
     entries = []
     for n in stdlib_seeder._CORE_NODES:
@@ -78,8 +66,6 @@ def main() -> int:
             "source": "stdlib",
             "platform": None,
         }
-        if node_id in _INLINE_ONLY_IDS:
-            entry["inline_only"] = True
         entries.append(entry)
     for event_type, _model in CANONICAL_EVENT_TYPES:
         entries.append(

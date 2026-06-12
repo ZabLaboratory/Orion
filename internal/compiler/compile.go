@@ -10,8 +10,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-
-	"github.com/ZabLaboratory/Orion/internal/conformance"
 )
 
 // Compile turns a push envelope into a graph + bundle pair plus a
@@ -565,29 +563,16 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest, execSet map[
 		// appear in the GraphNode list. Skipping them here (and their
 		// edges fall away in topologicalSort, which drops edges to
 		// dropped nodes) closes the silent-skip hole. This check runs
-		// FIRST so exec nodes bypass the db-inline and manifest gates.
+		// FIRST so exec nodes bypass the manifest gate.
 		if _, isExec := execSet[n.ID]; isExec {
 			continue
 		}
 
-		// (b) Structural guard (ADR 006 §3.5): inline-only atoms placed in
-		// the main graph are a Blue authoring error (Blue raises
-		// db_node_outside_query for the same). Mirror that diagnostic.
-		// This check runs BEFORE the manifest lookup so the error message
-		// is structural rather than "unknown compute".
-		if sn, ok := conformance.Classify(n.Compute); ok && sn.Kind == conformance.KindInlineOnly {
-			diags = append(diags, Diagnostic{
-				Code:     ErrDBNodeOutsideQuery,
-				Severity: "error",
-				Message: fmt.Sprintf(
-					"blueprint node %s uses %q in the main graph — this atom is inline-only "+
-						"(legal only inside a core.db.query@1 config.inline_graph per Blue "+
-						"db_node_outside_query); it is served transitively by core.db.query@1",
-					n.ID, n.Compute),
-				Path: n.ID,
-			})
-			continue
-		}
+		// ADR 007 §3.3: the former structural guard (DB_NODE_OUTSIDE_QUERY)
+		// is retired. The six core.db.* clause atomics are ordinary pure
+		// computes (KindCompute, compute_db.go) composable in the main
+		// graph; they flow through the manifest lookup below like any other
+		// data node.
 
 		// (c) Manifest validation: the compute must be known to Blue.
 		// Purity is NO LONGER a rejection gate (ADR 006 §3.2): an impure
