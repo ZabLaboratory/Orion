@@ -15,9 +15,10 @@ import (
 // exceeds this. Shrinking the allowlist means lowering this number in
 // the same commit — the list only ever goes down, toward 0.
 //
-// ADR 006 §3.5 (issue #107): the 6 core.db.* inline-only atoms have
-// been reclassified KindInlineOnly and dropped from the allowlist.
-// The allowlist has reached its accepted empty end-state.
+// ADR 007 §3.3 (issues #140/#141): the 6 core.db.* clause atomics now
+// have real pure executors (KindCompute, compute_db.go) — they were
+// formerly classified inline-only. The allowlist remains at its
+// accepted empty end-state.
 const allowlistRatchet = 0
 
 // repoRoot walks up from the package dir to the repo root (the dir
@@ -53,9 +54,9 @@ func loadAllowlist(t *testing.T) []string {
 }
 
 // TestConformance_Matrix is the MASTER criterion (ADR 003 §6 #1): every
-// Blue manifest node id is either served by a registered Orion executor,
-// classified KindInlineOnly (served transitively — not a gap), or on the
-// allowlist — never silently unserved. Hard-fails CI on any uncovered id.
+// Blue manifest node id is either served by a registered Orion executor
+// or on the allowlist — never silently unserved. Hard-fails CI on any
+// uncovered id.
 func TestConformance_Matrix(t *testing.T) {
 	manifest := conformance.Manifest()
 	if len(manifest) == 0 {
@@ -70,14 +71,9 @@ func TestConformance_Matrix(t *testing.T) {
 
 	var uncovered []string
 	covered := 0
-	inlineOnlyCovered := 0
 	for _, e := range manifest {
-		sn, servedOK := conformance.Classify(e.NodeID)
+		_, servedOK := conformance.Classify(e.NodeID)
 		switch {
-		case servedOK && sn.Kind == conformance.KindInlineOnly:
-			// Inline-only: covered transitively (not a gap, not allowlisted).
-			covered++
-			inlineOnlyCovered++
 		case servedOK:
 			covered++
 		case allowSet[e.NodeID]:
@@ -94,9 +90,67 @@ func TestConformance_Matrix(t *testing.T) {
 			"shrinking debt):\n  %v", len(uncovered), uncovered)
 	}
 
-	t.Logf("conformance: %d/%d manifest nodes covered (%d inline-only via db.query), "+
-		"%d on allowlist",
-		covered, len(manifest), inlineOnlyCovered, len(allow))
+	t.Logf("conformance: %d/%d manifest nodes covered, %d on allowlist",
+		covered, len(manifest), len(allow))
+}
+
+// TestConformance_AllDBNodesServed is the ADR 007 §3.3 / §6.2 assertion:
+// all 7 core.db.* nodes are served by a real executor — the six clause
+// atomics as KindCompute (pure descriptor builders, compute_db.go) and
+// core.db.query@1 as a KindExecOp (topology A). None is inline-only,
+// none is on the allowlist. 7/7 db served.
+func TestConformance_AllDBNodesServed(t *testing.T) {
+	want := map[string]conformance.ExecutorKind{
+		"core.db.from@1":   conformance.KindCompute,
+		"core.db.where@1":  conformance.KindCompute,
+		"core.db.join@1":   conformance.KindCompute,
+		"core.db.select@1": conformance.KindCompute,
+		"core.db.order@1":  conformance.KindCompute,
+		"core.db.limit@1":  conformance.KindCompute,
+		"core.db.query@1":  conformance.KindExecOp,
+	}
+
+	// Every db.* node in the manifest must be in `want` (catches a new
+	// db node landing in Blue without an executor).
+	manifestDB := map[string]bool{}
+	for _, e := range conformance.Manifest() {
+		if e.Namespace == "core.db" {
+			manifestDB[e.NodeID] = true
+			if _, ok := want[e.NodeID]; !ok {
+				t.Errorf("manifest db node %q has no expected executor classification "+
+					"(a new core.db.* node landed unserved)", e.NodeID)
+			}
+		}
+	}
+	if len(manifestDB) != 7 {
+		t.Fatalf("expected 7 core.db.* manifest nodes, got %d: %v", len(manifestDB), manifestDB)
+	}
+
+	allowSet := map[string]bool{}
+	for _, id := range loadAllowlist(t) {
+		allowSet[id] = true
+	}
+
+	served := 0
+	for id, kind := range want {
+		sn, ok := conformance.Classify(id)
+		if !ok {
+			t.Errorf("Classify(%q) = ok=false, want served (%s)", id, kind)
+			continue
+		}
+		if sn.Kind != kind {
+			t.Errorf("Classify(%q).Kind = %q, want %q", id, sn.Kind, kind)
+			continue
+		}
+		if allowSet[id] {
+			t.Errorf("%q is served but ALSO on the allowlist — remove it", id)
+		}
+		served++
+	}
+	if served != 7 {
+		t.Fatalf("conformance: %d/7 core.db.* nodes served, want 7/7", served)
+	}
+	t.Logf("conformance: 7/7 core.db.* nodes served (6 pure builders + 1 exec op)")
 }
 
 // TestConformance_AllowlistRatchet enforces the shrink-to-zero ratchet:
@@ -179,73 +233,6 @@ func TestConformance_ExecOpClassificationMatchesRuntime(t *testing.T) {
 		if !runtimeOps[op] {
 			t.Errorf("matrix maps a node onto exec op %q which runtime.ExecOps does not "+
 				"serve", op)
-		}
-	}
-}
-
-// TestConformance_InlineOnlyAtomsAreClassifiedNotGap verifies the 6
-// core.db.* atoms are KindInlineOnly (ADR 006 §3.5 / issue #107):
-//   - Classify returns ok=true with KindInlineOnly for each.
-//   - None appears on the allowlist (they are NOT a gap).
-//   - None is KindCompute or KindExecOp (no standalone executor).
-//   - Each carries a non-empty Reason.
-//
-// Regression guard: if one of these atoms is accidentally re-added to
-// the allowlist, TestConformance_AllowlistEntriesAreRealManifestIDs
-// also catches the contradiction (served AND allowlisted).
-func TestConformance_InlineOnlyAtomsAreClassifiedNotGap(t *testing.T) {
-	want := []string{
-		"core.db.from@1",
-		"core.db.join@1",
-		"core.db.limit@1",
-		"core.db.order@1",
-		"core.db.select@1",
-		"core.db.where@1",
-	}
-	allowSet := map[string]bool{}
-	for _, id := range loadAllowlist(t) {
-		allowSet[id] = true
-	}
-	ids := conformance.InlineOnlyIDs()
-	if len(ids) != len(want) {
-		t.Fatalf("InlineOnlyIDs() returned %d entries, want %d: %v", len(ids), len(want), ids)
-	}
-	for i, id := range ids {
-		if id != want[i] {
-			t.Errorf("InlineOnlyIDs()[%d] = %q, want %q", i, id, want[i])
-		}
-	}
-	for _, id := range want {
-		sn, ok := conformance.Classify(id)
-		if !ok {
-			t.Errorf("Classify(%q) = ok=false, want KindInlineOnly", id)
-			continue
-		}
-		if sn.Kind != conformance.KindInlineOnly {
-			t.Errorf("Classify(%q).Kind = %q, want KindInlineOnly", id, sn.Kind)
-		}
-		if sn.Reason == "" {
-			t.Errorf("Classify(%q).Reason is empty — inline-only classification requires a reason", id)
-		}
-		if allowSet[id] {
-			t.Errorf("%q is KindInlineOnly but ALSO on the allowlist — remove it from the allowlist", id)
-		}
-	}
-}
-
-// TestConformance_InlineOnlyAtomsAreInManifest verifies the 6 atoms
-// actually exist in the vendored manifest (a rename in Blue would remove
-// them from the manifest and this test would catch the drift).
-func TestConformance_InlineOnlyAtomsAreInManifest(t *testing.T) {
-	known := map[string]bool{}
-	for _, e := range conformance.Manifest() {
-		known[e.NodeID] = true
-	}
-	for _, id := range conformance.InlineOnlyIDs() {
-		if !known[id] {
-			t.Errorf("inline-only id %q is not in the vendored manifest — "+
-				"either the atom was renamed in Blue (update manifest.json) "+
-				"or InlineOnlyIDs() has a stale entry", id)
 		}
 	}
 }
