@@ -568,7 +568,19 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest, execSet map[
 	inputs := make(map[string][]GraphInput)
 	for _, e := range b.Edges {
 		upstreams[e.ToNode] = append(upstreams[e.ToNode], e.FromNode)
-		inputs[e.ToNode] = append(inputs[e.ToNode], GraphInput{From: e.FromNode, Port: e.ToPort})
+		// Carry from_port ONLY when the producer is an EXEC node: a counted
+		// loop exposes several data-out pins (`index`/`element`) and the
+		// consumer must name which one, so demandValue can resolve the
+		// per-iteration env pin `<from>.<from_port>`. Ordinary data producers
+		// have a single output pin — their from_port is decorative, and
+		// emitting it would break the byte-identical-artefact invariant for
+		// every pre-existing pure-dataflow scene (ADR 006 §3.1). So it stays
+		// omitted there.
+		gi := GraphInput{From: e.FromNode, Port: e.ToPort}
+		if _, fromExec := execSet[e.FromNode]; fromExec {
+			gi.FromPort = e.FromPort
+		}
+		inputs[e.ToNode] = append(inputs[e.ToNode], gi)
 	}
 
 	for _, n := range b.Nodes {
