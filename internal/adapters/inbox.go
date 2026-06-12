@@ -127,18 +127,26 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 		IsSystem:    w.system,
 	}
 
-	// Route to the ACTIVE scene only (ADR 008 §3.1, supersedes ADR 004
-	// § 5 rule 4 fan-out). Only the scene on air executes its blues; the
-	// rest of the roster is a frozen backstage that receives no write, so
-	// it recomputes nothing and fires nothing (dormance by construction —
-	// the onAir gate of ADR 006 §3.4 stays as defence in depth). The
-	// active pointer is read once under the show lock (Active); a write in
-	// flight during a switch lands on whichever scene was active at that
-	// read — accepted and documented (events are live-only, ADR 008 R1).
-	scene := in.show.Active()
-	if scene == nil {
-		// No active scene: nothing on air to receive the write. Absorbed,
-		// exactly as a path no scene declares is absorbed today.
+	// Route to the union {active} ∪ {promoted stream-rules} (ADR 009 §3.3,
+	// extending ADR 008 §3.1). The active scene executes its blues AND
+	// each promoted rule that declares the path; sceneAcceptsPath gates
+	// every target individually. This is NOT the ADR 004 §5 rule-4 roster
+	// fan-out: RouteTargets is bounded to the operator-promoted set
+	// (typically 0–3), so the rest of the roster — a scene neither active
+	// nor promoted — is absent from the slice and receives NOTHING, a
+	// frozen backstage by non-routage (criterion #1 ADR 008 stays vert).
+	// The set is snapshotted once under the show RLock; a write in flight
+	// during a (de)activation/(de)promotion lands on the set as of that
+	// read — accepted, events are live-only (ADR 009 §3.3).
+	//
+	// Reserved for issue #155: the `show.emit` rule→active injection is a
+	// distinct active-only system path that must NOT reuse this union
+	// (routing it here would cascade rule→rule). #155 targets
+	// in.show.Active() directly for that path. See ADR 009 §3.6.
+	targets := in.show.RouteTargets()
+	if len(targets) == 0 {
+		// No active scene and no promoted rule: nothing to receive the
+		// write. Absorbed, exactly as a path no scene declares is absorbed.
 		in.audit.Record(AuditEntry{
 			Source:    w.Source,
 			Path:      w.Path,
@@ -147,17 +155,22 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 		})
 		return nil
 	}
-	if sceneAcceptsPath(scene, w.Path, w.system) {
+	for _, scene := range targets {
+		if !sceneAcceptsPath(scene, w.Path, w.system) {
+			continue
+		}
 		// scene.Input's return is consumed, not discarded (ADR 003 §3.3
 		// E2, issue #84): false means the scene's event loop refused the
 		// write (full channel) — the value is LOST, which must be
 		// observable (`orion_inbox_dropped_total`) without log-spamming
-		// under the very flood that causes it.
+		// under the very flood that causes it. Drop metric is per scene id.
 		if !scene.Input(msg) {
-			in.noteDrop(in.show.ActiveID(), w.Path)
+			in.noteDrop(scene.ID(), w.Path)
 		}
 	}
 
+	// One audit record per accepted write (ADR 009 §3.3 — the inbox stays
+	// the single point of audit regardless of fan-out cardinality).
 	in.audit.Record(AuditEntry{
 		Source:    w.Source,
 		Path:      w.Path,

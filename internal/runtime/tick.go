@@ -74,16 +74,18 @@ func (t *Tick) loop() {
 	}
 }
 
-// fanout writes the tick to the ACTIVE scene only (ADR 008 §3.1). The
-// tick does NOT pass through the inbox — it routes here directly — so it
-// must follow the active pointer on its own, exactly like Inbox.Write.
-// A dormant roster scene receives no tick: zero recompute, zero on-tick
-// fire. The active scene that doesn't read __system.tick from its graph
-// never propagates it (the recompute pass is dirty-driven). A tick in
-// flight during a switch lands on whichever scene was active at the
-// Active() read — accepted, equivalent to a tick one frame earlier.
+// fanout writes the tick to the union {active} ∪ {promoted stream-rules}
+// (ADR 009 §3.3, extending ADR 008 §3.1) — a rule's on-tick chain lives
+// in continu, also without an active scene. The tick does NOT pass
+// through the inbox — it routes here directly — so it reads RouteTargets
+// itself, exactly like Inbox.Write. A dormant roster scene (neither
+// active nor promoted) is absent from the set and receives no tick: zero
+// recompute, zero on-tick fire (criterion #1 ADR 008 stays vert). A scene
+// that doesn't read __system.tick never propagates it (dirty-driven). A
+// tick in flight during a switch/(de)promotion lands on the set as of the
+// RouteTargets read — accepted, equivalent to a tick one frame earlier.
 func (t *Tick) fanout(msg InputMsg) {
-	if scene := t.show.Active(); scene != nil {
+	for _, scene := range t.show.RouteTargets() {
 		scene.Input(msg)
 	}
 }
