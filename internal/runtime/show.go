@@ -256,6 +256,14 @@ func (sh *Show) Active() *Scene {
 	return sh.scenes[sh.active]
 }
 
+// ActiveID returns the id of the currently active scene ("" if none).
+// Used by the inbox to tag a drop metric without re-deriving the id.
+func (sh *Show) ActiveID() string {
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	return sh.active
+}
+
 // SetActive flips the active-scene pointer, migrates every live-show
 // subscriber from the previous scene to the new one, and emits
 // scene_changed + fresh snapshot on the destination. ADR 004 § 4.4 +
@@ -387,9 +395,9 @@ func (sh *Show) SubscribeLive(buf int) (*Subscription, *protocol.Snapshot, error
 // already active, this behaves like SubscribeLive but the caller may
 // choose to ignore the snapshot (a writer-only client does).
 //
-// Writes are unaffected by attachment: the inbox fans every accepted
-// write out to whichever loaded scenes declare the path (Inbox.Write),
-// independently of this subscription.
+// Writes are unaffected by attachment: the inbox routes every accepted
+// write to the ACTIVE scene iff it declares the path (Inbox.Write,
+// ADR 008 §3.1), independently of this subscription.
 func (sh *Show) SubscribeLiveWriter(buf int) (*Subscription, *protocol.Snapshot) {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()

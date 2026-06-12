@@ -629,8 +629,25 @@ func (s *Scene) applyInput(msg InputMsg) {
 		s.onAir = *msg.SetOnAir
 		return
 	}
-	if s.state.Set(msg.Path, msg.Value) {
+	// Dataflow gate (ADR 008 §3.1, issue #149). A gated roster instance
+	// off air does NO dataflow recompute: the leaf is still written
+	// (state is single-source-of-truth and a future reactivation reads
+	// it), but the dirty cone is NOT seeded, so no recompute pass runs and
+	// no delta is emitted backstage. This is the dataflow counterpart of
+	// the on-tick/on-event firing gate below — both layer 2 (defence in
+	// depth) atop active-only routing, which already keeps genuine writes
+	// from reaching a dormant scene at all (only system/test writes can).
+	// A test-session / validation clone is never gated (triggersGated ==
+	// false), so its dataflow is unaffected. State writes performed BY
+	// exec tasks go through the effector on the scene goroutine, not this
+	// path, so a freshly reactivated scene's on-start chain mutates state
+	// and recomputes normally.
+	gatedOffAir := s.triggersGated && !s.onAir
+	if s.state.Set(msg.Path, msg.Value) && !gatedOffAir {
 		s.pending[msg.Path] = struct{}{}
+	}
+	if gatedOffAir {
+		return
 	}
 	// Trigger hooks (issue #83, ADR 003 §3.1.3). After the state
 	// write, so a fired task's data pulls observe the new value. Both
@@ -639,16 +656,13 @@ func (s *Scene) applyInput(msg InputMsg) {
 	if len(s.execProgs) == 0 {
 		return
 	}
-	// Air-only trigger scope (ADR 006 §3.4, issue #106, criterion #6).
-	// A live roster instance (triggersGated) fires on-tick/on-event ONLY
-	// while on air: the tick fans out to every loaded scene, so an
-	// off-air validated scene must stay exec-quiescent backstage (zero
-	// effects). A test-session / validation clone is never gated. The
-	// check is read by the single scene-goroutine writer of onAir — no
-	// concurrent access.
-	if s.triggersGated && !s.onAir {
-		return
-	}
+	// Air-only trigger scope (ADR 006 §3.4, issue #106, criterion #6) is
+	// now subsumed by the dataflow gate above (ADR 008 §3.1): a gated
+	// off-air instance returns before reaching either the state write or
+	// these trigger hooks, so on-tick/on-event cannot fire backstage. The
+	// two layers agree — active-only routing means a dormant scene never
+	// receives a write at all; this firing path only runs for the active
+	// (on-air) instance or an ungated clone.
 	if len(s.execOnTick) > 0 && msg.Path == tickPath {
 		s.fireOnTick(msg.Value)
 		return

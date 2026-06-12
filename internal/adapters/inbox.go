@@ -2,7 +2,10 @@
 // external input adapters (HTTP poll, PG LISTEN/NOTIFY). Per ADR 004
 // § 5, every write to scene state goes through the inbox before
 // reaching a scene's per-goroutine event loop. The inbox is the
-// single audit point for writes.
+// single audit point for writes. Per ADR 008 §3.1 a write is routed to
+// the ACTIVE scene only (no longer fanned out to the whole roster):
+// the active scene executes, the rest of the roster is a frozen
+// backstage that receives nothing.
 package adapters
 
 import (
@@ -87,10 +90,11 @@ func NewInbox(show *runtime.Show, logger *slog.Logger, metrics InboxMetrics) *In
 	}
 }
 
-// Write validates scope + fan-outs to every scene that has declared
-// a binding on the target path. Returns ErrWriteForbidden if the
-// caller's identity is not allowed at the target path; nil on success
-// (including the case where no scene has a binding — silent drop).
+// Write validates scope + routes the write to the ACTIVE scene only,
+// iff it declares a binding on the target path (ADR 008 §3.1). Returns
+// ErrWriteForbidden if the caller's identity is not allowed at the
+// target path; nil on success (including the case where no scene is
+// active, or the active scene has no binding — silent absorb).
 func (in *Inbox) Write(_ context.Context, w Write) error {
 	if !w.system {
 		// B-syswrite hardening (issue #85): the `__system.*` namespace
@@ -123,23 +127,34 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 		IsSystem:    w.system,
 	}
 
-	// Fan-out to every loaded scene that declared a binding on the
-	// path (ADR 004 § 5 rule 4).
-	for _, id := range in.show.IDs() {
-		scene, err := in.show.Get(id)
-		if err != nil {
-			continue
-		}
-		if !sceneAcceptsPath(scene, w.Path, w.system) {
-			continue
-		}
+	// Route to the ACTIVE scene only (ADR 008 §3.1, supersedes ADR 004
+	// § 5 rule 4 fan-out). Only the scene on air executes its blues; the
+	// rest of the roster is a frozen backstage that receives no write, so
+	// it recomputes nothing and fires nothing (dormance by construction —
+	// the onAir gate of ADR 006 §3.4 stays as defence in depth). The
+	// active pointer is read once under the show lock (Active); a write in
+	// flight during a switch lands on whichever scene was active at that
+	// read — accepted and documented (events are live-only, ADR 008 R1).
+	scene := in.show.Active()
+	if scene == nil {
+		// No active scene: nothing on air to receive the write. Absorbed,
+		// exactly as a path no scene declares is absorbed today.
+		in.audit.Record(AuditEntry{
+			Source:    w.Source,
+			Path:      w.Path,
+			ValueHash: hashValue(w.Value),
+			Timestamp: time.Now(),
+		})
+		return nil
+	}
+	if sceneAcceptsPath(scene, w.Path, w.system) {
 		// scene.Input's return is consumed, not discarded (ADR 003 §3.3
 		// E2, issue #84): false means the scene's event loop refused the
 		// write (full channel) — the value is LOST, which must be
 		// observable (`orion_inbox_dropped_total`) without log-spamming
 		// under the very flood that causes it.
 		if !scene.Input(msg) {
-			in.noteDrop(id, w.Path)
+			in.noteDrop(in.show.ActiveID(), w.Path)
 		}
 	}
 
@@ -172,8 +187,11 @@ func (in *Inbox) noteDrop(sceneID, path string) {
 
 // sceneAcceptsPath checks whether the scene's compiled graph
 // declares the path in any of: defaults seed, operator_inputs, or
-// external_adapter target_paths. v1 rule: this is the binding
-// declaration that decides who receives the write (ADR 004 § 5).
+// external_adapter target_paths (the latter now also covers synthesized
+// `platform-stream` and `event-topic` bindings). It is evaluated on the
+// ACTIVE scene only (ADR 008 §3.1): the binding declaration decides
+// whether the active scene receives the write (ADR 004 § 5 acceptance,
+// preserved; the fan-out of rule 4 is superseded by active-only routing).
 func sceneAcceptsPath(scene *runtime.Scene, path string, system bool) bool {
 	g := scene.Graph()
 	if _, ok := g.Defaults[path]; ok {
