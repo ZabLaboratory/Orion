@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"testing"
 	"time"
@@ -24,15 +25,23 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/store"
 )
 
-// requireDB returns a freshly migrated database. Each test gets its
-// own schema so they can run in parallel without crosstalk.
+// requireDB returns a freshly migrated database in its OWN ephemeral Postgres
+// schema, so each test (and each re-run against a shared/persistent CI
+// Postgres) migrates into a guaranteed-clean namespace. See the e2e isolation
+// note in tests/e2e/contract/helpers_test.go for the root cause (the prod
+// migrations are strict bare CREATE TABLE; a re-apply collides on the implicit
+// pg_type row-type with SQLSTATE 23505). The schema is dropped on cleanup.
 func requireDB(t *testing.T) *store.Store {
 	t.Helper()
 	dsn := os.Getenv("ORION_E2E_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("ORION_E2E_DATABASE_URL not set; skipping e2e")
 	}
-	st, err := store.Open(context.Background(), dsn)
+
+	schema := "e2e_" + stripDashes(uuid.NewString())
+	provisionSchema(t, dsn, schema)
+
+	st, err := store.Open(context.Background(), dsnWithSearchPath(dsn, schema))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
@@ -48,12 +57,9 @@ func requireDB(t *testing.T) *store.Store {
 
 func applyMigration(ctx context.Context, pool *pgxpool.Pool) error {
 	// Apply every migration in order so the e2e schema matches prod.
-	// Idempotent: tests in this package share one CI Postgres, so the
-	// schema may already exist from a prior test's requireDB. The raw
-	// migration SQL uses bare CREATE TABLE (no IF NOT EXISTS — it is the
-	// prod goose script and must stay strict there), so a second apply
-	// raises duplicate_table (42P07) / duplicate_column (42701). Those
-	// are benign here and absorbed; any other error is a real failure.
+	// requireDB guarantees a clean, isolated schema, so the strict prod
+	// CREATE TABLE statements (no IF NOT EXISTS) apply exactly once and a
+	// duplicate error here is a REAL failure — no idempotency tolerance.
 	for _, path := range []string{
 		"../../migrations/0001_init.sql",
 		"../../migrations/0002_lsml_bundle.sql",
@@ -67,31 +73,57 @@ func applyMigration(ctx context.Context, pool *pgxpool.Pool) error {
 		// Strip goose markers so we can exec the raw SQL.
 		stripped := stripGoose(string(migration))
 		if _, err := pool.Exec(ctx, stripped); err != nil {
-			if isMigrationAlreadyApplied(err) {
-				continue
-			}
 			return fmt.Errorf("apply %s: %w", path, err)
 		}
 	}
 	return nil
 }
 
-// isMigrationAlreadyApplied reports whether a migration Exec failed only
-// because the schema objects already exist (duplicate_table 42P07 /
-// duplicate_column 42701), which is benign for a shared-DB e2e run.
-func isMigrationAlreadyApplied(err error) bool {
-	if err == nil {
-		return false
+// provisionSchema creates the ephemeral schema on a throwaway connection and
+// registers its DROP on cleanup.
+func provisionSchema(t *testing.T, dsn, schema string) {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect for schema bootstrap: %v", err)
 	}
-	msg := err.Error()
-	return contains(msg, "already exists") ||
-		contains(msg, "42P07") ||
-		contains(msg, "42701")
+	if _, err := conn.Exec(ctx, fmt.Sprintf("CREATE SCHEMA %s", schema)); err != nil {
+		_ = conn.Close(ctx)
+		t.Fatalf("create schema %s: %v", schema, err)
+	}
+	_ = conn.Close(ctx)
+
+	t.Cleanup(func() {
+		c, err := pgx.Connect(ctx, dsn)
+		if err != nil {
+			return
+		}
+		_, _ = c.Exec(ctx, fmt.Sprintf("DROP SCHEMA IF EXISTS %s CASCADE", schema))
+		_ = c.Close(ctx)
+	})
 }
 
-// contains is a tiny substring check kept local so this file stays free of
-// the strings import (matching its hand-rolled helpers above).
-func contains(s, sub string) bool { return indexOf(s, sub) >= 0 }
+// dsnWithSearchPath bakes a libpq `options=-c search_path=<schema>` into the
+// DSN so every pooled connection inherits the isolated schema.
+func dsnWithSearchPath(dsn, schema string) string {
+	sep := "?"
+	if indexOf(dsn, "?") >= 0 {
+		sep = "&"
+	}
+	return dsn + sep + "options=" + url.QueryEscape("-c search_path="+schema)
+}
+
+// stripDashes removes '-' so a UUID is a bare Postgres identifier fragment.
+func stripDashes(s string) string {
+	out := make([]rune, 0, len(s))
+	for _, c := range s {
+		if c != '-' {
+			out = append(out, c)
+		}
+	}
+	return string(out)
+}
 
 func stripGoose(s string) string {
 	// goose Up section only — drop everything after `-- +goose Down`.
@@ -244,4 +276,3 @@ func TestE2E_PushAdvancesPointer(t *testing.T) {
 		t.Fatalf("pointer not advanced: %+v", got)
 	}
 }
-
