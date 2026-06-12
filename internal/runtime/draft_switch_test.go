@@ -40,34 +40,25 @@ const (
 	dsN         = 3 // DRAFT_N in the fixture
 )
 
-// Three candidate matches the on-start pre-fetch lists, each with a
-// distinct draft. The match_id is the key the per-draft draft_picks query
-// splices into its where clause.
+// The three PINNED candidate matches the on-start pre-fetch reads — the
+// SAME real match_ids hard-coded in Blue's bp-draft-switch fixture
+// (PINNED_MATCH_IDS), one per region. Each per-draft draft_picks query
+// splices its pinned match_id into its where clause; there is no matches
+// list query anymore (the draft-less-head prod trap is gone).
+//   [0] LPL — Invictus Gaming vs Top Esports   (real first pick: Nautilus)
+//   [1] LEC — GIANTX vs Fnatic                 (real first pick: Azir)
+//   [2] LCK — Hanwha Life vs HANJIN BRION       (real first pick: Orianna)
 var dsMatchIDs = []string{
-	"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-	"bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
-	"cccccccc-cccc-cccc-cccc-cccccccccccc",
+	"4fb6bc23-51f6-4a70-9dbc-7ba51473976d",
+	"1aa918cc-014e-41ca-bab3-1e7d313c66d7",
+	"f7958e36-f646-4765-a8b1-034c1c52050e",
 }
 
-// Each draft's first champion (blue side, pick_order ascending) — distinct
-// per match so the displayed board visibly changes when the draft switches.
-// champion is NOT NULL in ZabTruth; the display reads it directly.
-var dsFirstChamp = []string{"Aatrox", "Belveth", "Camille"}
-
-// dsMatchesResponse is the stub /truth/_query reply to the matches list
-// query (table=matches). Returns the three candidate match ids.
-func dsMatchesResponse() string {
-	var b strings.Builder
-	b.WriteString(`{"rows":[`)
-	for k, id := range dsMatchIDs {
-		if k > 0 {
-			b.WriteString(",")
-		}
-		fmt.Fprintf(&b, `{"id":%q,"blue_team":null,"red_team":null}`, id)
-	}
-	fmt.Fprintf(&b, `],"count":%d,"elapsed_ms":2}`, dsN)
-	return b.String()
-}
+// Each draft's real first champion (blue side, pick_order ascending) —
+// distinct per match so the displayed board visibly changes when the draft
+// switches. champion is NOT NULL in ZabTruth; the display reads it directly.
+// These mirror the real prod draft heads for the three pinned matches.
+var dsFirstChamp = []string{"Nautilus", "Azir", "Orianna"}
 
 // dsDraftResponse is the stub reply to a per-draft draft_picks query for a
 // given match_id: a short, deterministic draft whose first pick champion is
@@ -124,14 +115,17 @@ func dsTruthStub(t *testing.T) *httptest.Server {
 		}
 		_ = json.Unmarshal(buf, &desc)
 		switch desc.Table {
-		case "matches":
-			_, _ = w.Write([]byte(dsMatchesResponse()))
 		case "draft_picks":
 			mid := ""
 			if len(desc.Where) == 1 && desc.Where[0].Column == "match_id" {
 				mid = desc.Where[0].Value
 			}
 			_, _ = w.Write([]byte(dsDraftResponse(mid)))
+		case "matches":
+			// No matches list query is authored anymore — the candidates are
+			// pinned literals. If one ever arrives, the pinning regressed.
+			t.Errorf("unexpected matches list query — candidates must be pinned")
+			http.Error(w, "bad", http.StatusBadRequest)
 		default:
 			t.Errorf("unexpected table %q", desc.Table)
 			http.Error(w, "bad", http.StatusBadRequest)
