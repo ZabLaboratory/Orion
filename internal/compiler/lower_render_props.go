@@ -74,6 +74,21 @@ var textRenames = renameMap{
 	"textAlign":  "align",  // text.tsx resolved.align
 }
 
+// textContentRename lowers a text node's CONTENT key. `text` is the
+// natural authoring key for a text node's displayed string (LSML text
+// content; the runtime even reserves `text` as a known-but-unconsumed
+// prop key in render/prop-allowlist.js). The runtime's text primitive
+// however reads ONLY `resolved.value` (text.tsx). A producer that emits
+// the content as `text` (static prop OR binding) would otherwise land on
+// `resolved.text` — ignored — leaving `resolved.value` undefined and the
+// span empty (the live "Solar paints black in mode=broadcast" incident,
+// leaderboard scene 57dc631f: bundle bound `text:` → black). Lower
+// `text` → `value` so an authored-as-`text` content still resolves.
+// A producer that already emits `value` is unaffected (`value` is in
+// textKeep and is not a rename source).
+const textContentAuthoringKey = "text"
+const textContentRenderKey = "value"
+
 // textKeep is the set of top-level text props the runtime reads as-is.
 // value (bound) and opacity pass through. Everything else the producer
 // emits inside `style` that the runtime does NOT read (lineHeight/
@@ -97,6 +112,9 @@ func lowerText(props map[string]json.RawMessage, bindings map[string]string) (ma
 		rename["style."+ak] = rk
 		rename[ak] = rk
 	}
+	// Content key : an authored-as-`text` binding re-keys to `value`
+	// (the render vocab the runtime reads). See textContentRename above.
+	rename[textContentAuthoringKey] = textContentRenderKey
 
 	for k, v := range props {
 		switch k {
@@ -112,6 +130,14 @@ func lowerText(props map[string]json.RawMessage, bindings map[string]string) (ma
 					// inner keys the runtime never reads (fontFamily, …)
 					// are silently dropped — survive in LSML, no render slot.
 				}
+			}
+		case textContentAuthoringKey:
+			// Content authored as `text` → the render vocab `value`. A
+			// node that already carries `value` keeps it (textKeep below);
+			// a node carrying both is malformed authoring — `value` wins
+			// only if it is processed after, so guard against clobber.
+			if _, hasValue := props[textContentRenderKey]; !hasValue {
+				out[textContentRenderKey] = v
 			}
 		default:
 			if _, ok := textKeep[k]; ok {

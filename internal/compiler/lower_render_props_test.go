@@ -268,6 +268,72 @@ func TestLowerRenderProps_Pure(t *testing.T) {
 	}
 }
 
+// TestLowerText_ContentKeyTextToValue is the regression for the live
+// "Solar paints black in mode=broadcast" incident (leaderboard scene
+// 57dc631f, 2026-06): the producer authored the text node's content with
+// the key `text` (the natural authoring/LSML content key), but the Solar
+// runtime's text primitive reads ONLY `resolved.value` (text.tsx;
+// render/prop-allowlist.js lists text→{value,…} and does NOT consume
+// `text`). Without lowering, the bundle ships `bindings:{text:…}` →
+// `resolved.text` (ignored) → empty span → black. lowerText must re-key
+// the content `text` → `value`, for both a static prop and a binding.
+func TestLowerText_ContentKeyTextToValue(t *testing.T) {
+	raw := func(s string) json.RawMessage { return json.RawMessage(s) }
+
+	// (a) bound content keyed `text` (the prod shape) → re-keyed to value.
+	{
+		props := map[string]json.RawMessage{"colour": raw(`"#ffd200"`)}
+		bindings := map[string]string{"text": "__vars..leaderboard_display"}
+		outP, outB := lowerRenderProps("text", props, bindings)
+		if got, ok := outB["value"]; !ok || got != "__vars..leaderboard_display" {
+			t.Fatalf("bound text content: outB[value]=%q ok=%v, want __vars..leaderboard_display (outB=%v)", got, ok, outB)
+		}
+		if _, stale := outB["text"]; stale {
+			t.Fatalf("authoring binding key `text` must be re-keyed away (outB=%v)", outB)
+		}
+		if _, ok := outP["colour"]; !ok {
+			t.Fatalf("colour prop must pass through (outP=%v)", outP)
+		}
+	}
+
+	// (b) static content keyed `text` → re-keyed to value.
+	{
+		props := map[string]json.RawMessage{"text": raw(`"ON AIR"`)}
+		outP, _ := lowerRenderProps("text", props, nil)
+		if got, ok := outP["value"]; !ok || string(got) != `"ON AIR"` {
+			t.Fatalf("static text content: outP[value]=%s ok=%v, want \"ON AIR\" (outP=%v)", got, ok, outP)
+		}
+		if _, stale := outP["text"]; stale {
+			t.Fatalf("authoring prop key `text` must be gone after lowering (outP=%v)", outP)
+		}
+	}
+
+	// (c) a node that already authored `value` is unaffected (no clobber).
+	{
+		props := map[string]json.RawMessage{"value": raw(`"KEEP"`)}
+		outP, _ := lowerRenderProps("text", props, nil)
+		if string(outP["value"]) != `"KEEP"` {
+			t.Fatalf("existing value prop must survive untouched, got %s", outP["value"])
+		}
+	}
+
+	// (d) malformed authoring carrying BOTH keys: `value` wins, `text`
+	// never clobbers it (deterministic regardless of map iteration order).
+	{
+		props := map[string]json.RawMessage{
+			"value": raw(`"WINS"`),
+			"text":  raw(`"LOSES"`),
+		}
+		outP, _ := lowerRenderProps("text", props, nil)
+		if string(outP["value"]) != `"WINS"` {
+			t.Fatalf("value must win over text when both present, got %s", outP["value"])
+		}
+		if _, stale := outP["text"]; stale {
+			t.Fatalf("authoring key `text` must be gone (outP=%v)", outP)
+		}
+	}
+}
+
 // TestLowerRenderProps_BoundFontSize proves a binding keyed on an
 // authoring prop is re-keyed to the render key so a BOUND font-size
 // still lands on resolved.size (ADR 007 §9.5 bindings clause).
