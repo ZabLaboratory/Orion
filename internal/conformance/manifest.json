@@ -1,5 +1,5 @@
 {
-  "count": 81,
+  "count": 82,
   "entries": [
     {
       "node_id": "core.animation.play@1",
@@ -636,6 +636,17 @@
       "category": "io",
       "is_pure": false,
       "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.show.emit@1",
+      "namespace": "core.show",
+      "name": "emit",
+      "version": 1,
+      "category": "side-effect",
+      "is_pure": false,
+      "is_bounded": false,
       "source": "stdlib",
       "platform": null
     },

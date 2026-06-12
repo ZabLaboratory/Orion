@@ -170,6 +170,12 @@ func execOpProbeProgram(op string) *ExecProgram {
 	case OpSourceRead:
 		head = &ExecNode{ID: "op", Op: OpSourceRead,
 			Config: map[string]json.RawMessage{"source_id": raw(`"src"`)}, Next: mark}
+	case OpShowEmit:
+		// show.emit fires `then` immediately (no error pin, Blue#73). The
+		// injection seam is nil on this bare scene → no-op injection, `then`
+		// still fires (construction-safe).
+		head = &ExecNode{ID: "op", Op: OpShowEmit,
+			Config: map[string]json.RawMessage{"topic": raw(`"conf"`)}, Next: mark}
 	default:
 		// Unknown op: a single mark via on-start direct — will fail the
 		// op assertion loudly rather than silently passing.
