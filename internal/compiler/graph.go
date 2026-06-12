@@ -83,9 +83,22 @@ type GraphNode struct {
 // GraphInput is one inbound data edge on a GraphNode: the upstream
 // node id plus the destination port name (the blueprint edge's
 // `to_port`, carried verbatim into the artefact — ADR 003 §3.1.1).
+//
+// FromPort carries the PRODUCER's out-pin name (the edge's `from_port`)
+// when it disambiguates a multi-output producer. It matters when the
+// producer is an EXEC node exposing several data-out pins — a counted
+// loop's `index`/`element` (exec_interpreter.go binds them in the task
+// env under `<node>.<from_port>`). For an ordinary single-output data
+// producer it is empty (omitted), and demandValue resolves the producer
+// by node id alone — byte-identical to pre-existing artefacts. Without
+// it, an `add` fed by `for-loop.index` reached the runtime as
+// `{from:"loop"}` with no pin, demandValue could not find
+// `t.env["loop.index"]`, and the index read as 0 → the loop body summed
+// nothing (the second half of the counted-loop iteration bug).
 type GraphInput struct {
-	From string `json:"from"`
-	Port string `json:"port"`
+	From     string `json:"from"`
+	Port     string `json:"port"`
+	FromPort string `json:"from_port,omitempty"`
 }
 
 // RenderBundle is the Solar-facing artefact. Same shape as ADR 003 § 3.

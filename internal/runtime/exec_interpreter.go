@@ -446,7 +446,11 @@ func (s *Scene) demandValue(t *execTask, from, fromPort string, memo map[string]
 			if name == "" {
 				name = positionalPort(i)
 			}
-			if v := s.demandValue(t, in.From, "", memo); v != nil {
+			// Carry FromPort so a producer's specific data-out pin resolves:
+			// an exec node's per-iteration env pin (`<node>.index`/`.element`)
+			// is keyed by `<from>.<from_port>` in t.env. Empty for ordinary
+			// single-output data producers (resolved by node id alone).
+			if v := s.demandValue(t, in.From, in.FromPort, memo); v != nil {
 				args[name] = v
 			}
 		}

@@ -249,6 +249,25 @@ func partitionBlueprint(b *BlueprintGraph, key string) (execSet map[string]struc
 // Config is carried verbatim (variable.set's `name`, delay's duration,
 // branch's pins). A manifest-known exec node with no runtime op mapping
 // → fail-loud EXEC_OP_UNMAPPED (ADR 006 §3.1).
+//
+// Unwired DATA-input defaults are folded into Config under the port name
+// (#146 follow-up). Blue's seed declares a counted loop's control inputs
+// as DATA pins with a default — `for-loop`'s `first`/`last`
+// (_data_in(..., default=0)) and `for-each`'s `items` — never as config
+// keys (signature.config == []). When the author types an inline literal
+// instead of wiring an edge, that value lives on the input port's
+// `default`, exactly as the data layer reads it (buildGraphNodes seeds
+// graph.Defaults from `p.Default`). The interpreter resolves an exec
+// node's data input by checking its wired producers (ExecDataInput)
+// first, then `node.Config[port]` (pullData's fallback). Carrying ONLY
+// n.Config dropped those defaults, so a literal-bounded `for-loop`
+// reached the runtime with no `first`/`last` and `pullInt` fell to its
+// def (-1 for `last`) → `0 <= -1` false → ZERO iterations, body never
+// pushed. `while` was immune because its `condition` is always a wired
+// comparison (no sensible literal), so it never depended on a port
+// default — which is exactly why counted loops failed live while `while`
+// worked. A WIRED edge still wins: it becomes an ExecDataInput, which
+// pullData consults before the config fallback.
 func buildExecNode(n BlueprintNode) (*execNode, *Diagnostic) {
 	sn, ok := conformance.Classify(n.Compute)
 	if !ok || sn.Kind != conformance.KindExecOp || sn.Op == "" {
@@ -260,11 +279,46 @@ func buildExecNode(n BlueprintNode) (*execNode, *Diagnostic) {
 			Path: n.ID,
 		}
 	}
+	cfg := foldInputDefaults(n)
 	return &execNode{
 		ID:     n.ID,
 		Op:     sn.Op,
-		Config: n.Config,
+		Config: cfg,
 	}, nil
+}
+
+// foldInputDefaults returns n.Config extended with each DATA input port's
+// `default` under the port name, so the interpreter's config fallback
+// (pullData) finds an inline-literal control value the author typed
+// rather than wired. An author-supplied config key wins over a port
+// default (config is the more specific authoring intent), and exec pins
+// are skipped (they carry no data value). Returns nil when nothing is
+// carried, preserving the byte-identical artefact for nodes with no
+// config and no defaulted inputs (criterion #2).
+func foldInputDefaults(n BlueprintNode) map[string]json.RawMessage {
+	var cfg map[string]json.RawMessage
+	ensure := func() {
+		if cfg == nil {
+			cfg = make(map[string]json.RawMessage, len(n.Config)+len(n.Inputs))
+			for k, v := range n.Config {
+				cfg[k] = v
+			}
+		}
+	}
+	if len(n.Config) > 0 {
+		ensure()
+	}
+	for _, p := range n.Inputs {
+		if p.Kind == execPinKind || len(p.Default) == 0 {
+			continue
+		}
+		if _, exists := n.Config[p.Name]; exists {
+			continue // author config is the more specific intent
+		}
+		ensure()
+		cfg[p.Name] = p.Default
+	}
+	return cfg
 }
 
 // buildExecEntry compiles an event node into one ExecEntry per wired
