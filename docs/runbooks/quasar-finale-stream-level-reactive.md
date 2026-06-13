@@ -42,23 +42,33 @@ STREAM-LEVEL RULE  (bp-quasar-finale-stream-rule, PROMOTED, always-on)
                  (ADR 009 §3.6 — never rule→rule, anti-loop by construction)
 
 ACTIVE REACTIVE SCENE  (bp-quasar-finale-reactive-scene, ACTIVATED, on air)
-  on-event("stream_chat_event")           ← arms the scene + surfaces the topic binding
-    payload (DATA) ─► get-field("payload.text") ─► output("chat.display")  (DATAFLOW only)
+  core.input("__events.stream_chat_event")   ← reads the emitted event leaf DIRECTLY (M1)
+    value (DATA) ─► get-field("payload.text") ─► output("chat.display")   (DATAFLOW only)
               └─ leaf delta → LSDP → Solar repaints the text element live
 ```
 
-> ⚠️ `core.output@1` is a **pure compute sink** (Orion conformance
-> `KindCompute`), so the reactive scene is **dataflow-only**: the output
-> carries NO exec pins and there is NO exec spine through it. The on-event
-> entry's only out-edge is its `payload` DATA edge; the reactive engine
-> re-evaluates the `payload → get-field → output` chain on every
-> `__events.stream_chat_event` write (the proven M1 shape). Wiring the
-> output as an exec sink (`on-event.then → output.in`) is wrong twice over:
-> the push fails `EXEC_OP_UNMAPPED`, and an event entry must only take its
-> exec Target from an **exec** out-edge — a data out-edge made the runtime
-> dispatch into the get-field data node and log `exec: unknown node id`,
-> so the antenna never updated. Fixed in Blue `fix(finale): … dataflow-only`
-> + Orion `fix(compiler): … exec Target from an exec out-edge`.
+> ⚠️ The reactive scene is **pure dataflow** — NO exec entry, NO exec
+> spine, NO exec pins on any node. It reads the show event the rule emits
+> (`__events.stream_chat_event`) with a `core.input@1` leaf node, exactly
+> the proven M1 shape (`bp-m1-reactive-chat`) that read
+> `__inputs.platform.*` reactively. `EmitToActive` writes the canonical
+> event to that leaf in the active scene's state (it does NOT gate on
+> `sceneAcceptsPath`), the runtime seeds the dirty cone on the write
+> (`scene.go` `applyInput` → `s.pending[__events.stream_chat_event]`), and
+> `recompute` wakes the get-field registered as the leaf's consumer
+> (`upstreamPath` resolves the inbound edge to the input node's leaf, the
+> `consumers` index). No compiler change is needed: a single-blueprint
+> scene compiles under the legacy key `""`, so `prefixGraphNodes` leaves
+> the `__events.*` leaf address unprefixed — byte-identical to the write.
+>
+> The **4th-link fix** (ADR 013 issue 4): the previous shape read
+> `onChat.payload`, the DATA-OUT pin of an `on-event` exec entry. That pin
+> lives only in the transient env of a fired exec task and is NEVER a state
+> leaf; in a spine-less dataflow scene nothing on the dataflow side consumed
+> `__events.stream_chat_event`, so the event reached state (deltas at the
+> wire) but `chat.display` stayed `null`. Reading the leaf directly closes
+> the link. Fixed in Blue `fix(finale): read __events leaf directly in
+> dataflow` (authoring-only — no Orion compiler change).
 
 The rule arms **all 14** canonical Twitch types (`chat`,
 `subscription`, `subscription_gift`, `cheer`, `follow`, `raid`,
@@ -143,14 +153,14 @@ curl -fsS -X POST "$GW/blue/api/v1/blueprints" \
   -H "authorization: Bearer $OP_TOKEN" -H "content-type: application/json" \
   -d '{"slug":"bp-quasar-finale-reactive-scene",
        "name":"Quasar finale reactive scene","kind":"workflow",
-       "tags":["adr013","reactive","twitch","chat","on-event"]}'
+       "tags":["adr013","reactive","twitch","chat","dataflow"]}'
 # 201 → record "id" as REACTIVE_BP_UUID.
 export REACTIVE_BP_UUID="<id from the 201 response>"
 
 curl -fsS -X PUT "$GW/blue/api/v1/blueprints/$REACTIVE_BP_UUID/versions/1" \
   -H "authorization: Bearer $OP_TOKEN" -H "content-type: application/json" \
   -d "$(jq -n --argjson g "$(cat quasar-finale-reactive-scene-bp-graph.json)" '{graph:$g}')"
-# 200 → draft v1 carries the on-event display spine.
+# 200 → draft v1 carries the pure-dataflow display chain.
 
 curl -fsS -X POST "$GW/blue/api/v1/blueprints/$REACTIVE_BP_UUID/versions/1/publish" \
   -H "authorization: Bearer $OP_TOKEN"
@@ -218,9 +228,12 @@ export RULE_SCENE_VERSION="<scene_version from the response>"
 
 ## 5. Validate BOTH (R9) — exec runs only on a validated scene
 
-Both scenes carry exec logic (the rule arms `on-platform-event`; the
-scene arms `on-event`), so both must clear the R9 validation bar before
-they can go on air or be promoted (ADR 009 §3 "exec gated R9").
+The rule carries exec logic (`on-platform-event` → `show.emit`), so it
+must clear the R9 validation bar before it can be promoted (ADR 009 §3
+"exec gated R9"). The reactive scene is pure dataflow (no exec), but it
+still runs through the same validate-then-activate gate (a scene must be
+validated before it can go on air — `SCENE_NOT_VALIDATED`), so validate
+both.
 
 ```bash
 # Validate (202 Accepted), then poll until validated — for each scene.
@@ -248,8 +261,8 @@ export ROLLBACK_ID="<uuid of a healthy, validated scene>"
 curl -fsS -X POST "$GW/orion/api/v1/show/active-scene" \
   -H "authorization: Bearer $OP_TOKEN" -H "content-type: application/json" \
   -d "{\"scene_id\":\"$REACTIVE_SCENE_ID\"}"
-# 200. The scene is the antenna; its on-event(stream_chat_event) is armed
-# and waiting for the rule's emit. (Activate-before-validate is refused
+# 200. The scene is the antenna; its core.input(__events.stream_chat_event)
+# reads the rule's emit reactively. (Activate-before-validate is refused
 # 409 SCENE_NOT_VALIDATED — §5 satisfies the gate.)
 ```
 
@@ -301,8 +314,9 @@ The single load-bearing proof is the antenna, recorded to `.mp4`
 
 That string changing at the antenna on a real chat message is the finale:
 `quasar.twitch.chat@1` write → `on-platform-event` arms → `show.emit`
-injects `stream_chat_event` into the active scene → its `on-event` fires →
-`chat.display` repaints. The 14-type coverage means follow/sub/raid/cheer/…
+injects `__events.stream_chat_event` into the active scene → its
+`core.input` read wakes the get-field → output chain → `chat.display`
+repaints. The 14-type coverage means follow/sub/raid/cheer/…
 ride the same proven path.
 
 > If nothing changes at air: confirm (a) Quasar's WS to Orion is up and
