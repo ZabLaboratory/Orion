@@ -329,7 +329,79 @@ func copyBindings(bindings map[string]string) map[string]string {
 // driver the compile tail calls on the assembled render-bundle root.
 // `animations` is the inlined Animation Asset catalogue (ADR 011 §3.1),
 // resolved when lowering an `animation` element; nil for scenes with none.
+//
+// It is the entry point: it first indexes every node by id so an
+// `animation` element can resolve + NEST its target overlay (the I7
+// geometry fix), then drives the recursive lowering. The set of target ids
+// consumed by `animation` elements is collected so those nodes are PRUNED
+// from their original sibling location (they now live nested under the
+// animation wrapper — leaving the original would render the overlay twice,
+// once static and once animated).
 func lowerRenderTree(node LayoutNode, animations map[string]animationAsset) LayoutNode {
+	// No catalogue → no target nesting/pruning possible; take the cheap
+	// path that walks without the index (every `animation` element falls
+	// through inert anyway).
+	if len(animations) == 0 {
+		return lowerRenderTreeRec(node, animations, nil, nil)
+	}
+	index := indexNodesByID(node)
+	consumed := collectAnimationTargets(node, animations)
+	return lowerRenderTreeRec(node, animations, index, consumed)
+}
+
+// indexNodesByID builds a flat id→node map of the layout tree so an
+// `animation` element can resolve its `asset.target` to the actual target
+// LayoutNode (its geometry is the source of truth the wrapper is sized to).
+// A later duplicate id is ignored (first wins) — authored ids are expected
+// unique; the index is read-only.
+func indexNodesByID(node LayoutNode) map[string]LayoutNode {
+	out := make(map[string]LayoutNode)
+	var walk func(LayoutNode)
+	walk = func(n LayoutNode) {
+		if n.ID != "" {
+			if _, exists := out[n.ID]; !exists {
+				out[n.ID] = n
+			}
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(node)
+	return out
+}
+
+// collectAnimationTargets returns the set of layout-node ids that a
+// conforming `animation` element resolves as its target (and will nest).
+// Those ids are pruned from their original location so the overlay is not
+// rendered twice. Only well-formed elements (resolvable animation_id +
+// non-empty asset target) contribute — a non-conforming element nests
+// nothing, so prunes nothing.
+func collectAnimationTargets(node LayoutNode, animations map[string]animationAsset) map[string]struct{} {
+	out := make(map[string]struct{})
+	var walk func(LayoutNode)
+	walk = func(n LayoutNode) {
+		if n.Kind == AnimationKind {
+			if animID, ok := stringProp(n.Props, "animation_id"); ok && animID != "" {
+				if asset, ok := animations[animID]; ok && asset.Target != "" {
+					out[asset.Target] = struct{}{}
+				}
+			}
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(node)
+	return out
+}
+
+// lowerRenderTreeRec is the recursive lowering driver. `index` resolves an
+// `animation` element's target overlay (nil when no catalogue); `consumed`
+// is the set of target ids to prune from their sibling position (they are
+// nested under the animation wrapper). Both are nil on the no-catalogue
+// fast path.
+func lowerRenderTreeRec(node LayoutNode, animations map[string]animationAsset, index map[string]LayoutNode, consumed map[string]struct{}) LayoutNode {
 	// The `wipe-cover` authoring element lowers to a keyframed `frame` render
 	// node (ADR 003 Amendment 5 §A5.3): a different kind + props + a synthesised
 	// `keyframes` block, so it is handled before the generic per-kind prop
@@ -355,8 +427,23 @@ func lowerRenderTree(node LayoutNode, animations map[string]animationAsset) Layo
 	// runtime renders as nothing, and the keyframes block rides ONLY this
 	// lowered tree (the authoring node keeps `kind:"animation"` for EmitLSML).
 	if node.Kind == AnimationKind {
-		if lowered, ok := lowerAnimationAsset(node, animations); ok {
-			lowered.Children = nil
+		var target *LayoutNode
+		// Resolve the target overlay from the tree index and lower it to
+		// render vocab BEFORE nesting it, so the nested overlay paints with
+		// its real geometry/fill (the same lowering every other node gets).
+		// The recursion into the lowered target carries the same index so a
+		// nested target may itself contain further animation elements.
+		if index != nil {
+			if animID, ok := stringProp(node.Props, "animation_id"); ok && animID != "" {
+				if asset, ok := animations[animID]; ok && asset.Target != "" {
+					if raw, ok := index[asset.Target]; ok {
+						lt := lowerRenderTreeRec(raw, animations, index, consumed)
+						target = &lt
+					}
+				}
+			}
+		}
+		if lowered, ok := lowerAnimationAsset(node, animations, target); ok {
 			return lowered
 		}
 	}
@@ -381,9 +468,23 @@ func lowerRenderTree(node LayoutNode, animations map[string]animationAsset) Layo
 	// envelope, so EmitLSML / the C4 hash are unperturbed.
 	out.Transitions = lowerTransitions(node.Transitions)
 	if len(node.Children) > 0 {
-		out.Children = make([]LayoutNode, len(node.Children))
-		for i, c := range node.Children {
-			out.Children[i] = lowerRenderTree(c, animations)
+		lowered := make([]LayoutNode, 0, len(node.Children))
+		for _, c := range node.Children {
+			// Prune children consumed as an animation target: they are
+			// nested under the animation wrapper (lowerAnimationAsset), so
+			// leaving them here would render the overlay twice — once
+			// static (this sibling), once animated (under the wrapper).
+			if consumed != nil && c.ID != "" {
+				if _, isTarget := consumed[c.ID]; isTarget {
+					continue
+				}
+			}
+			lowered = append(lowered, lowerRenderTreeRec(c, animations, index, consumed))
+		}
+		if len(lowered) > 0 {
+			out.Children = lowered
+		} else {
+			out.Children = nil
 		}
 	} else {
 		out.Children = nil
