@@ -42,10 +42,23 @@ STREAM-LEVEL RULE  (bp-quasar-finale-stream-rule, PROMOTED, always-on)
                  (ADR 009 §3.6 — never rule→rule, anti-loop by construction)
 
 ACTIVE REACTIVE SCENE  (bp-quasar-finale-reactive-scene, ACTIVATED, on air)
-  on-event("stream_chat_event")
-    ──then──► output("chat.display")  value ← get-field("payload.text") ← on-event.payload
+  on-event("stream_chat_event")           ← arms the scene + surfaces the topic binding
+    payload (DATA) ─► get-field("payload.text") ─► output("chat.display")  (DATAFLOW only)
               └─ leaf delta → LSDP → Solar repaints the text element live
 ```
+
+> ⚠️ `core.output@1` is a **pure compute sink** (Orion conformance
+> `KindCompute`), so the reactive scene is **dataflow-only**: the output
+> carries NO exec pins and there is NO exec spine through it. The on-event
+> entry's only out-edge is its `payload` DATA edge; the reactive engine
+> re-evaluates the `payload → get-field → output` chain on every
+> `__events.stream_chat_event` write (the proven M1 shape). Wiring the
+> output as an exec sink (`on-event.then → output.in`) is wrong twice over:
+> the push fails `EXEC_OP_UNMAPPED`, and an event entry must only take its
+> exec Target from an **exec** out-edge — a data out-edge made the runtime
+> dispatch into the get-field data node and log `exec: unknown node id`,
+> so the antenna never updated. Fixed in Blue `fix(finale): … dataflow-only`
+> + Orion `fix(compiler): … exec Target from an exec out-edge`.
 
 The rule arms **all 14** canonical Twitch types (`chat`,
 `subscription`, `subscription_gift`, `cheer`, `follow`, `raid`,
@@ -256,8 +269,14 @@ curl -fsS -X POST "$GW/orion/api/v1/show/stream-rules" \
 # 409 SCENE_NOT_PUSHED   → §4b not completed.
 # 409 RULE_IS_ACTIVE_SCENE → you passed the reactive scene id; pass RULE_SCENE_ID.
 
-# Confirm it is in the rule set:
-curl -fsS "$GW/orion/api/v1/show" -H "authorization: Bearer $OP_TOKEN" | jq '.stream_rules'
+# Confirm promotion. NOTE: the deployed `GET /show` summary does NOT echo a
+# `stream_rules` field (it is omitted when the serializer has none). The
+# authoritative signals are (a) the 200 response above carrying
+# {"stream_rule_id": "<RULE_SCENE_ID>"}, and (b) the persisted row:
+#   docker exec orion-postgres psql -U orion -d orion -tAc \
+#     "SELECT scene_id FROM show_stream_rules ORDER BY promoted_at;"
+# `GET /show/stream-rules` is 405 (only POST/DELETE on that path).
+curl -fsS "$GW/orion/api/v1/show" -H "authorization: Bearer $OP_TOKEN"
 ```
 
 ## 9. Go-live Solar (browser source)
