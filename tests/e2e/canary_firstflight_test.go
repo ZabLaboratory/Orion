@@ -24,10 +24,12 @@ import (
 // its exec runs LIVE — exactly what Keeper will reproduce on the VPS.
 //
 // LIVE-ops-only (Bastion condition, hard): the blueprint uses ONLY
-// logic + delay + print + on-tick. It NEVER touches http.request /
-// db.query / source.read (which would halt-at-node under the SetEffects
-// hold). The compute manifest below is therefore the complete op set the
-// canary exercises — assert by inspection that none is an egress op.
+// logic + delay + print + on-tick. It NEVER touches the world-effect ops
+// http.request / db.query (which would halt-at-node under the SetEffects
+// hold). source.read is NO LONGER a world op (ADR 012 Option B — a pure
+// introspection compute), so it is not an egress concern; the canary still
+// does not bind it. The compute manifest below is therefore the complete op
+// set the canary exercises — assert by inspection that none is an egress op.
 
 // canaryBlueprint is the R9 first-flight scene's logic (see runbook):
 //
@@ -114,8 +116,8 @@ func canaryBlueprint() *compiler.BlueprintGraph {
 
 // canaryManifest is the COMPLETE op set the canary blueprint binds. Every
 // entry is logic / delay / print / animation-class — there is no
-// http.request, db.query, or source.read. This is the Bastion live-ops
-// invariant, asserted structurally in TestE2E_Canary_UsesOnlyLiveOps.
+// http.request or db.query (the world-effect ops). This is the Bastion
+// live-ops invariant, asserted structurally in TestE2E_Canary_UsesOnlyLiveOps.
 func canaryManifest() compiler.ComputeManifest {
 	return compiler.ComputeManifest{
 		"core.event.on-start@1": {IsPure: true, IsBounded: true, Version: "1"},
@@ -151,15 +153,17 @@ var liveOnlyOps = map[string]struct{}{
 }
 
 // TestE2E_Canary_UsesOnlyLiveOps is the Bastion guard: the canary's op set
-// is a subset of the live-only allow-list. No http.request / db.query /
-// source.read — proven by construction, not by claim.
+// is a subset of the live-only allow-list. No http.request / db.query (the
+// world-effect egress ops) — proven by construction, not by claim.
+// source.read is no longer egress-shaped (ADR 012 Option B), so it is not
+// in the blocked-token set.
 func TestE2E_Canary_UsesOnlyLiveOps(t *testing.T) {
 	for op := range canaryManifest() {
 		if _, ok := liveOnlyOps[op]; !ok {
 			t.Fatalf("canary binds non-live op %q (Bastion condition violated)", op)
 		}
 		if strings.Contains(op, "http") || strings.Contains(op, "db") ||
-			strings.Contains(op, "source") || strings.Contains(op, "request") {
+			strings.Contains(op, "request") {
 			t.Fatalf("canary binds egress-shaped op %q", op)
 		}
 	}

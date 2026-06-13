@@ -26,7 +26,8 @@ import (
 // The blueprint here is byte-identical in shape to the runbook payload
 // (docs/runbooks/canary-scene-payload.md). LIVE-ops-only: on-start,
 // on-tick, for-loop, literal, variable.set/get, print, math.add — no
-// http.request / db.query / source.read (Bastion condition).
+// http.request / db.query (the world-effect ops; Bastion condition).
+// source.read is no longer a world op (ADR 012 Option B — pure compute).
 
 func canaryHarnessBlueprint() *compiler.BlueprintGraph {
 	ep := func(n string) compiler.BlueprintPort {

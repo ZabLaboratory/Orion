@@ -16,7 +16,8 @@ import (
 //   - wall-budget exceeded path (distinct from step-budget)
 //   - ValidationBudgetFrom env-tunable (zero values fall back to default)
 //   - MaxSteps=0 disables the step check (wall only)
-//   - source.read completes down `then` in validation mode
+//   - (source.read validation-mode completion removed — ADR 012 Option B
+//     reclassified it from a world op to a pure compute)
 //   - B10 guard: undeclared world effect → harness returns error
 //   - SeedValidationLeaf is a no-op outside validation mode (no live mutation)
 //   - Multiple blueprints: one fails → overall StatusFailed
@@ -143,60 +144,10 @@ func TestStepBudgetExceeded_PositiveBudgetFires(t *testing.T) {
 	}
 }
 
-// --------------------------------------------------------------------------
-// 4. source.read completes down `then` in validation mode (B10 completeness)
-// --------------------------------------------------------------------------
-
-// TestHarness_SourceReadValidationModeCompletesThen: a `source.read` op
-// in validation mode synthesises a null value and walks `then` — proving
-// the third world-touching op's inert path, not only http.request + db.query.
-func TestHarness_SourceReadValidationModeCompletesThen(t *testing.T) {
-	g := validationGraph("srcread")
-	g.Bindings = []compiler.ExternalAdapter{{Key: "live-src", URL: "https://MUST-NOT-CONNECT.invalid"}}
-
-	prog := &ExecProgram{
-		BlueprintKey: "bp",
-		Nodes: map[string]*ExecNode{
-			"src": {ID: "src", Op: OpSourceRead,
-				Config: map[string]json.RawMessage{"source_id": raw(`"live-src"`)},
-				Next:   map[string]ExecTarget{"then": {Node: "set"}, "error": {Node: "err"}}},
-			"set": varSet("set", "got-value", nil, nil),
-			"err": varSet("err", "got-error", nil, nil),
-		},
-		Entrypoints: map[string]ExecEntry{
-			"start": {Kind: EntryOnStart, Target: ExecTarget{Node: "src"}},
-		},
-	}
-	prog.Nodes["set"].Config["value"] = raw(`true`)
-	prog.Nodes["err"].Config["value"] = raw(`true`)
-
-	rep := newTestHarness().Validate(g, &compiler.RenderBundle{}, []*ExecProgram{prog})
-
-	if rep.Status != StatusValidated {
-		t.Fatalf("source.read validation status = %s, want validated", rep.Status)
-	}
-	er := rep.Blueprints[0].Entrypoints[0]
-	if !er.Pass {
-		t.Fatalf("source.read entrypoint failed: %+v", er)
-	}
-	// Must have walked `then`, not `error`.
-	if !contains(er.LeavesWritten, "__vars.bp.got-value") {
-		t.Fatalf("source.read did not complete down then: leaves=%v", er.LeavesWritten)
-	}
-	if contains(er.LeavesWritten, "__vars.bp.got-error") {
-		t.Fatalf("source.read completed down error port (must use then in validation mode): leaves=%v", er.LeavesWritten)
-	}
-	// The attempt is listed in the report (author sees the call).
-	found := false
-	for _, ea := range er.EffectsTried {
-		if ea.Op == OpSourceRead && ea.Node == "src" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("effects_attempted does not list source.read: %v", er.EffectsTried)
-	}
-}
+// (Former test 4 — source.read validation-mode completion — was removed
+// with the exec op: ADR 012 Option B reclassified core.source.read@1 to a
+// pure compute. Its inert path is no longer a validation-mode concern; the
+// two remaining world ops http.request / db.query are covered above.)
 
 // --------------------------------------------------------------------------
 // 5. B10 guard: ValidateValidationModeCoverage fails on undeclared op

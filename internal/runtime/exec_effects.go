@@ -35,10 +35,15 @@ import (
 // phase-4 gate (#87).
 
 // Exec op names for the async effects (runtime-canonical, like exec.go).
+//
+// source.read is NOT here: ADR 012 (Option B) reclassified
+// core.source.read@1 from a world-touching exec effect to a pure compute
+// (introspection of a compile-resolved descriptor — internal/runtime/
+// compute_source.go). It carries no exec pins in the seed, so it was never
+// reachable as an effect; the resolution now happens at compile.
 const (
 	OpHTTPRequest = "http.request"
 	OpDBQuery     = "db.query"
-	OpSourceRead  = "source.read"
 )
 
 // effectCompletePort is the internal exec in-pin a parked effect
@@ -50,8 +55,8 @@ const effectCompletePort = "__effect_complete"
 // `timeout_seconds` is absent or non-positive.
 const defaultEffectTimeout = 10 * time.Second
 
-// maxEffectResponse bounds an http.request / source.read body read
-// (same 1 MiB bound as the poller).
+// maxEffectResponse bounds an http.request body read (same 1 MiB bound
+// as the poller).
 const maxEffectResponse = 1 << 20
 
 // EffectMetrics is the phase-3 observability seam. *obs.Metrics
@@ -78,11 +83,6 @@ type SceneEffects struct {
 	DB *effects.DBQueryClient
 	// DataSources is the ORION_DATASOURCES allowlist.
 	DataSources map[string]effects.DataSource
-	// SourceClient performs `source.read` fetches of DECLARED adapter
-	// sources (operator-declared URLs — the same trust level as the
-	// poller, which is why it is a plain client and not the egress
-	// one). nil = a default client.
-	SourceClient *http.Client
 	// Metrics is the phase-3 metrics sink (nil = disabled).
 	Metrics EffectMetrics
 }
@@ -102,7 +102,6 @@ var worldEffectRegistrations = []struct {
 }{
 	{OpHTTPRequest, execHTTPRequest},
 	{OpDBQuery, execDBQuery},
-	{OpSourceRead, execSourceRead},
 }
 
 // SetEffects installs the async-effect ops on this scene. Pre-Run only
@@ -688,68 +687,6 @@ func execDBQuery(s *Scene, t *execTask, node *ExecNode, inPort string) execOpOut
 			return effects.Result{Err: "DB_QUERY_ENCODE: " + err.Error()}
 		}
 		return effects.Result{Value: out}
-	}
-	return s.effectOutcome(node, key, run, timeout)
-}
-
-// --- source.read --------------------------------------------------------
-
-// execSourceRead is the `source.read` op: an on-demand fetch of a
-// DECLARED external source — the graph binding (`external_adapter`)
-// whose `key` matches the authored `source_id` config. The URL is the
-// operator/author-declared binding URL (the same trust level the
-// poller already fetches on a cadence), NOT a blueprint-computed
-// destination — hence the plain client. Outputs: `<node>.value` on
-// `then`; `<node>.error` on `error`. An undeclared source fails to the
-// error port (`SOURCE_NOT_DECLARED`) — structural, never a capability
-// refusal.
-func execSourceRead(s *Scene, t *execTask, node *ExecNode, inPort string) execOpOutcome {
-	if inPort == effectCompletePort {
-		return finishEffect(s, t, node, func(env map[string]json.RawMessage, value json.RawMessage) {
-			env[node.ID+".value"] = value
-		})
-	}
-
-	// Seed `core.source.read@1` declares its config key as `source_id`
-	// (stdlib_seeder.py) — the UUID of the data_sources row to read.
-	name := configString(node.Config, "source_id")
-	var srcURL string
-	for _, b := range s.graph.Bindings {
-		if b.Key == name && b.URL != "" {
-			srcURL = b.URL
-			break
-		}
-	}
-	timeout := s.effectTimeout(t, node)
-	e := s.effects
-	key := s.nextWakeKey()
-
-	run := func(ctx context.Context) effects.Result {
-		if srcURL == "" {
-			return effects.Result{Err: "SOURCE_NOT_DECLARED: " + name}
-		}
-		client := http.DefaultClient
-		if e != nil && e.SourceClient != nil {
-			client = e.SourceClient
-		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, srcURL, nil)
-		if err != nil {
-			return effects.Result{Err: "SOURCE_READ_INVALID: " + err.Error()}
-		}
-		req.Header.Set("Accept", "application/json")
-		resp, err := client.Do(req)
-		if err != nil {
-			return effects.Result{Err: "SOURCE_READ_FAILED: " + err.Error()}
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusOK {
-			return effects.Result{Err: fmt.Sprintf("SOURCE_READ_STATUS: %d", resp.StatusCode)}
-		}
-		body, err := io.ReadAll(io.LimitReader(resp.Body, maxEffectResponse))
-		if err != nil {
-			return effects.Result{Err: "SOURCE_READ_READ: " + err.Error()}
-		}
-		return effects.Result{Value: asJSON(body)}
 	}
 	return s.effectOutcome(node, key, run, timeout)
 }

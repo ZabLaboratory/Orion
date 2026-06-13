@@ -59,6 +59,15 @@ const (
 	// fail-closed half of the R4 path-injection defence (Quasar E1 is the
 	// producer half). Invalid channels are rejected, never rewritten.
 	ErrPlatformChannelInvalid DiagnosticCode = "PLATFORM_CHANNEL_INVALID"
+
+	// ErrSourceNotDeclared (ADR 012 §1.4): a `core.source.read@1` node's
+	// authored `source_id` config names no declared source — no
+	// ExternalAdapter whose `Key` matches it. source.read is introspection
+	// resolved at COMPILE (Option B), so an undeclared source is a
+	// push-time STRUCTURAL reject (POST /push), never a runtime error port
+	// (a compute has no error pin). Mirrors DATASOURCE_NOT_DECLARED for
+	// db.query — fail at push, never on air.
+	ErrSourceNotDeclared DiagnosticCode = "SOURCE_NOT_DECLARED"
 )
 
 // Diagnostic is a single error or warning produced during compilation.

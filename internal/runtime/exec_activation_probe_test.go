@@ -20,9 +20,10 @@ package runtime
 //  6. SetActive order invariant: SetOnAir(true) arrives in inbox BEFORE
 //     the on-start fire (both inbox messages, FIFO); the first tick that
 //     arrives after activation observes onAir == true and fires.
-//  7. SetEffects dormancy (R9): http.request / db.query / source.read
-//     fired on a scene WITHOUT SetEffects installed → fail-close to the
-//     error port, no panic, no real egress. Proves the "hold ADR §3.7"
+//  7. SetEffects dormancy (R9): http.request / db.query fired on a scene
+//     WITHOUT SetEffects installed → fail-close to the error port, no
+//     panic, no real egress (source.read is no longer a world op — ADR 012
+//     Option B). Proves the "hold ADR §3.7"
 //     guarantee: effects fail loudly, not silently.
 //  8. Boot reseed invariant: ExecProgramsFromGraph on a graph with NO
 //     exec_programs returns (nil, nil) — a pure-dataflow scene at boot

@@ -87,6 +87,11 @@ func NewComputeRegistry() *ComputeRegistry {
 	// QueryMe QueryDescriptor JSON. compute_db.go.
 	r.registerDBTranche()
 
+	// core.source.read@1 — introspection compute (ADR 012 Option B). A
+	// total pure function over the compiler-resolved `__resolved_source`
+	// config; reclassified from a world-touching exec effect. compute_source.go.
+	r.registerSourceTranche()
+
 	return r
 }
 
