@@ -92,6 +92,82 @@ func compileMixed(t *testing.T) *Graph {
 // event node becomes an entry, the exec edge becomes Next, the data
 // edges into exec pins become ExecDataInput. The pure literal that only
 // feeds the data layer stays a data node.
+// reactiveOnEventBlueprint mirrors the Quasar-finale reactive scene
+// (ADR 013): an on-event entry whose ONLY out-edge is a DATA edge
+// (`payload` → a get-field's data input), feeding a pure dataflow chain
+// into a core.output@1 sink. There is no exec body. The entry must
+// therefore carry NO exec Target — the reactivity is the __events write
+// re-evaluating the data chain, not an exec dispatch. Regression for the
+// compiler wiring the entry Target off a DATA out-edge, which made the
+// runtime walk into a data node ("exec: unknown node id").
+func reactiveOnEventBlueprint() *BlueprintGraph {
+	return &BlueprintGraph{
+		ID: "bp-reactive",
+		Nodes: []BlueprintNode{
+			{ID: "onChat", Compute: "core.event.on-event@1",
+				Config:  map[string]json.RawMessage{"event_name": json.RawMessage(`"stream_chat_event"`)},
+				Outputs: []BlueprintPort{execOut("then"), dataIn("payload")}},
+			{ID: "text", Compute: "core.data.get-field@1",
+				Config:  map[string]json.RawMessage{"path": json.RawMessage(`"payload.text"`)},
+				Inputs:  []BlueprintPort{dataIn("record")},
+				Outputs: []BlueprintPort{dataIn("value")}},
+			{ID: "out", Compute: "core.output@1",
+				Config: map[string]json.RawMessage{"name": json.RawMessage(`"chat.display"`)},
+				Inputs: []BlueprintPort{dataIn("value")}},
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "onChat", FromPort: "payload", ToNode: "text", ToPort: "record"},
+			{FromNode: "text", FromPort: "value", ToNode: "out", ToPort: "value"},
+		},
+	}
+}
+
+// TestPartition_OnEvent_DataEdgeIsNotExecTarget is the ADR 013 finale
+// regression: an on-event whose sole out-edge is data must produce an
+// entry with an EMPTY exec Target (not the data node). Otherwise the
+// runtime exec interpreter looks the data node up in the exec node table,
+// misses, and logs "exec: unknown node id".
+func TestPartition_OnEvent_DataEdgeIsNotExecTarget(t *testing.T) {
+	m := execManifest()
+	m["core.data.get-field@1"] = ComputeManifestEntry{IsPure: true, IsBounded: true, Version: "1"}
+	m["core.output@1"] = ComputeManifestEntry{IsPure: true, IsBounded: true, Version: "1"}
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+		blueprints: map[string]*BlueprintGraph{"bp-1": reactiveOnEventBlueprint()},
+		manifest:   m,
+	}
+	g, _, _, err := Compile(context.Background(), "scene-r",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-1"}, f)
+	if err != nil {
+		t.Fatalf("reactive on-event scene rejected: %v", err)
+	}
+	if len(g.ExecPrograms) != 1 {
+		t.Fatalf("want 1 exec program, got %d", len(g.ExecPrograms))
+	}
+	p := decodeProgram(t, g.ExecPrograms[0])
+	e, ok := p.Entrypoints["onChat"]
+	if !ok {
+		t.Fatalf("on-event entry missing; entries = %+v", p.Entrypoints)
+	}
+	if e.Kind != "on-event" || e.Event != "stream_chat_event" {
+		t.Fatalf("entry = %+v, want kind on-event event stream_chat_event", e)
+	}
+	if e.Target.Node != "" {
+		t.Fatalf("entry Target = %+v, want EMPTY (data-only out-edge must not become an exec target)", e.Target)
+	}
+	// The exec program carries no body nodes (the chain is pure dataflow).
+	if len(p.Nodes) != 0 {
+		t.Fatalf("exec program nodes = %+v, want none (dataflow-only reactive scene)", p.Nodes)
+	}
+	// The data nodes survive in the data graph and stay reactive.
+	if _, ok := graphNodeByID(g, "text"); !ok {
+		t.Fatal("get-field data node dropped from the data graph")
+	}
+	if _, ok := graphNodeByID(g, "out"); !ok {
+		t.Fatal("output sink dropped from the data graph")
+	}
+}
+
 func TestPartition_MixedScene_Structure(t *testing.T) {
 	g := compileMixed(t)
 

@@ -106,6 +106,49 @@ func onPlatformVarProg(key, leaf string, value int) *ExecProgram {
 	}
 }
 
+// TestExec_OnPlatformEvent_PayloadBoundToFiredTask (ADR 013, live finale
+// null-text regression): firing on a platform write must bind the TRIGGERING
+// LEAF VALUE under the entry node's `payload` data-out pin, exactly as on-tick
+// binds `delta_seconds` and on-event surfaces its `payload`. Before the fix
+// the branch fired with no env, so a downstream `payload` read resolved to
+// null (the on-platform node is an exec node, not a dataflow node — demandValue
+// finds no state leaf at `<node>`). Here a spine `on-platform-event → set` whose
+// value pulls `<entry>.payload` must write the FULL canonical event value, not
+// null. msg.Value is the canonical `{type, payload:{...}}` Quasar writes.
+func TestExec_OnPlatformEvent_PayloadBoundToFiredTask(t *testing.T) {
+	leaf := "__inputs.platform.twitch.g2nmathias.last_chat"
+	canonical := `{"type":"chat","payload":{"text":"hello"}}`
+
+	// on-platform-event(leaf) → set `__vars.bp.received = <onplat>.payload`.
+	// The entry carries Node so the runtime knows which node namespaces the
+	// payload pin (the compiler sets ExecEntry.Node = the event node's id).
+	prog := &ExecProgram{
+		BlueprintKey: "bp",
+		Nodes: map[string]*ExecNode{
+			"set": varSet("set", "received",
+				[]ExecDataInput{{Port: "value", From: "onplat", FromPort: "payload"}}, nil),
+		},
+		Entrypoints: map[string]ExecEntry{
+			"onplat": {Kind: EntryOnPlatformEvent, Event: leaf, Node: "onplat",
+				Target: ExecTarget{Node: "set"}},
+		},
+	}
+	sc := execScene(t, "platform-payload", prog)
+	startScene(t, sc)
+
+	// A write of the canonical event fires the spine; the fired task must
+	// observe the LEAF VALUE on its `payload` pin and land it verbatim —
+	// proving the payload is no longer null at the source.
+	sc.Input(InputMsg{Path: leaf, Value: raw(canonical)})
+	waitForState(t, sc, "__vars.bp.received", canonical, time.Second)
+
+	// A SECOND write with a different payload re-fires and lands the new
+	// value (fire-on-write carries the current leaf, not a stale binding).
+	next := `{"type":"chat","payload":{"text":"world"}}`
+	sc.Input(InputMsg{Path: leaf, Value: raw(next)})
+	waitForState(t, sc, "__vars.bp.received", next, time.Second)
+}
+
 // TestExec_OnPlatformEvent_CoexistsWithDataflow (criterion #4, coexistence):
 // a scene carrying BOTH a dataflow leaf binding (the quasar.* reactive value
 // path) AND an on-platform-event entry on the SAME leaf sees BOTH on one

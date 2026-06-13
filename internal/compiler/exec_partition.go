@@ -364,13 +364,29 @@ func buildExecEntry(n BlueprintNode, kind string, edges []BlueprintEdge, entries
 		entry.Event = leaf
 	}
 	// Find the single exec OUT edge to set Target. An entry with no
-	// wired body fires a no-op task — structurally valid (the authoring
-	// gap is the author's, not a capability rejection).
-	for _, e := range edges {
-		if e.FromNode == n.ID {
-			entry.Target = execTarget{Node: e.ToNode, Port: e.ToPort}
-			break
+	// wired exec body fires a no-op task — structurally valid (the
+	// authoring gap is the author's, not a capability rejection). Only
+	// edges leaving an EXEC out pin set the Target: a data edge off the
+	// entry (e.g. on-event `payload` → a get-field's data input) drives
+	// pure dataflow reactivity, not an exec dispatch, and must never be
+	// mistaken for the exec body — otherwise the runtime walks into a
+	// data node and logs "unknown node id" (the exec node table holds
+	// exec nodes only).
+	execOutPins := make(map[string]struct{})
+	for _, p := range n.Outputs {
+		if p.Kind == execPinKind {
+			execOutPins[p.Name] = struct{}{}
 		}
+	}
+	for _, e := range edges {
+		if e.FromNode != n.ID {
+			continue
+		}
+		if _, isExecOut := execOutPins[e.FromPort]; !isExecOut {
+			continue
+		}
+		entry.Target = execTarget{Node: e.ToNode, Port: e.ToPort}
+		break
 	}
 	entries[n.ID] = entry
 	return diags

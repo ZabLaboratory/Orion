@@ -704,7 +704,22 @@ func (s *Scene) applyInput(msg InputMsg) {
 	// and an on-platform-event sees BOTH on one write (coexistence, §3.6).
 	if len(s.execOnPlatform) > 0 && strings.HasPrefix(msg.Path, platformLeafPrefix) {
 		for _, k := range s.execOnPlatform[msg.Path] {
-			s.enqueueFire(k)
+			// Bind the triggering leaf value under the entry node's
+			// `payload` data-out pin, mirroring on-tick's `delta_seconds`
+			// binding (fireOnTick) — and parity with on-event, whose
+			// `payload` pin resolves to the same node-scoped value. msg.Value
+			// is the canonical event Quasar wrote (`{type, payload:{...}}`).
+			// Without this the data-out pin resolves to null: the on-platform
+			// node is an exec node, not a dataflow node, so demandValue finds
+			// no state leaf at `<node>` and a downstream `payload` read is
+			// empty (the live finale null-text bug, ADR 013).
+			var env map[string]json.RawMessage
+			if ref, ok := s.execEntries[k]; ok {
+				if node := ref.entry.Node; node != "" {
+					env = map[string]json.RawMessage{node + ".payload": msg.Value}
+				}
+			}
+			s.enqueueFireEnv(k, env)
 		}
 	}
 }
