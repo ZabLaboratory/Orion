@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,8 +59,13 @@ func NewComputeRegistry() *ComputeRegistry {
 	r.fns["core.math.mod@1"] = arithmetic(math.Mod)
 
 	// Comparison — ports `a`, `b` (stdlib `core.compare.*`).
-	r.fns["core.compare.equal@1"] = comparator(func(a, b float64) bool { return a == b })
-	r.fns["core.compare.not-equal@1"] = comparator(func(a, b float64) bool { return a != b })
+	// equal/not-equal are value-equality (mirroring Blue's executor.py
+	// `i.get("a") == i.get("b")`): numeric when both operands are
+	// numbers, raw/structural otherwise (string, bool, …). The four
+	// ORDER comparisons stay strictly numeric — order over non-numbers
+	// is undefined in Blue's stdlib (`_cmp_pair` coerces via `_num`).
+	r.fns["core.compare.equal@1"] = equalComparator(false)
+	r.fns["core.compare.not-equal@1"] = equalComparator(true)
 	r.fns["core.compare.less-than@1"] = comparator(func(a, b float64) bool { return a < b })
 	r.fns["core.compare.less-equal@1"] = comparator(func(a, b float64) bool { return a <= b })
 	r.fns["core.compare.greater-than@1"] = comparator(func(a, b float64) bool { return a > b })
@@ -163,6 +169,45 @@ func arithmetic(op func(a, b float64) float64) ComputeFn {
 	}
 }
 
+// equalComparator builds `core.compare.equal@1` (negate=false) and
+// `core.compare.not-equal@1` (negate=true). Unlike the order
+// comparators, equality is defined over ANY value, not just numbers —
+// the first real consumer is command/text matching
+// (`lower(payload.text) == "lck"`), where forcing operands through
+// `readNum` made equality impossible on strings (`input "a" not a
+// number`). Semantics mirror Blue's executor.py (`i.get("a") ==
+// i.get("b")`):
+//
+//   - both operands parse as JSON numbers → numeric compare. This
+//     preserves the campaign-validated behaviour exactly (equal(5,5),
+//     equal(5,6)) AND makes int/float agree (5 == 5.0), since both land
+//     on the same float64.
+//   - otherwise → raw/structural equality on the canonicalised bytes
+//     (string == string, bool == bool, …). A number vs a non-number is
+//     unequal here (one branch parses, the other does not), matching
+//     Python's `5 == "5"` → False.
+//
+// Reads ports `x`/`a` and `y`/`b` (same name chain as the numeric
+// comparators), so wiring is unchanged.
+func equalComparator(negate bool) ComputeFn {
+	return func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
+		a := readRaw(inputs, "x", "a")
+		b := readRaw(inputs, "y", "b")
+
+		var eq bool
+		if fa, oka := asNum(a); oka {
+			if fb, okb := asNum(b); okb {
+				eq = fa == fb
+				out, _ := json.Marshal(eq != negate)
+				return out, nil
+			}
+		}
+		eq = rawEqualNorm(a, b)
+		out, _ := json.Marshal(eq != negate)
+		return out, nil
+	}
+}
+
 func comparator(op func(a, b float64) bool) ComputeFn {
 	return func(inputs, _ map[string]json.RawMessage) (json.RawMessage, error) {
 		a, err := readNum(inputs, "x", "a")
@@ -238,6 +283,42 @@ func readNum(inputs map[string]json.RawMessage, names ...string) (float64, error
 		return 0, fmt.Errorf("compute: input %q not a number: %s", n, raw)
 	}
 	return 0, nil
+}
+
+// readRaw returns the first present port's raw value, else JSON null.
+// Unlike readNum/readBool it never errors — equality is total over any
+// value, and a missing operand defaults to `null` (Blue's `i.get(...)`
+// returns None for an unwired port, and `None == None` holds).
+func readRaw(inputs map[string]json.RawMessage, names ...string) json.RawMessage {
+	for _, n := range names {
+		if raw, ok := inputs[n]; ok {
+			return raw
+		}
+	}
+	return json.RawMessage(`null`)
+}
+
+// asNum reports whether raw is a JSON number and returns its float64.
+// A JSON string like `"5"` is NOT a number here (json.Unmarshal into
+// float64 fails), so it routes to the raw-equality branch.
+func asNum(raw json.RawMessage) (float64, bool) {
+	var f float64
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return 0, false
+	}
+	return f, true
+}
+
+// rawEqualNorm compares two raw JSON values for structural equality
+// after canonicalising whitespace. Compute inputs (leaf values,
+// literals) are not guaranteed byte-canonical the way state writes are,
+// so we compact both sides before delegating to rawEqual (state.go).
+func rawEqualNorm(a, b json.RawMessage) bool {
+	var ca, cb bytes.Buffer
+	if json.Compact(&ca, a) != nil || json.Compact(&cb, b) != nil {
+		return rawEqual(a, b) // fall back to raw bytes on malformed input
+	}
+	return rawEqual(ca.Bytes(), cb.Bytes())
 }
 
 func readBool(inputs map[string]json.RawMessage, names ...string) (bool, error) {
