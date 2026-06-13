@@ -245,7 +245,20 @@ func Compile(
 	//     acceptance so sceneAcceptsPath routes a write to `__events.<topic>`
 	//     to the scene. No goroutine is ever spawned for this Kind. Topics
 	//     sorted for scene_version hash determinism (criterion #6).
-	adapters = append(adapters, eventTopicBindings(eventTopics)...)
+	//
+	//     ADDITIVE (ADR 013, the quasar-finale 5th link): a PURE-DATAFLOW
+	//     scene reads an `__events.*` topic through a `core.input@1` leaf node
+	//     (the M1 shape, no on-event exec entry) — its leaf address rides on a
+	//     data GraphNode.Path, NOT on an ExecEntry, so the eventTopics scan
+	//     above (fed only by on-event entrypoints) misses it and NO acceptance
+	//     binding is synthesized → sceneAcceptsPath rejects the wire/service
+	//     write → the leaf is never written → the dataflow cone never wakes.
+	//     This is the exact mirror of (6b)'s entryLeaves merge for platform
+	//     leaves: scan the compiled data nodes for `__events.*` paths and union
+	//     them into the topic set so the input-driven case gets the same
+	//     acceptance binding. A scene with BOTH an on-event entry and a
+	//     dataflow input on the same topic dedups to one binding.
+	adapters = append(adapters, eventTopicBindings(eventTopics, eventInputLeaves(sorted))...)
 
 	// 6d) Resolve every `core.source.read@1` node's `source_id` against the
 	//     assembled adapter set and fold the introspection descriptor into
@@ -1172,9 +1185,9 @@ func platformStreamBindings(nodes []GraphNode, entryLeaves map[string]struct{}) 
 }
 
 // eventTopicBindings synthesizes one ExternalAdapter{Kind:"event-topic"}
-// per DISTINCT on-event topic an exec-bearing blueprint declares (issue
-// #148, ADR 008 §3.3). It is the exact mirror of platformStreamBindings:
-// a PURE acceptance declaration so the inbox's sceneAcceptsPath routes an
+// per DISTINCT `__events.*` topic the scene observes (issue #148, ADR 008
+// §3.3). It is the exact mirror of platformStreamBindings: a PURE
+// acceptance declaration so the inbox's sceneAcceptsPath routes an
 // operator/service write to `__events.<topic>` to the scene — without it
 // the write is silently absorbed (the gap ADR 008 closes). NO adapter
 // goroutine is ever spawned for this Kind (the poller / pg-listen
@@ -1183,13 +1196,36 @@ func platformStreamBindings(nodes []GraphNode, entryLeaves map[string]struct{}) 
 // and global (the runtime indexes execOnEvent by the raw event name), so
 // the leaf is `__events.<topic>` with no blueprint-key prefix. Topics are
 // sorted for scene_version hash determinism (criterion #6).
-func eventTopicBindings(topics map[string]struct{}) []ExternalAdapter {
-	if len(topics) == 0 {
+//
+// Two observation channels feed it, deduped to one binding per leaf:
+//   - topics: bare topic names borne by on-event exec entrypoints (the
+//     #148 case). Each is prefixed with `__events.` here.
+//   - inputLeaves: FULL `__events.*` leaf addresses borne by pure-dataflow
+//     `core.input@1` nodes (the ADR 013 quasar-finale 5th-link case). Already
+//     prefixed — they ARE the data node's Path. A spine-less reactive scene
+//     reads its topic this way (no on-event entry), so without this merge its
+//     write is rejected by sceneAcceptsPath and the cone never wakes.
+func eventTopicBindings(topics map[string]struct{}, inputLeaves map[string]struct{}) []ExternalAdapter {
+	if len(topics) == 0 && len(inputLeaves) == 0 {
 		return nil
 	}
-	leaves := make([]string, 0, len(topics))
+	seen := make(map[string]struct{}, len(topics)+len(inputLeaves))
+	var leaves []string
+	add := func(leaf string) {
+		if leaf == "" {
+			return
+		}
+		if _, dup := seen[leaf]; dup {
+			return
+		}
+		seen[leaf] = struct{}{}
+		leaves = append(leaves, leaf)
+	}
 	for t := range topics {
-		leaves = append(leaves, eventsLeafPrefix+t)
+		add(eventsLeafPrefix + t)
+	}
+	for leaf := range inputLeaves {
+		add(leaf)
 	}
 	sort.Strings(leaves)
 	out := make([]ExternalAdapter, 0, len(leaves))
@@ -1200,6 +1236,29 @@ func eventTopicBindings(topics map[string]struct{}) []ExternalAdapter {
 			Kind:        "event-topic",
 			TargetPaths: []string{leaf},
 		})
+	}
+	return out
+}
+
+// eventInputLeaves collects the distinct `__events.*` leaf paths borne by
+// the compiled DATA nodes — a `core.input@1` whose config.name names an
+// event topic (the pure-dataflow reactive scene, ADR 013). These leaves
+// are the address a dataflow scene reads its event from WITHOUT an on-event
+// exec entry, so they are invisible to the eventTopics scan (fed only by
+// ExecEntries) and need the same acceptance binding as an on-event topic.
+// The scan runs over the post-prefix `sorted` nodes; `__events.*` is a flat
+// global namespace exempt from blueprint-key prefixing (parity with the
+// platform-leaf exemption), so the path is the byte-identical address the
+// inbox gates on. Mirrors platformStreamBindings' node scan.
+func eventInputLeaves(nodes []GraphNode) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, n := range nodes {
+		if n.Kind != "input" {
+			continue
+		}
+		if strings.HasPrefix(n.Path, eventsLeafPrefix) {
+			out[n.Path] = struct{}{}
+		}
 	}
 	return out
 }
