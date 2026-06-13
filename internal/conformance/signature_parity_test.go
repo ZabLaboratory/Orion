@@ -93,9 +93,17 @@ var runtimeContract = map[string]runtimeStrings{
 	// url/method/query/headers/body/timeout_ms, binds status/ok/body/headers
 	// on `then`, and fires `error` on failure — all pinned below.
 	//
-	// source.read still declares NO exec pins in the seed (pure dataflow —
-	// emits a descriptor); its runtime then/error firing is a dead exec
-	// path, NOT asserted against the seed (those pins don't exist there).
+	// source.read declares NO exec pins in the seed (pure dataflow — emits a
+	// descriptor). Since ADR 012 Option B it is a PURE COMPUTE (compute_source.go),
+	// not an exec effect: the compiler resolves its `source_id` config into a
+	// compiler-injected `__resolved_source` key at compile, and the compute
+	// returns that object as its single value (Option A). The runtime reads
+	// only `__resolved_source` — a compiler-injected `__`-prefixed key,
+	// deliberately NOT a seed config key, so it is intentionally absent from
+	// runtimeContract (which pins only AUTHORED seed strings). The authored
+	// seed config key is `source_id`, pinned below; the four output pins are
+	// projected downstream by get-field (Option A), so the runtime hardcodes
+	// no output-pin names — trivially a subset of the seed signature.
 	"core.http.request@1": {inputs: []string{"url", "method", "query", "headers", "body", "timeout_ms"}, outputs: []string{"status", "ok", "body", "headers", "then", "error"}},
 	"core.db.query@1":     {inputs: []string{"descriptor"}, outputs: []string{"rows", "count", "elapsed_ms", "error", "then"}, config: []string{"datasource"}},
 	"core.source.read@1":  {config: []string{"source_id"}},

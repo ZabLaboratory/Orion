@@ -90,8 +90,10 @@ func TestWiring_ValidatedSceneArmsEffectsThroughShow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The world ops MUST be registered (the validated path).
-	for _, op := range []string{OpDBQuery, OpHTTPRequest, OpSourceRead} {
+	// The world ops MUST be registered (the validated path). source.read is
+	// no longer a world op (ADR 012 Option B — pure compute), so only
+	// db.query / http.request remain in the SetEffects registration set.
+	for _, op := range []string{OpDBQuery, OpHTTPRequest} {
 		if _, ok := sc.execOps[op]; !ok {
 			t.Fatalf("validated scene missing world op %q in registry", op)
 		}
@@ -115,9 +117,10 @@ func TestWiring_ValidatedSceneArmsEffectsThroughShow(t *testing.T) {
 // loaded with an EMPTY program set — what execForAir returns for a
 // NON-VALIDATED or pure-dataflow version — must register ZERO
 // world-effect ops. The seam never calls SetEffects, so http.request /
-// db.query / source.read are not in the registry: an authored
-// occurrence halts-at-node with NO egress and NO query. This is the
-// negative assertion that an unvalidated scene can never touch the world.
+// db.query are not in the registry: an authored occurrence halts-at-node
+// with NO egress and NO query. This is the negative assertion that an
+// unvalidated scene can never touch the world. (source.read is no longer a
+// world op — ADR 012 Option B reclassified it to a pure compute.)
 func TestWiring_DataflowSceneRegistersNoWorldOps(t *testing.T) {
 	var gatewayHit atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -141,7 +144,7 @@ func TestWiring_DataflowSceneRegistersNoWorldOps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, op := range []string{OpDBQuery, OpHTTPRequest, OpSourceRead} {
+	for _, op := range []string{OpDBQuery, OpHTTPRequest} {
 		if _, ok := sc.execOps[op]; ok {
 			t.Fatalf("R9 VIOLATION: dataflow scene registered world op %q — an unvalidated scene must touch nothing", op)
 		}

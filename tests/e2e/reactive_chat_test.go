@@ -27,9 +27,9 @@ import (
 // PURE DATAFLOW (no exec, no egress). The blueprint binds only
 // `quasar.twitch.chat@1` (leaf input), `core.data.get-field@1` (payload
 // extraction, ADR 003 §3.3) and `core.string.concat@1` — no
-// http.request / db.query / source.read, so nothing halts-at-node under
-// the SetEffects egress hold. Asserted structurally in
-// TestE2E_ReactiveChat_UsesOnlyDataflowOps.
+// http.request / db.query, so nothing halts-at-node under the SetEffects
+// egress hold (source.read is no longer a world op — ADR 012 Option B).
+// Asserted structurally in TestE2E_ReactiveChat_UsesOnlyDataflowOps.
 //
 // The blueprint graph below is the source of truth for the Blue artefact
 // the activation runbook authors (Blue/docs/runbooks/m1-reactive-chat.md
@@ -175,7 +175,7 @@ func TestE2E_ReactiveChat_UsesOnlyDataflowOps(t *testing.T) {
 			t.Fatalf("reactive chat binds non-dataflow op %q (M1 no-effects condition violated)", op)
 		}
 		if strings.Contains(op, "http") || strings.Contains(op, "db") ||
-			strings.Contains(op, "source") || strings.Contains(op, "request") {
+			strings.Contains(op, "request") {
 			t.Fatalf("reactive chat binds egress-shaped op %q", op)
 		}
 	}

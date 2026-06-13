@@ -167,7 +167,6 @@ var served = map[string]ServedNode{
 	"core.http.request@1":   {Kind: KindExecOp, Op: "http.request", Test: "TestEffects_HTTPRequestResumesContinuation"},
 	"core.http-request@1":   {Kind: KindExecOp, Op: "http.request", Test: "TestEffects_HTTPRequestResumesContinuation"},
 	"core.db.query@1":       {Kind: KindExecOp, Op: "db.query", Test: "TestEffects_DBQueryTopologyA"},
-	"core.source.read@1":    {Kind: KindExecOp, Op: "source.read", Test: "TestEffects_SourceReadDeclaredBinding"},
 	"core.show.emit@1":      {Kind: KindExecOp, Op: "show.emit", Test: "TestShowEmit_RuleToActiveNoCascade"},
 
 	// --- Compute registry (pure data layer) ---------------------------
@@ -228,6 +227,14 @@ var served = map[string]ServedNode{
 	"core.db.select@1": {Kind: KindCompute, Test: "TestPure_DBSelect"},
 	"core.db.order@1":  {Kind: KindCompute, Test: "TestPure_DBOrder"},
 	"core.db.limit@1":  {Kind: KindCompute, Test: "TestPure_DBLimit"},
+
+	// core.source.read@1 — introspection compute (ADR 012 Option B). The
+	// compiler folds the declared source's descriptor into the node config
+	// under `__resolved_source` at compile; the runtime compute is a total
+	// pure function over that config (no I/O, no client, no Scene) —
+	// compute_source.go. Reclassified from KindExecOp: the seed declares no
+	// exec pins, so it was never reachable as an effect.
+	"core.source.read@1": {Kind: KindCompute, Test: "TestCompute_SourceRead"},
 }
 
 // quasarPlatformPrefix identifies the platform-event family the compiler

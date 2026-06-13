@@ -38,6 +38,16 @@ import (
 // the remainder as gated on the compiler-partition issue. The exec
 // executors themselves ARE proven through the real engine in
 // internal/runtime/conformance_exec_test.go.
+//
+// SCOPE NOTE 2 (ADR 012 Option B). core.source.read@1 is now a KindCompute
+// but a compile-RESOLVED one: it requires a DECLARED ExternalAdapter
+// (config["__resolved_source"], folded at compile). The push path's layout
+// cannot yet declare external_adapters (extractAdapters is a v1 stub), so a
+// source.read node rejects SOURCE_NOT_DECLARED at push — the absence of a
+// declared source, NOT a capability refusal. It is excluded from this
+// fixture (like the R9 exec ops) and proven by TestCompute_SourceRead +
+// the resolveSourceReads compiler tests; it joins this push path once
+// Canvas authors adapter declarations.
 func TestE2E_Conformance_OneOfEachServedType(t *testing.T) {
 	st := requireDB(t)
 	sceneID := uuid.New()
@@ -154,6 +164,21 @@ func buildOneOfEachBlueprint(t *testing.T) (*compiler.BlueprintGraph, compiler.C
 		case conformance.KindCompute:
 			if e.NodeID == "core.output@1" {
 				continue // the sink itself, added per-compute below
+			}
+			if e.NodeID == "core.source.read@1" {
+				// source.read (ADR 012 Option B) is a compile-RESOLVED compute:
+				// it needs a DECLARED ExternalAdapter whose Key matches its
+				// `source_id`, folded into config["__resolved_source"] at compile.
+				// The push path's layout cannot yet declare external_adapters
+				// (extractAdapters is a v1 stub returning nil), so a source.read
+				// node correctly rejects SOURCE_NOT_DECLARED at push — not a
+				// capability refusal of the node type (§1.1), but the absence of
+				// a declared source. It is therefore not push-exercisable today
+				// (same status as the R9 exec ops below). Its served proof lives
+				// in internal/runtime TestCompute_SourceRead +
+				// internal/compiler resolveSourceReads tests. Activates here once
+				// Canvas authors adapter declarations.
+				continue
 			}
 			manifest[e.NodeID] = compiler.ComputeManifestEntry{
 				IsPure: true, IsBounded: true, Version: "1",

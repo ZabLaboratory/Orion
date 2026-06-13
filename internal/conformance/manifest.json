@@ -656,8 +656,8 @@
       "name": "read",
       "version": 1,
       "category": "data",
-      "is_pure": false,
-      "is_bounded": false,
+      "is_pure": true,
+      "is_bounded": true,
       "source": "stdlib",
       "platform": null
     },

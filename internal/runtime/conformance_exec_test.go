@@ -100,7 +100,7 @@ func TestConformance_EveryExecOpExecutes(t *testing.T) {
 
 func isWorldOp(op string) bool {
 	switch op {
-	case OpHTTPRequest, OpDBQuery, OpSourceRead:
+	case OpHTTPRequest, OpDBQuery:
 		return true
 	}
 	return false
@@ -167,9 +167,6 @@ func execOpProbeProgram(op string) *ExecProgram {
 	case OpDBQuery:
 		head = &ExecNode{ID: "op", Op: OpDBQuery,
 			Config: map[string]json.RawMessage{"datasource": raw(`"ds"`)}, Next: mark}
-	case OpSourceRead:
-		head = &ExecNode{ID: "op", Op: OpSourceRead,
-			Config: map[string]json.RawMessage{"source_id": raw(`"src"`)}, Next: mark}
 	case OpShowEmit:
 		// show.emit fires `then` immediately (no error pin, Blue#73). The
 		// injection seam is nil on this bare scene → no-op injection, `then`

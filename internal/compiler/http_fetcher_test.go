@@ -67,9 +67,12 @@ func TestFetchComputeManifest_BlueContract(t *testing.T) {
 	if !add.IsPure || !add.IsBounded {
 		t.Errorf("core.math.add@1: is_pure=%v is_bounded=%v, want true/true", add.IsPure, add.IsBounded)
 	}
+	// source.read is pure/bounded since ADR 012 Option B (introspection
+	// compute, not an external fetch) — the manifest mirrors Blue's flipped
+	// seed. Asserts the parse round-trips the flag faithfully.
 	read := manifest["core.source.read@1"]
-	if read.IsPure || read.IsBounded {
-		t.Errorf("core.source.read@1: is_pure=%v is_bounded=%v, want false/false", read.IsPure, read.IsBounded)
+	if !read.IsPure || !read.IsBounded {
+		t.Errorf("core.source.read@1: is_pure=%v is_bounded=%v, want true/true", read.IsPure, read.IsBounded)
 	}
 
 	// 3) Version int → string.

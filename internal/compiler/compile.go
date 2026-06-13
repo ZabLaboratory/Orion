@@ -237,6 +237,15 @@ func Compile(
 	//     sorted for scene_version hash determinism (criterion #6).
 	adapters = append(adapters, eventTopicBindings(eventTopics)...)
 
+	// 6d) Resolve every `core.source.read@1` node's `source_id` against the
+	//     assembled adapter set and fold the introspection descriptor into
+	//     the node config under `__resolved_source` (ADR 012 §1.2, Option B).
+	//     An undeclared source is a STRUCTURAL push-time reject
+	//     (SOURCE_NOT_DECLARED, §1.4) — source.read is a pure compute with no
+	//     error port, so resolution happens here, never on air. Run after all
+	//     adapters (incl. synthesized) exist and before the error gate below.
+	resolveSourceReads(sorted, adapters, d)
+
 	if d.HasErrors() {
 		return nil, nil, "", &CompileError{Diagnostics: *d}
 	}
@@ -746,6 +755,109 @@ func validateBlueprint(b *BlueprintGraph, manifest ComputeManifest, execSet map[
 func isSourceCompute(compute string) bool {
 	sn, ok := conformance.Classify(compute)
 	return ok && sn.Kind == conformance.KindCompute
+}
+
+// coreSourceRead is the introspection compute reclassified by ADR 012
+// (Option B). Its `source_id` config names a DECLARED ExternalAdapter; the
+// compiler resolves it here and folds the descriptor into the node config.
+const coreSourceRead = "core.source.read@1"
+
+// resolvedSourceConfigKey is the reserved compiler-injected config key the
+// resolved source descriptor is folded into (ADR 012 §1.2). It is mirrored
+// verbatim by the runtime reader (runtime.resolvedSourceConfigKey,
+// compute_source.go). Double-underscore = compiler-injected, never an
+// authored key.
+const resolvedSourceConfigKey = "__resolved_source"
+
+// resolvedSource is the introspection projection the compiler folds into a
+// source.read node's config (ADR 012 §1.2/§1.3). `name`/`kind` echo the
+// adapter; `descriptor` is the structural projection of the adapter; the
+// runtime returns this whole object as the node's single value (Option A),
+// and a blueprint projects an individual pin downstream via get-field.
+type resolvedSource struct {
+	Name       string             `json:"name"`
+	Kind       string             `json:"kind"`
+	Descriptor resolvedDescriptor `json:"descriptor"`
+}
+
+type resolvedDescriptor struct {
+	Label       string   `json:"label"`
+	TargetPaths []string `json:"target_paths"`
+	FrequencyHz *float64 `json:"frequency_hz"`
+	Channel     *string  `json:"channel"`
+}
+
+// resolveSourceReads folds the pre-resolved descriptor into every
+// `core.source.read@1` node's config and rejects undeclared sources (ADR
+// 012 §1.2/§1.4). It mutates the node Config in place; a node was emitted as
+// `computed` (isSourceCompute) so it already carries its config map. The
+// reject is appended to d; the caller's HasErrors gate turns it into a
+// POST /push failure.
+func resolveSourceReads(nodes []GraphNode, adapters []ExternalAdapter, d *Diagnostics) {
+	var byKey map[string]*ExternalAdapter
+	for i := range nodes {
+		n := &nodes[i]
+		if n.Compute != coreSourceRead {
+			continue
+		}
+		// Authored config key is `source_id` (stdlib_seeder.py).
+		var sourceID string
+		if raw, ok := n.Config["source_id"]; ok {
+			_ = json.Unmarshal(raw, &sourceID)
+		}
+		if byKey == nil {
+			byKey = make(map[string]*ExternalAdapter, len(adapters))
+			for j := range adapters {
+				byKey[adapters[j].Key] = &adapters[j]
+			}
+		}
+		adapter, found := byKey[sourceID]
+		if sourceID == "" || !found {
+			d.Items = append(d.Items, Diagnostic{
+				Code:     ErrSourceNotDeclared,
+				Severity: "error",
+				Message: fmt.Sprintf(
+					"source.read node %s references undeclared source %q", n.ID, sourceID),
+				Path: n.ID,
+			})
+			continue
+		}
+		var channel *string
+		if adapter.Channel != "" {
+			c := adapter.Channel
+			channel = &c
+		}
+		targetPaths := adapter.TargetPaths
+		if targetPaths == nil {
+			targetPaths = []string{}
+		}
+		resolved := resolvedSource{
+			Name: adapter.Key,
+			Kind: adapter.Kind,
+			Descriptor: resolvedDescriptor{
+				Label:       adapter.Label,
+				TargetPaths: targetPaths,
+				FrequencyHz: adapter.FrequencyHz,
+				Channel:     channel,
+			},
+		}
+		raw, err := json.Marshal(resolved)
+		if err != nil {
+			// Marshal of a plain struct of JSON-safe fields cannot fail;
+			// guard fail-closed rather than panic.
+			d.Items = append(d.Items, Diagnostic{
+				Code:     ErrSourceNotDeclared,
+				Severity: "error",
+				Message:  fmt.Sprintf("source.read node %s: descriptor marshal: %v", n.ID, err),
+				Path:     n.ID,
+			})
+			continue
+		}
+		if n.Config == nil {
+			n.Config = map[string]json.RawMessage{}
+		}
+		n.Config[resolvedSourceConfigKey] = raw
+	}
 }
 
 // Stdlib node references whose body carries a state-leaf-bearing config

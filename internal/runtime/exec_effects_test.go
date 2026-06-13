@@ -388,54 +388,12 @@ func errorsAs(err error, target **ExecValidationError) bool {
 	return ok
 }
 
-// TestEffects_SourceReadDeclaredBinding: source.read fetches a
-// DECLARED graph binding's URL on demand and binds `value`; an
-// undeclared source name fails to the error port.
-func TestEffects_SourceReadDeclaredBinding(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"price":7}`))
-	}))
-	defer srv.Close()
-
-	prog := &ExecProgram{
-		BlueprintKey: "bp",
-		Nodes: map[string]*ExecNode{
-			"rd": {ID: "rd", Op: OpSourceRead,
-				Config: map[string]json.RawMessage{"source_id": raw(`"prices"`)},
-				Next: map[string]ExecTarget{
-					"then":  {Node: "set.out"},
-					"error": {Node: "set.err"},
-				}},
-			"rd.bad": {ID: "rd.bad", Op: OpSourceRead,
-				Config: map[string]json.RawMessage{"source_id": raw(`"undeclared"`)},
-				Next:   map[string]ExecTarget{"error": {Node: "set.err"}}},
-			"set.out": setFromPin("set.out", "out", "rd", "value", nil),
-			"set.err": setFromPin("set.err", "err", "rd.bad", "error", nil),
-		},
-		Entrypoints: map[string]ExecEntry{
-			"e1": {Target: ExecTarget{Node: "rd"}},
-			"e2": {Target: ExecTarget{Node: "rd.bad"}},
-		},
-	}
-	binding := compiler.ExternalAdapter{Kind: "http-poll", Key: "prices", URL: srv.URL}
-	eff := &SceneEffects{Runner: newTestRunner(t)}
-	sc := effectsScene(t, "source-test", prog, eff, binding)
-	startScene(t, sc)
-
-	mustFire(t, sc, "e1")
-	waitForState(t, sc, "__vars.bp.out", `{"price":7}`, 2*time.Second)
-
-	mustFire(t, sc, "e2")
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if v, ok := sc.state.Get("__vars.bp.err"); ok && strings.Contains(string(v), "SOURCE_NOT_DECLARED") {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	v, _ := sc.state.Get("__vars.bp.err")
-	t.Fatalf("expected SOURCE_NOT_DECLARED on the error port, got %s", v)
-}
+// source.read is no longer an exec effect (ADR 012 Option B): it is a pure
+// introspection compute resolved at compile. Its executable proof lives in
+// compute_source_test.go (TestCompute_SourceRead) and its compile-time
+// resolution + SOURCE_NOT_DECLARED reject in the compiler tests. The former
+// HTTP-fetch test (TestEffects_SourceReadDeclaredBinding) was removed with
+// the exec op.
 
 // TestEffects_PoolRefusalToErrorPort: a stopped/full pool refuses the
 // job — the effect resolves to EFFECT_QUEUE_FULL on the error port,

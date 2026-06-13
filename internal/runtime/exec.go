@@ -445,7 +445,7 @@ func (s *Scene) SetEmitEvent(fn func(topic string, payload json.RawMessage)) { s
 var ExecOps = []string{
 	OpBranch, OpSequence, OpGate, OpForLoop, OpForEach, OpWhile,
 	OpVariableSet, OpPrint, OpDelay,
-	OpAnimationPlay, OpHTTPRequest, OpDBQuery, OpSourceRead, OpShowEmit,
+	OpAnimationPlay, OpHTTPRequest, OpDBQuery, OpShowEmit,
 }
 
 // registerExecOp installs an additional exec op. Pre-Run only. This is
