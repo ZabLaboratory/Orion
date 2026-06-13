@@ -300,6 +300,85 @@ func TestEffects_HTTP_HeaderCapToErrorPort(t *testing.T) {
 	t.Fatalf("header cap did not fire the error port, __vars.bp.err = %s", v)
 }
 
+// TestEffects_HTTP_NetworkFailureIsHostOnly: a transport failure toward an
+// ALLOWLISTED host (server closed before the call → connection refused)
+// must surface an error that is host-only — it carries the host but NEVER
+// the authored path or query-string. Go's *url.Error from net/http renders
+// as `Get "https://host/path?api_key=SECRET": <cause>`; if that raw string
+// reached the bound `error` pin (and the "effect failed" log at
+// exec_effects.go), an authored API-key query param would leak on any
+// transient network blip. (c) logging host-only — the failure path the
+// success / egress-deny tests never exercise.
+func TestEffects_HTTP_NetworkFailureIsHostOnly(t *testing.T) {
+	// Stand a server up only to mint an allowlisted host:port, then close
+	// it: the port is now dead but still on the egress allowlist, so the
+	// request passes the policy and fails at dial (connection refused).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	deadURL := srv.URL
+	egress := loopbackEgress(t, deadURL)
+	srv.Close()
+
+	const secret = "SECRET123"
+	authoredURL := deadURL + "/v1/private/path?api_key=" + secret
+
+	prog := &ExecProgram{
+		BlueprintKey: "bp",
+		Nodes: map[string]*ExecNode{
+			"req": {ID: "req", Op: OpHTTPRequest,
+				Config: map[string]json.RawMessage{
+					"url":        raw(`"` + authoredURL + `"`),
+					"timeout_ms": raw(`1500`),
+				},
+				Next: map[string]ExecTarget{
+					"then":  {Node: "set.body"},
+					"error": {Node: "set.err"},
+				}},
+			"set.body": setFromPin("set.body", "body", "req", "body", nil),
+			"set.err":  setFromPin("set.err", "err", "req", "error", nil),
+		},
+		Entrypoints: map[string]ExecEntry{"e": {Target: ExecTarget{Node: "req"}}},
+	}
+	eff := &SceneEffects{Runner: newTestRunner(t), Egress: egress}
+	sc := httpHardeningScene(t, "http-netfail", prog, eff)
+	startScene(t, sc)
+
+	mustFire(t, sc, "e")
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if v, ok := sc.state.Get("__vars.bp.err"); ok && string(v) != `null` {
+			errStr := string(v)
+			if !strings.Contains(errStr, "HTTP_REQUEST_FAILED") {
+				t.Fatalf("network failure did not shape HTTP_REQUEST_FAILED: %s", errStr)
+			}
+			// Host-only: must NOT carry the authored query secret nor the path.
+			if strings.Contains(errStr, secret) {
+				t.Fatalf("authored query secret %q leaked into bound error: %s", secret, errStr)
+			}
+			if strings.Contains(errStr, "api_key") {
+				t.Fatalf("authored query param name leaked into bound error: %s", errStr)
+			}
+			if strings.Contains(errStr, "/v1/private/path") {
+				t.Fatalf("authored path leaked into bound error: %s", errStr)
+			}
+			if strings.Contains(errStr, "?") {
+				t.Fatalf("a query-string leaked into bound error: %s", errStr)
+			}
+			// The allowlisted host is public/non-secret and is allowed.
+			host, _, _ := strings.Cut(strings.TrimPrefix(deadURL, "http://"), "/")
+			if !strings.Contains(errStr, host) {
+				t.Fatalf("host-only error should still name the host %q: %s", host, errStr)
+			}
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	v, _ := sc.state.Get("__vars.bp.err")
+	t.Fatalf("error port did not fire on network failure, __vars.bp.err = %s", v)
+}
+
 // TestExecHTTP_TimeoutMillisClampAndFallback unit-tests the timeout_ms
 // reader: a non-positive / NaN value falls back to the default, and a
 // huge value is clamped to maxEffectTimeout.

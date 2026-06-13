@@ -402,7 +402,11 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 		}
 		u, err := url.Parse(rawURL)
 		if err != nil {
-			return effects.Result{Err: "HTTP_REQUEST_INVALID_URL: " + err.Error()}
+			// (c) host-only: url.Parse returns a *url.Error whose .Error()
+			// re-echoes the raw URL (and thus any authored query secret). We
+			// cannot trust a host from a string that failed to parse, so emit
+			// a generic class with no raw value.
+			return effects.Result{Err: "HTTP_REQUEST_INVALID_URL: malformed url"}
 		}
 		// (b) cap the outbound body before anything else.
 		if len(body) > maxOutboundBody {
@@ -422,7 +426,10 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 		}
 		req, err := http.NewRequestWithContext(ctx, method, u.String(), reader)
 		if err != nil {
-			return effects.Result{Err: "HTTP_REQUEST_INVALID: " + err.Error()}
+			// (c) host-only: http.NewRequest re-parses u.String() and its
+			// error can re-echo the full URL (incl. authored query). Never
+			// interpolate err.Error() raw.
+			return effects.Result{Err: "HTTP_REQUEST_INVALID: " + httpFailureReason(u.Hostname(), err)}
 		}
 		if reader != nil {
 			req.Header.Set("Content-Type", "application/json")
@@ -439,7 +446,11 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 			if errors.Is(err, effects.ErrEgressBlocked) {
 				return egressDenied(e, s.id, err)
 			}
-			return effects.Result{Err: "HTTP_REQUEST_FAILED: " + err.Error()}
+			// (c) host-only: a *url.Error here carries the full request URL
+			// (incl. authored query-string, which may hold an API key). Never
+			// interpolate err.Error() raw — it would leak to the log and the
+			// bound `error` pin. u.Hostname() is allowlisted/public.
+			return effects.Result{Err: "HTTP_REQUEST_FAILED: " + httpFailureReason(u.Hostname(), err)}
 		}
 		defer resp.Body.Close()
 		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxEffectResponse))
@@ -571,6 +582,31 @@ func flattenHeaders(h http.Header) map[string]string {
 		}
 	}
 	return out
+}
+
+// httpFailureReason renders a transport failure as a host-only string,
+// never the full request URL. A *url.Error from net/http carries the
+// complete URL (`Get "https://host/path?api_key=SECRET": <cause>`); its
+// .Error() must NEVER reach a log or a bound `error` pin. We bind only the
+// authorized host (already public, allowlisted) plus an unwrapped cause that
+// no longer holds the URL. (c) logging host-only.
+func httpFailureReason(host string, err error) string {
+	cause := err.Error()
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		// urlErr.Err is the underlying transport error (DNS, connrefused,
+		// TLS, timeout) — it does not carry the URL/query that urlErr.Error()
+		// prepends. Fall back to a generic class only if it somehow does.
+		if urlErr.Err != nil {
+			cause = urlErr.Err.Error()
+		} else {
+			cause = "request failed"
+		}
+	}
+	if host == "" {
+		return cause
+	}
+	return host + ": " + cause
 }
 
 // egressDenied counts the policy denial and shapes the error result.
