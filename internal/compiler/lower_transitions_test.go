@@ -150,7 +150,7 @@ func TestLowerTransitions_RetroCompat(t *testing.T) {
 	})
 
 	t.Run("no transitions", func(t *testing.T) {
-		lowered := lowerRenderTree(LayoutNode{Kind: "image", ID: "logo"})
+		lowered := lowerRenderTree(LayoutNode{Kind: "image", ID: "logo"}, nil)
 		if lowered.Transitions != nil {
 			t.Fatalf("no-transitions node grew transitions: %v", lowered.Transitions)
 		}
@@ -163,7 +163,7 @@ func TestLowerTransitions_RetroCompat(t *testing.T) {
 				"from":    raw(`{"opacity":0}`),
 				"opacity": raw(`1`),
 			},
-		})
+		}, nil)
 		if lowered.Transitions != nil {
 			t.Fatalf("from-only envelope should omit transitions (TS parity), got %v", keysOf(lowered.Transitions))
 		}
