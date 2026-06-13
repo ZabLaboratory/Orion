@@ -508,13 +508,16 @@ func TestExecDelay_Race_ConcurrentInputsAndCancel(t *testing.T) {
 	waitForState(t, sc, "score.team_a", `99`, time.Second)
 }
 
-// ---- on-start fires once per activation, not on same-instance re-set ---
+// ---- on-start REFIRES per activation, including same-instance re-set ---
 
-// TestExec_OnStart_NotRefiredOnSameInstance_Direct: directly activating
-// a scene then activating the SAME scene again (from == id guard in
-// SetActive) must not fire on-start a second time. Forge's test goes
-// via Show; this verifies the guard at the Scene level independently.
-func TestExec_OnStart_NotRefiredOnSameInstance_Direct(t *testing.T) {
+// TestExec_OnStart_RefiredOnSameInstance_Direct: activating a scene then
+// activating the SAME scene again (the from == id branch of SetActive) REFIRES
+// on-start on the same instance — without reseeding state (ADR 008 Amendment 1
+// §A1.2/§A1.5). This previously asserted the inverse (no refire); the amendment
+// corrects the implementation ↔ doctrine gap (§3.2/§3.4/R2 always said "refire
+// at every activation"). The same instance is reused, so the add-from-current
+// reads the preserved 1 and writes 2.
+func TestExec_OnStart_RefiredOnSameInstance_Direct(t *testing.T) {
 	show := NewShow(NewComputeRegistry(), quietLogger())
 	t.Cleanup(show.Stop)
 	bundle := &compiler.RenderBundle{SceneVersion: "sha256:exec-test"}
@@ -526,13 +529,13 @@ func TestExec_OnStart_NotRefiredOnSameInstance_Direct(t *testing.T) {
 	scA, _ := show.Get("a")
 	waitForState(t, scA, "__vars.bp.done", `1`, time.Second)
 
-	// Re-activate same scene: must not refire.
+	// Re-activate same scene: on-start refires, state preserved → done == 2.
 	if err := show.SetActive("a", nil); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(30 * time.Millisecond)
-	if v, _ := scA.state.Get("__vars.bp.done"); string(v) != `1` {
-		t.Fatalf("on-start fired on same-instance re-activation: done=%s", v)
+	waitForState(t, scA, "__vars.bp.done", `2`, time.Second)
+	if scA2, _ := show.Get("a"); scA2 != scA {
+		t.Fatal("re-activation must reuse the same instance (refire, not reseed)")
 	}
 }
 

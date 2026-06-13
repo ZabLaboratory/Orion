@@ -497,22 +497,31 @@ func (sh *Show) SetActive(id string, transition json.RawMessage) error {
 	// switch-away cancels all live tasks of the previous scene
 	// version; the destination becoming live fires `on-start`.
 	if from != id {
+		// Switch-away (A→B): the previous scene leaves the antenna. Cancel
+		// its live tasks (ADR 003 §3.1.4) AND clear its on-air flag so its
+		// on-tick/on-event triggers stop firing while it sits backstage in
+		// the roster (ADR 006 §3.4, criterion #6). The flag flip travels the
+		// inbox — single-writer; CancelExec travels its own coalescing
+		// channel.
 		if hadPrev {
-			// Switch-away: the previous scene leaves the antenna. Cancel
-			// its live tasks (ADR 003 §3.1.4) AND clear its on-air flag so
-			// its on-tick/on-event triggers stop firing while it sits
-			// backstage in the roster (ADR 006 §3.4, criterion #6). The
-			// flag flip travels the inbox — single-writer; CancelExec
-			// travels its own coalescing channel.
 			prev.CancelExec()
 			prev.SetOnAir(false)
 		}
-		// Destination takes the antenna: flag it on air BEFORE the
-		// on-start fire (both inbox messages, FIFO arrival order), so any
-		// on-tick that lands after activation observes onAir == true.
-		dest.SetOnAir(true)
-		dest.FireOnStart("system:scene-activated")
+	} else {
+		// Re-activation (from == id): activation is the canonical verb for
+		// (re)launching exec, so on-start refires even when the scene is
+		// already live (ADR 008 §3.2/§3.4/R2, Amendment 1 §A1.2). Cancel the
+		// scene's own in-flight exec so the refire starts from a clean task
+		// slate — but NEVER SetOnAir(false) (prev == dest: a scene must not
+		// turn itself off air). State is NOT reseeded: refire ≠ reseed (§A1.5).
+		dest.CancelExec()
 	}
+	// Destination takes the antenna and (re)fires on-start in BOTH branches.
+	// Flag it on air BEFORE the on-start fire (both inbox messages, FIFO
+	// arrival order), so any on-tick that lands after activation observes
+	// onAir == true. SetOnAir is idempotent when already on air.
+	dest.SetOnAir(true)
+	dest.FireOnStart("system:scene-activated")
 
 	// ADR 007 §C.3b: switch the kit's active scene too, so LSDP/1.1
 	// live subscribers get scene_changed + a fresh snapshot off the
@@ -540,10 +549,17 @@ func (sh *Show) SetActive(id string, transition json.RawMessage) error {
 	// an initial BIND, so it receives only the fresh `snapshot` — emitting
 	// a `scene_changed{from:""}` would be a phantom transition. A sub that
 	// WAS on a previous scene keeps the full scene_changed + snapshot pair.
+	//
+	// Re-activation (from == id, ADR 008 Amendment 1 §A1.3/criterion #10):
+	// there is no A→B viewer transition, so NO `scene_changed` is emitted —
+	// emitting `scene_changed{from==to}` would be a phantom transition. The
+	// subscriber still receives the fresh `snapshot` below so its values
+	// resync after the on-start refire. The emit is gated strictly behind
+	// `from != id` so the re-activation branch never reaches it.
 	for _, sub := range migrating {
 		wasDetached := sub.scene == nil
 		snap := dest.AttachExisting(sub)
-		if !wasDetached {
+		if from != id && !wasDetached {
 			select {
 			case sub.Out <- &protocol.SceneChanged{
 				FromSceneID: from,
