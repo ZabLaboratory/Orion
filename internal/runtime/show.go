@@ -227,7 +227,7 @@ func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.Rend
 	// it routes to show.Active() at call time, so the TARGET is always the
 	// active scene regardless of which instance emits. This is the distinct
 	// active-only path; it never touches RouteTargets (anti-cascade).
-	scene.SetEmit(sh.emitToActive)
+	scene.SetEmitEvent(sh.emitToActive)
 	// R9 world-effect install (ADR 006 §3.4, load-bearing). The
 	// world-touching ops (http.request / db.query / source.read) are
 	// registered ONLY when this scene loads with a non-empty exec set —

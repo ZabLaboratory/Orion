@@ -424,12 +424,13 @@ func (s *Scene) SetExecSlicing(steps int, dur time.Duration) {
 // through this (B10).
 func (s *Scene) SetEffector(e Effector) { s.effector = e }
 
-// SetEmit installs the `show.emit` rule→antenna injection seam (ADR 009
-// §3.6, issue #155). Pre-Run only (like the other Set* mutators). The
+// SetEmitEvent installs the `show.emit` rule→antenna injection seam (ADR
+// 009 §3.6, issue #155). Pre-Run only (like the other Set* mutators). The
 // Show passes a closure routing through the audited inbox to show.Active()
 // ONLY. A nil closure (or never calling this) leaves the emit op a
-// construction-safe no-op that still fires `then`.
-func (s *Scene) SetEmit(fn func(topic string, payload json.RawMessage)) { s.emit = fn }
+// construction-safe no-op that still fires `then`. Named *Event (not Emit)
+// to avoid colliding with Scene.emit, the delta fan-out method.
+func (s *Scene) SetEmitEvent(fn func(topic string, payload json.RawMessage)) { s.emitEvent = fn }
 
 // ExecOps is the canonical set of exec-layer op names the runtime
 // serves — the built-in ops dispatched in exec_interpreter.go plus the

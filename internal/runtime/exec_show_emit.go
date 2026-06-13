@@ -10,7 +10,7 @@ import (
 // Semantics (NORMATIVE, ADR 009 §3.6). The op reads config `topic` and
 // data input `payload`, then injects a SYSTEM write `__events.<topic>` =
 // payload into the ACTIVE scene ONLY (`show.Active()`), via the Show's
-// audited inbox path (the `s.emit` seam wired at Load). This is a NEW
+// audited inbox path (the `s.emitEvent` seam wired at Load). This is a NEW
 // runtime path DISTINCT from the §3.3 routing union: it deliberately does
 // NOT pass through `RouteTargets()`. If it followed the union, a promoted
 // stream rule's emission would fan out to every OTHER promoted rule and
@@ -38,9 +38,9 @@ import (
 //
 // R9 dormancy: like every exec op, it runs only on a scene with an
 // installed ExecProgram, which no production path installs before the
-// phase-4 gate (#87). The injection seam (s.emit) is nil-safe: an unwired
-// scene (no active reachable, or pre-wiring) no-ops the injection and
-// STILL fires `then` — construction-safe, never a halt.
+// phase-4 gate (#87). The injection seam (s.emitEvent) is nil-safe: an
+// unwired scene (no active reachable, or pre-wiring) no-ops the injection
+// and STILL fires `then` — construction-safe, never a halt.
 
 // OpShowEmit is the runtime-canonical op name for `core.show.emit@1`.
 const OpShowEmit = "show.emit"
@@ -63,8 +63,8 @@ func execShowEmit(s *Scene, t *execTask, node *ExecNode, _ string) execOpOutcome
 	if !ok || len(payload) == 0 {
 		payload = json.RawMessage(`null`)
 	}
-	if s.emit != nil {
-		s.emit(topic, payload)
+	if s.emitEvent != nil {
+		s.emitEvent(topic, payload)
 	} else {
 		// Unwired seam (no active scene reachable / pre-wiring): the
 		// emission is dropped, but the chain is never amputated — `then`

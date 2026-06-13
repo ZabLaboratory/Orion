@@ -207,7 +207,7 @@ type Scene struct {
 	// injection and still fires `then` (construction-safe, no error pin —
 	// Blue#73 contract). Read on the scene goroutine; the closure itself is
 	// concurrency-safe (it routes through the audited inbox).
-	emit func(topic string, payload json.RawMessage)
+	emitEvent func(topic string, payload json.RawMessage)
 
 	// --- timer wheel / triggers / cancellation (issue #83) ------------
 	// clock is the injectable time source the wheel runs on
@@ -332,7 +332,7 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 	// seam), no external dependency — like animation.play. R9 holds because
 	// no production path installs an ExecProgram before the phase-4 gate
 	// (#87); without a program the op can never fire. The active-only
-	// injection seam (s.emit) is wired by the Show at Load.
+	// injection seam (s.emitEvent) is wired by the Show at Load.
 	s.registerExecOp(OpShowEmit, execShowEmit)
 	s.state.Seed(graph.Defaults)
 	// O(1) node-id → state-path index (issue #80): one pass, then
