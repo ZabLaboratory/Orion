@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
+	"github.com/ZabLaboratory/Orion/internal/effects"
 )
 
 // Tests for the ADR 010 §3.2 / §3.7 http.request executor: the full
@@ -377,6 +380,93 @@ func TestEffects_HTTP_NetworkFailureIsHostOnly(t *testing.T) {
 	}
 	v, _ := sc.state.Get("__vars.bp.err")
 	t.Fatalf("error port did not fire on network failure, __vars.bp.err = %s", v)
+}
+
+// TestEffects_HTTP_EgressDialTimeIsHostOnly: the SSRF dial-time path. An
+// authored URL targets an ALLOWLISTED host (passes CheckURL) that resolves to
+// the cloud metadata endpoint 169.254.169.254 — a denied (link-local) address.
+// The dial-time IP guard (egress.go dialContext) refuses it with an
+// ErrEgressBlocked-wrapped error; net/http wraps THAT into a *url.Error from
+// Client().Do, whose .Error() re-echoes the full request URL
+// (`Get "https://host/path?api_key=SECRET": <cause>`). The sentinel survives
+// the wrap, so the executor routes it through egressDenied. That error reaches
+// the bound `error` pin AND the "effect failed" log; it must be host-only —
+// NEVER the authored query secret, the param name, the path, or any `?`. This
+// is the highest-value attacker path (SSRF reaching cloud metadata) and the
+// 4th leak site of the same class. Must FAIL without the egressDenied fix.
+func TestEffects_HTTP_EgressDialTimeIsHostOnly(t *testing.T) {
+	const (
+		secret = "SECRET456"
+		host   = "metadata.allowlisted.example"
+	)
+	// Allowlist the host (CheckURL passes), allow http so no scheme detour,
+	// then resolve it — at dial time — to the metadata IP, a blocked address.
+	// No InsecureAllowPrivateForTest: the IP vetting must stay ACTIVE so the
+	// dial-time guard fires and produces the *url.Error via Do.
+	egress := effects.NewEgressPolicy([]string{host}, true)
+	egress.SetLookupForTest(func(_ context.Context, _ string) ([]net.IPAddr, error) {
+		return []net.IPAddr{{IP: net.ParseIP("169.254.169.254")}}, nil
+	})
+
+	authoredURL := "http://" + host + "/v1/private/path?api_key=" + secret
+
+	metrics := &fakeEffectMetrics{}
+	prog := &ExecProgram{
+		BlueprintKey: "bp",
+		Nodes: map[string]*ExecNode{
+			"req": {ID: "req", Op: OpHTTPRequest,
+				Config: map[string]json.RawMessage{
+					"url":        raw(`"` + authoredURL + `"`),
+					"timeout_ms": raw(`1500`),
+				},
+				Next: map[string]ExecTarget{
+					"then":  {Node: "set.body"},
+					"error": {Node: "set.err"},
+				}},
+			"set.body": setFromPin("set.body", "body", "req", "body", nil),
+			"set.err":  setFromPin("set.err", "err", "req", "error", nil),
+		},
+		Entrypoints: map[string]ExecEntry{"e": {Target: ExecTarget{Node: "req"}}},
+	}
+	eff := &SceneEffects{Runner: newTestRunner(t), Egress: egress, Metrics: metrics}
+	sc := httpHardeningScene(t, "http-egress-dialtime", prog, eff)
+	startScene(t, sc)
+
+	mustFire(t, sc, "e")
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if v, ok := sc.state.Get("__vars.bp.err"); ok && string(v) != `null` {
+			errStr := string(v)
+			if !strings.Contains(errStr, "EGRESS_BLOCKED") {
+				t.Fatalf("dial-time denial did not shape EGRESS_BLOCKED: %s", errStr)
+			}
+			if metrics.blocked() == 0 {
+				t.Fatal("dial-time denial must be counted")
+			}
+			// Host-only: NEVER the authored query secret, param name, path, or `?`.
+			if strings.Contains(errStr, secret) {
+				t.Fatalf("authored query secret %q leaked into bound error: %s", secret, errStr)
+			}
+			if strings.Contains(errStr, "api_key") {
+				t.Fatalf("authored query param name leaked into bound error: %s", errStr)
+			}
+			if strings.Contains(errStr, "/v1/private/path") {
+				t.Fatalf("authored path leaked into bound error: %s", errStr)
+			}
+			if strings.Contains(errStr, "?") {
+				t.Fatalf("a query-string leaked into bound error: %s", errStr)
+			}
+			// The allowlisted host is public/non-secret and is allowed to show.
+			if !strings.Contains(errStr, host) {
+				t.Fatalf("host-only error should still name the host %q: %s", host, errStr)
+			}
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	v, _ := sc.state.Get("__vars.bp.err")
+	t.Fatalf("error port did not fire on dial-time denial, __vars.bp.err = %s", v)
 }
 
 // TestExecHTTP_TimeoutMillisClampAndFallback unit-tests the timeout_ms

@@ -398,7 +398,7 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 
 	run := func(ctx context.Context) effects.Result {
 		if e == nil || e.Egress == nil {
-			return egressDenied(e, s.id, fmt.Errorf("%w: no egress policy configured (deny-all)", effects.ErrEgressBlocked))
+			return egressDenied(e, s.id, "", fmt.Errorf("%w: no egress policy configured (deny-all)", effects.ErrEgressBlocked))
 		}
 		u, err := url.Parse(rawURL)
 		if err != nil {
@@ -418,7 +418,7 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 			return effects.Result{Err: err.Error()}
 		}
 		if err := e.Egress.CheckURL(u); err != nil {
-			return egressDenied(e, s.id, err)
+			return egressDenied(e, s.id, u.Hostname(), err)
 		}
 		var reader io.Reader
 		if len(body) > 0 {
@@ -444,7 +444,7 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 		resp, err := e.Egress.Client().Do(req)
 		if err != nil {
 			if errors.Is(err, effects.ErrEgressBlocked) {
-				return egressDenied(e, s.id, err)
+				return egressDenied(e, s.id, u.Hostname(), err)
 			}
 			// (c) host-only: a *url.Error here carries the full request URL
 			// (incl. authored query-string, which may hold an API key). Never
@@ -610,11 +610,22 @@ func httpFailureReason(host string, err error) string {
 }
 
 // egressDenied counts the policy denial and shapes the error result.
-func egressDenied(e *SceneEffects, sceneID string, err error) effects.Result {
+//
+// (c) host-only: a denial raised in the transport (the dial-time IP guard
+// closing SSRF / DNS-rebinding, or a redirect re-check) is wrapped by
+// net/http into a *url.Error whose .Error() re-echoes the full request URL —
+// `Get "https://host/path?api_key=SECRET": <cause>` — so it carries any
+// authored query secret. errors.Is(err, ErrEgressBlocked) survives that wrap,
+// so we reach here with a URL-bearing error. Route it through the same
+// host-only sanitisation as the other failure sites (httpFailureReason):
+// `host` is the allowlisted/public hostname, never the path or query. Pre-flight
+// denials (CheckURL: no policy, host not allowlisted) carry no URL and pass an
+// empty host — still sanitised for uniformity.
+func egressDenied(e *SceneEffects, sceneID, host string, err error) effects.Result {
 	if e != nil && e.Metrics != nil {
 		e.Metrics.HTTPEgressBlocked(sceneID)
 	}
-	return effects.Result{Err: "EGRESS_BLOCKED: " + err.Error()}
+	return effects.Result{Err: "EGRESS_BLOCKED: " + httpFailureReason(host, err)}
 }
 
 // asJSON passes valid JSON through verbatim and wraps anything else as
