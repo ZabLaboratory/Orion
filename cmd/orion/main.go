@@ -174,6 +174,11 @@ func run() error {
 
 	// Adapter inbox + HTTP poller + PG LISTEN/NOTIFY.
 	inbox := adapters.NewInbox(show, logger, metrics)
+	// `show.emit` active-only injection sink (ADR 009 §3.6, issue #155):
+	// the inbox owns the audit ring + the system-write path, so it is the
+	// Emitter. Wired before live traffic; scenes loaded earlier read it at
+	// call time.
+	show.SetEmitter(inbox)
 	poller := adapters.NewPoller(inbox, logger, cfg.HTTPPollUserAgent)
 	defer poller.StopAll()
 
@@ -351,5 +356,49 @@ func loadActiveScenes(ctx context.Context, st *store.Store, show *runtime.Show, 
 		logger.Error("cold start: re-activate persisted scene failed",
 			"scene_id", activeID.String(), "err", err)
 	}
+	reloadStreamRules(ctx, st, show, logger)
 	return nil
+}
+
+// reloadStreamRules reseeds the persisted stream-level Blue rule set into
+// the roster after a restart (ADR 009 §3.1, issue #154, criterion #11).
+// Mirrors the active-pointer restore: only the SELECTION is durable — each
+// rule reseeds from declared defaults and fires on-start once (ADR 009
+// §3.4, the FireOnStart-at-reload branch in Show.LoadExec). A rule is
+// resolved through the SAME validated-exec seam (ExecForBoot) as every
+// other roster instance: a rule promoted while validated comes back with
+// its exec programs. Fail-soft per rule — one bad rule never aborts boot.
+// SetActive ran already, so PromoteStreamRule's active-scene guard is
+// authoritative (a scene that is both persisted-active and persisted-rule —
+// which the API prevents — would simply be refused as a rule here, never
+// double-routed).
+func reloadStreamRules(ctx context.Context, st *store.Store, show *runtime.Show, logger *slog.Logger) {
+	ruleIDs, err := st.ListStreamRules(ctx)
+	if err != nil {
+		logger.Error("cold start: read stream rule set failed; rules stay dormant", "err", err)
+		return
+	}
+	for _, id := range ruleIDs {
+		pv, err := st.GetLatestPushedVersion(ctx, id)
+		if err != nil {
+			logger.Warn("cold start: stream rule has no pushed version; skipped",
+				"scene_id", id.String(), "err", err)
+			continue
+		}
+		var graph compiler.Graph
+		var bundle compiler.RenderBundle
+		if err := json.Unmarshal(pv.GraphJSON, &graph); err != nil {
+			logger.Warn("cold start: stream rule bad graph json; skipped", "scene_id", id.String(), "err", err)
+			continue
+		}
+		if err := json.Unmarshal(pv.BundleJSON, &bundle); err != nil {
+			logger.Warn("cold start: stream rule bad bundle json; skipped", "scene_id", id.String(), "err", err)
+			continue
+		}
+		progs := api.ExecForBoot(ctx, st, id, pv.SceneVersion, &graph, logger)
+		if err := show.PromoteStreamRule(id.String(), &graph, &bundle, progs...); err != nil {
+			logger.Warn("cold start: stream rule promotion refused; skipped",
+				"scene_id", id.String(), "err", err)
+		}
+	}
 }

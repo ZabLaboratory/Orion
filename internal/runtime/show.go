@@ -60,8 +60,51 @@ type Show struct {
 	// in LoadExec's `len(progs) > 0` guard, NOT here.
 	effects *SceneEffects
 
+	// emitter is the active-only `show.emit` injection sink (ADR 009 §3.6,
+	// issue #155). nil until SetEmitter wires it (the adapters.Inbox, which
+	// owns the audit ring + the system-write path). A nil emitter leaves
+	// every scene's emit op a construction-safe no-op (it still fires
+	// `then`). Set once at boot, before live traffic; read under RLock.
+	emitter Emitter
+
 	ctx    context.Context
 	cancel context.CancelFunc
+}
+
+// Emitter is the active-only injection sink the `show.emit` op delivers
+// through (ADR 009 §3.6). The adapters.Inbox implements it: it builds a
+// SYSTEM write `__events.<topic>` = payload, targets show.Active() ONLY
+// (never RouteTargets — anti-cascade), records ONE audit entry, and
+// delivers it to the active scene's loop. Defined here so the runtime
+// package owns the contract while the implementation stays in adapters
+// (where the audit ring + system-write seam live).
+type Emitter interface {
+	EmitToActive(topic string, payload json.RawMessage)
+}
+
+// SetEmitter installs the active-only `show.emit` injection sink (ADR 009
+// §3.6, issue #155). Called once at boot, after the inbox is built and
+// before live traffic. Every scene's emit closure reads sh.emitter at CALL
+// time, so a scene loaded before this is wired still emits correctly once
+// it is set — the only requirement is that it is set before any rule fires
+// show.emit live.
+func (sh *Show) SetEmitter(e Emitter) {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	sh.emitter = e
+}
+
+// emitToActive is the closure each scene's `show.emit` op invokes. It
+// reads the emitter under RLock at CALL time (so boot-load order is
+// irrelevant) and delegates the active-only injection. A nil emitter
+// drops the emission (the op still fires `then` — construction-safe).
+func (sh *Show) emitToActive(topic string, payload json.RawMessage) {
+	sh.mu.RLock()
+	e := sh.emitter
+	sh.mu.RUnlock()
+	if e != nil {
+		e.EmitToActive(topic, payload)
+	}
 }
 
 // SetExecMetrics installs the exec-layer metrics sink (implemented by
@@ -179,6 +222,12 @@ func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.Rend
 		scene.SetExecMetrics(sh.execMetrics)
 	}
 	scene.InstallExec(progs...)
+	// `show.emit` active-only injection seam (ADR 009 §3.6, issue #155):
+	// every loaded scene (active, rule, or roster) gets the same closure —
+	// it routes to show.Active() at call time, so the TARGET is always the
+	// active scene regardless of which instance emits. This is the distinct
+	// active-only path; it never touches RouteTargets (anti-cascade).
+	scene.SetEmitEvent(sh.emitToActive)
 	// R9 world-effect install (ADR 006 §3.4, load-bearing). The
 	// world-touching ops (http.request / db.query / source.read) are
 	// registered ONLY when this scene loads with a non-empty exec set —

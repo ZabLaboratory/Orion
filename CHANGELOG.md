@@ -13,6 +13,24 @@ publishes with empty notes.
 
 ### ✨ Features
 
+- **Stream-level Blue rules — promotion API + `show.emit` bridge**
+  (ADR 009 §3.6, issues #154/#155). Operator-gated promotion/demotion of a
+  roster scene into an always-on stream rule (`POST`/`DELETE
+  /api/v1/show/stream-rules`), gated on R9 validation (`SCENE_NOT_VALIDATED`)
+  and refusing the active scene (`RULE_IS_ACTIVE_SCENE`); a promoted rule is
+  refused archival (`SCENE_IN_USE`). The promoted set is persisted
+  (`show_stream_rules`, migration 0005) and reseeded at boot — restart
+  restores the same rules (criterion #11). The 82nd Blue primitive
+  `core.show.emit@1` gains its Orion executor: it injects `__events.<topic>`
+  = payload into the ACTIVE scene only, via a distinct active-only system
+  inbox path that never traverses the routing union — a rule's emission can
+  never cascade rule→rule (anti-loop by construction). Construction-safe,
+  no error pin (delivery to the active scene's system inbox cannot fail).
+  Conformance manifest/signatures regenerated off the merged Blue seed (82
+  nodes / 68 signatures); the bidirectional `exec-port-parity` gate covers
+  `show.emit` on both sides. (`internal/runtime/exec_show_emit.go`,
+  `internal/api/stream_rules.go`, `internal/store/show_stream_rules.go`,
+  `migrations/0005_show_stream_rules.sql`, `internal/conformance/`)
 - **Total-conformance matrix CI gate** (ADR 003 §3.4 phase 5 / §6
   criterion 1, the MASTER criterion — issue #88). A new
   `conformance-matrix` CI job (hard-fail, no `continue-on-error`)

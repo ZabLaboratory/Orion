@@ -1,5 +1,5 @@
 {
-  "count": 67,
+  "count": 68,
   "signatures": {
     "core.animation.play@1": {
       "inputs": [
@@ -620,6 +620,18 @@
         "then"
       ],
       "config": []
+    },
+    "core.show.emit@1": {
+      "inputs": [
+        "in",
+        "payload"
+      ],
+      "outputs": [
+        "then"
+      ],
+      "config": [
+        "topic"
+      ]
     },
     "core.source.read@1": {
       "inputs": [],

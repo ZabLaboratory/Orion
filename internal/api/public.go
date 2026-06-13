@@ -80,6 +80,10 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/show", getShow(deps))
 	mux.HandleFunc("POST /api/v1/show/active-scene", postActiveScene(deps))
 	mux.HandleFunc("POST /api/v1/show/test-sessions", postTestSession(deps))
+	// Stream-level Blue rules (ADR 009 §3.1, issue #154): operator-gated
+	// promotion/demotion of a roster scene into an always-on rule.
+	mux.HandleFunc("POST /api/v1/show/stream-rules", postStreamRule(deps))
+	mux.HandleFunc("DELETE /api/v1/show/stream-rules/{id}", deleteStreamRule(deps))
 
 	mux.HandleFunc("GET /api/v1/assets/{id}", getAsset(deps))
 	mux.HandleFunc("GET /api/v1/credentials/{id}/stream-key", getStreamKey(deps))
@@ -172,6 +176,10 @@ func codeFromError(err error) (int, string) {
 		return http.StatusConflict, "SCENE_NOT_PUSHED"
 	case errors.Is(err, store.ErrSceneInUse):
 		return http.StatusConflict, "SCENE_IN_USE"
+	case errors.Is(err, runtime.ErrRuleIsActiveScene):
+		// ADR 009 §3.1 criterion #5: a rule and the active scene are
+		// disjoint roles — promoting the active scene is refused.
+		return http.StatusConflict, "RULE_IS_ACTIVE_SCENE"
 	default:
 		return http.StatusInternalServerError, "INTERNAL"
 	}

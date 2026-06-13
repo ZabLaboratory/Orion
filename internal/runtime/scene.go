@@ -198,6 +198,17 @@ type Scene struct {
 	// R9: no production path installs it before the phase-4 gate.
 	effects *SceneEffects
 
+	// emit is the `show.emit` rule→antenna injection seam (ADR 009 §3.6,
+	// issue #155). Set by the Show at Load to a closure that delivers a
+	// system `__events.<topic>` write to show.Active() ONLY — a distinct
+	// active-only path, never RouteTargets, so a rule's emission can never
+	// cascade rule→rule (anti-loop by construction). nil = unwired (no
+	// active scene reachable / not yet wired): the executor then no-ops the
+	// injection and still fires `then` (construction-safe, no error pin —
+	// Blue#73 contract). Read on the scene goroutine; the closure itself is
+	// concurrency-safe (it routes through the audited inbox).
+	emitEvent func(topic string, payload json.RawMessage)
+
 	// --- timer wheel / triggers / cancellation (issue #83) ------------
 	// clock is the injectable time source the wheel runs on
 	// (systemClock in prod, fake clock in tests).
@@ -316,6 +327,13 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 	// no production path installs an ExecProgram before the phase-4
 	// gate (#87); without a program the op can never fire.
 	s.registerExecOp(OpAnimationPlay, execAnimationPlay)
+	// `show.emit` (ADR 009 §3.6, issue #155): the rule→antenna bridge. Pure
+	// scene machinery (read config/input + inject through the Show's emit
+	// seam), no external dependency — like animation.play. R9 holds because
+	// no production path installs an ExecProgram before the phase-4 gate
+	// (#87); without a program the op can never fire. The active-only
+	// injection seam (s.emitEvent) is wired by the Show at Load.
+	s.registerExecOp(OpShowEmit, execShowEmit)
 	s.state.Seed(graph.Defaults)
 	// O(1) node-id → state-path index (issue #80): one pass, then
 	// every upstreamPath call is a map hit instead of an O(N) scan.

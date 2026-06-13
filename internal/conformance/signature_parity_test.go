@@ -107,6 +107,15 @@ var runtimeContract = map[string]runtimeStrings{
 	"core.db.query@1":     {inputs: []string{"descriptor"}, outputs: []string{"rows", "count", "elapsed_ms", "error", "then"}, config: []string{"datasource"}},
 	"core.source.read@1":  {config: []string{"source_id"}},
 
+	// --- show event bridge (exec_show_emit.go, ADR 009 §3.6) ----------
+	// show.emit: config "topic"; pullData "payload"; fires "then". A real
+	// exec effect node — exec_in "in" / exec_out "then" in the seed; no
+	// "error" pin (Blue#73 — delivery is construction-safe). The active-only
+	// injection it performs writes __events.<topic> on show.Active(), an
+	// INTERNAL runtime path (not a seed port), so only the authored
+	// vocabulary (topic/payload/then) is pinned here.
+	"core.show.emit@1": {inputs: []string{"payload"}, outputs: []string{"then"}, config: []string{"topic"}},
+
 	// --- compute (compute_db.go / compute_pure.go config readers) -----
 	// db.* descriptor builders read these config keys (compute_db.go).
 	"core.db.from@1":   {config: []string{"table"}},
@@ -166,7 +175,12 @@ func TestExecPortParity_EverySeedExecPinHonoured(t *testing.T) {
 		// http.request / source.read declare NO exec pins in the seed (pure
 		// dataflow) — see the divergence note in runtimeContract; they are
 		// intentionally absent here. db.query IS a real exec effect node.
-		"core.db.query@1":       {out: []string{"then", "error"}},
+		"core.db.query@1": {out: []string{"then", "error"}},
+		// show.emit: exec_in "in", exec_out "then", NO error pin (Blue#73 —
+		// construction-safe delivery). The runtime honours `then` (the empty
+		// outcome defaults to it); `in` is the generic entry pin the
+		// interpreter routes, not a name the executor reads.
+		"core.show.emit@1":      {out: []string{"then"}},
 		"core.event.on-start@1": {out: []string{"then"}},
 		"core.event.on-tick@1":  {out: []string{"then"}},
 		"core.event.on-event@1": {out: []string{"then"}},

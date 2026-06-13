@@ -168,6 +168,7 @@ var served = map[string]ServedNode{
 	"core.http-request@1":   {Kind: KindExecOp, Op: "http.request", Test: "TestEffects_HTTPRequestResumesContinuation"},
 	"core.db.query@1":       {Kind: KindExecOp, Op: "db.query", Test: "TestEffects_DBQueryTopologyA"},
 	"core.source.read@1":    {Kind: KindExecOp, Op: "source.read", Test: "TestEffects_SourceReadDeclaredBinding"},
+	"core.show.emit@1":      {Kind: KindExecOp, Op: "show.emit", Test: "TestShowEmit_RuleToActiveNoCascade"},
 
 	// --- Compute registry (pure data layer) ---------------------------
 	"core.output@1": {Kind: KindCompute, Test: "TestPure_OutputPassthrough"},

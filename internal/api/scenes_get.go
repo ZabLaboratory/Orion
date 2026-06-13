@@ -146,6 +146,13 @@ func handleArchive(ctx context.Context, w http.ResponseWriter, deps PublicDeps, 
 		writeJSON(w, http.StatusConflict, map[string]string{"code": "SCENE_IN_USE"})
 		return
 	}
+	// A promoted stream rule is in use too (ADR 009 §3.1 criterion #5):
+	// archiving it would purge the artefacts of a scene the show runs
+	// always. Demote it first.
+	if deps.Show.IsStreamRule(sceneID.String()) {
+		writeJSON(w, http.StatusConflict, map[string]string{"code": "SCENE_IN_USE"})
+		return
+	}
 
 	// Purge compiled artefacts + reset latest_pushed_version, then
 	// flip status — atomic.

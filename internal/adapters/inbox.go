@@ -180,6 +180,57 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 	return nil
 }
 
+// EmitToActive injects a SYSTEM `__events.<topic>` = payload write into
+// the ACTIVE scene ONLY (ADR 009 §3.6, issue #155 — the `show.emit`
+// rule→antenna bridge). It implements runtime.Emitter.
+//
+// This is the distinct active-only injection path the ADR mandates: it
+// deliberately does NOT call in.show.RouteTargets() (which would fan out
+// to every promoted rule and cascade rule→rule, an infinite loop). It
+// targets in.show.Active() alone — a rule's emission reaches the antenna,
+// never another rule. The write is marked system (it writes the reserved
+// `__events.*` namespace, which is never wire-writable) and goes through
+// the SAME audited ring as every inbox write, so the emission is traceable
+// (criterion #4: "the event appears in the audit ring").
+//
+// No active scene → the emission is absorbed (audited, delivered nowhere)
+// exactly as a wire write with no active scene is absorbed — and the
+// `show.emit` op still fired `then` (construction-safe, Blue#73 has no
+// error pin). The system flag means sceneAcceptsPath admits the
+// `__events.*` write into the active scene's loop, where its on-event
+// entries fire (the reflexive no-op-loop when emitted from the active
+// scene itself; the rule→active delivery when emitted from a rule).
+func (in *Inbox) EmitToActive(topic string, payload json.RawMessage) {
+	path := eventsPrefix + topic
+	active := in.show.Active()
+	// One audit record per emission regardless of delivery (the inbox is
+	// the single point of audit, ADR 009 §3.3).
+	in.audit.Record(AuditEntry{
+		Source:    "system:show.emit",
+		Path:      path,
+		ValueHash: hashValue(payload),
+		Timestamp: time.Now(),
+	})
+	if active == nil {
+		// No antenna: absorbed, exactly as a write with no active scene is.
+		return
+	}
+	msg := runtime.InputMsg{
+		Path:     path,
+		Value:    payload,
+		Source:   "system:show.emit",
+		IsSystem: true,
+	}
+	if !active.Input(msg) {
+		in.noteDrop(active.ID(), path)
+	}
+}
+
+// eventsPrefix is the `__events.<topic>` namespace `on-event` entries
+// listen to (mirrors runtime.eventsPrefix; the inbox builds the path here
+// so the emission lands on the same trigger surface as a wire event).
+const eventsPrefix = "__events."
+
 // noteDrop records one refused write: the metric counts EVERY drop;
 // the warn is rate-limited to one per dropWarnInterval via a CAS on
 // the last-warn stamp (losing the race just means another goroutine
