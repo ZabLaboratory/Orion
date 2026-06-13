@@ -151,6 +151,20 @@ capability rejection — `db.query` stays fully served).
 - **External report (animation.play `completed` — #86):** the renderer (Solar/CEF
   in Pulsar) reports over HTTP. THIS is the dedicated authenticated endpoint.
 
+> **⚠ ADR 011 I3 amendment (the wake-key channel changed shape).** This section
+> originally had the renderer **learn** its `wake_key` by reading the OBJECT leaf
+> `__anim.<overlay>.<gen>` (which carried `animation_id`/`params`/`generation`/
+> `wake_key`). ADR 011 I3 **removes that object leaf** — the live trigger is now
+> the SCALAR leaf `__anim.<overlay>` = a bare `uint64` generation counter (LSDP
+> §3.2.1 scalar-only). `animation_id`/`params` are resolved at COMPILE time into
+> the keyframe node and leave the wire entirely; the `wake_key` is kept
+> **server-side** (park map + timer fallback) and is no longer broadcast on any
+> leaf. **Consequence: there is currently NO wire channel by which an external
+> renderer can learn the `wake_key`.** This is acceptable today and the
+> replacement channel is deferred — see §5 (the obj→scalar reconciliation and the
+> wake-key decision). The §2.2 body below describes the *target* completion
+> endpoint shape; the renderer-learns-wake-key clause is superseded by §5.
+
 ### 2.2 Completion endpoint (exact)
 
 `POST /api/v1/scenes/{scene_id}/exec/completion` (reached as
@@ -165,9 +179,14 @@ capability rejection — `db.query` stays fully served).
   "error": null
 }
 ```
-- `wake_key` — opaque to the renderer; it echoes the key Orion emitted in the
-  `animation.play` state write (`__anim.<overlay_id>.<token>`). The renderer must
-  carry the wake key through; it never mints one.
+- `wake_key` — opaque to the renderer; it echoes the key Orion handed to the
+  renderer when the animation started. The renderer must carry it through and
+  never mints one. **(SUPERSEDED by ADR 011 I3 — see §5.)** The original source
+  of this key was the object leaf `__anim.<overlay_id>.<token>`, which I3 removed;
+  the leaf is now the scalar generation counter `__anim.<overlay>` and carries no
+  `wake_key`. No replacement learning channel is wired today (the report path is
+  R9-dormant, #87). **TODO before any prod use of the external report:** specify a
+  scalar, §3.2.1-compatible wake-key channel — see §5.2.
 - `kind` — `"animation"` for #86 (only external kind for now).
 - `error` — non-null string ⇒ the continuation resumes down the effect's `error`
   output port (effect semantics, never a crash).
@@ -294,3 +313,145 @@ writes the scope strings — it's a 1-line choice, recommend `query.read.<svc>`.
   forged/stale/cross-scene completion resumes nothing (criterion #19).
 - **P1 ZabGate REST `X-Authenticated-Paths` injection:** auth-surface change →
   Bastion clearance (it widens what a service token can do over REST).
+
+---
+
+## 5. ADR 011 I3 — `animation.play` wire shape: object → scalar (Conduit I5)
+
+> Reconciliation of the `__anim` wire leaf for ADR 011 (animation keyframe
+> lowering). Proven 2026-06-13 against **both sides of the real code**, not the
+> ADR prose: Orion emitter (`internal/runtime/exec_anim.go`,
+> `internal/compiler/lower_animation.go`) and Solar consumer
+> (`Solar/src/overlay/animation.ts` `buildAnimationNode` + `@lumencast/runtime`
+> `KeyframePlayer`). All `__anim` consumers grepped across Orion / Solar / Prism /
+> Pulsar — see §5.3.
+
+### 5.1 Wire shape — before → after
+
+| | **Before (ADR 003 Amd 1, §2.1/§2.2)** | **After (ADR 011 I3)** |
+|---|---|---|
+| Leaf path | `__anim.<overlay>.<gen>` (object) | `__anim.<overlay>` (scalar) |
+| Leaf value | JSON object `{animation_id, params, generation, duration_seconds, wake_key}` | bare `uint64` (the per-scene monotone generation counter, e.g. `7`) |
+| `animation_id` / `params` | on the wire | **resolved at COMPILE time** into the lowered keyframe `RenderNode` (`lower_animation.go` `buildAnimationNode`); leave the wire |
+| `duration_seconds` | on the wire | **server-side only** — arms the timer-wheel fallback; never needed the leaf |
+| `wake_key` | on the wire (renderer learned it here) | **server-side only** — park map + `resumeParked`; not broadcast (see §5.2) |
+| LSDP §3.2.1 (scalar-only) | **violated** (object leaf is filtered off the wire) | **passes** — a bare `uint64` is scalar; the M9 replay trigger Solar's `KeyframePlayer` keys on |
+
+The scalar leaf is the SOLE live signal: a value change at `__anim.<overlay>`
+remounts the `KeyframePlayer` and replays the compile-resolved geometry — the
+same proven M9 reactive path `wipe-cover` already uses. This is what makes the
+animation visible on the wire (the prior object leaf was silently dropped by the
+§3.2.1 scalar filter — black-screen class of bug, cf. #132).
+
+**Emitter ↔ consumer parity:** `exec_anim.go` writes
+`__anim.<overlay>` = `strconv.FormatUint(gen,10)`; the compiler binds the
+lowered keyframe node's `keyframes.key` to the same `__anim.<overlay>`
+(`lower_animation.go`); Solar's `buildAnimationNode` sets `keyframes.key =
+leafPath` byte-identically (the Go↔TS parity oracle, ADR 011 §3.3/D6). Contract
+coherent on both sides.
+
+> **⚠ Cross-repo merge-order flag for Eleven (deployment reality, 2026-06-13).**
+> The two sides are NOT both deployed yet — they are **out of step on `main`**:
+> - **Solar `main`** already carries the **scalar** consumer (`buildAnimationNode`,
+>   #22 merged, `cc4a96c`).
+> - **Orion `main`** still emits the **object** leaf `__anim.<overlay>.<gen>`
+>   (`exec_anim.go:119` on `main`); the scalar emitter + `lower_animation.go` live
+>   only on the **unmerged** branch `forge/orion-solar-adr011-animation-core`
+>   (I2/I3/I4 — commits `405068a`/`a1db6d1`/`4e5396e`), NOT on `main`.
+>
+> So the brief's premise "I2/I3/I4 mergé+déployé (Orion #161)" does not match the
+> repo: **#161 is not on Orion `main`.** This mismatch is **inert today** because
+> the whole animation exec path is R9-dormant (no prod scene installs an
+> ExecProgram until #87, ADR 011 §3 / ADR 006) — no live scene exercises either
+> leaf shape. But Solar's oracle and Orion's live emitter currently disagree
+> byte-wise. **Resolution:** Eleven merges the Orion animation-core branch (the
+> emitter) to converge `main` with the already-merged Solar consumer. Producer
+> (Orion emitter) and consumer (Solar oracle) are not rétro-incompatible at run
+> time only because both are dormant; once #87 lifts dormancy the Orion branch
+> MUST be on `main` first. This contract describes the **post-branch-merge** shape
+> (the agreed target), and is the binding spec both sides are pinned to.
+
+### 5.2 Wake-key channel for the external report — DECISION
+
+**Decision: (a) — nothing to wire now; declare the channel dormant + a TODO gate.**
+
+Rationale (proven, not asserted):
+
+1. **No live regression, no current consumer.** The external-report path (#86) is
+   **R9-dormant**: no production scene installs an ExecProgram until #87, and
+   **Solar/CEF carries no completion-reporting code today** (grepped: zero
+   `wake_key` / `exec/completion` references in Solar/Prism/Pulsar — §5.3). The
+   sole resolver in use is the **server-side duration fallback** (timer wheel,
+   `exec_timer.go`), which is **leaf-independent** — it keys off the server-held
+   park map, never the `__anim` leaf. Removing the object leaf removes a channel
+   that **nothing reads**.
+2. **No speculative architecture.** Forge correctly did NOT invent a sidecar
+   wake-key channel (platform doctrine: no speculative wiring). Specifying a
+   replacement scalar channel **now**, with no consumer and no report code to
+   exercise it, would be unfalsifiable contract — it could not be proven by a
+   smoke test, only asserted. A contract clause that no running code exercises is
+   exactly what this doc forbids ("a contract is proven, never deduced").
+3. **The ADR is consistent under this reading.** ADR 011 §3.6 says completion is
+   "unchanged in mechanism / resolves exactly as today" and "**no new Bastion
+   surface**". That holds precisely *because* the only live resolver (duration
+   fallback) is leaf-independent. The object leaf was never the *mechanism* of
+   completion — it was an incidental **learning channel** for a renderer that does
+   not yet exist. Dropping it does not contradict §3.6; it just retires an
+   unbuilt channel. No ADR amendment is required for the dormant state.
+
+**TODO gate (binding, before any prod use of the external report):** when #87
+lifts R9 dormancy AND a reporting renderer is built, a wake-key learning channel
+MUST be (re)specified here. Constraints fixed now so the future channel stays
+in-contract:
+- **scalar, §3.2.1-compatible** — it may NOT reintroduce an object leaf on the
+  LSDP wire (that is the black-screen regression class).
+- Candidate shapes (NOT decided — to be chosen with the renderer's real needs):
+  a sibling scalar leaf `__anim.<overlay>.wake` carrying the opaque string, OR
+  delivery of the wake_key in the render-bundle/start-of-animation handshake
+  rather than as a live delta. Either keeps the key off the object-leaf path.
+- Picking among them is a **wire-shape** call (Conduit owns it) *unless* it
+  touches the completion auth contract or the LSDP envelope grammar — in which
+  case it is an **ADR 011 amendment → Atlas via Eleven (gated)**. Flagged here so
+  it is not slipped in silently.
+
+This decision does **not** require Atlas now: it changes no architecture, adds no
+mechanism, and matches ADR 011 §3.6 as written. It only records, in-contract, a
+gap that ADR 011 §3.6 left implicit (the §3.6 prose is silent on the wake-key
+*learning* channel — it speaks only of the resume *mechanism*).
+
+### 5.3 Consumers verified (the "both sides, all consumers" proof)
+
+Grepped across `Orion/`, `Solar/src`, `Prism/src`, `Pulsar/` (non-test, non-vendored):
+- **Emitter:** `Orion/internal/runtime/exec_anim.go` (scalar write, branch),
+  `Orion/internal/compiler/lower_animation.go` (keyframe-node key bind, branch).
+- **Consumer:** `Solar/src/overlay/animation.ts` `buildAnimationNode` +
+  `@lumencast/runtime` `KeyframePlayer` (keys on the scalar leaf). Re-exported via
+  `Solar/src/index.ts`.
+- **External-report / wake-key consumers:** **none.** Zero `wake_key` /
+  `wakeKey` / `exec/completion` references in Solar/Prism/Pulsar runtime code →
+  removing the object leaf breaks no consumer.
+- **Prism `animation_id` is NOT a wire consumer (verified, false positive).**
+  `Prism/src/main/animation-bridge.ts` `AnimationPlayEnvelope` =
+  `{overlay_id, animation_id, params}` is the **authoring-side** Blue
+  `prism.canvas` SideEffect envelope (mirrors `Blue/src/blue/schemas/
+  from_trigger.py`), delivered over Prism's internal `animation:play` IPC — NOT
+  the Orion `__anim` LSDP leaf. Prism's only Orion-wire consumer is
+  `broadcast-engine.ts` subscribing to `/show/stream.lsdp`, which forwards deltas
+  to Solar and never parses `__anim` itself. The `animation_id` field belongs to
+  the authoring/asset surface that I3 *deliberately* moves to compile time — it is
+  unaffected by the leaf scalarisation and is not a broken consumer.
+
+### 5.4 Coherence with I6 (seed) and I7 (live proof)
+
+The scalar leaf **`__anim.<overlay>`** is the single binding point downstream:
+- **I6 (Blue seed):** the `core.animation.play@1` blueprint, once exec-active,
+  causes Orion to write `__anim.<overlay>` on each play. The seed harness must
+  drive an `overlay_id` whose lowered keyframe node is bound to that exact leaf.
+- **I7 (live proof):** the animation harness **binds `__anim.<overlay>`** as the
+  scalar whose value-change proves movement at the antenna — each increment of the
+  `uint64` generation is one replay of the authored geometry through Solar's
+  KeyframePlayer, observable on the Twitch output (the live-testing.md objective
+  measure: spatial stddev / luma on the encoded `.mp4`, not a CEF screenshot).
+
+**Confirmed:** `__anim.<overlay>` (scalar uint64) is THE anchor leaf I7 binds to
+prove the animation on air. No object leaf, no `animation_id`/`params` on the wire.
