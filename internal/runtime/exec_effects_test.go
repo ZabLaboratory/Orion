@@ -248,8 +248,8 @@ func TestEffects_TimeoutToErrorPort_NoKill(t *testing.T) {
 			}},
 			"req": {ID: "req", Op: OpHTTPRequest,
 				Config: map[string]json.RawMessage{
-					"url":             raw(`"` + srv.URL + `"`),
-					"timeout_seconds": raw(`0.05`),
+					"url":        raw(`"` + srv.URL + `"`),
+					"timeout_ms": raw(`50`),
 				},
 				Next: map[string]ExecTarget{"error": {Node: "set.err"}}},
 			"set.after": varSet("set.after", "after", nil, nil),

@@ -85,25 +85,18 @@ var runtimeContract = map[string]runtimeStrings{
 
 	// --- async effects (exec_effects.go) ------------------------------
 	//
-	// DIVERGENCE FLAGGED TO ELEVEN (NOT a rename — an execution-model
-	// question for Atlas/ADR): the seed `core.http.request@1` and
-	// `core.source.read@1` declare NO exec pins (no `in`, no `then`/
-	// `error`) — they are PURE DATAFLOW nodes in Blue (Blue's executor
-	// pre-fetches http synchronously; source.read emits a descriptor).
-	// `isExecNode` is false for them, so a real Blue-authored graph routes
-	// them through the DATA layer — Orion's exec-op `http.request` /
-	// `source.read` (which park + fire then/error) are NOT reachable from
-	// authored graphs. The runtime's then/error firing on these is a dead
-	// exec path, so it is NOT asserted against the seed here (those pins
-	// don't exist in the seed by design). Only the genuine seed contract is
-	// pinned: the DATA inputs/outputs the runtime reads/binds and the
-	// config keys. Whether http/source SHOULD be exec effects or stay
-	// dataflow is an architecture decision for Eleven.
+	// http.request is now (ADR 010 §3.2) a real exec effect node: the seed
+	// `core.http.request@1` declares exec pins `in`/`then`/`error` ON TOP
+	// of its rich data surface, so `isExecNode` is true and execHTTPRequest
+	// is reachable from an authored graph (the pre-ADR-010 unreachability
+	// bug is closed). The runtime reads the DATA inputs
+	// url/method/query/headers/body/timeout_ms, binds status/ok/body/headers
+	// on `then`, and fires `error` on failure — all pinned below.
 	//
-	// db.query, by contrast, DOES declare exec pins in the seed
-	// (exec_in/then/error) and is a real exec effect node — its then/error
-	// ARE asserted.
-	"core.http.request@1": {inputs: []string{"url", "method", "body"}, outputs: []string{"status", "ok", "body"}},
+	// source.read still declares NO exec pins in the seed (pure dataflow —
+	// emits a descriptor); its runtime then/error firing is a dead exec
+	// path, NOT asserted against the seed (those pins don't exist there).
+	"core.http.request@1": {inputs: []string{"url", "method", "query", "headers", "body", "timeout_ms"}, outputs: []string{"status", "ok", "body", "headers", "then", "error"}},
 	"core.db.query@1":     {inputs: []string{"descriptor"}, outputs: []string{"rows", "count", "elapsed_ms", "error", "then"}, config: []string{"datasource"}},
 	"core.source.read@1":  {config: []string{"source_id"}},
 
@@ -172,10 +165,12 @@ func TestExecPortParity_EverySeedExecPinHonoured(t *testing.T) {
 		"core.print@1":         {out: []string{"then"}},
 		"core.variable.set@1":  {out: []string{"then"}},
 		"core.output@1":        {out: []string{"then"}},
-		// http.request / source.read declare NO exec pins in the seed (pure
-		// dataflow) — see the divergence note in runtimeContract; they are
-		// intentionally absent here. db.query IS a real exec effect node.
-		"core.db.query@1": {out: []string{"then", "error"}},
+		// http.request: exec_in "in", exec_out "then"/"error" (ADR 010 §3.2 —
+		// a real exec effect node). source.read declares NO exec pins in the
+		// seed (pure dataflow) — intentionally absent. db.query IS a real
+		// exec effect node.
+		"core.http.request@1": {out: []string{"then", "error"}},
+		"core.db.query@1":     {out: []string{"then", "error"}},
 		// show.emit: exec_in "in", exec_out "then", NO error pin (Blue#73 —
 		// construction-safe delivery). The runtime honours `then` (the empty
 		// outcome defaults to it); `in` is the generic entry pin the

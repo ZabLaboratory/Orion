@@ -293,36 +293,84 @@ func (s *Scene) effectTimeout(t *execTask, node *ExecNode) time.Duration {
 	return d
 }
 
+// effectTimeoutMillis reads the seed `timeout_ms` integer DATA input
+// (ADR 010 §3.2). Non-positive — including IEEE-754 `-0`, negative, and
+// NaN, all of which fail `> 0` — or an absent pin falls back to the
+// effect default; the value is clamped to the hard ceiling maxEffectTimeout
+// (Bastion §3.7 hardening (b)), so an authored timeout can never escape
+// the worker-pool bound.
+func (s *Scene) effectTimeoutMillis(t *execTask, node *ExecNode) time.Duration {
+	ms := s.pullFloat(t, node, "timeout_ms", 0)
+	if !(ms > 0) { // negative, -0, 0, NaN
+		return defaultEffectTimeout
+	}
+	d := time.Duration(ms) * time.Millisecond
+	if d <= 0 {
+		return defaultEffectTimeout
+	}
+	if d > maxEffectTimeout {
+		return maxEffectTimeout
+	}
+	return d
+}
+
 // --- http.request -----------------------------------------------------
 
-// execHTTPRequest is the `http.request` op, aligned to the canonical
+// execHTTPRequest is the `http.request` op, the executor of the canonical
 // seed node `core.http.request@1` (stdlib_seeder.py + Blue's preview
-// executor `_http_request`): `url` / `method` / `body` are DATA inputs
-// (method defaults GET); outputs bind the seed pins `status` / `ok` /
-// `body` on `then` and `error` on `error`. The egress policy is enforced
-// in the worker: URL check, then post-DNS resolved-IP vetting at dial.
+// executor `_http_request`). ADR 010 §3.2: the node is an exec effect with
+// continuation — the seed declares exec pins `in`/`then`/`error`, so
+// `isExecNode()` is true and the op is reachable from an authored graph
+// (the pre-ADR-010 bug: no exec pins ⇒ data partition ⇒ unreachable).
 //
-// NOTE (handed to Eleven — out of this rename's scope): the seed also
-// declares `query` / `headers` DATA inputs and a `timeout_ms` integer,
-// none of which this op forwards yet (it reads the shared
-// `timeout_seconds`). Wiring query/headers is new HTTP egress surface —
-// a Bastion-cleared change, not a port rename — and is deliberately NOT
-// done here. Until then a blueprint's query/headers pins are silently
-// dropped; the parity gate flags only port-NAME drift, not this
-// behavioural gap, which is documented as a known follow-up.
+// DATA inputs (all seed pins, method defaults GET): `url` / `method` /
+// `query` / `headers` / `body` / `timeout_ms`. Outputs bind the seed pins
+// `status` / `ok` / `body` / `headers` on `then`, and `error` on `error`.
+//
+// The egress policy (effects.EgressPolicy) is enforced unchanged in the
+// worker: CheckURL (scheme + host allowlist, fail-closed) then post-DNS
+// resolved-IP vetting at dial. This op adds CONTENT filtering on top of
+// that transport policy — the three Bastion §3.7 hardenings:
+//
+//   (a) authored headers are filtered through dropForwardHeader: every
+//       sensitive credential header (Authorization, Cookie,
+//       Proxy-Authorization, any Proxy-*) and every hop-by-hop header
+//       (Host, Content-Length, Connection, Transfer-Encoding, Upgrade,
+//       TE, Trailer) is DROPPED, case-insensitively. Orion never forwards
+//       Authorization — a scene has no caller, and an authored
+//       `headers.Authorization` must not become an exfiltration channel for
+//       a secret read in-graph (asymmetry with Blue approved by Bastion,
+//       ADR 010 §3.7 / §5 D);
+//   (b) cumulative outbound size is capped: query (maxOutboundQuery),
+//       headers (maxOutboundHeaders), body (maxOutboundBody); response read
+//       stays capped at maxEffectResponse; timeout_ms is clamped to
+//       maxEffectTimeout;
+//   (c) logging is host-only — no header value, query value, or full URL
+//       ever reaches a log or metric (egressDenied already logs host-only
+//       via the wrapped error; this op adds no value-bearing log).
+//
+// Every failure mode (egress denial, cap exceeded, network, encode) binds
+// `error` and fires the exec `error` pin — never a crash (ADR 003 §1.1).
 func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execOpOutcome {
 	if inPort == effectCompletePort {
 		return finishEffect(s, t, node, func(env map[string]json.RawMessage, value json.RawMessage) {
 			var out struct {
-				Status int             `json:"status"`
-				Body   json.RawMessage `json:"body"`
+				Status  int             `json:"status"`
+				Body    json.RawMessage `json:"body"`
+				Headers json.RawMessage `json:"headers"`
 			}
 			if err := json.Unmarshal(value, &out); err == nil {
 				env[node.ID+".status"] = json.RawMessage(strconv.Itoa(out.Status))
-				// Seed output pins: `body` (the response) and `ok`
-				// (200..299). `response` was the legacy `core.http-request@1`
-				// pin name — not in the canonical node.
+				// Seed output pins: `body` (the response), `ok` (200..299),
+				// and `headers` (flat record of the response headers).
+				// `response` was the legacy `core.http-request@1` pin — not
+				// in the canonical node.
 				env[node.ID+".body"] = out.Body
+				if len(out.Headers) > 0 {
+					env[node.ID+".headers"] = out.Headers
+				} else {
+					env[node.ID+".headers"] = json.RawMessage(`{}`)
+				}
 				if out.Status >= 200 && out.Status <= 299 {
 					env[node.ID+".ok"] = json.RawMessage(`true`)
 				} else {
@@ -333,14 +381,18 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 	}
 
 	rawURL := pullString(s, t, node, "url")
-	// Seed `core.http.request@1` declares `method` as a DATA input
-	// (default GET), not config — read it on demand like `url`.
+	// Seed declares `method` as a DATA input (default GET), not config —
+	// read it on demand like `url`.
 	method := strings.ToUpper(pullString(s, t, node, "method"))
 	if method == "" {
 		method = http.MethodGet
 	}
+	// `query` and `headers` are JSON-object DATA inputs (string→scalar /
+	// string→string). Absent pins read as nil and forward nothing.
+	queryRaw, _ := s.pullData(t, node, "query")
+	headersRaw, _ := s.pullData(t, node, "headers")
 	body, _ := s.pullData(t, node, "body")
-	timeout := s.effectTimeout(t, node)
+	timeout := s.effectTimeoutMillis(t, node)
 	e := s.effects
 	key := s.nextWakeKey()
 
@@ -351,6 +403,15 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 		u, err := url.Parse(rawURL)
 		if err != nil {
 			return effects.Result{Err: "HTTP_REQUEST_INVALID_URL: " + err.Error()}
+		}
+		// (b) cap the outbound body before anything else.
+		if len(body) > maxOutboundBody {
+			return effects.Result{Err: "HTTP_REQUEST_BODY_TOO_LARGE"}
+		}
+		// Merge authored `query` into the URL query-string (scalar values
+		// stringified); pre-existing params are preserved. (b) bounded.
+		if err := mergeQuery(u, queryRaw); err != nil {
+			return effects.Result{Err: err.Error()}
 		}
 		if err := e.Egress.CheckURL(u); err != nil {
 			return egressDenied(e, s.id, err)
@@ -367,6 +428,12 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 			req.Header.Set("Content-Type", "application/json")
 		}
 		req.Header.Set("Accept", "application/json")
+		// (a) forward authored headers through the sensitive/hop-by-hop
+		// drop filter; (b) cap cumulative header size. Authored
+		// Content-Type/Accept override the defaults set above.
+		if err := applyAuthoredHeaders(req, headersRaw); err != nil {
+			return effects.Result{Err: err.Error()}
+		}
 		resp, err := e.Egress.Client().Do(req)
 		if err != nil {
 			if errors.Is(err, effects.ErrEgressBlocked) {
@@ -380,15 +447,130 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 			return effects.Result{Err: "HTTP_REQUEST_READ: " + err.Error()}
 		}
 		out, err := json.Marshal(struct {
-			Status int             `json:"status"`
-			Body   json.RawMessage `json:"body"`
-		}{Status: resp.StatusCode, Body: asJSON(respBody)})
+			Status  int               `json:"status"`
+			Body    json.RawMessage   `json:"body"`
+			Headers map[string]string `json:"headers"`
+		}{Status: resp.StatusCode, Body: asJSON(respBody), Headers: flattenHeaders(resp.Header)})
 		if err != nil {
 			return effects.Result{Err: "HTTP_REQUEST_ENCODE: " + err.Error()}
 		}
 		return effects.Result{Value: out}
 	}
 	return s.effectOutcome(node, key, run, timeout)
+}
+
+// outbound content caps (Bastion §3.7 hardening (b)). Sizes are bytes.
+const (
+	// maxOutboundHeaders bounds the cumulative authored header bytes
+	// (name+value across all forwarded headers).
+	maxOutboundHeaders = 16 << 10 // 16 KiB
+	// maxOutboundQuery bounds the cumulative authored query-string bytes.
+	maxOutboundQuery = 8 << 10 // 8 KiB
+	// maxOutboundBody bounds the authored request body bytes.
+	maxOutboundBody = 1 << 20 // 1 MiB
+	// maxEffectTimeout is the hard ceiling on an authored timeout_ms.
+	maxEffectTimeout = 60 * time.Second
+)
+
+// forbiddenForwardHeaders is the lower-cased set of headers an authored
+// `headers` input may NEVER forward: sensitive credential headers and
+// hop-by-hop headers. Proxy-* is matched by prefix (dropForwardHeader).
+var forbiddenForwardHeaders = map[string]struct{}{
+	"authorization":       {},
+	"cookie":              {},
+	"proxy-authorization": {},
+	"host":                {},
+	"content-length":      {},
+	"connection":          {},
+	"transfer-encoding":   {},
+	"upgrade":             {},
+	"te":                  {},
+	"trailer":             {},
+}
+
+// dropForwardHeader reports whether an authored header name must be
+// dropped before forwarding: case-insensitive membership in
+// forbiddenForwardHeaders, or any `Proxy-*` header. Orion NEVER forwards
+// Authorization (no caller in a scene — ADR 010 §3.2 / §3.7).
+func dropForwardHeader(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	if _, ok := forbiddenForwardHeaders[lower]; ok {
+		return true
+	}
+	return strings.HasPrefix(lower, "proxy-")
+}
+
+// applyAuthoredHeaders sets the authored `headers` object on the request,
+// dropping sensitive/hop-by-hop names (a) and enforcing the cumulative
+// header cap (b). A non-object `headers` input is ignored (nothing
+// forwarded), not an error — an unwired/odd data pin must not fail egress.
+func applyAuthoredHeaders(req *http.Request, headersRaw json.RawMessage) error {
+	if len(headersRaw) == 0 {
+		return nil
+	}
+	var authored map[string]json.RawMessage
+	if err := json.Unmarshal(headersRaw, &authored); err != nil {
+		return nil
+	}
+	total := 0
+	for name, valRaw := range authored {
+		if dropForwardHeader(name) {
+			continue
+		}
+		val := scalarToString(valRaw)
+		total += len(name) + len(val)
+		if total > maxOutboundHeaders {
+			return errors.New("HTTP_REQUEST_HEADERS_TOO_LARGE")
+		}
+		req.Header.Set(name, val)
+	}
+	return nil
+}
+
+// mergeQuery folds an authored `query` object into the URL query-string,
+// stringifying scalar values and preserving any params already on the URL.
+// Enforces the query cap (b). A non-object input is ignored.
+func mergeQuery(u *url.URL, queryRaw json.RawMessage) error {
+	if len(queryRaw) == 0 {
+		return nil
+	}
+	var authored map[string]json.RawMessage
+	if err := json.Unmarshal(queryRaw, &authored); err != nil {
+		return nil
+	}
+	q := u.Query()
+	for k, vRaw := range authored {
+		q.Set(k, scalarToString(vRaw))
+	}
+	encoded := q.Encode()
+	if len(encoded) > maxOutboundQuery {
+		return errors.New("HTTP_REQUEST_QUERY_TOO_LARGE")
+	}
+	u.RawQuery = encoded
+	return nil
+}
+
+// scalarToString renders a JSON scalar as its string form for a header or
+// query value: a JSON string yields its contents; any other scalar yields
+// its compact JSON text. Keeps `42` → "42", `"x"` → "x".
+func scalarToString(raw json.RawMessage) string {
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return strings.TrimSpace(string(raw))
+}
+
+// flattenHeaders renders response headers as a flat string→string record
+// (last value wins on repeats), matching Blue's response `headers` shape.
+func flattenHeaders(h http.Header) map[string]string {
+	out := make(map[string]string, len(h))
+	for k, vs := range h {
+		if len(vs) > 0 {
+			out[k] = vs[len(vs)-1]
+		}
+	}
+	return out
 }
 
 // egressDenied counts the policy denial and shapes the error result.

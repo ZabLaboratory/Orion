@@ -402,7 +402,7 @@
       "namespace": "core.http",
       "name": "request",
       "version": 1,
-      "category": "io",
+      "category": "side-effect",
       "is_pure": false,
       "is_bounded": false,
       "source": "stdlib",

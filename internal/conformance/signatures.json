@@ -400,6 +400,7 @@
       "inputs": [
         "body",
         "headers",
+        "in",
         "method",
         "query",
         "timeout_ms",
@@ -410,7 +411,8 @@
         "error",
         "headers",
         "ok",
-        "status"
+        "status",
+        "then"
       ],
       "config": []
     },
