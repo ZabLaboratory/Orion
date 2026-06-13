@@ -298,8 +298,9 @@ func TestExec_OnStart_TestSessionOpen(t *testing.T) {
 // scene becomes live (SetActive) and again on a push-swap of the
 // active scene — where the NEW instance starts from declared defaults
 // (restart-reseed + on-start, ADR 003 §3.1.4). Loading a non-active
-// scene fires nothing; re-activating the already-active scene fires
-// nothing.
+// scene fires nothing; re-activating the already-active scene REFIRES
+// on-start without reseeding state (ADR 008 Amendment 1 §A1.2 — activation
+// is the canonical (re)launch verb; refire ≠ reseed §A1.5).
 func TestExec_OnStart_ActivationAndRePush(t *testing.T) {
 	show := NewShow(NewComputeRegistry(), quietLogger())
 	t.Cleanup(show.Stop)
@@ -319,13 +320,16 @@ func TestExec_OnStart_ActivationAndRePush(t *testing.T) {
 	}
 	waitForState(t, scA, "__vars.bp.done", `1`, time.Second)
 
-	// Re-activating the already-active scene does not refire.
+	// Re-activating the already-active scene REFIRES on-start (ADR 008
+	// Amendment 1 §A1.2). The SAME instance is reused (no reseed): the
+	// add-from-current reads the preserved 1 and writes 2 — refire observed,
+	// state preserved. A reseed would have snapped done back to 0 then 1.
 	if err := show.SetActive("a", nil); err != nil {
 		t.Fatal(err)
 	}
-	time.Sleep(25 * time.Millisecond)
-	if v, _ := scA.state.Get("__vars.bp.done"); string(v) != `1` {
-		t.Fatalf("on-start refired on re-activation: done=%s", v)
+	waitForState(t, scA, "__vars.bp.done", `2`, time.Second)
+	if scA2, _ := show.Get("a"); scA2 != scA {
+		t.Fatal("re-activation must reuse the same instance (refire, not reseed)")
 	}
 
 	// Push-swap of the ACTIVE scene: fresh instance, defaults

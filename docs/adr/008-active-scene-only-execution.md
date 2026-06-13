@@ -214,3 +214,124 @@ par l'inbox live. Aucun changement.
 7. **Cancellation à la désactivation** : tâches vives, continuations parkées et
    timers de la scène sortante morts après switch ; une completion async
    arrivant post-switch est droppée sans effet.
+
+## Amendment 1 — 2026-06-13 — sémantique d'activation (status: accepted)
+
+> Author: Atlas · Deciders: @ClodoCapeo · Validation: Vigil (proposed→accepted, 2026-06-13) ·
+> Décision du porteur sollicitée (gated). N'altère aucune décision §3.1–§3.6 :
+> précise le contrat de §3.2 (réactivation) et §3.4 (invariant de switch) là où
+> la rédaction disait « FireOnStart refire à chaque activation » alors que le
+> code ne le tient que sur transition `from != id`.
+
+### A1.1 Le défaut corrigé
+
+§3.2 et §3.4 affirment trois fois (« on-start refire à chaque activation »,
+R2 mitigation §5) que la réactivation d'une scène refire `on-start`. Le code ne
+l'honore que sur une **transition** : `SetActive` (`show.go:499`) gate
+`SetOnAir(true)` + `FireOnStart` derrière `if from != id`. Conséquence : un
+`POST /show/active-scene` sur la scène **déjà active** (`from == id`) ne refire
+rien — la logique `on-start` (ici un `core.http.request@1`) ne tourne jamais.
+
+C'est un **écart implémentation ↔ doctrine déjà écrite**, pas un nouveau choix.
+Au boot le bug est masqué par accident : `loadActiveScenes` (`main.go:355`)
+appelle `SetActive` avec `sh.active == ""`, donc `from="" != id` fire on-start.
+Une réactivation post-boot, idempotente ou après reload, ne refire pas.
+
+### A1.2 Décision — Option A (l'activation est l'unité de (re)lancement d'exec)
+
+**`POST /show/active-scene` (re)fire `on-start` à chaque appel, y compris
+`from == id`.** L'activation est le verbe canonique unique de mise/maintien à
+l'antenne ET de (re)lancement de l'exec d'une scène ; il n'y a **pas** de verbe
+`restart`/`reload` séparé (Option B et C écartées, A1.5).
+
+Sémantique précise du cas `from == id` (ré-activation de l'active) :
+
+1. **Exec** : `dest.CancelExec()` (tue tâches vives, continuations parkées,
+   timers — exactement la cancellation §3.2/§5 R-cancel), puis `SetOnAir(true)`
+   (idempotent), puis `dest.FireOnStart("system:scene-reactivated")`. Un seul
+   fire par appel (pas de double-fire : c'est `SetActive` qui fire, jamais le
+   chemin de migration des subs).
+2. **État (`__vars`, compteurs, leaves)** : **préservé, gelé — pas de reseed.**
+   On reste sous la doctrine freeze-and-resume §3.2 : l'activation ne reset pas
+   l'état. Le reset reste le re-push (`show.go:154`) ou le restart process
+   (criterion #11 ADR 004). Une scène leaderboard ré-activée garde ses scores ;
+   son `on-start` se ré-exécute par-dessus l'état gelé (idempotent par
+   construction côté authoring — un `on-start` qui fetch/écrit recalcule, un
+   `on-start` qui incrémente est un bug d'authoring, hors périmètre moteur).
+3. **Rendu / subs** : pas de `scene_changed` quand `from == id` (pas de
+   transition viewer — règle phantom-transition `show.go:543` réaffirmée). Le
+   snapshot frais réémis par le re-fire couvre la resync des valeurs.
+
+### A1.3 Impact sur `show.go::SetActive`
+
+Le gate exec doit sortir du `if from != id`. Forme attendue (Forge tranche
+l'implémentation exacte) :
+
+- **`from != id`** (switch A→B) : inchangé — `prev.CancelExec()` +
+  `prev.SetOnAir(false)` sur la sortante ; `dest.SetOnAir(true)` +
+  `dest.FireOnStart` sur la destination ; migration + `scene_changed` + snapshot.
+- **`from == id`** (ré-activation) : `dest.CancelExec()` puis `SetOnAir(true)`
+  (idempotent) puis `dest.FireOnStart`. **Pas** de `CancelExec`/`SetOnAir(false)`
+  sur « prev » (prev == dest : ne jamais s'éteindre soi-même), **pas** de
+  `scene_changed`. Le snapshot frais est réémis aux subs existants.
+
+Ordre FIFO inbox (SetOnAir avant FireOnStart) conservé dans les deux branches —
+invariant ADR 008 §3.4.
+
+### A1.4 Impact sur le chemin de boot (`loadActiveScenes`)
+
+Aucun changement de code requis : `from="" != id` reste une transition, on-start
+fire comme aujourd'hui. **Mais la dépendance accidentelle est levée** — le boot
+ne fire plus parce que `from` est vide *par chance*, il fire parce que A1.2
+garantit le fire sur toute activation. Le comportement de boot est désormais le
+cas particulier d'une règle générale, pas une coïncidence. **Le contrat de boot
+est explicité : la scène active persistée (re)exécute son `on-start` au
+démarrage d'Orion** (réponse à la question ouverte de l'Option C — la scène
+persistée n'est pas gelée jusqu'à une activation manuelle ; le reseed du
+pointeur EST une activation).
+
+### A1.5 Alternatives écartées
+
+- **Option B (statu quo + verbe `restart` séparé).** Écartée : multiplie la
+  surface opérateur pour un cas que l'opérateur vit comme « je ré-active »
+  (idempotence attendue), contredit la rédaction déjà votée de §3.2/§3.4, et
+  laisse le piège vivant (« scène inactive après restart » — `live-testing.md`).
+  Un second verbe n'achète aucune sémantique que A1.2 ne couvre déjà.
+- **Option C (séparer « activer rendu » de « (re)lancer exec »).** Écartée :
+  introduit deux cycles de vie distincts (rendu vs exec) là où ADR 008 §4 a
+  précisément unifié « `active` gouverne rendu ET exécution ». Re-fracturer le
+  modèle mental quelques jours après l'avoir unifié n'est pas justifié. La part
+  utile de C (clarté du boot) est absorbée par A1.4.
+- **Reseed de l'état à la réactivation.** Déjà écartée en §3.2 — réaffirmée :
+  A1.2 fire `on-start` SANS reset d'état. Refire ≠ reseed.
+
+### A1.6 Resolution criteria (testables — étendent §6)
+
+8. **Ré-activation idempotente refire on-start** : scène A active ;
+   `POST /show/active-scene{A}` une seconde fois (`from == id`) → `on-start` de A
+   refire exactement une fois (assert : un `core.http.request@1` / un compteur de
+   fire en on-start s'incrémente d'exactement 1 par appel ; pas de double-fire).
+9. **Ré-activation préserve l'état** : A accumule `__vars.x = N` ;
+   `POST /show/active-scene{A}` → après le re-fire, `__vars.x` n'est PAS reseedé
+   aux defaults (vaut N, ou la valeur recalculée par l'on-start par-dessus N —
+   jamais le default sec). Distingue refire (oui) de reseed (non).
+10. **Pas de phantom `scene_changed` en ré-activation** : `from == id` n'émet
+    aucun `scene_changed` aux subs ; un snapshot frais est émis. La scène ne
+    s'éteint jamais elle-même (aucun `SetOnAir(false)` observé sur A).
+11. **Invariant de switch intact** : `TestShow_SwitchMigratesLiveSubsAndEmits`
+    `SceneChanged` (§6.4 / criterion #5 ADR 004) reste vert sans modification de
+    ses assertions — la branche `from != id` n'a pas bougé.
+12. **Boot (re)exécute l'active persistée** : Orion démarre avec
+    `active_scene_id` persistée → la scène revient à l'antenne ET son `on-start`
+    s'exécute (assert sur le fire au cold start ; le piège `live-testing.md`
+    « scène inactive après restart » est couvert par un test, plus par une
+    vérification manuelle post-deploy).
+
+### A1.7 Sécurité
+
+Aucune surface élargie : `CanWritePath` et l'auth de `POST /show/active-scene`
+(operator/admin via ZabGate) inchangés. Un re-fire idempotent ne crée aucun
+nouveau chemin d'écriture ; il ré-exécute un `on-start` authored déjà sous le
+modèle de confiance ADR 008/006. **Pas de clearance Bastion requise** (cohérent
+avec §5 — vigilance Cosmos/`__events.*` inchangée). Vigil valide
+proposed→accepted ; Forge implémente sur `forge/<issue>-reactivation-fires-onstart`.
