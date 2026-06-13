@@ -71,11 +71,15 @@ func lowerWipeCover(node LayoutNode) (LayoutNode, bool) {
 	// Asset (opaque-cover opacity reveal/hold/retract). wipeCoverKeyframes
 	// builds the asset-equivalent keyframes (its `key` authored inline as
 	// the scene_control leaf, unlike the general animation.play path whose
-	// key the compiler binds); buildAnimationNode frames it. No geometry is
-	// duplicated, and the emitted bytes are IDENTICAL to the pre-delegation
-	// node (kind/id/props/keyframes), so the byte-pin + the M10 magenta
-	// probe stay green. id defaults to "wipe-cover" inside buildAnimationNode.
-	out := buildAnimationNode(node.ID, fill, wipeCoverKeyframes(leaf, reveal, hold, retract))
+	// key the compiler binds); buildAnimationNode frames it. wipe-cover is
+	// the DEGENERATE geometry: a full-screen self-painting opaque cover
+	// (wipeCoverProps) with NO nested target child — it paints itself, it
+	// does not move a dimensioned overlay (unlike the general animation.play
+	// path, which wraps + nests a sized target). The emitted bytes are
+	// IDENTICAL to the pre-fix node (kind/id/props/keyframes, children nil),
+	// so the byte-pin + the M10 magenta probe stay green. id defaults to
+	// "wipe-cover" inside buildAnimationNode.
+	out := buildAnimationNode(node.ID, wipeCoverProps(fill), wipeCoverKeyframes(leaf, reveal, hold, retract), nil)
 	return out, true
 }
 
