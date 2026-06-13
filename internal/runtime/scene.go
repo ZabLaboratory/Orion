@@ -691,7 +691,21 @@ func (s *Scene) applyInput(msg InputMsg) {
 	}
 	if len(s.execOnEvent) > 0 && strings.HasPrefix(msg.Path, eventsPrefix) {
 		for _, k := range s.execOnEvent[msg.Path[len(eventsPrefix):]] {
-			s.enqueueFire(k)
+			// Bind the triggering event value under the entry node's
+			// `payload` data-out pin — parity with on-platform-event and
+			// on-tick's `delta_seconds`. on-event is an exec node, not a
+			// dataflow node, so without this a downstream `payload` read
+			// (demandValue) finds no state leaf at `<node>` and resolves to
+			// null (the live finale null-text bug: `show.emit → on-event →
+			// get-field(payload.text)`). msg.Value is the value EmitToActive
+			// wrote at `__events.<topic>`.
+			var env map[string]json.RawMessage
+			if ref, ok := s.execEntries[k]; ok {
+				if node := ref.entry.Node; node != "" {
+					env = map[string]json.RawMessage{node + ".payload": msg.Value}
+				}
+			}
+			s.enqueueFireEnv(k, env)
 		}
 	}
 	// on-platform-event (ADR 013): the arming twin of on-event, but indexed

@@ -81,6 +81,53 @@ func onEventSetProg(topic string, value int) *ExecProgram {
 	}
 }
 
+// TestExec_OnEvent_PayloadBoundToFiredTask (live finale null-text regression,
+// twin of TestExec_OnPlatformEvent_PayloadBoundToFiredTask): firing an
+// on-event entry on a `__events.<topic>` write must bind the TRIGGERING EVENT
+// VALUE under the entry node's `payload` data-out pin — exactly as
+// on-platform-event binds its leaf and on-tick binds `delta_seconds`. Before
+// the fix the branch fired with no env, so a downstream `payload` read
+// resolved to null (the on-event node is an exec node, not a dataflow node —
+// demandValue finds no state leaf at `<node>`). This is the latent gap behind
+// the finale `show.emit → on-event(payload) → get-field(payload.text)` path:
+// on-platform-event was fixed (#173) but on-event was left unbound. Here a
+// spine `on-event(topic) → set` whose value pulls `<entry>.payload` must write
+// the FULL event value EmitToActive wrote at `__events.<topic>`, not null.
+func TestExec_OnEvent_PayloadBoundToFiredTask(t *testing.T) {
+	topic := "alert"
+	canonical := `{"type":"chat","payload":{"text":"hello"}}`
+
+	// on-event(topic) → set `__vars.bp.received = <onev>.payload`. The entry
+	// carries Node so the runtime knows which node namespaces the payload pin
+	// (the compiler sets ExecEntry.Node = the event node's id).
+	prog := &ExecProgram{
+		BlueprintKey: "bp",
+		Nodes: map[string]*ExecNode{
+			"set": varSet("set", "received",
+				[]ExecDataInput{{Port: "value", From: "onev", FromPort: "payload"}}, nil),
+		},
+		Entrypoints: map[string]ExecEntry{
+			"onev": {Kind: EntryOnEvent, Event: topic, Node: "onev",
+				Target: ExecTarget{Node: "set"}},
+		},
+	}
+	sc := execScene(t, "event-payload", prog)
+	startScene(t, sc)
+
+	// A system write of the canonical event to `__events.<topic>` (what
+	// EmitToActive does) fires the spine; the fired task must observe the
+	// event VALUE on its `payload` pin and land it verbatim — proving the
+	// payload is no longer null at the source.
+	sc.Input(InputMsg{Path: eventsPrefix + topic, Value: raw(canonical), Source: "system:show.emit", IsSystem: true})
+	waitForState(t, sc, "__vars.bp.received", canonical, time.Second)
+
+	// A SECOND write with a different payload re-fires and lands the new
+	// value (fire-on-write carries the current event, not a stale binding).
+	next := `{"type":"chat","payload":{"text":"world"}}`
+	sc.Input(InputMsg{Path: eventsPrefix + topic, Value: raw(next), Source: "system:show.emit", IsSystem: true})
+	waitForState(t, sc, "__vars.bp.received", next, time.Second)
+}
+
 // TestShowEmit_RuleToActiveNoCascade (criterion #4, the anti-loop proof,
 // referenced by the conformance matrix for core.show.emit@1):
 //
