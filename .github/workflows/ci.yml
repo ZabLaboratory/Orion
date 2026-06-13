@@ -289,7 +289,13 @@ jobs:
           # operational handle to roll Pulsar CEF / browser hosts
           # forward to a new Solar release. Multiple values supported
           # to allow canarying a new version alongside the previous.
-          SOLAR_VERSIONS: "v0.1.1"
+          # Reconciled to the actually-served set (the box served v0.2.8
+          # via one-off solar-deploy.yml dispatches while this list still
+          # said v0.1.1). v0.2.9 = ADR 011 I7 runtime compositing fix
+          # (KeyframePlayer box geometry + translateX->x transform).
+          # Older v0.1.x / v0.2.0-7 stay on disk (no --delete); they are
+          # no longer pinned consumers, so they drop off the durable handle.
+          SOLAR_VERSIONS: "v0.2.8 v0.2.9"
         run: |
           # Interpolate APP_PATH / SOLAR_VERSIONS into the remote command
           # the same safe way as "Ensure target dir exists" — single-quoted
