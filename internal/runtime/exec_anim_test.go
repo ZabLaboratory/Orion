@@ -2,18 +2,29 @@ package runtime
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 )
 
-// Tests for `animation.play` (ADR 003 §3.1.3 Amendment 1, issue #86):
-// the `__anim.<overlay>.<generation>` state write in the normal delta
+// Tests for `animation.play` (ADR 003 §3.1.3 Amendment 1, issue #86;
+// leaf shape amended by ADR 011 §3.2/I3): the SCALAR generation leaf
+// `__anim.<overlay>` = uint64 generation counter in the normal delta
 // pipe, `then` immediate, `completed` parked on a stamped wake key,
 // the server-side duration fallback on the timer wheel, first-of-two
 // resolution (the loser is an inert counted drop), and the -0 pattern
 // on the duration.
+//
+// I3 NOTE. The leaf is no longer an object carrying `animation_id` /
+// `params` / `wake_key`: those are compile-resolved (asset geometry) and
+// kept server-side (wake key in the parked map). The wake key is the
+// deterministic `wk|<sceneVersion>|<epoch>|<seq>` (exec_timer.go), with
+// seq == generation here (one play == one nextWakeKey == one generation),
+// so a test reconstructs it from the scalar leaf rather than reading it
+// off the wire — exactly as the SERVER resolves it, since neither the
+// park nor the fallback nor resumeParked reads the leaf.
 
 // animNode builds an animation.play node with config inputs.
 func animNode(id string, durationJSON string, next map[string]ExecTarget) *ExecNode {
@@ -67,36 +78,55 @@ func animScene(t *testing.T, id, durationJSON string) (*Scene, *fakeClock, *fake
 	return sc, clk, m
 }
 
-// animLeafKey reads the wake key back out of the emitted command —
-// exactly what the renderer does (it never mints one).
-func animLeafKey(t *testing.T, sc *Scene, leaf string) string {
+// animScalarGen reads the SCALAR generation counter off the leaf
+// `__anim.<overlay>` (ADR 011 §3.2): a bare uint64, never an object.
+func animScalarGen(t *testing.T, sc *Scene, leaf string) uint64 {
 	t.Helper()
-	rawCmd, ok := sc.state.Get(leaf)
+	raw, ok := sc.state.Get(leaf)
 	if !ok {
 		t.Fatalf("leaf %s absent", leaf)
 	}
-	var cmd struct {
-		WakeKey string `json:"wake_key"`
+	var gen uint64
+	if err := json.Unmarshal(raw, &gen); err != nil {
+		t.Fatalf("leaf %s is not a scalar uint64 (ADR 011 §3.2): %s (%v)", leaf, raw, err)
 	}
-	if err := json.Unmarshal(rawCmd, &cmd); err != nil || cmd.WakeKey == "" {
-		t.Fatalf("leaf %s carries no wake key: %s", leaf, rawCmd)
-	}
-	return cmd.WakeKey
+	return gen
 }
 
-// TestAnim_EmitsCommandAndThenImmediate: the command is a state write
-// with deterministic shape (generation 1, stamped wake key), `then`
-// fires immediately, `completed` stays parked.
-func TestAnim_EmitsCommandAndThenImmediate(t *testing.T) {
+// animWakeKeyForGen rebuilds the deterministic wake key for a generation
+// the SAME way the server mints it (exec_timer.go nextWakeKey:
+// wk|<sceneVersion>|<epoch>|<seq>) — at start epoch is 0 and seq ==
+// generation (one play arms one wake key). With the scalar leaf the wake
+// key no longer travels the wire, so a reporting client / test recovers
+// it server-side; this mirrors that recovery for the parked-map resume.
+func animWakeKeyForGen(sc *Scene, gen uint64) string {
+	return fmt.Sprintf("wk|%s|%d|%d", sc.graph.SceneVersion, sc.execEpoch, gen)
+}
+
+// animLeafKey recovers the wake key for the LATEST play on a leaf: read
+// the scalar generation, rebuild the deterministic key. Convenience for
+// the single-play tests (the leaf still holds the only generation).
+func animLeafKey(t *testing.T, sc *Scene, leaf string) string {
+	t.Helper()
+	return animWakeKeyForGen(sc, animScalarGen(t, sc, leaf))
+}
+
+// TestAnim_EmitsScalarGenerationAndThenImmediate: the trigger is a
+// SCALAR state write — `__anim.ov` = generation 1, a bare uint64, NOT an
+// object (ADR 011 §3.2: no animation_id/params/wake_key on the wire) —
+// `then` fires immediately, `completed` stays parked.
+func TestAnim_EmitsScalarGenerationAndThenImmediate(t *testing.T) {
 	sc, _, m := animScene(t, "anim-emit", "100")
 	startScene(t, sc)
 
 	mustFire(t, sc, "e")
 	waitForState(t, sc, "__vars.bp.after", `"then-fired"`, 2*time.Second)
 
-	want := `{"animation_id":"fade","params":{"x":1},"generation":1,` +
-		`"duration_seconds":100,"wake_key":"wk|sha256:effects-test|0|1"}`
-	waitForState(t, sc, "__anim.ov.1", want, 2*time.Second)
+	// The leaf is the scalar generation `1` — byte-exact, no object.
+	waitForState(t, sc, "__anim.ov", `1`, 2*time.Second)
+	if gen := animScalarGen(t, sc, "__anim.ov"); gen != 1 {
+		t.Fatalf("scalar generation = %d, want 1", gen)
+	}
 
 	waitFor(t, "completed continuation parked", func() bool {
 		_, _, parked := m.counts()
@@ -116,7 +146,7 @@ func TestAnim_ExternalReportResumesCompleted(t *testing.T) {
 	mustFire(t, sc, "e")
 	waitFor(t, "park", func() bool { _, _, p := m.counts(); return p == 1 })
 
-	key := animLeafKey(t, sc, "__anim.ov.1")
+	key := animLeafKey(t, sc, "__anim.ov")
 	if !sc.Input(InputMsg{ResumeExec: key, ResumeEnv: AnimReportEnv(raw(`{"ok":true}`), ""), Source: "test:report"}) {
 		t.Fatal("inbox full")
 	}
@@ -134,7 +164,7 @@ func TestAnim_ReportErrorRoutesErrorPort(t *testing.T) {
 	mustFire(t, sc, "e")
 	waitFor(t, "park", func() bool { _, _, p := m.counts(); return p == 1 })
 
-	key := animLeafKey(t, sc, "__anim.ov.1")
+	key := animLeafKey(t, sc, "__anim.ov")
 	sc.Input(InputMsg{ResumeExec: key, ResumeEnv: AnimReportEnv(nil, "RENDER_FAIL"), Source: "test:report"})
 	waitForState(t, sc, "__vars.bp.err", `"RENDER_FAIL"`, 2*time.Second)
 	if v, _ := sc.state.Get("__vars.bp.out"); string(v) != `null` {
@@ -172,7 +202,7 @@ func TestAnim_ReportBeforeTimeout_TimerBecomesInertDrop(t *testing.T) {
 	mustFire(t, sc, "e")
 	waitFor(t, "park", func() bool { _, _, p := m.counts(); return p == 1 })
 
-	key := animLeafKey(t, sc, "__anim.ov.1")
+	key := animLeafKey(t, sc, "__anim.ov")
 	sc.Input(InputMsg{ResumeExec: key, ResumeEnv: AnimReportEnv(raw(`"r"`), ""), Source: "test:report"})
 	waitForState(t, sc, "__vars.bp.out", `"r"`, 2*time.Second)
 
@@ -211,7 +241,7 @@ func TestAnim_StaleEpochReportDropped(t *testing.T) {
 	startScene(t, sc)
 	mustFire(t, sc, "e")
 	waitFor(t, "park", func() bool { _, _, p := m.counts(); return p == 1 })
-	key := animLeafKey(t, sc, "__anim.ov.1")
+	key := animLeafKey(t, sc, "__anim.ov")
 
 	sc.CancelExec()
 	waitFor(t, "cancellation", func() bool { _, _, p := m.counts(); return p == 0 })
@@ -223,9 +253,13 @@ func TestAnim_StaleEpochReportDropped(t *testing.T) {
 	}
 }
 
-// TestAnim_GenerationMonotonic: two plays mint generations 1 then 2
-// (per-scene monotone counter, never map order) with distinct stamped
-// wake keys.
+// TestAnim_GenerationMonotonic: two plays bump the SAME scalar leaf
+// `__anim.ov` 1 → 2 (per-scene monotone counter, never map order) — each
+// delta is a distinct KeyframePlayer replay trigger (ADR 011 §3.2 /
+// criterion #5 "replay on re-fire") — and mint distinct stamped wake
+// keys. Both plays write one leaf (the scalar overwrites), so the final
+// leaf value is 2; the two wake keys are the deterministic per-generation
+// keys the server parked.
 func TestAnim_GenerationMonotonic(t *testing.T) {
 	sc, _, m := animScene(t, "anim-gen", "100")
 	startScene(t, sc)
@@ -233,8 +267,12 @@ func TestAnim_GenerationMonotonic(t *testing.T) {
 	mustFire(t, sc, "e")
 	waitFor(t, "two parks", func() bool { _, _, p := m.counts(); return p == 2 })
 
-	k1 := animLeafKey(t, sc, "__anim.ov.1")
-	k2 := animLeafKey(t, sc, "__anim.ov.2")
+	// The scalar leaf advanced 1 → 2 (the second delta re-triggers replay).
+	if gen := animScalarGen(t, sc, "__anim.ov"); gen != 2 {
+		t.Fatalf("scalar generation = %d, want 2 (two plays bump the same leaf)", gen)
+	}
+	k1 := animWakeKeyForGen(sc, 1)
+	k2 := animWakeKeyForGen(sc, 2)
 	if k1 == k2 {
 		t.Fatalf("wake keys not distinct: %s", k1)
 	}

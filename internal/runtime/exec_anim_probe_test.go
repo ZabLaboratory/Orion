@@ -3,8 +3,15 @@ package runtime
 // Probe tests for animation.play — complement Forge's exec_anim_test.go.
 // Do NOT rewrite it.
 //
+// ADR 011 §3.2/I3 mechanical update (Forge): the trigger leaf became the
+// SCALAR `__anim.<overlay>` (bare uint64 generation) instead of the object
+// `__anim.<overlay>.<gen>`. Only the LEAF-SHAPE decode below was adapted to
+// the scalar; every completion-mechanism assertion (#82/#83/#86: park,
+// fallback, timer-first race, error-port halt) is UNCHANGED — those resolve
+// off the server-side parked map, never the leaf. Probe owns extending this.
+//
 // Axes:
-//  1. __anim.* namespace: the command leaf uses __anim.<overlay>.<gen>,
+//  1. __anim.* namespace: the trigger leaf uses __anim.<overlay>,
 //     never __system.* — pinned against drift that would bypass the inbox
 //     gate (contract §2.6: no free __system.* write can resume a
 //     continuation).
@@ -25,46 +32,45 @@ import (
 	"time"
 )
 
-// TestAnim_LeafNamespace_IsAnimNotSystem: the command emitted by
+// TestAnim_LeafNamespace_IsAnimNotSystem: the trigger emitted by
 // animation.play must be written under `__anim.*`, never `__system.*`.
 // A free `__system.*` write would bypass inbox.go's CanWritePath check
 // (contract §2.6 hardening); the delta-pipe write must use the `__anim`
 // namespace so it travels as a normal leaf write through the effector.
+// Post-I3 the leaf is the SCALAR generation `__anim.<overlay>` (ADR 011
+// §3.2), not the object `__anim.<overlay>.<gen>`.
 func TestAnim_LeafNamespace_IsAnimNotSystem(t *testing.T) {
 	sc, _, _ := animScene(t, "anim-ns", "100")
 	startScene(t, sc)
 	mustFire(t, sc, "e")
 
 	// Wait for the leaf to appear.
-	waitFor(t, "__anim.ov.1 emitted", func() bool {
-		_, ok := sc.state.Get("__anim.ov.1")
+	waitFor(t, "__anim.ov emitted", func() bool {
+		_, ok := sc.state.Get("__anim.ov")
 		return ok
 	})
 
 	// Confirm it is under __anim, NOT __system.
-	if _, ok := sc.state.Get("__system.anim.ov.1"); ok {
+	if _, ok := sc.state.Get("__system.anim.ov"); ok {
 		t.Fatal("animation.play wrote to __system.* namespace — violates B-syswrite contract (§2.6)")
 	}
-	if _, ok := sc.state.Get("__anim.ov.1"); !ok {
-		t.Fatal("animation.play did not write to __anim.* namespace — command not emitted")
+	if _, ok := sc.state.Get("__anim.ov"); !ok {
+		t.Fatal("animation.play did not write to __anim.* namespace — trigger not emitted")
 	}
 
-	// The leaf key must match the format __anim.<overlay>.<generation>.
-	rawCmd, _ := sc.state.Get("__anim.ov.1")
-	var cmd struct {
-		WakeKey    string  `json:"wake_key"`
-		Generation uint64  `json:"generation"`
-		AnimID     string  `json:"animation_id"`
-		Duration   float64 `json:"duration_seconds"`
+	// The leaf is the scalar generation counter — a bare uint64 (ADR 011
+	// §3.2), passing the LSDP §3.2.1 scalar-only filter. No object, no
+	// animation_id/params/wake_key on the wire.
+	raw, _ := sc.state.Get("__anim.ov")
+	var gen uint64
+	if err := json.Unmarshal(raw, &gen); err != nil {
+		t.Fatalf("leaf __anim.ov not a scalar uint64 (ADR 011 §3.2): %s (%v)", raw, err)
 	}
-	if err := json.Unmarshal(rawCmd, &cmd); err != nil {
-		t.Fatalf("leaf __anim.ov.1 not valid animCommand JSON: %v", err)
+	if gen != 1 {
+		t.Errorf("generation = %d, want 1", gen)
 	}
-	if cmd.Generation != 1 {
-		t.Errorf("generation = %d, want 1", cmd.Generation)
-	}
-	if !strings.HasPrefix(cmd.WakeKey, "wk|") {
-		t.Errorf("wake_key %q must start with wk|", cmd.WakeKey)
+	if strings.ContainsAny(string(raw), "{}\"") {
+		t.Errorf("leaf carries object/string shape %q — must be a bare scalar (LSDP §3.2.1)", raw)
 	}
 }
 
@@ -78,7 +84,7 @@ func TestAnim_TimerFirst_ThenExternalReport_IsUnknownDrop(t *testing.T) {
 	mustFire(t, sc, "e")
 	waitFor(t, "park", func() bool { _, _, p := m.counts(); return p == 1 })
 
-	key := animLeafKey(t, sc, "__anim.ov.1")
+	key := animLeafKey(t, sc, "__anim.ov")
 
 	// Timer fires first.
 	clk.Advance(2 * time.Second)
@@ -145,7 +151,7 @@ func TestAnim_ErrorPortNoWire_HaltsCleanly(t *testing.T) {
 	mustFire(t, sc, "e")
 	waitFor(t, "park", func() bool { _, _, p := m.counts(); return p == 1 })
 
-	key := animLeafKey(t, sc, "__anim.ov.1")
+	key := animLeafKey(t, sc, "__anim.ov")
 	// Deliver an error report on a node with no error port wired → halt.
 	if !sc.Input(InputMsg{ResumeExec: key, ResumeEnv: AnimReportEnv(nil, "RENDER_FAIL"), Source: "test:err"}) {
 		t.Fatal("inbox full")

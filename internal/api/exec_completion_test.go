@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -81,29 +82,35 @@ func newAnimFixture(t *testing.T, sceneID string) *animFixture {
 		deps: PublicDeps{Logger: testLogger(), Metrics: m, Show: show},
 		show: show, metrics: m, sceneID: sceneID,
 	}
-	f.wakeKey = f.waitLeaf(t, sceneID, "__anim.ov.1", 2*time.Second)
+	// ADR 011 §3.2/I3: the leaf is now the SCALAR generation `__anim.ov`
+	// (a bare uint64), not the object that used to carry the wake key. The
+	// renderer's external report needs the wake key, which is the
+	// deterministic `wk|<sceneVersion>|<epoch>|<seq>` — here seq == gen ==
+	// 1 (one play). We reconstruct it from the scalar exactly as the
+	// server would, since no live channel echoes it off the wire post-I3
+	// (the forward external-report wake-key channel is I5/Conduit's).
+	gen := f.waitScalarGen(t, sceneID, "__anim.ov", 2*time.Second)
+	f.wakeKey = "wk|sha256:api-anim|0|" + strconv.FormatUint(gen, 10)
 	return f
 }
 
-// waitLeaf polls subscriber snapshots until the leaf appears, then
-// returns the wake key it carries (or the raw value for assertions).
-func (f *animFixture) waitLeaf(t *testing.T, sceneID, leaf string, timeout time.Duration) string {
+// waitScalarGen polls subscriber snapshots until the scalar generation
+// leaf appears and returns its uint64 value.
+func (f *animFixture) waitScalarGen(t *testing.T, sceneID, leaf string, timeout time.Duration) uint64 {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if raw, ok := f.snapshotLeaf(t, sceneID, leaf); ok {
-			var cmd struct {
-				WakeKey string `json:"wake_key"`
+			var gen uint64
+			if err := json.Unmarshal(raw, &gen); err != nil {
+				t.Fatalf("leaf %s not a scalar uint64 (ADR 011 §3.2): %s", leaf, raw)
 			}
-			if err := json.Unmarshal(raw, &cmd); err == nil && cmd.WakeKey != "" {
-				return cmd.WakeKey
-			}
-			return string(raw)
+			return gen
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
 	t.Fatalf("leaf %s never appeared", leaf)
-	return ""
+	return 0
 }
 
 func (f *animFixture) snapshotLeaf(t *testing.T, sceneID, leaf string) (json.RawMessage, bool) {
