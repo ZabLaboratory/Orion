@@ -124,6 +124,15 @@ func TestFinaleReactive_CompileFromPushDrivesChatDisplay(t *testing.T) {
 				if err := json.Unmarshal(p.Value, &got); err != nil {
 					t.Fatalf("%s value not a string: %s (%v)", displayLeaf, p.Value, err)
 				}
+				// The scene's cold-start recompute emits a `chat.display`
+				// patch (empty — the get-field over a null record) at load,
+				// which can race ahead of the event write onto sub.Out. It is
+				// NOT the assertion target: keep reading until the WRITE drives
+				// the extracted text through. Without the acceptance binding
+				// fix that write is dropped, so the deadline fires (the bug).
+				if got == "" {
+					continue
+				}
 				if got != "DIAGTEST123" {
 					t.Fatalf("%s = %q, want %q", displayLeaf, got, "DIAGTEST123")
 				}
