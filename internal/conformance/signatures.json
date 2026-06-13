@@ -1,5 +1,5 @@
 {
-  "count": 68,
+  "count": 69,
   "signatures": {
     "core.animation.play@1": {
       "inputs": [
@@ -271,6 +271,18 @@
       ],
       "config": [
         "event_name"
+      ]
+    },
+    "core.event.on-platform-event@1": {
+      "inputs": [],
+      "outputs": [
+        "payload",
+        "then"
+      ],
+      "config": [
+        "channel",
+        "event_type",
+        "platform"
       ]
     },
     "core.event.on-start@1": {

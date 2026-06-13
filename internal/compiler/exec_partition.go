@@ -53,9 +53,10 @@ const ErrExecOpUnmapped DiagnosticCode = "EXEC_OP_UNMAPPED"
 // the runtime by the round-trip test (crit #1), which decodes what this
 // emits through runtime.ExecProgramsFromGraph.
 var execEntryKind = map[string]string{
-	"core.event.on-start@1": "on-start",
-	"core.event.on-tick@1":  "on-tick",
-	"core.event.on-event@1": "on-event",
+	"core.event.on-start@1":          "on-start",
+	"core.event.on-tick@1":           "on-tick",
+	"core.event.on-event@1":          "on-event",
+	"core.event.on-platform-event@1": "on-platform-event",
 }
 
 // execEntryEventConfigKey is the single seam (mirroring nodeLeafPath's
@@ -346,6 +347,21 @@ func buildExecEntry(n BlueprintNode, kind string, edges []BlueprintEdge, entries
 			})
 			return diags
 		}
+	}
+	if kind == "on-platform-event" {
+		// The platform-event entry observes the canonical platform leaf
+		// `__inputs.platform.<platform>.<channel>.last_<event_type>` (ADR
+		// 013 §3) — NOT an `__events.` topic. Its config carries
+		// platform/channel/event_type; the same casefold-then-validate
+		// channel discipline as quasar.* nodes is reused (same charset,
+		// same PLATFORM_CHANNEL_INVALID diagnostic). The leaf is also what
+		// platformStreamBindings accepts, via collectExecEntryLeaves.
+		leaf, pd := platformEventEntryLeaf(n)
+		if pd != nil {
+			diags = append(diags, *pd)
+			return diags
+		}
+		entry.Event = leaf
 	}
 	// Find the single exec OUT edge to set Target. An entry with no
 	// wired body fires a no-op task — structurally valid (the authoring

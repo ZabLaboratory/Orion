@@ -120,3 +120,86 @@ func TestExecPartition_RoundTripFromCompiler(t *testing.T) {
 	sc := NewScene("scene-exec", graph, nil, NewComputeRegistry(), quietLogger())
 	sc.InstallExec(p)
 }
+
+// TestExecPartition_RoundTrip_OnPlatformEvent (ADR 013 §6 criterion #2): a
+// `core.event.on-platform-event@1` node the compiler emits decodes byte-
+// identically through ExecProgramsFromGraph into an
+// ExecEntry{Kind: EntryOnPlatformEvent, Event: <canonical leaf>}, and the
+// decoded program installs onto a real Scene with the entry indexed under
+// the platform leaf in execOnPlatform. Drives the REAL compiler.
+func TestExecPartition_RoundTrip_OnPlatformEvent(t *testing.T) {
+	execOut := func(n string) compiler.BlueprintPort {
+		return compiler.BlueprintPort{Name: n, Type: "exec", Kind: "exec"}
+	}
+	execIn := func(n string) compiler.BlueprintPort {
+		return compiler.BlueprintPort{Name: n, Type: "exec", Kind: "exec"}
+	}
+	dataIn := func(n string) compiler.BlueprintPort {
+		return compiler.BlueprintPort{Name: n, Type: "any", Kind: "data"}
+	}
+	cfg := func(s string) json.RawMessage { return json.RawMessage(`"` + s + `"`) }
+
+	bp := &compiler.BlueprintGraph{
+		ID: "bp-plat",
+		Nodes: []compiler.BlueprintNode{
+			{ID: "onplat", Compute: "core.event.on-platform-event@1",
+				Config: map[string]json.RawMessage{
+					"platform":   cfg("twitch"),
+					"channel":    cfg("ZabChannel"),
+					"event_type": cfg("chat"),
+				},
+				Outputs: []compiler.BlueprintPort{execOut("then")}},
+			{ID: "v", Compute: "core.literal@1",
+				Config:  map[string]json.RawMessage{"value": json.RawMessage(`1`)},
+				Outputs: []compiler.BlueprintPort{dataIn("out")}},
+			{ID: "set", Compute: "core.variable.set@1",
+				Config:  map[string]json.RawMessage{"variable": json.RawMessage(`"fired"`)},
+				Inputs:  []compiler.BlueprintPort{execIn("exec_in"), dataIn("value")},
+				Outputs: []compiler.BlueprintPort{execOut("then")}},
+		},
+		Edges: []compiler.BlueprintEdge{
+			{FromNode: "onplat", FromPort: "then", ToNode: "set", ToPort: "exec_in"},
+			{FromNode: "v", FromPort: "out", ToNode: "set", ToPort: "value"},
+		},
+	}
+	f := &stubFetcher{
+		layout: &compiler.CanvasLayout{
+			Version: "v1",
+			Root:    compiler.LayoutNode{Kind: "stack", ID: "root"},
+		},
+		blueprint: bp,
+		manifest: compiler.ComputeManifest{
+			"core.event.on-platform-event@1": {IsPure: true, IsBounded: true, Version: "1"},
+			"core.literal@1":                 {IsPure: true, IsBounded: true, Version: "1"},
+			"core.variable.set@1":            {IsPure: true, IsBounded: true, Version: "1"},
+		},
+	}
+	graph, _, _, err := compiler.Compile(context.Background(), "scene-plat",
+		compiler.PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-plat"}, f)
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	progs, err := ExecProgramsFromGraph(graph)
+	if err != nil {
+		t.Fatalf("ExecProgramsFromGraph rejected the compiler's emission: %v", err)
+	}
+	if len(progs) != 1 {
+		t.Fatalf("want 1 program, got %d", len(progs))
+	}
+	p := progs[0]
+	e, ok := p.Entrypoints["onplat"]
+	wantLeaf := "__inputs.platform.twitch.zabchannel.last_chat"
+	if !ok || e.Kind != EntryOnPlatformEvent || e.Event != wantLeaf || e.Target.Node != "set" {
+		t.Fatalf("on-platform-event entry round-trip wrong: %+v (want Kind=%q Event=%q)", p.Entrypoints, EntryOnPlatformEvent, wantLeaf)
+	}
+
+	// Installs onto a real Scene; the entry indexes under the platform leaf
+	// in execOnPlatform, namespaced by the program's blueprint key.
+	sc := NewScene("scene-plat", graph, nil, NewComputeRegistry(), quietLogger())
+	sc.InstallExec(p)
+	wantKey := entryKey(p.BlueprintKey, "onplat")
+	if got := sc.execOnPlatform[wantLeaf]; len(got) != 1 || got[0] != wantKey {
+		t.Fatalf("execOnPlatform[%q] = %v, want [%s]", wantLeaf, got, wantKey)
+	}
+}

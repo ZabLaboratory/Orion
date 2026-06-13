@@ -259,6 +259,16 @@ func planEntrypoints(prog *ExecProgram) []entrypointPlan {
 				seedPath:  eventsPrefix + e.Event,
 				seedValue: fixtureForEvent(e.Event),
 			})
+		case EntryOnPlatformEvent:
+			// Feed the platform entry by pre-seeding the FULL platform leaf
+			// it observes (e.Event already holds the canonical
+			// `__inputs.platform.*` path — no prefix to prepend, unlike
+			// on-event). The fire carries no env; the payload lives in state.
+			plans = append(plans, entrypointPlan{
+				entry:     nk,
+				seedPath:  e.Event,
+				seedValue: json.RawMessage(`null`),
+			})
 		default:
 			// on-start and explicitly-fired entries: one firing.
 			plans = append(plans, entrypointPlan{entry: nk})

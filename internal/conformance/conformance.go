@@ -144,9 +144,10 @@ type ServedNode struct {
 // richer behavioural test, not the conformance proof itself.
 var served = map[string]ServedNode{
 	// --- Exec entrypoints (trigger-fired) -----------------------------
-	"core.event.on-start@1": {Kind: KindEntry, Test: "TestExec_OnStart_ActivationAndRePush"},
-	"core.event.on-tick@1":  {Kind: KindEntry, Test: "TestExec_OnTick_DeltaSeconds"},
-	"core.event.on-event@1": {Kind: KindEntry, Test: "TestExec_OnEvent_FiresPerWrite"},
+	"core.event.on-start@1":          {Kind: KindEntry, Test: "TestExec_OnStart_ActivationAndRePush"},
+	"core.event.on-tick@1":           {Kind: KindEntry, Test: "TestExec_OnTick_DeltaSeconds"},
+	"core.event.on-event@1":          {Kind: KindEntry, Test: "TestExec_OnEvent_FiresPerWrite"},
+	"core.event.on-platform-event@1": {Kind: KindEntry, Test: "TestExec_OnPlatformEvent_FiresPerWrite"},
 
 	// --- Leaf-bound (compiler binds, no runtime executor) -------------
 	"core.input@1":        {Kind: KindLeafBound, Test: "TestCompile_InputLeafBound"},

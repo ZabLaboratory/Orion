@@ -148,6 +148,13 @@ func Compile(
 	// global namespace (the runtime indexes execOnEvent by the raw event
 	// name, scene.go:657), so they are NOT key-prefixed.
 	eventTopics := map[string]struct{}{}
+	// platformEntryLeaves accumulates the `__inputs.platform.*` leaves
+	// carried by `on-platform-event` ExecEntries (ADR 013 §3.6). They join
+	// the platform leaves expanded by quasar.* dataflow nodes in the
+	// platformStreamBindings acceptance set — ADDITIVE: a scene may have an
+	// entry on a leaf no quasar.* node references, and it must still be
+	// accepted (the entry IS what arms the spine on the Quasar write).
+	platformEntryLeaves := map[string]struct{}{}
 	for _, kb := range keyedBlueprints {
 		// Partition first: the exec node set drives both the data-node
 		// exclusion (validateBlueprint) and the ExecProgram emission.
@@ -177,6 +184,9 @@ func Compile(
 			for _, e := range prog.Entrypoints {
 				if e.Kind == "on-event" && e.Event != "" {
 					eventTopics[e.Event] = struct{}{}
+				}
+				if e.Kind == "on-platform-event" && e.Event != "" {
+					platformEntryLeaves[e.Event] = struct{}{}
 				}
 			}
 			raw, mErr := marshalExecProgram(prog)
@@ -228,7 +238,7 @@ func Compile(
 	//     leaf the blueprints expanded (ADR 003 §3.3.3, issue #84) so the
 	//     inbox's sceneAcceptsPath accepts Quasar's writes. Acceptance
 	//     declaration only — no goroutine is ever spawned for this Kind.
-	adapters = append(adapters, platformStreamBindings(sorted)...)
+	adapters = append(adapters, platformStreamBindings(sorted, platformEntryLeaves)...)
 
 	// 6c) Synthesize one `event-topic` binding per distinct on-event topic
 	//     (issue #148, ADR 008 §3.3) — the exact mirror of (6b): pure
@@ -1024,6 +1034,85 @@ func platformLeafPath(n BlueprintNode, platform, event string) (string, *Diagnos
 	return platformLeafPrefix + platform + "." + folded + ".last_" + event, nil
 }
 
+// platformEventEntryLeaf expands an `on-platform-event` entrypoint node's
+// config (platform/channel/event_type) into the canonical platform leaf
+// `__inputs.platform.<platform>.<channel>.last_<event_type>` it observes
+// (ADR 013 §3). Unlike platformLeafPath (whose platform/event come from the
+// `quasar.<platform>.<event>@N` compute name), here all three segments are
+// AUTHORED config — but the channel handling is identical (casefold-then-
+// validate, same charset, same PLATFORM_CHANNEL_INVALID diagnostic), so the
+// leaf an entry observes is byte-identical to the leaf the matching quasar.*
+// dataflow input expands to. Diagnostics are structural authoring errors on
+// the node's config, never capability rejections of the entry type.
+func platformEventEntryLeaf(n BlueprintNode) (string, *Diagnostic) {
+	platform, pd := platformEventConfigSegment(n, "platform")
+	if pd != nil {
+		return "", pd
+	}
+	eventType, ed := platformEventConfigSegment(n, "event_type")
+	if ed != nil {
+		return "", ed
+	}
+	// Channel: reuse platformLeafPath's exact channel discipline by
+	// delegating to it (it reads config.channel + applies casefold-then-
+	// validate against platformChannelRE), passing the authored platform +
+	// `last_<event_type>` so the returned leaf matches the quasar.* form.
+	return platformLeafPath(n, platform, eventType)
+}
+
+// platformEventConfigSegment reads and validates one required lowercase
+// path segment (`platform` or `event_type`) from an on-platform-event
+// node's config. The charset matches the platform/event segments of the
+// quasar.* leaf convention (compile-time ASCII, so Orion's expansion and
+// Quasar's producer agree). A missing key reuses ErrPlatformChannelMissing
+// shape; a malformed value reuses ErrPlatformChannelInvalid — the same
+// structural authoring diagnostics the channel uses.
+func platformEventConfigSegment(n BlueprintNode, key string) (string, *Diagnostic) {
+	raw, ok := n.Config[key]
+	if !ok {
+		return "", &Diagnostic{
+			Code:     ErrPlatformChannelMissing,
+			Severity: "error",
+			Message:  fmt.Sprintf("on-platform-event node %s declares no config.%s — cannot expand its %s leaf", n.ID, key, platformLeafPrefix),
+			Path:     n.ID,
+		}
+	}
+	var val string
+	if err := json.Unmarshal(raw, &val); err != nil {
+		return "", &Diagnostic{
+			Code:     ErrPlatformChannelInvalid,
+			Severity: "error",
+			Message:  fmt.Sprintf("on-platform-event node %s: config.%s must be a JSON string", n.ID, key),
+			Path:     n.ID,
+		}
+	}
+	if val == "" {
+		return "", &Diagnostic{
+			Code:     ErrPlatformChannelMissing,
+			Severity: "error",
+			Message:  fmt.Sprintf("on-platform-event node %s: config.%s is empty", n.ID, key),
+			Path:     n.ID,
+		}
+	}
+	folded := strings.ToLower(val)
+	if !platformSegmentRE.MatchString(folded) {
+		return "", &Diagnostic{
+			Code:     ErrPlatformChannelInvalid,
+			Severity: "error",
+			Message:  fmt.Sprintf("on-platform-event node %s: config.%s %q is not a valid %s segment (after casefold it must match %s)", n.ID, key, val, key, platformSegmentRE.String()),
+			Path:     n.ID,
+		}
+	}
+	return folded, nil
+}
+
+// platformSegmentRE is the charset for the platform/event_type path
+// segments (mirrors the quasar.* convention: a lowercase ascii word that
+// may carry underscores). Channel uses platformChannelRE; these two segments
+// are author-supplied for an on-platform-event entry, so they are validated
+// here with the same fold-then-match discipline.
+var platformSegmentRE = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+
 // platformStreamBindings synthesizes one
 // ExternalAdapter{Kind:"platform-stream"} per DISTINCT platform leaf in
 // the compiled node set (ADR 003 §3.3.3, normative). The binding is a
@@ -1033,7 +1122,15 @@ func platformLeafPath(n BlueprintNode, platform, event string) (string, *Diagnos
 // it (the poller / pg-listen starters filter on their own Kind), and
 // none of the goroutine-bearing fields (URL, FrequencyHz, Channel) is
 // set. Leaves are sorted for scene_version hash determinism.
-func platformStreamBindings(nodes []GraphNode) []ExternalAdapter {
+//
+// entryLeaves (ADR 013 §3.6) is the ADDITIVE set of `__inputs.platform.*`
+// leaves carried by `on-platform-event` ExecEntries — the leaf an entry
+// observes is borne by ExecEntry.Event, NOT by a quasar.* input GraphNode,
+// so it would be missed by the node scan alone. Merging it here means a
+// scene with ONLY an arming entry (no dataflow input on that leaf) still
+// gets the acceptance binding that routes the Quasar write — and a scene
+// with BOTH dedups to one binding (coexistence, §3.6). No new adapter Kind.
+func platformStreamBindings(nodes []GraphNode, entryLeaves map[string]struct{}) []ExternalAdapter {
 	seen := map[string]struct{}{}
 	var leaves []string
 	for _, n := range nodes {
@@ -1048,6 +1145,18 @@ func platformStreamBindings(nodes []GraphNode) []ExternalAdapter {
 		}
 		seen[n.Path] = struct{}{}
 		leaves = append(leaves, n.Path)
+	}
+	// Merge the on-platform-event entry leaves (ADR 013 §3.6) — additive,
+	// deduped against the quasar.* node leaves already collected.
+	for leaf := range entryLeaves {
+		if leaf == "" {
+			continue
+		}
+		if _, dup := seen[leaf]; dup {
+			continue
+		}
+		seen[leaf] = struct{}{}
+		leaves = append(leaves, leaf)
 	}
 	sort.Strings(leaves)
 	out := make([]ExternalAdapter, 0, len(leaves))

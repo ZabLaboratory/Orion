@@ -96,6 +96,13 @@ const (
 	EntryOnStart = "on-start"
 	EntryOnTick  = "on-tick"
 	EntryOnEvent = "on-event"
+	// EntryOnPlatformEvent fires on a WRITE to the platform leaf the
+	// entry observes (`__inputs.platform.<platform>.<channel>.last_<type>`,
+	// the namespace Quasar writes). The arming twin of EntryOnEvent — same
+	// write-arms-a-spine mechanic, but on the platform-ingestion namespace
+	// instead of `__events.` (ADR 013 §3). The full leaf the entry observes
+	// is carried in ExecEntry.Event (no `__events.` prefix, unlike on-event).
+	EntryOnPlatformEvent = "on-platform-event"
 )
 
 // ExecEntry is one event entrypoint: the target the event node's exec
@@ -106,8 +113,9 @@ type ExecEntry struct {
 	// Kind selects the runtime trigger ("" = fired explicitly via
 	// FireExec only — tests, future operator dispatch).
 	Kind string `json:"kind,omitempty"`
-	// Event names the `__events.<event>` topic an on-event entry
-	// listens to.
+	// Event names the leaf an event-driven entry listens to: the
+	// `__events.<event>` topic for an on-event entry, or the full
+	// `__inputs.platform.*` leaf for an on-platform-event entry (ADR 013).
 	Event string `json:"event,omitempty"`
 	// Node is the event node's id — the namespace its data out pins
 	// (`<node>.delta_seconds` for on-tick) are bound under in the
@@ -282,6 +290,7 @@ func entryKey(blueprintKey, entryID string) string {
 func (s *Scene) InstallExec(progs ...*ExecProgram) {
 	s.execOnStart, s.execOnTick = nil, nil
 	s.execOnEvent = nil
+	s.execOnPlatform = nil
 	s.execProgs = nil
 	s.execEntries = nil
 
@@ -332,6 +341,14 @@ func (s *Scene) InstallExec(progs ...*ExecProgram) {
 					s.execOnEvent = map[string][]string{}
 				}
 				s.execOnEvent[e.Event] = append(s.execOnEvent[e.Event], nk)
+			case EntryOnPlatformEvent:
+				if e.Event == "" {
+					continue
+				}
+				if s.execOnPlatform == nil {
+					s.execOnPlatform = map[string][]string{}
+				}
+				s.execOnPlatform[e.Event] = append(s.execOnPlatform[e.Event], nk)
 			}
 		}
 	}
@@ -341,6 +358,9 @@ func (s *Scene) InstallExec(progs ...*ExecProgram) {
 	sort.Strings(s.execOnTick)
 	for ev := range s.execOnEvent {
 		sort.Strings(s.execOnEvent[ev])
+	}
+	for leaf := range s.execOnPlatform {
+		sort.Strings(s.execOnPlatform[leaf])
 	}
 }
 
