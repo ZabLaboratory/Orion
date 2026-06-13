@@ -327,7 +327,9 @@ func copyBindings(bindings map[string]string) map[string]string {
 // lowerRenderTree applies lowerRenderProps to every node in the tree,
 // returning a fresh tree (the input is not mutated). It is the recursive
 // driver the compile tail calls on the assembled render-bundle root.
-func lowerRenderTree(node LayoutNode) LayoutNode {
+// `animations` is the inlined Animation Asset catalogue (ADR 011 §3.1),
+// resolved when lowering an `animation` element; nil for scenes with none.
+func lowerRenderTree(node LayoutNode, animations map[string]animationAsset) LayoutNode {
 	// The `wipe-cover` authoring element lowers to a keyframed `frame` render
 	// node (ADR 003 Amendment 5 §A5.3): a different kind + props + a synthesised
 	// `keyframes` block, so it is handled before the generic per-kind prop
@@ -339,6 +341,21 @@ func lowerRenderTree(node LayoutNode) LayoutNode {
 	if node.Kind == WipeCoverKind {
 		if lowered, ok := lowerWipeCover(node); ok {
 			// wipe-cover is a leaf overlay node — no children to recurse into.
+			lowered.Children = nil
+			return lowered
+		}
+	}
+
+	// The `animation` authoring element (ADR 011 §3.3/§3.4) lowers to the same
+	// keyframed `frame` render node via the general lower_animation.go path:
+	// it resolves its `animation_id` against the inlined asset catalogue and
+	// keys the replay on the SCALAR generation leaf `__anim.<overlay>` (§3.2).
+	// Same inert-fallthrough + LSML-hash-unperturbed discipline as wipe-cover:
+	// a missing asset / target / catalogue leaves the node a pass-through the
+	// runtime renders as nothing, and the keyframes block rides ONLY this
+	// lowered tree (the authoring node keeps `kind:"animation"` for EmitLSML).
+	if node.Kind == AnimationKind {
+		if lowered, ok := lowerAnimationAsset(node, animations); ok {
 			lowered.Children = nil
 			return lowered
 		}
@@ -366,7 +383,7 @@ func lowerRenderTree(node LayoutNode) LayoutNode {
 	if len(node.Children) > 0 {
 		out.Children = make([]LayoutNode, len(node.Children))
 		for i, c := range node.Children {
-			out.Children[i] = lowerRenderTree(c)
+			out.Children[i] = lowerRenderTree(c, animations)
 		}
 	} else {
 		out.Children = nil

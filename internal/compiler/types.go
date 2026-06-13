@@ -72,6 +72,20 @@ type CanvasLayout struct {
 	Version string          `json:"version"`
 	Root    LayoutNode      `json:"root"`
 	Inputs  []OperatorInput `json:"operator_inputs,omitempty"`
+
+	// Animations is the inlined Animation Asset catalogue (ADR 011 §3.1 /
+	// I1): `{animation_id: {target, keyframes{key?, duration_ms, easing,
+	// steps[]}}}`, validated authoring-side by ZabCanvas
+	// (schemas/animation_asset.py) and forwarded verbatim onto the served
+	// CanvasLayout by the layout adapter. The compiler resolves
+	// `animation.play.animation_id` against it at lowering
+	// (lower_animation.go), never on the wire (§3.2/§3.4). Opaque
+	// json.RawMessage: Orion is a transport for the keyframe shape (single
+	// source of truth = the authoring schema + the Solar oracle), it binds
+	// the `key` and frames it, it does not re-interpret the steps. Optional
+	// + additive: a layout without animations leaves it nil → every
+	// `animation` element falls through inert.
+	Animations json.RawMessage `json:"animations,omitempty"`
 }
 
 // LayoutNode is one node in the layout tree. Either a Solar primitive

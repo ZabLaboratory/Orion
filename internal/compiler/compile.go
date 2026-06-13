@@ -263,7 +263,14 @@ func Compile(
 	// at default font/size/dims. It operates on a fresh tree so `expanded`
 	// stays in authoring vocab for EmitLSML (the LSML bundle keeps the
 	// authoring keys — no double-lowering, ADR 007 §9.6). Ref #41.
-	loweredRoot := lowerRenderTree(expanded)
+	// Parse the inlined Animation Asset catalogue (ADR 011 §3.1 / I1) so the
+	// lowering can resolve `animation.play.animation_id` → asset → keyframe
+	// node at compile time (§3.3/§3.4). A nil/malformed catalogue yields an
+	// empty map → every `animation` element falls through inert. Asset
+	// resolution is purely local to the served layout (no cross-service
+	// fetch, ADR 011 §5 R1 mitigation / R4: no new Bastion surface).
+	animations := parseAnimationCatalogue(layout.Animations)
+	loweredRoot := lowerRenderTree(expanded, animations)
 	bundle := &RenderBundle{
 		Root:             loweredRoot,
 		OperatorInputs:   allInputs,

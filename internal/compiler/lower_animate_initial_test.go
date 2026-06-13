@@ -160,7 +160,7 @@ func TestLowerAnimateInitial_RetroCompat(t *testing.T) {
 			"transition": json.RawMessage(`{"duration":550,"easing":"ease-out"}`),
 		},
 	}
-	lowered := lowerRenderTree(node)
+	lowered := lowerRenderTree(node, nil)
 	if lowered.AnimateInitial != nil {
 		t.Fatalf("no-from node got animate_initial = %s, want absent", lowered.AnimateInitial)
 	}

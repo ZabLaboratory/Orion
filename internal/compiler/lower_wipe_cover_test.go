@@ -330,7 +330,7 @@ func TestLowerWipeCover_MalformedFallsThrough(t *testing.T) {
 				t.Fatalf("malformed wipe-cover (%s) was lowered — want fall-through", name)
 			}
 			// Through the tree driver it stays the authoring kind (inert).
-			out := lowerRenderTree(node)
+			out := lowerRenderTree(node, nil)
 			if out.Kind != WipeCoverKind {
 				t.Fatalf("malformed wipe-cover lowered to %q, want pass-through %q", out.Kind, WipeCoverKind)
 			}

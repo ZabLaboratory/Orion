@@ -66,18 +66,16 @@ func lowerWipeCover(node LayoutNode) (LayoutNode, bool) {
 		fill = f
 	}
 
-	id := node.ID
-	if id == "" {
-		// buildWipeCoverNode defaults the node id to "wipe-cover".
-		id = WipeCoverKind
-	}
-
-	out := LayoutNode{
-		Kind:      "frame",
-		ID:        id,
-		Props:     wipeCoverProps(fill),
-		Keyframes: wipeCoverKeyframes(leaf, reveal, hold, retract),
-	}
+	// I4 (ADR 011 §3.5): delegate the node assembly to the general
+	// buildAnimationNode path — `wipe-cover` is the degenerate Animation
+	// Asset (opaque-cover opacity reveal/hold/retract). wipeCoverKeyframes
+	// builds the asset-equivalent keyframes (its `key` authored inline as
+	// the scene_control leaf, unlike the general animation.play path whose
+	// key the compiler binds); buildAnimationNode frames it. No geometry is
+	// duplicated, and the emitted bytes are IDENTICAL to the pre-delegation
+	// node (kind/id/props/keyframes), so the byte-pin + the M10 magenta
+	// probe stay green. id defaults to "wipe-cover" inside buildAnimationNode.
+	out := buildAnimationNode(node.ID, fill, wipeCoverKeyframes(leaf, reveal, hold, retract))
 	return out, true
 }
 
