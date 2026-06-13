@@ -1,5 +1,5 @@
 {
-  "count": 82,
+  "count": 83,
   "entries": [
     {
       "node_id": "core.animation.play@1",
@@ -269,6 +269,17 @@
       "node_id": "core.event.on-event@1",
       "namespace": "core.event",
       "name": "on-event",
+      "version": 1,
+      "category": "event",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.event.on-platform-event@1",
+      "namespace": "core.event",
+      "name": "on-platform-event",
       "version": 1,
       "category": "event",
       "is_pure": true,

@@ -58,6 +58,11 @@ var runtimeContract = map[string]runtimeStrings{
 	"core.event.on-start@1": {outputs: []string{"then"}},
 	"core.event.on-tick@1":  {outputs: []string{"then", "delta_seconds"}},
 	"core.event.on-event@1": {outputs: []string{"then"}, config: []string{"event_name"}},
+	// on-platform-event (ADR 013): exec out `then` + data-out `payload`;
+	// config platform/channel/event_type → the compiler canonicalises them
+	// into the observed `__inputs.platform.*` leaf (ExecEntry.Event), the
+	// runtime reads no config string of its own (the leaf is on the entry).
+	"core.event.on-platform-event@1": {outputs: []string{"then", "payload"}, config: []string{"platform", "channel", "event_type"}},
 
 	// --- flow control (exec_interpreter.go) ---------------------------
 	// branch: pullBool "condition"; fires "true"/"false".
@@ -183,10 +188,11 @@ func TestExecPortParity_EverySeedExecPinHonoured(t *testing.T) {
 		// construction-safe delivery). The runtime honours `then` (the empty
 		// outcome defaults to it); `in` is the generic entry pin the
 		// interpreter routes, not a name the executor reads.
-		"core.show.emit@1":      {out: []string{"then"}},
-		"core.event.on-start@1": {out: []string{"then"}},
-		"core.event.on-tick@1":  {out: []string{"then"}},
-		"core.event.on-event@1": {out: []string{"then"}},
+		"core.show.emit@1":               {out: []string{"then"}},
+		"core.event.on-start@1":          {out: []string{"then"}},
+		"core.event.on-tick@1":           {out: []string{"then"}},
+		"core.event.on-event@1":          {out: []string{"then"}},
+		"core.event.on-platform-event@1": {out: []string{"then"}},
 	}
 	for id, pins := range seedExecPins {
 		t.Run(id, func(t *testing.T) {

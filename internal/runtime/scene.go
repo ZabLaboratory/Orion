@@ -244,12 +244,16 @@ type Scene struct {
 	// execLastTickMs is the previous global-tick timestamp this scene
 	// observed, for the on-tick `delta_seconds` binding (-1 = none).
 	execLastTickMs int64
-	// execOnStart/execOnTick/execOnEvent are the trigger indexes
-	// built by InstallExec, in sorted entry-key order (deterministic
-	// firing, never map iteration). Pre-Run only; read-only after.
-	execOnStart []string
-	execOnTick  []string
-	execOnEvent map[string][]string
+	// execOnStart/execOnTick/execOnEvent/execOnPlatform are the trigger
+	// indexes built by InstallExec, in sorted entry-key order
+	// (deterministic firing, never map iteration). Pre-Run only; read-only
+	// after. execOnPlatform is keyed by the full `__inputs.platform.*` leaf
+	// an on-platform-event entry observes (ADR 013) — the platform-namespace
+	// twin of execOnEvent (keyed by the `__events.` topic).
+	execOnStart    []string
+	execOnTick     []string
+	execOnEvent    map[string][]string
+	execOnPlatform map[string][]string
 
 	// --- validation mode (ADR 003 §3.2, issue #87) -------------------
 	// validationMode makes the effect seam STRUCTURALLY inert (B10): a
@@ -690,11 +694,31 @@ func (s *Scene) applyInput(msg InputMsg) {
 			s.enqueueFire(k)
 		}
 	}
+	// on-platform-event (ADR 013): the arming twin of on-event, but indexed
+	// by the FULL `__inputs.platform.*` leaf (no `__events.` topic
+	// shortening — Quasar writes the canonical leaf verbatim). Fires on the
+	// WRITE, like every trigger above (a write carrying the same payload
+	// twice is two events) — one write, one fire per observing entry. The
+	// dataflow recompute for this same write already ran via the state Set
+	// + pending seed above, so a blueprint carrying both the quasar.* input
+	// and an on-platform-event sees BOTH on one write (coexistence, §3.6).
+	if len(s.execOnPlatform) > 0 && strings.HasPrefix(msg.Path, platformLeafPrefix) {
+		for _, k := range s.execOnPlatform[msg.Path] {
+			s.enqueueFire(k)
+		}
+	}
 }
 
 // eventsPrefix namespaces the operator/service-dispatched event topics
 // `on-event` listens to (ADR 003 §3.1.3).
 const eventsPrefix = "__events."
+
+// platformLeafPrefix is the namespace Quasar writes platform events into
+// (`__inputs.platform.<platform>.<channel>.last_<type>`). on-platform-event
+// entries arm on a write under it (ADR 013). Mirrors the compiler's
+// platformLeafPrefix (compile.go) — the compiler cannot import the runtime
+// (cycle), so the literal is pinned on both sides.
+const platformLeafPrefix = "__inputs.platform."
 
 // fireOnTick fires every on-tick entrypoint with `delta_seconds`
 // bound in the task environment under the event node's id. The first
