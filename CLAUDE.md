@@ -109,6 +109,30 @@ chantier-specific). Status updated post-#88 (conformance matrix merged,
 | 17 | Cyclic component reject (`CYCLIC_COMPONENT`). | `internal/compiler/compile_test.go::TestCompile_CyclicComponent` |
 | 18 | Impure compute reject (`IMPURE_COMPUTE`). **SUPERSEDED par ADR 006** : la partition exec-compilateur tue ce reject ; purity devient scheduling metadata. Les deux tests `TestCompile_ImpureCompute` sont réécrits en assertions de partition (ADR 006 §3.2 + §6 #3). | ~~`internal/compiler/compile_test.go::TestCompile_ImpureCompute`~~ → voir ADR 006 §3.2 |
 
+## ADR ledger — post-ADR 006 decisions (accepted, on main)
+
+| ADR | Title | Status | Key fact |
+|---|---|---|---|
+| 007 | `core.db.*` atomics as pure descriptor builders | accepted | PR #142 · `compute_db.go` |
+| 008 | Active-scene-only execution (dormant roster) | accepted + Amendment 1 | PR #152 (#163 amendment) · inbox routing, freeze-resume |
+| 009 | Stream-level Blue rules | accepted | PR #156 #157 · stream-rule union routing + `core.show.emit@1` |
+| 010 | `core.http.request@1` canonical executor + content hardening | accepted | PR #160 · query/headers/response_headers/timeout_ms + host-only logging |
+| 011 | `core.animation.play@1` keyframe lowering (ADR 003 §3.4 reconciliation) | accepted | PR #161 #164 #167 · scalar gen leaf, compiler lowering, I7 live proof |
+| 012 | `core.source.read@1` reclassified to pure compute (Option B) | accepted | PR #165 #166 · compile-time resolution, `__resolved_source` in Config; Blue `is_pure` flip pending |
+
+> Full resolution criteria live in each ADR doc (`docs/adr/`).
+> ADR 010 and ADR 012 doc files were committed with this resync (scribe/solar-v029-adr-sync).
+
+## Solar version history
+
+| Version | Status | Key change |
+|---|---|---|
+| v0.2.8 | installed, kept | URL/auth/value fixes (go-live Solar) |
+| v0.2.9 | **current go-live** | box `position:absolute;inset:0` + `translateX→x`/`translateY→y` framer-motion (animation fix, ADR 011 I7) |
+
+`SOLAR_VERSIONS: "v0.2.8 v0.2.9"` in `ci.yml` (PR #168). Go-live URL: `static/solar/v0.2.9/host/index.html`.
+Rollback: re-point browser-source to `v0.2.8` (already on VPS, instant). Runbook: `docs/runbooks/solar-v029-animation-fix.md`.
+
 ## Resolution criterion (branch-level, per workspace `git.md`)
 
 The branch is resolved when:
