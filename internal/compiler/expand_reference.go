@@ -19,6 +19,16 @@ import (
 // (CYCLIC_BLUEPRINT_REFERENCE, issue #179) before this bound is reached.
 const maxBlueprintRefExpansionDepth = 16
 
+// relayInterfaceTag marks a renamed interface relay node (core.input@1 /
+// core.output@1) carried THROUGH expansion and bypassed-then-dropped in a
+// final pass. Keeping the relays alive during recursion lets the bypass pass
+// reconnect splice points uniformly — including an edge BETWEEN two reference
+// nodes (a sequential exec chain `refA.then → refB.exec_in`) and a chain of
+// pass-through wires across several references — which a per-reference splice
+// could not, because each reference saw the other endpoint only as a sibling
+// CALL node id, not as its inlined interior (the missing-inter-reference-edge
+// bug: 9 of the 10 `score-for-player` references left orphaned, ADR 003 §3.C).
+
 // expandReferences rewrites a blueprint graph so it contains NO `reference`
 // nodes: each is replaced in-line by its pinned (blueprint_id, version)
 // sub-graph, recursively, until the whole graph is flat `core.*` (ADR 014
@@ -42,17 +52,30 @@ func expandReferences(ctx context.Context, b *BlueprintGraph, fetcher Fetcher) (
 		// HTTP fetch (ADR 012 / http_fetcher), so a function referenced from
 		// several sites is fetched once.
 		resolved: map[string]*ResolvedBlueprintGraph{},
+		relays:   map[string]struct{}{},
 	}
 	flat, diags := ex.expandGraph(ctx, b.Nodes, b.Edges, 0, nil)
 	if len(diags) > 0 {
 		return nil, diags
 	}
+	// Final bypass: every interface relay carried through expansion is removed
+	// here, its producers wired straight to its consumers. Doing it ONCE over
+	// the fully-inlined graph reconnects splice points across reference
+	// boundaries — adjacent references and pass-through chains alike — which a
+	// per-reference splice cannot (each reference sees its neighbour only as a
+	// CALL node, not as inlined interior).
+	flat = ex.dropRelays(flat)
 	return &BlueprintGraph{ID: b.ID, Nodes: flat.nodes, Edges: flat.edges}, nil
 }
 
 type refExpander struct {
 	fetcher  Fetcher
 	resolved map[string]*ResolvedBlueprintGraph
+	// relays is the set of renamed interface relay node ids carried through
+	// expansion. Populated during inlining, consumed (bypassed + removed) by
+	// dropRelays at the end (ADR 014 §3 splice). Direction is irrelevant to the
+	// bypass — a relay is bypassed identically whether input or output side.
+	relays map[string]struct{}
 	// site is a monotonically increasing counter giving every expansion
 	// site a globally-unique alpha-rename prefix. A function referenced
 	// twice (or recursively) yields two disjoint id namespaces, so no
@@ -67,9 +90,17 @@ type flatGraph struct {
 	edges []BlueprintEdge
 }
 
+// endpoint is a concrete (node, port) address in the flattened graph — the
+// non-relay producer dropRelays splices a relay's consumers onto.
+type endpoint struct {
+	node string
+	port string
+}
+
 // expandGraph expands every reference node in (nodes, edges) into flat
-// core.* and returns the merged result. depth bounds the recursion; stack is
-// the (blueprint_id@version) resolution path — the chain of references on the
+// core.* (plus the interface relays dropRelays removes at the end) and returns
+// the merged result. depth bounds the recursion; stack is the
+// (blueprint_id@version) resolution path — the chain of references on the
 // CURRENT branch — against which expandOne detects cycles (A→A or A→B→A,
 // CYCLIC_BLUEPRINT_REFERENCE, issue #179).
 func (ex *refExpander) expandGraph(
@@ -85,8 +116,10 @@ func (ex *refExpander) expandGraph(
 		edges: make([]BlueprintEdge, 0, len(edges)),
 	}
 
-	// Partition the parent's nodes: plain nodes pass through verbatim;
-	// reference nodes are expanded and their call-node edges rewired.
+	// Partition the parent's nodes: plain nodes pass through verbatim; each
+	// reference node is replaced by its inlined sub-graph (interior nodes plus
+	// renamed interface relays), and its call-node edges are rewired onto those
+	// relays (below).
 	refNodes := map[string]*BlueprintReference{}
 	for i := range nodes {
 		n := nodes[i]
@@ -95,18 +128,6 @@ func (ex *refExpander) expandGraph(
 			continue
 		}
 		out.nodes = append(out.nodes, n)
-	}
-
-	// Parent edges NOT touching a reference node pass through verbatim. An
-	// edge into/out of a reference node is rewired onto the inlined
-	// interface node during that reference's expansion (below), so we drop
-	// it from the verbatim set and re-emit it remapped.
-	for _, e := range edges {
-		_, fromRef := refNodes[e.FromNode]
-		_, toRef := refNodes[e.ToNode]
-		if !fromRef && !toRef {
-			out.edges = append(out.edges, e)
-		}
 	}
 
 	// Expand each reference node. Iterate in stable id order so the
@@ -119,33 +140,99 @@ func (ex *refExpander) expandGraph(
 	}
 	sort.Strings(refIDs)
 
+	// relayByCall[callID][pinName] = the renamed relay node id for that
+	// reference's interface pin, so the parent call-node edges can be rewired
+	// onto it after every sibling has produced its relays.
+	relayByCall := map[string]map[string]string{}
+	pinNames := map[string]struct{ in, out map[string]struct{} }{}
 	for _, callID := range refIDs {
 		ref := refNodes[callID]
-		sub, refDiags := ex.expandOne(ctx, callID, ref, edges, depth, stack)
+		sub, relayPins, names, refDiags := ex.expandOne(ctx, callID, ref, depth, stack)
 		if len(refDiags) > 0 {
 			diags = append(diags, refDiags...)
 			continue
 		}
 		out.nodes = append(out.nodes, sub.nodes...)
 		out.edges = append(out.edges, sub.edges...)
+		relayByCall[callID] = relayPins
+		pinNames[callID] = names
+	}
+	if len(diags) > 0 {
+		return out, diags
+	}
+
+	// Rewire every parent edge that touches a reference call node onto the
+	// reference's interface relay. An edge into call.pin re-targets to the
+	// input relay; an edge out of call.pin re-sources from the output relay.
+	// When BOTH endpoints are references (the sequential exec chain
+	// `refA.then → refB.exec_in`), each side resolves to its own relay, so the
+	// edge survives as relay→relay and dropRelays bypasses both — the fix for
+	// the orphaned references. A non-ref endpoint stays verbatim.
+	for _, e := range edges {
+		_, fromRef := refNodes[e.FromNode]
+		_, toRef := refNodes[e.ToNode]
+		if !fromRef && !toRef {
+			out.edges = append(out.edges, e) // verbatim — touches no reference
+			continue
+		}
+		ne := e
+		if fromRef {
+			if _, ok := pinNames[e.FromNode].out[e.FromPort]; !ok {
+				diags = append(diags, portMismatch(e.FromNode, refKey(refNodes[e.FromNode]), "output", e.FromPort))
+				continue
+			}
+			ne.FromNode = relayByCall[e.FromNode][e.FromPort]
+			ne.FromPort = relayValuePort
+		}
+		if toRef {
+			if _, ok := pinNames[e.ToNode].in[e.ToPort]; !ok {
+				diags = append(diags, portMismatch(e.ToNode, refKey(refNodes[e.ToNode]), "input", e.ToPort))
+				continue
+			}
+			ne.ToNode = relayByCall[e.ToNode][e.ToPort]
+			ne.ToPort = relayValuePort
+		}
+		out.edges = append(out.edges, ne)
 	}
 
 	return out, diags
 }
 
-// expandOne resolves and inlines a single reference node `callID`. parentEdges
-// is the calling graph's full edge list (so the call node's in/out edges can
-// be rewired onto the inlined interface nodes by port name).
+// relayValuePort is the single synthetic port every interface relay carries on
+// both ends. Relays never reach validation (dropRelays removes them), so the
+// port name only has to be internally consistent between the rewired parent
+// edge and the body edge incident on the relay.
+const relayValuePort = "__relay"
+
+// refKey rebuilds the (blueprint_id@version) key for a diagnostic message.
+func refKey(ref *BlueprintReference) string {
+	if ref == nil {
+		return ""
+	}
+	return fmt.Sprintf("%s@%d", ref.BlueprintID, ref.Version)
+}
+
+// expandOne resolves and inlines a single reference node `callID`, returning:
+//   - the inlined sub-graph: interior nodes + relay nodes + interior/body edges
+//     (every body edge incident on an interface node is re-pointed at that
+//     interface's relay node, carrying relayValuePort);
+//   - relayPins[pinName] = the renamed relay node id for each interface pin, so
+//     expandGraph can rewire the parent call-node edges onto it;
+//   - names = the declared interface input/output pin names, for the parent-edge
+//     port-mismatch check.
+//
+// Interface nodes are kept as RELAY nodes (not spliced here) so the single
+// final dropRelays pass can bypass them across reference boundaries.
 func (ex *refExpander) expandOne(
 	ctx context.Context,
 	callID string,
 	ref *BlueprintReference,
-	parentEdges []BlueprintEdge,
 	depth int,
 	stack []string,
-) (flatGraph, []Diagnostic) {
+) (flatGraph, map[string]string, struct{ in, out map[string]struct{} }, []Diagnostic) {
+	noNames := struct{ in, out map[string]struct{} }{}
 	if ref.BlueprintID == "" || ref.Version <= 0 {
-		return flatGraph{}, []Diagnostic{{
+		return flatGraph{}, nil, noNames, []Diagnostic{{
 			Code:     ErrBlueprintRefUnresolved,
 			Severity: "error",
 			Message: fmt.Sprintf(
@@ -164,7 +251,7 @@ func (ex *refExpander) expandOne(
 	// B→D, C→D) appears in the fetch set twice but never twice on one path, so
 	// it is NOT a cycle and expands normally.
 	if onStack(stack, key) {
-		return flatGraph{}, []Diagnostic{{
+		return flatGraph{}, nil, noNames, []Diagnostic{{
 			Code:     ErrCyclicBlueprintReference,
 			Severity: "error",
 			Message: fmt.Sprintf(
@@ -178,7 +265,7 @@ func (ex *refExpander) expandOne(
 	// genuinely means the (acyclic) reference tree is too deep/wide; the
 	// blow-up is rejected at push, not at runtime (cost paid once, at compile).
 	if depth >= maxBlueprintRefExpansionDepth {
-		return flatGraph{}, []Diagnostic{{
+		return flatGraph{}, nil, noNames, []Diagnostic{{
 			Code:     ErrBlueprintRefExpansionLimit,
 			Severity: "error",
 			Message: fmt.Sprintf(
@@ -190,7 +277,7 @@ func (ex *refExpander) expandOne(
 
 	resolved, diag := ex.resolve(ctx, callID, ref, key)
 	if diag != nil {
-		return flatGraph{}, []Diagnostic{*diag}
+		return flatGraph{}, nil, noNames, []Diagnostic{*diag}
 	}
 
 	// Alpha-rename the whole sub-graph under a per-site unique prefix so no
@@ -203,7 +290,7 @@ func (ex *refExpander) expandOne(
 	// exec INPUT pin (kind == "exec"). It is read from the interface, never
 	// guessed from a node/port name (graph-resolution.md § Exec pins / Orion
 	// #186). When true, the caller's spine — spliced onto the inlined
-	// `core.input@1`-exec — IS the trigger, so the function's own
+	// `exec_in` relay — IS the trigger, so the function's own
 	// `core.event.on-start@1` MUST be removed: keeping it would re-arm the
 	// body at scene load (the ADR 003 §1.1 root cause) instead of on the
 	// caller's trigger. When false (a data-only function), the on-start is
@@ -217,20 +304,13 @@ func (ex *refExpander) expandOne(
 		}
 	}
 
-	// The sub-graph's interface nodes (core.input@1 / core.output@1) are the
-	// SPLICE points, not nodes that survive inlining. core.input@1 is a
-	// leaf-bound source with no runtime executor: keeping it AND giving it an
-	// inbound edge from the parent would reclassify it `computed`
-	// (validateBlueprint) and the runtime would have nothing to run. So we
-	// DROP every interface node and splice the parent's wiring directly onto
-	// the interior nodes that referenced it — true flattening, byte-for-byte
-	// what an inline-authored blueprint would look like (ADR 014 §3 / contract
-	// "Port mapping"). Indexed by interface NAME (core.input@1 / core.output@1
-	// carry it in config.name, the same key nodeLeafPath reads).
-	inputNodeByID := map[string]string{}  // renamed core.input@1 id → interface name
-	outputNodeByID := map[string]string{} // renamed core.output@1 id → interface name
-	inputNames := map[string]struct{}{}   // declared interface input names present
-	outputNames := map[string]struct{}{}  // declared interface output names present
+	// Interface nodes (core.input@1 / core.output@1) are kept as RELAY nodes,
+	// indexed by interface NAME (carried in config.name, the same key
+	// nodeLeafPath reads). dropRelays bypasses and removes them at the end.
+	relayPins := map[string]string{}        // interface name → renamed relay node id
+	interfaceRelay := map[string]string{}   // renamed interface node id → relay node id
+	inNames := map[string]struct{}{}        // declared interface input names present
+	outNames := map[string]struct{}{}       // declared interface output names present
 
 	// droppedOnStart collects the renamed ids of `core.event.on-start@1` nodes
 	// removed because the function is exec-triggerable: their edges must be
@@ -247,20 +327,30 @@ func (ex *refExpander) expandOne(
 		switch n.Compute {
 		case coreInput:
 			if name := interfaceNodeName(n); name != "" {
-				inputNodeByID[rid] = name
-				inputNames[name] = struct{}{}
-				continue // dropped — spliced below
+				relayID := rid
+				relayPins[name] = relayID
+				interfaceRelay[rid] = relayID
+				inNames[name] = struct{}{}
+				ex.relays[relayID] = struct{}{}
+				// Keep the node as an opaque relay placeholder — dropRelays
+				// removes it; it never reaches validation. Recorded above.
+				sub.nodes = append(sub.nodes, BlueprintNode{ID: relayID})
+				continue
 			}
 		case coreOutput:
 			if name := interfaceNodeName(n); name != "" {
-				outputNodeByID[rid] = name
-				outputNames[name] = struct{}{}
-				continue // dropped — spliced below
+				relayID := rid
+				relayPins[name] = relayID
+				interfaceRelay[rid] = relayID
+				outNames[name] = struct{}{}
+				ex.relays[relayID] = struct{}{}
+				sub.nodes = append(sub.nodes, BlueprintNode{ID: relayID})
+				continue
 			}
 		case coreEventOnStart:
 			// Drop the function's own on-start ONLY when it is
 			// exec-triggerable: the caller's spine (arriving on the inlined
-			// `exec_in` core.input@1) re-arms the interior spine in its place
+			// `exec_in` relay) re-arms the interior spine in its place
 			// (graph-resolution.md § Exec pins, Orion #186). A data-only
 			// reference keeps its on-start verbatim — anti-regression.
 			if execTriggerable {
@@ -279,93 +369,132 @@ func (ex *refExpander) expandOne(
 		sub.nodes = append(sub.nodes, renamed)
 	}
 
-	// Build the splice maps from the parent's call-node edges:
-	//   parentInput[name]  = the upstream {node, port} feeding call pin `name`
-	//   parentOutputs[name]= the downstream {node, port} edges call pin `name`
-	//                        feeds (a pin may fan out to several consumers)
-	parentInput := map[string]struct{ node, port string }{}
-	parentOutputs := map[string][]struct{ node, port string }{}
-	for _, e := range parentEdges {
-		if e.ToNode == callID {
-			if _, ok := inputNames[e.ToPort]; !ok {
-				return flatGraph{}, []Diagnostic{portMismatch(callID, key, "input", e.ToPort)}
-			}
-			parentInput[e.ToPort] = struct{ node, port string }{e.FromNode, e.FromPort}
-		}
-		if e.FromNode == callID {
-			if _, ok := outputNames[e.FromPort]; !ok {
-				return flatGraph{}, []Diagnostic{portMismatch(callID, key, "output", e.FromPort)}
-			}
-			parentOutputs[e.FromPort] = append(parentOutputs[e.FromPort],
-				struct{ node, port string }{e.ToNode, e.ToPort})
-		}
-	}
-
-	// Splice the sub-graph's internal edges across the dropped interface
-	// nodes. An edge FROM a core.input@1 (name X) re-sources to the parent's
-	// producer of pin X; an edge INTO a core.output@1 (name Y) re-targets to
-	// every parent consumer of pin Y. An edge between two interior nodes
-	// passes through with both ids renamed.
+	// Carry the body edges, re-pointing each end incident on an interface node
+	// at that interface's relay (so dropRelays sees one consistent relay port).
+	// Edges incident on a dropped on-start are removed with it.
 	for _, e := range resolved.Edges {
-		// An edge incident on a dropped on-start (exec-triggerable function)
-		// is removed with it: the interior spine it armed is re-armed by the
-		// caller's spine via the exec_in splice instead. on-start is an
-		// exec ENTRY (no inbound edges), so this only ever drops its outbound
-		// `then` spine edge; guarding both ends is defensive and harmless.
 		if _, drop := droppedOnStart[rename(e.FromNode)]; drop {
 			continue
 		}
 		if _, drop := droppedOnStart[rename(e.ToNode)]; drop {
 			continue
 		}
-		from, fromIsInput := inputNodeByID[rename(e.FromNode)]
-		to, toIsOutput := outputNodeByID[rename(e.ToNode)]
-		switch {
-		case fromIsInput && toIsOutput:
-			// A pass-through wire input→output: connect the parent producer of
-			// the input pin straight to every parent consumer of the output pin.
-			src, srcOK := parentInput[from]
-			if !srcOK {
-				continue // input pin unwired by the parent — nothing to deliver
-			}
-			for _, dst := range parentOutputs[to] {
-				sub.edges = append(sub.edges, BlueprintEdge{
-					FromNode: src.node, FromPort: src.port, ToNode: dst.node, ToPort: dst.port,
-				})
-			}
-		case fromIsInput:
-			src, srcOK := parentInput[from]
-			if !srcOK {
-				continue
-			}
-			sub.edges = append(sub.edges, BlueprintEdge{
-				FromNode: src.node, FromPort: src.port,
-				ToNode: rename(e.ToNode), ToPort: e.ToPort,
-			})
-		case toIsOutput:
-			for _, dst := range parentOutputs[to] {
-				sub.edges = append(sub.edges, BlueprintEdge{
-					FromNode: rename(e.FromNode), FromPort: e.FromPort,
-					ToNode: dst.node, ToPort: dst.port,
-				})
-			}
-		default:
-			sub.edges = append(sub.edges, BlueprintEdge{
-				FromNode: rename(e.FromNode), FromPort: e.FromPort,
-				ToNode: rename(e.ToNode), ToPort: e.ToPort,
-			})
+		ne := BlueprintEdge{
+			FromNode: rename(e.FromNode), FromPort: e.FromPort,
+			ToNode: rename(e.ToNode), ToPort: e.ToPort,
 		}
+		if relay, ok := interfaceRelay[ne.FromNode]; ok {
+			ne.FromNode, ne.FromPort = relay, relayValuePort
+		}
+		if relay, ok := interfaceRelay[ne.ToNode]; ok {
+			ne.ToNode, ne.ToPort = relay, relayValuePort
+		}
+		sub.edges = append(sub.edges, ne)
 	}
 
 	// Recurse: the sub-graph may itself contain reference nodes (Blue serves
 	// ONE level raw — Orion re-fetches each nested reference, contract "One
 	// level only"). Push this key onto the resolution stack so a reference
-	// back to it (on this path) is detected as a cycle by expandOne.
+	// back to it (on this path) is detected as a cycle by expandOne. The
+	// recursion only inlines nested references; relays of THIS reference pass
+	// through untouched (they are plain nodes to the nested pass).
 	nested, nestedDiags := ex.expandGraph(ctx, sub.nodes, sub.edges, depth+1, append(stack, key))
 	if len(nestedDiags) > 0 {
-		return flatGraph{}, nestedDiags
+		return flatGraph{}, nil, noNames, nestedDiags
 	}
-	return nested, nil
+	names := struct{ in, out map[string]struct{} }{in: inNames, out: outNames}
+	return nested, relayPins, names, nil
+}
+
+// dropRelays removes every interface relay node, splicing each relay's
+// producers straight to its consumers. It iterates to a fixpoint so a chain of
+// relays (relay→relay, produced by a pass-through wire spanning several
+// references, or by two adjacent references on one spine) collapses to direct
+// producer→consumer edges. Relays carry no executor and never reach
+// validation; this is the true flattening (ADR 014 §3 "Port mapping").
+func (ex *refExpander) dropRelays(g flatGraph) flatGraph {
+	if len(ex.relays) == 0 {
+		return g
+	}
+
+	// Index the edges entering each relay (its producer side). A producer may
+	// itself be a relay (a relay→relay link: an inter-reference spine edge or a
+	// pass-through wire), which is why producers are resolved TRANSITIVELY below.
+	inEdges := map[string][]BlueprintEdge{}
+	for _, e := range g.edges {
+		if isRelay(ex.relays, e.ToNode) {
+			inEdges[e.ToNode] = append(inEdges[e.ToNode], e)
+		}
+	}
+
+	// resolveProducers returns the concrete (non-relay) producer endpoints
+	// feeding `relayID`, chasing relay→relay links to their non-relay source.
+	// Memoised; `onPath` guards the (already cycle-checked) graph defensively so
+	// a pathological relay loop cannot spin forever here.
+	memo := map[string][]endpoint{}
+	var resolveProducers func(relayID string, onPath map[string]bool) []endpoint
+	resolveProducers = func(relayID string, onPath map[string]bool) []endpoint {
+		if cached, ok := memo[relayID]; ok {
+			return cached
+		}
+		if onPath[relayID] {
+			return nil // defensive: relay cycle (should never happen post-#179)
+		}
+		onPath[relayID] = true
+		var out []endpoint
+		for _, e := range inEdges[relayID] {
+			if isRelay(ex.relays, e.FromNode) {
+				out = append(out, resolveProducers(e.FromNode, onPath)...)
+			} else {
+				out = append(out, endpoint{node: e.FromNode, port: e.FromPort})
+			}
+		}
+		delete(onPath, relayID)
+		memo[relayID] = out
+		return out
+	}
+
+	// Emit the flattened edges. A verbatim edge (neither end a relay) passes
+	// through. An edge OUT of a relay to a NON-relay consumer is the splice
+	// point: connect every resolved concrete producer of that relay straight to
+	// the consumer. Edges into a relay, and relay→relay edges, are not emitted
+	// directly — they are folded into resolveProducers. The result is true
+	// flattening: producer→consumer with no relay left (ADR 014 §3 "Port
+	// mapping"); an unwired pin (relay with no producers) simply delivers
+	// nothing, which is correct.
+	cleaned := make([]BlueprintEdge, 0, len(g.edges))
+	for _, e := range g.edges {
+		fromRelay := isRelay(ex.relays, e.FromNode)
+		toRelay := isRelay(ex.relays, e.ToNode)
+		switch {
+		case !fromRelay && !toRelay:
+			cleaned = append(cleaned, e)
+		case fromRelay && !toRelay:
+			for _, p := range resolveProducers(e.FromNode, map[string]bool{}) {
+				cleaned = append(cleaned, BlueprintEdge{
+					FromNode: p.node, FromPort: p.port,
+					ToNode: e.ToNode, ToPort: e.ToPort,
+				})
+			}
+		default:
+			// into a relay, or relay→relay — folded into resolveProducers.
+		}
+	}
+
+	// Strip the relay placeholder nodes — none survives to validation.
+	nodes := make([]BlueprintNode, 0, len(g.nodes))
+	for _, n := range g.nodes {
+		if isRelay(ex.relays, n.ID) {
+			continue
+		}
+		nodes = append(nodes, n)
+	}
+	return flatGraph{nodes: nodes, edges: cleaned}
+}
+
+func isRelay(relays map[string]struct{}, id string) bool {
+	_, ok := relays[id]
+	return ok
 }
 
 // resolve fetches a pinned (blueprint_id, version) graph, memoised for the
