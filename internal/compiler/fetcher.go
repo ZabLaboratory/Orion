@@ -19,6 +19,18 @@ type Fetcher interface {
 	// pushed-version id (the operator picks this in the editor).
 	FetchBlueprint(ctx context.Context, blueprintID string) (*BlueprintGraph, error)
 
+	// FetchBlueprintGraph retrieves a PINNED (blueprint_id, version)
+	// published graph for compile-time reference expansion (ADR 014).
+	// Unlike FetchBlueprint it never resolves current_version: the version
+	// is exactly the `reference.version` of the calling node. An absent /
+	// unpublished version is a hard, typed failure (BLUEPRINT_REF_UNRESOLVED
+	// surfaced by the caller) — never a silent substitution
+	// (Blue/docs/contracts/graph-resolution.md). It returns the raw nodes/
+	// edges PLUS the version's declared interface (the input/output pin
+	// names the call node's edges map onto) and the served purity (consumed,
+	// never recomputed — ADR 006).
+	FetchBlueprintGraph(ctx context.Context, blueprintID string, version int) (*ResolvedBlueprintGraph, error)
+
 	// FetchComponent retrieves one pushed user-component version.
 	// The compiler resolves these recursively, walking
 	// component-uses-component edges, with cycle detection.

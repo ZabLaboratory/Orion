@@ -240,6 +240,9 @@ func (f *stubFetcher) FetchBlueprint(_ context.Context, id string) (*compiler.Bl
 	}
 	return nil, fmt.Errorf("stub: blueprint %q missing", id)
 }
+func (f *stubFetcher) FetchBlueprintGraph(_ context.Context, id string, version int) (*compiler.ResolvedBlueprintGraph, error) {
+	return nil, fmt.Errorf("stub: blueprint graph %q@%d not seeded", id, version)
+}
 func (f *stubFetcher) FetchComponent(_ context.Context, _ compiler.ComponentRef) (*compiler.UserComponent, error) {
 	return nil, fmt.Errorf("stub: components not seeded")
 }

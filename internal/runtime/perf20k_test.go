@@ -70,6 +70,9 @@ func (f *benchFetcher) FetchCanvasLayout(_ context.Context, _ string) (*compiler
 func (f *benchFetcher) FetchBlueprint(_ context.Context, _ string) (*compiler.BlueprintGraph, error) {
 	return f.blueprint, nil
 }
+func (f *benchFetcher) FetchBlueprintGraph(_ context.Context, _ string, _ int) (*compiler.ResolvedBlueprintGraph, error) {
+	return nil, fmt.Errorf("bench scene has no blueprint references")
+}
 func (f *benchFetcher) FetchComponent(_ context.Context, ref compiler.ComponentRef) (*compiler.UserComponent, error) {
 	return nil, fmt.Errorf("bench scene has no components (asked for %s)", ref.ID)
 }

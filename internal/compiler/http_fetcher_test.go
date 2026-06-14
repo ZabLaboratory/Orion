@@ -3,6 +3,7 @@ package compiler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -153,6 +154,83 @@ func TestFetchBlueprint_BlueContract(t *testing.T) {
 	}
 	if bp.Edges[0].FromNode != "add" || bp.Edges[0].ToPort != "value" {
 		t.Fatalf("edge decode wrong: %+v", bp.Edges[0])
+	}
+}
+
+// TestFetchBlueprintGraph_PinnedEndpoint proves the ADR 014 reference-
+// expansion fetch hits the PINNED, published-only endpoint
+// (/blueprints/{id}/versions/{version}/graph) — never current_version — and
+// decodes the served nodes/edges/interface/purity (Blue #94 contract).
+func TestFetchBlueprintGraph_PinnedEndpoint(t *testing.T) {
+	const graphBody = `{
+		"blueprint_id":"bp-double","version":3,"status":"published",
+		"nodes":[
+			{"id":"in","definition":"core.input@1","config":{"name":"x"}},
+			{"id":"add","definition":"core.math.add@1"},
+			{"id":"out","definition":"core.output@1","config":{"name":"result"}}
+		],
+		"edges":[{"id":"e1","from_node":"in","from_port":"value","to_node":"add","to_port":"a"}],
+		"variables":[],
+		"interface":{"inputs":[{"name":"x","type":"float","required":true}],
+			"outputs":[{"name":"result","type":"float","required":true}],"side_effects":[]},
+		"purity":{"is_pure":true,"is_bounded":true}
+	}`
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(graphBody))
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher("http://canvas.invalid", srv.URL, "")
+	g, err := f.FetchBlueprintGraph(context.Background(), "bp-double", 3)
+	if err != nil {
+		t.Fatalf("FetchBlueprintGraph: %v", err)
+	}
+	if gotPath != "/api/v1/blueprints/bp-double/versions/3/graph" {
+		t.Fatalf("hit %q, want pinned .../versions/3/graph", gotPath)
+	}
+	if g.Version != 3 || len(g.Nodes) != 3 || len(g.Edges) != 1 {
+		t.Fatalf("decode wrong: version=%d nodes=%d edges=%d", g.Version, len(g.Nodes), len(g.Edges))
+	}
+	if len(g.Interface.Inputs) != 1 || g.Interface.Inputs[0].Name != "x" {
+		t.Fatalf("interface inputs decode wrong: %+v", g.Interface.Inputs)
+	}
+	if !g.Purity.IsPure || !g.Purity.IsBounded {
+		t.Fatalf("purity decode wrong: %+v", g.Purity)
+	}
+}
+
+// TestFetchBlueprintGraph_TypedErrorsUnresolved proves Blue's typed
+// 404/422 reference errors map to ErrRefUnresolved (→ BLUEPRINT_REF_UNRESOLVED
+// at the compiler), never a transport-class error and never a silent
+// current_version fall-back (ADR 014 §3.4 / Blue #94 contract).
+func TestFetchBlueprintGraph_TypedErrorsUnresolved(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		code   string
+	}{
+		{"not-found", http.StatusNotFound, "BLUEPRINT_NOT_FOUND"},
+		{"version-not-found", http.StatusNotFound, "BLUEPRINT_VERSION_NOT_FOUND"},
+		{"not-published", http.StatusUnprocessableEntity, "BLUEPRINT_VERSION_NOT_PUBLISHED"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(`{"code":"` + tc.code + `","message":"x","blueprint_id":"bp-1","version":7}`))
+			}))
+			defer srv.Close()
+
+			f := NewHTTPFetcher("http://canvas.invalid", srv.URL, "")
+			_, err := f.FetchBlueprintGraph(context.Background(), "bp-1", 7)
+			if !errors.Is(err, ErrRefUnresolved) {
+				t.Fatalf("err = %v, want wrapped ErrRefUnresolved", err)
+			}
+		})
 	}
 }
 

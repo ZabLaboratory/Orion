@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,14 @@ type fakeFetcher struct {
 	components map[ComponentRef]*UserComponent
 	manifest   ComputeManifest
 	failKind   string
+
+	// graphs serves the pinned (blueprint_id, version) reference-expansion
+	// endpoint (ADR 014). Key is "blueprint_id@version". A missing key is a
+	// BLUEPRINT_REF_UNRESOLVED-class error (mirrors Blue's typed 404/422).
+	// graphCalls counts FetchBlueprintGraph hits per key so a test can prove
+	// the per-compile memoisation (one fetch per pinned pair).
+	graphs     map[string]*ResolvedBlueprintGraph
+	graphCalls map[string]int
 }
 
 func (f *fakeFetcher) FetchCanvasLayout(_ context.Context, v string) (*CanvasLayout, error) {
@@ -34,6 +43,19 @@ func (f *fakeFetcher) FetchBlueprint(_ context.Context, id string) (*BlueprintGr
 		return b, nil
 	}
 	return nil, errors.New("blueprint not found")
+}
+func (f *fakeFetcher) FetchBlueprintGraph(_ context.Context, id string, version int) (*ResolvedBlueprintGraph, error) {
+	key := fmt.Sprintf("%s@%d", id, version)
+	if f.graphCalls == nil {
+		f.graphCalls = map[string]int{}
+	}
+	f.graphCalls[key]++
+	if g, ok := f.graphs[key]; ok {
+		return g, nil
+	}
+	// Mirror Blue's typed reject: an absent / unpublished pinned pair maps to
+	// ErrRefUnresolved so the compiler emits BLUEPRINT_REF_UNRESOLVED.
+	return nil, fmt.Errorf("blueprint %s: %w", key, ErrRefUnresolved)
 }
 func (f *fakeFetcher) FetchComponent(_ context.Context, ref ComponentRef) (*UserComponent, error) {
 	if c, ok := f.components[ref]; ok {
