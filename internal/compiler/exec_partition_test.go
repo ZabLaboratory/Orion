@@ -354,6 +354,104 @@ func TestPartition_KeyedBlueprint_DataFromPrefixed(t *testing.T) {
 // manifest id maps to no runtime exec op is rejected structurally — a
 // coverage gap can never silently become accept-then-ignore. This is
 // NOT a capability rejection (a conformant build never hits it).
+// danglingOnStartBlueprint reproduces the issue #100 leak post-expansion: an
+// on-start whose EXEC out pin (`then`) is wired to a DATA node's data pin. This
+// is exactly the shape a PURE blueprint reference produces when its body still
+// carried a core.event.on-start@1: #186 preserves the on-start for a data-only
+// ref, then inlining splices the on-start's `then` across the dropped
+// core.output@1 onto the parent's data consumer. The on-start becomes an
+// entrypoint whose Target lands on a data node (`guard`, a not-equal compute),
+// which is NOT in the exec node table → at arming the runtime would log
+// "exec: unknown node id" and silently drop the chain. The compiler must
+// instead reject the push with EXEC_UNKNOWN_NODE.
+func danglingOnStartBlueprint() *BlueprintGraph {
+	return &BlueprintGraph{
+		ID: "bp-dangling",
+		Nodes: []BlueprintNode{
+			{ID: "start", Compute: "core.event.on-start@1",
+				Outputs: []BlueprintPort{execOut("then")}},
+			// A pure DATA node (no exec pin) — the spliced on-start `then`
+			// lands on its data input `a`, the dangling exec target.
+			{ID: "guard", Compute: "core.compare.not-equal@1",
+				Inputs:  []BlueprintPort{dataIn("a"), dataIn("b")},
+				Outputs: []BlueprintPort{dataIn("result")}},
+			{ID: "out", Compute: "core.output@1",
+				Config: map[string]json.RawMessage{"name": json.RawMessage(`"x"`)},
+				Inputs: []BlueprintPort{dataIn("value")}},
+		},
+		Edges: []BlueprintEdge{
+			// the dangling exec edge: on-start.then (exec) → guard.a (data)
+			{FromNode: "start", FromPort: "then", ToNode: "guard", ToPort: "a"},
+			{FromNode: "guard", FromPort: "result", ToNode: "out", ToPort: "value"},
+		},
+	}
+}
+
+// TestPartition_DanglingExecTarget_FailsLoud (issue #100): an exec entrypoint
+// whose Target resolves to a non-exec node is rejected with EXEC_UNKNOWN_NODE
+// — the compile-time mirror of the runtime's "unknown node id" miss. Without
+// this gate the push reported `validated` while logging ERRORs and arming a
+// silently-broken scene (the "false clean").
+func TestPartition_DanglingExecTarget_FailsLoud(t *testing.T) {
+	m := execManifest()
+	m["core.compare.not-equal@1"] = ComputeManifestEntry{IsPure: true, IsBounded: true, Version: "1"}
+	m["core.output@1"] = ComputeManifestEntry{IsPure: true, IsBounded: true, Version: "1"}
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+		blueprints: map[string]*BlueprintGraph{"bp-1": danglingOnStartBlueprint()},
+		manifest:   m,
+	}
+	_, _, _, err := Compile(context.Background(), "scene-1",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-1"}, f)
+	var ce *CompileError
+	if !errors.As(err, &ce) || !ce.HasCode(ErrExecUnknownNode) {
+		t.Fatalf("want EXEC_UNKNOWN_NODE, got %v", err)
+	}
+}
+
+// TestValidateExecTargets_DanglingNext: a Next edge pointing at a node absent
+// from the exec table is rejected (the node-level counterpart of the entry
+// case). Built directly on the program mirror so the path is unit-covered.
+func TestValidateExecTargets_DanglingNext(t *testing.T) {
+	p := &execProgram{
+		BlueprintKey: "",
+		Nodes: map[string]*execNode{
+			"a": {ID: "a", Op: "variable.set", Next: map[string]execTarget{
+				"then": {Node: "ghost", Port: "exec_in"}, // ghost not in Nodes
+			}},
+		},
+		Entrypoints: map[string]execEntry{},
+	}
+	diags := validateExecTargets(p)
+	if len(diags) != 1 || diags[0].Code != ErrExecUnknownNode {
+		t.Fatalf("want one EXEC_UNKNOWN_NODE, got %+v", diags)
+	}
+	if diags[0].Path != "a" {
+		t.Fatalf("diag Path = %q, want offending node id \"a\"", diags[0].Path)
+	}
+}
+
+// TestValidateExecTargets_HealthyProgram: a well-formed program (every Target /
+// Next resolves; an empty no-op entry Target is allowed) yields NO diagnostics
+// — the anti-regression guard for a sane graph (criterion #2 byte-identical).
+func TestValidateExecTargets_HealthyProgram(t *testing.T) {
+	p := &execProgram{
+		Nodes: map[string]*execNode{
+			"set": {ID: "set", Op: "variable.set", Next: map[string]execTarget{
+				"then": {Node: "set2", Port: "exec_in"},
+			}},
+			"set2": {ID: "set2", Op: "variable.set"},
+		},
+		Entrypoints: map[string]execEntry{
+			"start": {Kind: "on-start", Node: "start", Target: execTarget{Node: "set", Port: "exec_in"}},
+			"noop":  {Kind: "on-start", Node: "noop"}, // empty Target — valid no-op
+		},
+	}
+	if diags := validateExecTargets(p); len(diags) != 0 {
+		t.Fatalf("healthy program produced diagnostics: %+v", diags)
+	}
+}
+
 func TestPartition_ExecOpUnmapped_FailsLoud(t *testing.T) {
 	bp := &BlueprintGraph{
 		ID: "bp-1",
