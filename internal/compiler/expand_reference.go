@@ -286,6 +286,22 @@ func (ex *refExpander) expandOne(
 	prefix := fmt.Sprintf("__bpref%d__%s__", ex.site, callID)
 	rename := func(id string) string { return prefix + id }
 
+	// varNS namespaces a function-local variable name per reference INSTANCE,
+	// the data-space analogue of the per-site node-id `prefix`. A function body
+	// holds blueprint-local state in `__vars..<var>` leaves written by
+	// `core.variable.set@1`/read by `core.variable.get@1` and (the bug below)
+	// by `core.input@1` nodes whose config.name is the `__vars..<var>` leaf
+	// path. Those leaves are addressed by NAME, not node id, so the per-site id
+	// `prefix` does NOT keep two instances of the same function apart: 10
+	// `score-for-player` references would all write/read one shared
+	// `__vars..score_rows`, the last db.query clobbering the rest. Namespacing
+	// the bare var name per instance (set, get AND the input-reader leaf all
+	// rewritten the same way) gives each instance its own leaf while keeping its
+	// own set↔get↔reader matched. The final `__vars.<BlueprintKey>.` prefixing
+	// (prefixGraphNodes) wraps this unchanged. A scene-level (non-reference)
+	// blueprint never enters expandOne, so its `roster_rows` is untouched.
+	varNS := func(v string) string { return fmt.Sprintf("bpref%d_%s_%s", ex.site, callID, v) }
+
 	// execTriggerable is true iff the resolved interface declares at least one
 	// exec INPUT pin (kind == "exec"). It is read from the interface, never
 	// guessed from a node/port name (graph-resolution.md § Exec pins / Orion
@@ -307,10 +323,10 @@ func (ex *refExpander) expandOne(
 	// Interface nodes (core.input@1 / core.output@1) are kept as RELAY nodes,
 	// indexed by interface NAME (carried in config.name, the same key
 	// nodeLeafPath reads). dropRelays bypasses and removes them at the end.
-	relayPins := map[string]string{}        // interface name → renamed relay node id
-	interfaceRelay := map[string]string{}   // renamed interface node id → relay node id
-	inNames := map[string]struct{}{}        // declared interface input names present
-	outNames := map[string]struct{}{}       // declared interface output names present
+	relayPins := map[string]string{}      // interface name → renamed relay node id
+	interfaceRelay := map[string]string{} // renamed interface node id → relay node id
+	inNames := map[string]struct{}{}      // declared interface input names present
+	outNames := map[string]struct{}{}     // declared interface output names present
 
 	// droppedOnStart collects the renamed ids of `core.event.on-start@1` nodes
 	// removed because the function is exec-triggerable: their edges must be
@@ -326,7 +342,18 @@ func (ex *refExpander) expandOne(
 		rid := rename(n.ID)
 		switch n.Compute {
 		case coreInput:
-			if name := interfaceNodeName(n); name != "" {
+			// A core.input@1 is one of TWO distinct things, told apart by its
+			// config.name (graph-resolution.md § core.input). When the name is
+			// a `__vars..<var>` LEAF path it is NOT an interface pin: it is an
+			// internal reader of state a sibling `variable.set` wrote in the
+			// SAME body (the `score-for-player` shape — db.query → set score_rows,
+			// then getScore reads `core.input(__vars..score_rows)`). Such a node
+			// must be PROMOTED into the parent pure graph verbatim (renamed id,
+			// its leaf re-namespaced per instance), never turned into an
+			// interface relay and dropped — dropping it orphaned `getScore`
+			// (no `record` input → walkPath(nil) → "" → placeholder "—", ADR 014).
+			// Only a name that is NOT a `__vars..` leaf is a true interface pin.
+			if name := interfaceNodeName(n); name != "" && !strings.HasPrefix(name, varsLeafPrefix) {
 				relayID := rid
 				relayPins[name] = relayID
 				interfaceRelay[rid] = relayID
@@ -337,6 +364,8 @@ func (ex *refExpander) expandOne(
 				sub.nodes = append(sub.nodes, BlueprintNode{ID: relayID})
 				continue
 			}
+			// Falls through to the interior-node tail: a `__vars..` reader is
+			// kept verbatim, its leaf re-namespaced per instance by namespaceVarsConfig.
 		case coreOutput:
 			if name := interfaceNodeName(n); name != "" {
 				relayID := rid
@@ -366,6 +395,13 @@ func (ex *refExpander) expandOne(
 		// second source the compiler writes back.
 		renamed := n
 		renamed.ID = rid
+		// Per-instance variable namespacing (see varNS): rewrite the function-
+		// local var name on every node that addresses `__vars` state so each
+		// reference instance owns a distinct leaf. `variable.set`/`variable.get`
+		// carry it in config.variable; a promoted `core.input@1` reader carries
+		// the whole `__vars..<var>` leaf in config.name. Matched rewrites keep
+		// each instance's set↔get↔reader pointed at the SAME instance leaf.
+		renamed.Config = namespaceVarsConfig(n.Compute, n.Config, varNS)
 		sub.nodes = append(sub.nodes, renamed)
 	}
 
@@ -520,6 +556,69 @@ func (ex *refExpander) resolve(ctx context.Context, callID string, ref *Blueprin
 	}
 	ex.resolved[key] = resolved
 	return resolved, nil
+}
+
+// coreVariableSet is the writer half of a function's blueprint-local state
+// (its reader is coreVariableGet, compile.go). Both carry the variable name in
+// config.variable; the reference expander namespaces that name per instance
+// (namespaceVarsConfig) so two inlinings of one function own disjoint leaves.
+const coreVariableSet = "core.variable.set@1"
+
+// namespaceVarsConfig returns a copy of `cfg` with the node's function-local
+// variable name rewritten through ns, for the THREE node shapes that address
+// `__vars` state inside a referenced body:
+//
+//   - core.variable.set@1 / core.variable.get@1: config.variable = "<var>"
+//     → "<ns(var)>".
+//   - core.input@1 reading the leaf: config.name = "__vars..<var>"
+//     → "__vars..<ns(var)>".
+//
+// Rewriting all three identically keeps one instance's set↔get↔reader matched
+// while distinguishing instances (varNS). Any other node, or a config the node
+// does not own, is returned unchanged (a shallow copy — the original config map
+// must not be mutated, it is shared with the memoised resolved graph). A
+// data-only function with no `__vars` state is byte-identical to before.
+func namespaceVarsConfig(compute string, cfg map[string]json.RawMessage, ns func(string) string) map[string]json.RawMessage {
+	if len(cfg) == 0 {
+		return cfg
+	}
+	var rewriteKey string
+	var transform func(string) string
+	switch compute {
+	case coreVariableSet, coreVariableGet:
+		rewriteKey, transform = "variable", ns
+	case coreInput:
+		name := interfaceNodeName(BlueprintNode{Config: cfg})
+		if !strings.HasPrefix(name, varsLeafPrefix) {
+			return cfg // a true interface pin — no var leaf to namespace
+		}
+		// "__vars..<var>" → "__vars..<ns(var)>": keep the prefix, namespace the
+		// var segment after the empty-key double dot (varsLeaf("") == "__vars..").
+		rewriteKey, transform = "name", func(leaf string) string {
+			return varsLeaf(ns(leaf[len(varsLeaf("")):]))
+		}
+	default:
+		return cfg
+	}
+
+	raw, ok := cfg[rewriteKey]
+	if !ok {
+		return cfg
+	}
+	var cur string
+	if err := json.Unmarshal(raw, &cur); err != nil || cur == "" {
+		return cfg // malformed/empty — leave it for the downstream gate to reject
+	}
+	out := make(map[string]json.RawMessage, len(cfg))
+	for k, v := range cfg {
+		out[k] = v
+	}
+	encoded, err := json.Marshal(transform(cur))
+	if err != nil {
+		return cfg
+	}
+	out[rewriteKey] = encoded
+	return out
 }
 
 // interfaceNodeName reads the interface name a core.input@1 / core.output@1
