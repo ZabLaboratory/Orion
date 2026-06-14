@@ -45,6 +45,29 @@ const execPinKind = "exec"
 // of a Blue capability.
 const ErrExecOpUnmapped DiagnosticCode = "EXEC_OP_UNMAPPED"
 
+// ErrExecUnknownNode is the fail-loud structural diagnostic for a DANGLING
+// exec target (issue #100, ADR 003 §1.1): an exec entrypoint Target or a node
+// Next edge that points at an id absent from the program's exec node table.
+// The interpreter resolves every dispatch through `prog.Nodes[id]` and, on a
+// miss, logs `exec: unknown node id` and silently ENDS that chain
+// (exec_interpreter.go) — so a dangling target means the exec layer never
+// wires, no effect fires, and the scene degrades to fallbacks WITHOUT failing
+// the push (the validation reported `validated` while logging 10 ERRORs — the
+// "false clean" this closes). Promoting the dangling target to a blocking
+// COMPILE error makes the push fail (diagnostics.errors non-empty,
+// latest_pushed_version unchanged) instead of arming a silently-broken scene.
+//
+// Concretely the leak that motivated this: a PURE blueprint reference whose
+// body still carried a `core.event.on-start@1` keeps that on-start on inlining
+// (#186 anti-regression for data-only refs); inlining then splices the
+// on-start's `then` across the dropped `core.output@1` interface nodes onto
+// the parent's DATA consumers, so the entrypoint Target lands on a data node
+// that is not in the exec node table — exactly this diagnostic. The fix of
+// fond is authoring (a pure function carries no on-start, Blue #100); this
+// gate is the anti-regression so any future dangling exec target is rejected
+// at push, not discovered live at the antenna.
+const ErrExecUnknownNode DiagnosticCode = "EXEC_UNKNOWN_NODE"
+
 // Exec entrypoint manifest ids → runtime entry Kind (ADR 006 §3.1).
 // The runtime vocabulary ("on-start"/"on-tick"/"on-event") is owned by
 // runtime.EntryOnStart/OnTick/OnEvent; the compiler cannot import the
@@ -241,7 +264,82 @@ func partitionBlueprint(b *BlueprintGraph, key string) (execSet map[string]struc
 		Nodes:        nodes,
 		Entrypoints:  entries,
 	}
+	// Resolve every exec dispatch target against the exec node table BEFORE
+	// the program ships. A dangling Target/Next is the compile-time mirror of
+	// the runtime's `prog.Nodes[id] == nil` miss (exec_interpreter.go) — catch
+	// it loudly here so the push fails instead of arming a silently-broken
+	// scene (ErrExecUnknownNode / issue #100).
+	diags = append(diags, validateExecTargets(prog)...)
 	return execSet, prog, diags
+}
+
+// validateExecTargets reports an EXEC_UNKNOWN_NODE for every entrypoint Target
+// or node Next edge that points at an id NOT present in the program's exec
+// node table — the dispatch the interpreter resolves through `prog.Nodes[id]`.
+// An EMPTY Target.Node (an entrypoint with no wired exec body) is structurally
+// valid (a no-op task, buildExecEntry) and is skipped. Entrypoint and Next ids
+// are walked in sorted order so the diagnostics are deterministic (criterion
+// #2). Note that event nodes are entrypoints, not members of `prog.Nodes`, so
+// a Target/Next must never legitimately point at one; only real exec body
+// nodes are valid dispatch targets.
+func validateExecTargets(p *execProgram) (diags []Diagnostic) {
+	known := func(id string) bool {
+		_, ok := p.Nodes[id]
+		return ok
+	}
+
+	entryIDs := make([]string, 0, len(p.Entrypoints))
+	for id := range p.Entrypoints {
+		entryIDs = append(entryIDs, id)
+	}
+	sort.Strings(entryIDs)
+	for _, id := range entryIDs {
+		e := p.Entrypoints[id]
+		if e.Target.Node == "" {
+			continue // entrypoint with no wired exec body — valid no-op task
+		}
+		if !known(e.Target.Node) {
+			diags = append(diags, Diagnostic{
+				Code:     ErrExecUnknownNode,
+				Severity: "error",
+				Message: fmt.Sprintf(
+					"exec entrypoint %s targets node %q which is not an exec node "+
+						"(dangling exec edge — the runtime would log \"unknown node id\" and drop the chain)",
+					id, e.Target.Node),
+				Path: id,
+			})
+		}
+	}
+
+	nodeIDs := make([]string, 0, len(p.Nodes))
+	for id := range p.Nodes {
+		nodeIDs = append(nodeIDs, id)
+	}
+	sort.Strings(nodeIDs)
+	for _, id := range nodeIDs {
+		n := p.Nodes[id]
+		pins := make([]string, 0, len(n.Next))
+		for pin := range n.Next {
+			pins = append(pins, pin)
+		}
+		sort.Strings(pins)
+		for _, pin := range pins {
+			tgt := n.Next[pin]
+			if tgt.Node == "" || known(tgt.Node) {
+				continue
+			}
+			diags = append(diags, Diagnostic{
+				Code:     ErrExecUnknownNode,
+				Severity: "error",
+				Message: fmt.Sprintf(
+					"exec node %s pin %q targets node %q which is not an exec node "+
+						"(dangling exec edge — the runtime would log \"unknown node id\" and drop the chain)",
+					id, pin, tgt.Node),
+				Path: id,
+			})
+		}
+	}
+	return diags
 }
 
 // buildExecNode maps one exec-pin node onto an execNode: its op is

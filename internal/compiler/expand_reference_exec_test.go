@@ -2,6 +2,8 @@ package compiler
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -220,6 +222,84 @@ func TestExpand_DataOnlyReference_PreservesInlinedOnStart(t *testing.T) {
 	qNode, ok := p.Nodes[e.Target.Node]
 	if !ok || qNode.Op != "db.query" {
 		t.Fatalf("preserved on-start Target %+v does not arm the inlined db.query (node %+v)", e.Target, qNode)
+	}
+}
+
+// onStartPushesOutputFetch reproduces the REAL score-to-color v3 leak (issue
+// #100): a PURE function (no exec interface pin) whose body carries a
+// `core.event.on-start@1` that exec-pushes its `core.output@1` outputs
+// (start.then --> out.in). This is the legacy "publish outputs at load" idiom
+// score-to-color v3 still carried. The interface is data-only, so #186
+// PRESERVES the on-start; inlining then splices start.then across the dropped
+// output node onto the parent's DATA consumer of `color` — a dangling exec
+// target into a pure data pin.
+//
+//	in (core.input@1 "score") ; start (on-start) --then--> out (core.output@1 "color", exec in "in")
+func onStartPushesOutputFetch(id string, version int) *ResolvedBlueprintGraph {
+	return &ResolvedBlueprintGraph{
+		BlueprintID: id,
+		Version:     version,
+		Nodes: []BlueprintNode{
+			inputNode("in", "score"),
+			{ID: "start", Compute: coreEventOnStart, Outputs: []BlueprintPort{execOut("then")}},
+			// the output node carries an exec IN pin "in" (score-to-color v3's
+			// core.output@1 was armed by start.then) AND a data value.
+			{ID: "out", Compute: coreOutput,
+				Config: map[string]json.RawMessage{"name": json.RawMessage(`"color"`)},
+				Inputs: []BlueprintPort{execIn("in"), dataIn("value")}},
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "start", FromPort: "then", ToNode: "out", ToPort: "in"},
+			{FromNode: "in", FromPort: "value", ToNode: "out", ToPort: "value"},
+		},
+		Interface: BlueprintInterface{
+			// PURE data-only interface — no exec pin → #186 preserves the on-start.
+			Inputs:  []BlueprintInterfacePin{{Name: "score", Type: "float"}},
+			Outputs: []BlueprintInterfacePin{{Name: "color", Type: "string"}},
+		},
+		Purity: BlueprintPurity{IsPure: true, IsBounded: true},
+	}
+}
+
+// TestExpand_OnStartPushesOutput_RejectedAsDangling (issue #100): the real
+// score-to-color v3 leak — a pure reference whose preserved on-start `then`
+// gets spliced onto the parent's DATA consumer — is now rejected at compile
+// with EXEC_UNKNOWN_NODE instead of arming a scene the runtime can only log
+// "exec: unknown node id" against (the "false clean"). This is the faithful
+// reproduction of the bp-draft-databound-scene v6 failure, generalised to one
+// slot.
+func TestExpand_OnStartPushesOutput_RejectedAsDangling(t *testing.T) {
+	// caller: seed(score) → fn(reference) → guard.a (a pure data not-equal).
+	bp := &BlueprintGraph{
+		ID: "bp-scene",
+		Nodes: []BlueprintNode{
+			inputNode("seed", "score.seed"),
+			refNode("fn", "bp-pure", 3),
+			{ID: "guard", Compute: "core.compare.not-equal@1",
+				Inputs:  []BlueprintPort{dataIn("a"), dataIn("b")},
+				Outputs: []BlueprintPort{dataIn("result")}},
+			outputNode("sink", "color.final"),
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "seed", FromPort: "value", ToNode: "fn", ToPort: "score"},
+			{FromNode: "fn", FromPort: "color", ToNode: "guard", ToPort: "a"},
+			{FromNode: "guard", FromPort: "result", ToNode: "sink", ToPort: "value"},
+		},
+	}
+	m := execRefManifest()
+	m["core.compare.not-equal@1"] = ComputeManifestEntry{IsPure: true, IsBounded: true, Version: "1"}
+	f := &fakeFetcher{
+		layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+		blueprints: map[string]*BlueprintGraph{"bp-scene": bp},
+		components: map[ComponentRef]*UserComponent{},
+		manifest:   m,
+		graphs:     map[string]*ResolvedBlueprintGraph{"bp-pure@3": onStartPushesOutputFetch("bp-pure", 3)},
+	}
+	_, _, _, err := Compile(context.Background(), "scene-1",
+		PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: "bp-scene"}, f)
+	var ce *CompileError
+	if !errors.As(err, &ce) || !ce.HasCode(ErrExecUnknownNode) {
+		t.Fatalf("want EXEC_UNKNOWN_NODE (dangling spliced on-start), got %v", err)
 	}
 }
 
