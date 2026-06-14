@@ -324,10 +324,10 @@ func TestExpand_Deterministic(t *testing.T) {
 	}
 }
 
-// RC #3 bound — the depth bound rejects a self-referential function
-// (trivial cycle) with BLUEPRINT_REF_EXPANSION_LIMIT instead of looping
-// forever. (Full CYCLIC_BLUEPRINT_REFERENCE detection is issue #179.)
-func TestExpand_SelfReference_HitsBound(t *testing.T) {
+// Issue #179 — a self-referential function (A→A) is a cycle: rejected with
+// the precise CYCLIC_BLUEPRINT_REFERENCE, not the size bound, and the message
+// cites the offending key chain.
+func TestExpand_SelfReference_Cyclic(t *testing.T) {
 	selfRef := &ResolvedBlueprintGraph{
 		BlueprintID: "bp-loop",
 		Version:     1,
@@ -359,8 +359,222 @@ func TestExpand_SelfReference_HitsBound(t *testing.T) {
 		},
 	}
 	_, _, err := compileWithRefs(t, bp, map[string]*ResolvedBlueprintGraph{"bp-loop@1": selfRef})
-	assertHasCode(t, err, ErrBlueprintRefExpansionLimit)
+	assertHasCode(t, err, ErrCyclicBlueprintReference)
+	// The diagnostic must cite the cycle chain (the repeated key).
+	assertMessageContains(t, err, ErrCyclicBlueprintReference, "bp-loop@1")
 }
+
+// Issue #179 — an INDIRECT cycle A→B→A is rejected with
+// CYCLIC_BLUEPRINT_REFERENCE; the chain in the message names both keys.
+func TestExpand_IndirectCycle_Cyclic(t *testing.T) {
+	// bp-a references bp-b; bp-b references bp-a → loop on the path.
+	bpA := &ResolvedBlueprintGraph{
+		BlueprintID: "bp-a",
+		Version:     1,
+		Nodes: []BlueprintNode{
+			inputNode("ain", "x"),
+			refNode("toB", "bp-b", 1),
+			outputNode("aout", "result"),
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "ain", FromPort: "value", ToNode: "toB", ToPort: "x"},
+			{FromNode: "toB", FromPort: "result", ToNode: "aout", ToPort: "value"},
+		},
+		Interface: BlueprintInterface{
+			Inputs:  []BlueprintInterfacePin{{Name: "x", Type: "float"}},
+			Outputs: []BlueprintInterfacePin{{Name: "result", Type: "float"}},
+		},
+		Purity: BlueprintPurity{IsPure: true, IsBounded: true},
+	}
+	bpB := &ResolvedBlueprintGraph{
+		BlueprintID: "bp-b",
+		Version:     1,
+		Nodes: []BlueprintNode{
+			inputNode("bin", "x"),
+			refNode("toA", "bp-a", 1), // back-edge → cycle
+			outputNode("bout", "result"),
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "bin", FromPort: "value", ToNode: "toA", ToPort: "x"},
+			{FromNode: "toA", FromPort: "result", ToNode: "bout", ToPort: "value"},
+		},
+		Interface: BlueprintInterface{
+			Inputs:  []BlueprintInterfacePin{{Name: "x", Type: "float"}},
+			Outputs: []BlueprintInterfacePin{{Name: "result", Type: "float"}},
+		},
+		Purity: BlueprintPurity{IsPure: true, IsBounded: true},
+	}
+	bp := &BlueprintGraph{
+		ID: "bp-scene",
+		Nodes: []BlueprintNode{
+			inputNode("seed", "score.seed"),
+			refNode("a", "bp-a", 1),
+			outputNode("sink", "score.final"),
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "seed", FromPort: "value", ToNode: "a", ToPort: "x"},
+			{FromNode: "a", FromPort: "result", ToNode: "sink", ToPort: "value"},
+		},
+	}
+	_, _, err := compileWithRefs(t, bp, map[string]*ResolvedBlueprintGraph{
+		"bp-a@1": bpA,
+		"bp-b@1": bpB,
+	})
+	assertHasCode(t, err, ErrCyclicBlueprintReference)
+	assertMessageContains(t, err, ErrCyclicBlueprintReference, "bp-a@1")
+	assertMessageContains(t, err, ErrCyclicBlueprintReference, "bp-b@1")
+}
+
+// Issue #179 — a DAG is NOT a cycle. A diamond A→B, A→C, B→D, C→D reuses D on
+// two sibling branches: D is "seen" twice (fetched once, memoised) but never
+// twice on a single resolution path, so the whole graph expands WITHOUT error.
+func TestExpand_Diamond_NoCycle(t *testing.T) {
+	// d = double (interior add). Reused by both b and c.
+	d := doublerGraph("bp-d", 1)
+	mkMid := func(id string) *ResolvedBlueprintGraph {
+		return &ResolvedBlueprintGraph{
+			BlueprintID: id,
+			Version:     1,
+			Nodes: []BlueprintNode{
+				inputNode("min", "x"),
+				refNode("toD", "bp-d", 1), // both B and C reference the same D
+				outputNode("mout", "result"),
+			},
+			Edges: []BlueprintEdge{
+				{FromNode: "min", FromPort: "value", ToNode: "toD", ToPort: "x"},
+				{FromNode: "toD", FromPort: "result", ToNode: "mout", ToPort: "value"},
+			},
+			Interface: BlueprintInterface{
+				Inputs:  []BlueprintInterfacePin{{Name: "x", Type: "float"}},
+				Outputs: []BlueprintInterfacePin{{Name: "result", Type: "float"}},
+			},
+			Purity: BlueprintPurity{IsPure: true, IsBounded: true},
+		}
+	}
+	// a = top of the diamond: feeds the same seed into B and C, then sums
+	// their two results. References both bp-b and bp-c.
+	a := &ResolvedBlueprintGraph{
+		BlueprintID: "bp-a",
+		Version:     1,
+		Nodes: []BlueprintNode{
+			inputNode("ain", "x"),
+			refNode("toB", "bp-b", 1),
+			refNode("toC", "bp-c", 1),
+			{ID: "join", Compute: "core.math.add@1"},
+			outputNode("aout", "result"),
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "ain", FromPort: "value", ToNode: "toB", ToPort: "x"},
+			{FromNode: "ain", FromPort: "value", ToNode: "toC", ToPort: "x"},
+			{FromNode: "toB", FromPort: "result", ToNode: "join", ToPort: "a"},
+			{FromNode: "toC", FromPort: "result", ToNode: "join", ToPort: "b"},
+			{FromNode: "join", FromPort: "sum", ToNode: "aout", ToPort: "value"},
+		},
+		Interface: BlueprintInterface{
+			Inputs:  []BlueprintInterfacePin{{Name: "x", Type: "float"}},
+			Outputs: []BlueprintInterfacePin{{Name: "result", Type: "float"}},
+		},
+		Purity: BlueprintPurity{IsPure: true, IsBounded: true},
+	}
+	bp := &BlueprintGraph{
+		ID: "bp-scene",
+		Nodes: []BlueprintNode{
+			inputNode("seed", "score.seed"),
+			refNode("a", "bp-a", 1),
+			outputNode("sink", "score.final"),
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "seed", FromPort: "value", ToNode: "a", ToPort: "x"},
+			{FromNode: "a", FromPort: "result", ToNode: "sink", ToPort: "value"},
+		},
+	}
+	g, f, err := compileWithRefs(t, bp, map[string]*ResolvedBlueprintGraph{
+		"bp-a@1": a,
+		"bp-b@1": mkMid("bp-b"),
+		"bp-c@1": mkMid("bp-c"),
+		"bp-d@1": d,
+	})
+	if err != nil {
+		t.Fatalf("diamond DAG must expand without error, got: %v", err)
+	}
+	// D is reached on two branches (B and C) → expanded twice, two disjoint
+	// add nodes from D, plus the one join add in A = 3 adds total. No reference
+	// node survives.
+	var adds int
+	for _, n := range g.Nodes {
+		if n.Compute == "blueprint.reference" {
+			t.Fatalf("reference node %s leaked: diamond not fully expanded", n.ID)
+		}
+		if n.Compute == "core.math.add@1" {
+			adds++
+		}
+	}
+	if adds != 3 {
+		t.Fatalf("expected 3 inlined adds (D on each of 2 branches + A's join), got %d", adds)
+	}
+	// D fetched ONCE despite two expansion sites (memoised), proving "seen
+	// twice" is not "on the path twice".
+	if n := f.graphCalls["bp-d@1"]; n != 1 {
+		t.Fatalf("FetchBlueprintGraph for bp-d@1 called %d times, want 1 (memoised across DAG branches)", n)
+	}
+}
+
+// Issue #179 — a deep but ACYCLIC chain within the depth bound expands without
+// error (it is neither a cycle nor over the size bound). Chain length 8 < 16.
+func TestExpand_DeepAcyclicChain_OK(t *testing.T) {
+	const chain = 8
+	graphs := map[string]*ResolvedBlueprintGraph{}
+	// Link k references link k+1; the last link is a plain doubler.
+	for k := 0; k < chain; k++ {
+		id := chainID(k)
+		if k == chain-1 {
+			graphs[id+"@1"] = doublerGraph(id, 1)
+			continue
+		}
+		next := chainID(k + 1)
+		graphs[id+"@1"] = &ResolvedBlueprintGraph{
+			BlueprintID: id,
+			Version:     1,
+			Nodes: []BlueprintNode{
+				inputNode("cin", "x"),
+				refNode("nxt", next, 1),
+				outputNode("cout", "result"),
+			},
+			Edges: []BlueprintEdge{
+				{FromNode: "cin", FromPort: "value", ToNode: "nxt", ToPort: "x"},
+				{FromNode: "nxt", FromPort: "result", ToNode: "cout", ToPort: "value"},
+			},
+			Interface: BlueprintInterface{
+				Inputs:  []BlueprintInterfacePin{{Name: "x", Type: "float"}},
+				Outputs: []BlueprintInterfacePin{{Name: "result", Type: "float"}},
+			},
+			Purity: BlueprintPurity{IsPure: true, IsBounded: true},
+		}
+	}
+	bp := &BlueprintGraph{
+		ID: "bp-scene",
+		Nodes: []BlueprintNode{
+			inputNode("seed", "score.seed"),
+			refNode("head", chainID(0), 1),
+			outputNode("sink", "score.final"),
+		},
+		Edges: []BlueprintEdge{
+			{FromNode: "seed", FromPort: "value", ToNode: "head", ToPort: "x"},
+			{FromNode: "head", FromPort: "result", ToNode: "sink", ToPort: "value"},
+		},
+	}
+	g, _, err := compileWithRefs(t, bp, graphs)
+	if err != nil {
+		t.Fatalf("deep acyclic chain (len %d < bound) must compile, got: %v", chain, err)
+	}
+	for _, n := range g.Nodes {
+		if n.Compute == "blueprint.reference" {
+			t.Fatalf("reference node %s leaked: deep chain not fully expanded", n.ID)
+		}
+	}
+}
+
+func chainID(k int) string { return "bp-chain-" + string(rune('a'+k)) }
 
 // A reference node wiring a port the function does not declare is a
 // BLUEPRINT_REF_UNRESOLVED reject (cannot inline an undeclared pin).
@@ -436,4 +650,21 @@ func assertHasCode(t *testing.T, err error, code DiagnosticCode) {
 	if !ce.HasCode(code) {
 		t.Fatalf("compile error missing code %s: %+v", code, ce.Diagnostics.Items)
 	}
+}
+
+// assertMessageContains checks that the diagnostic with the given code carries
+// a message mentioning `want` — used to prove a cycle diagnostic cites the
+// offending key chain.
+func assertMessageContains(t *testing.T, err error, code DiagnosticCode, want string) {
+	t.Helper()
+	var ce *CompileError
+	if !errors.As(err, &ce) {
+		t.Fatalf("error %v is not a *CompileError", err)
+	}
+	for _, it := range ce.Diagnostics.Items {
+		if it.Code == code && strings.Contains(it.Message, want) {
+			return
+		}
+	}
+	t.Fatalf("no %s diagnostic message contains %q: %+v", code, want, ce.Diagnostics.Items)
 }

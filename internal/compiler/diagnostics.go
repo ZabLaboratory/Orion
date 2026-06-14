@@ -84,11 +84,23 @@ const (
 	// ErrBlueprintRefExpansionLimit (ADR 014 §5 graph-explosion mitigation):
 	// recursive expansion exceeded the depth/count bound. A deep or wide
 	// reference tree blowing up the expanded graph is rejected at push, not
-	// at runtime (the cost is paid once, at compile). This is the bound; the
-	// full cyclic-reference detector (CYCLIC_BLUEPRINT_REFERENCE) is issue
-	// #179 — but a trivial cycle on the resolution stack also trips this
-	// bound, so the compiler never loops forever even before #179 lands.
+	// at runtime (the cost is paid once, at compile). This is the structural
+	// SIZE bound; a true cycle is caught earlier and more precisely by
+	// ErrCyclicBlueprintReference (issue #179), so crossing this bound now
+	// genuinely means "too deep/wide", not "looping".
 	ErrBlueprintRefExpansionLimit DiagnosticCode = "BLUEPRINT_REF_EXPANSION_LIMIT"
+
+	// ErrCyclicBlueprintReference (ADR 014 §5 / issue #179): a `reference`
+	// node points at a (blueprint_id, version) key already present on the
+	// CURRENT resolution path — a self-reference (A→A) or an indirect loop
+	// (A→B→A). Inlining it would never terminate, so the push fails closed at
+	// compile (latest_pushed_version unchanged). Detected on the resolution
+	// STACK (the path), NOT the memoised fetch set: a function legitimately
+	// reused on sibling branches (a DAG / diamond A→B, A→C, B→D, C→D) is "seen
+	// twice" but never on one path, so it expands without error. This is the
+	// precise analogue of CYCLIC_COMPONENT for the blueprint-reference graph;
+	// the message cites the offending key chain.
+	ErrCyclicBlueprintReference DiagnosticCode = "CYCLIC_BLUEPRINT_REFERENCE"
 )
 
 // Diagnostic is a single error or warning produced during compilation.
