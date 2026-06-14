@@ -199,6 +199,24 @@ func (ex *refExpander) expandOne(
 	prefix := fmt.Sprintf("__bpref%d__%s__", ex.site, callID)
 	rename := func(id string) string { return prefix + id }
 
+	// execTriggerable is true iff the resolved interface declares at least one
+	// exec INPUT pin (kind == "exec"). It is read from the interface, never
+	// guessed from a node/port name (graph-resolution.md § Exec pins / Orion
+	// #186). When true, the caller's spine — spliced onto the inlined
+	// `core.input@1`-exec — IS the trigger, so the function's own
+	// `core.event.on-start@1` MUST be removed: keeping it would re-arm the
+	// body at scene load (the ADR 003 §1.1 root cause) instead of on the
+	// caller's trigger. When false (a data-only function), the on-start is
+	// preserved verbatim — a data-only reference is byte-identical to
+	// pre-#186 (anti-regression guard-rail, Vigil).
+	execTriggerable := false
+	for _, pin := range resolved.Interface.Inputs {
+		if pin.Kind == execPinKind {
+			execTriggerable = true
+			break
+		}
+	}
+
 	// The sub-graph's interface nodes (core.input@1 / core.output@1) are the
 	// SPLICE points, not nodes that survive inlining. core.input@1 is a
 	// leaf-bound source with no runtime executor: keeping it AND giving it an
@@ -213,6 +231,12 @@ func (ex *refExpander) expandOne(
 	outputNodeByID := map[string]string{} // renamed core.output@1 id → interface name
 	inputNames := map[string]struct{}{}   // declared interface input names present
 	outputNames := map[string]struct{}{}  // declared interface output names present
+
+	// droppedOnStart collects the renamed ids of `core.event.on-start@1` nodes
+	// removed because the function is exec-triggerable: their edges must be
+	// dropped too (below), so the parent never gets a stray spine that fires
+	// at scene load. Empty for a data-only function (on-start preserved).
+	droppedOnStart := map[string]struct{}{}
 
 	sub := flatGraph{
 		nodes: make([]BlueprintNode, 0, len(resolved.Nodes)),
@@ -232,6 +256,16 @@ func (ex *refExpander) expandOne(
 				outputNodeByID[rid] = name
 				outputNames[name] = struct{}{}
 				continue // dropped — spliced below
+			}
+		case coreEventOnStart:
+			// Drop the function's own on-start ONLY when it is
+			// exec-triggerable: the caller's spine (arriving on the inlined
+			// `exec_in` core.input@1) re-arms the interior spine in its place
+			// (graph-resolution.md § Exec pins, Orion #186). A data-only
+			// reference keeps its on-start verbatim — anti-regression.
+			if execTriggerable {
+				droppedOnStart[rid] = struct{}{}
+				continue // dropped — its spine resumes from the exec_in splice
 			}
 		}
 		// Interior node: keep verbatim under its renamed id. All interior
@@ -273,6 +307,17 @@ func (ex *refExpander) expandOne(
 	// every parent consumer of pin Y. An edge between two interior nodes
 	// passes through with both ids renamed.
 	for _, e := range resolved.Edges {
+		// An edge incident on a dropped on-start (exec-triggerable function)
+		// is removed with it: the interior spine it armed is re-armed by the
+		// caller's spine via the exec_in splice instead. on-start is an
+		// exec ENTRY (no inbound edges), so this only ever drops its outbound
+		// `then` spine edge; guarding both ends is defensive and harmless.
+		if _, drop := droppedOnStart[rename(e.FromNode)]; drop {
+			continue
+		}
+		if _, drop := droppedOnStart[rename(e.ToNode)]; drop {
+			continue
+		}
 		from, fromIsInput := inputNodeByID[rename(e.FromNode)]
 		to, toIsOutput := outputNodeByID[rename(e.ToNode)]
 		switch {
