@@ -1,8 +1,8 @@
 # ADR 014 — Blueprint-reference support via compile-time subgraph expansion
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-06-14
-- **Decided**: —
+- **Decided**: 2026-06-14
 - **Deciders**: @ClodoCapeo
 - **Author**: Atlas
 - **Supersedes**: — (étend ADR 003 §3.4 partition par-blueprint + ADR 004 §7 contrat manifest ; ne renverse rien)
