@@ -65,7 +65,14 @@ func expandReferences(ctx context.Context, b *BlueprintGraph, fetcher Fetcher) (
 	// per-reference splice cannot (each reference sees its neighbour only as a
 	// CALL node, not as inlined interior).
 	flat = ex.dropRelays(flat)
-	return &BlueprintGraph{ID: b.ID, Nodes: flat.nodes, Edges: flat.edges}, nil
+	// Surface the per-instance `__vars..` constant seeds harvested from each
+	// inlined reference's `variables[].value` (Orion #192). They ride out on
+	// BlueprintGraph.Defaults (an output-only carrier) for the per-blueprint
+	// compile loop to fold into graph.Defaults — the only path by which a
+	// referenced function's declared constant (e.g. a colour palette read by
+	// `core.variable.get@1`) reaches the runtime. Nil when no reference
+	// declared a valued variable — byte-identical to pre-#192.
+	return &BlueprintGraph{ID: b.ID, Nodes: flat.nodes, Edges: flat.edges, Defaults: flat.defaults}, nil
 }
 
 type refExpander struct {
@@ -88,6 +95,29 @@ type refExpander struct {
 type flatGraph struct {
 	nodes []BlueprintNode
 	edges []BlueprintEdge
+	// defaults accumulates the per-instance `__vars..<varNS(name)>` → value
+	// seeds from inlined references' `variables[].value` (Orion #192). It is
+	// merged bottom-up (expandOne → expandGraph) and carried verbatim through
+	// dropRelays. Keys are in the pre-blueprint-key (empty-key) `__vars..` form
+	// — prefixDefaultLeaf substitutes the real key per blueprint at fold time,
+	// the same rewrite prefixGraphNodes applies to the reading node's leaf.
+	defaults map[string]json.RawMessage
+}
+
+// mergeDefaults folds src into dst (allocating dst on first use), returning the
+// (possibly new) map. Used to lift each reference's variable seeds up the
+// expansion tree. A nil/empty src is a no-op (dst returned unchanged).
+func mergeDefaults(dst, src map[string]json.RawMessage) map[string]json.RawMessage {
+	if len(src) == 0 {
+		return dst
+	}
+	if dst == nil {
+		dst = make(map[string]json.RawMessage, len(src))
+	}
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // endpoint is a concrete (node, port) address in the flattened graph — the
@@ -154,6 +184,9 @@ func (ex *refExpander) expandGraph(
 		}
 		out.nodes = append(out.nodes, sub.nodes...)
 		out.edges = append(out.edges, sub.edges...)
+		// Lift this reference's `__vars..` constant seeds (its own variables +
+		// any from references it nested) into the parent graph (Orion #192).
+		out.defaults = mergeDefaults(out.defaults, sub.defaults)
 		relayByCall[callID] = relayPins
 		pinNames[callID] = names
 	}
@@ -428,6 +461,25 @@ func (ex *refExpander) expandOne(
 		sub.edges = append(sub.edges, ne)
 	}
 
+	// Harvest this reference's declared constants (Orion #192). A
+	// `variables[].value` is a blueprint-local CONSTANT the body reads through
+	// a `core.variable.get@1 {variable: <name>}` whose leaf is `__vars..<name>`
+	// (nodeLeafPath). Nothing wires that leaf, so the value must arrive as a
+	// graph default. The reader's `config.variable` is namespaced per instance
+	// (namespaceVarsConfig → varNS) above, so the seed leaf MUST use the SAME
+	// per-instance var name: varsLeaf(varNS(name)) === the leaf the namespaced
+	// `core.variable.get@1` resolves. A Value-less variable (pure shared state,
+	// written by a `variable.set` before any read) carries no constant — skip.
+	for _, v := range resolved.Variables {
+		if len(v.Value) == 0 || v.Name == "" {
+			continue
+		}
+		if sub.defaults == nil {
+			sub.defaults = map[string]json.RawMessage{}
+		}
+		sub.defaults[varsLeaf(varNS(v.Name))] = v.Value
+	}
+
 	// Recurse: the sub-graph may itself contain reference nodes (Blue serves
 	// ONE level raw — Orion re-fetches each nested reference, contract "One
 	// level only"). Push this key onto the resolution stack so a reference
@@ -438,6 +490,10 @@ func (ex *refExpander) expandOne(
 	if len(nestedDiags) > 0 {
 		return flatGraph{}, nil, noNames, nestedDiags
 	}
+	// The nested pass carries any seeds from references THIS body nested; fold
+	// in this reference's own variable seeds so the whole subtree's constants
+	// ride out together (Orion #192).
+	nested.defaults = mergeDefaults(nested.defaults, sub.defaults)
 	names := struct{ in, out map[string]struct{} }{in: inNames, out: outNames}
 	return nested, relayPins, names, nil
 }
@@ -525,7 +581,9 @@ func (ex *refExpander) dropRelays(g flatGraph) flatGraph {
 		}
 		nodes = append(nodes, n)
 	}
-	return flatGraph{nodes: nodes, edges: cleaned}
+	// Carry the harvested `__vars..` constant seeds through verbatim — relay
+	// removal never touches them (Orion #192).
+	return flatGraph{nodes: nodes, edges: cleaned, defaults: g.defaults}
 }
 
 func isRelay(relays map[string]struct{}, id string) bool {
