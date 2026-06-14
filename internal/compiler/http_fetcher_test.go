@@ -202,6 +202,55 @@ func TestFetchBlueprintGraph_PinnedEndpoint(t *testing.T) {
 	}
 }
 
+// TestFetchBlueprintGraph_ExecPinKind proves the fetcher deserialises the
+// `kind` discriminator Blue #97 added to interface pins (graph-resolution.md
+// § Exec pins). An exec-triggerable function declares `exec_in`/`then` pins
+// with kind:"exec"; a data pin omits kind (defaults to data). Orion #186
+// reads this field to drive the exec re-wire + on-start drop; if it did not
+// deserialise it, every reference would look data-only and the on-start
+// would never be removed.
+func TestFetchBlueprintGraph_ExecPinKind(t *testing.T) {
+	const graphBody = `{
+		"blueprint_id":"bp-exec","version":1,"status":"published",
+		"nodes":[
+			{"id":"in","definition":"core.input@1","config":{"name":"exec_in"}},
+			{"id":"q","definition":"core.db.query@1"}
+		],
+		"edges":[],
+		"variables":[],
+		"interface":{
+			"inputs":[{"name":"exec_in","type":"exec","kind":"exec","required":true},
+			          {"name":"limit","type":"int"}],
+			"outputs":[{"name":"then","type":"exec","kind":"exec"}],
+			"side_effects":[]},
+		"purity":{"is_pure":true,"is_bounded":true}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(graphBody))
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher("http://canvas.invalid", srv.URL, "")
+	g, err := f.FetchBlueprintGraph(context.Background(), "bp-exec", 1)
+	if err != nil {
+		t.Fatalf("FetchBlueprintGraph: %v", err)
+	}
+	if len(g.Interface.Inputs) != 2 {
+		t.Fatalf("inputs decode wrong: %+v", g.Interface.Inputs)
+	}
+	if g.Interface.Inputs[0].Name != "exec_in" || g.Interface.Inputs[0].Kind != "exec" {
+		t.Fatalf("exec input pin kind not deserialised: %+v", g.Interface.Inputs[0])
+	}
+	// A data pin omits `kind` on the wire → empty (treated as data).
+	if g.Interface.Inputs[1].Name != "limit" || g.Interface.Inputs[1].Kind != "" {
+		t.Fatalf("data pin should have empty kind: %+v", g.Interface.Inputs[1])
+	}
+	if len(g.Interface.Outputs) != 1 || g.Interface.Outputs[0].Kind != "exec" {
+		t.Fatalf("exec output pin kind not deserialised: %+v", g.Interface.Outputs)
+	}
+}
+
 // TestFetchBlueprintGraph_TypedErrorsUnresolved proves Blue's typed
 // 404/422 reference errors map to ErrRefUnresolved (→ BLUEPRINT_REF_UNRESOLVED
 // at the compiler), never a transport-class error and never a silent

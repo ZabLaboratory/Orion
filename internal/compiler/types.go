@@ -242,9 +242,19 @@ type BlueprintInterface struct {
 // BlueprintInterfacePin is one declared input or output pin: its name (the
 // matching key against a call node's port and against the inlined
 // core.input@1 / core.output@1 config.name) and type.
+//
+// Kind is the `data`|`exec` discriminator served by Blue #97
+// (graph-resolution.md § Exec pins). It defaults to `data` (empty/absent =
+// data, full back-compat with pre-#97 interfaces). A pin with Kind == "exec"
+// is an entry/exit of the execution spine (ADR 003 §3.A): the exec INPUT pin
+// (named `exec_in` by convention) is the splice point the caller's spine
+// arms; the exec OUTPUT pin (`then`) is where the inlined spine resumes the
+// caller. The expansion pass reads Kind to decide exec re-wiring and the
+// on-start drop — never by guessing from the name (Orion #186).
 type BlueprintInterfacePin struct {
 	Name     string `json:"name"`
 	Type     string `json:"type"`
+	Kind     string `json:"kind,omitempty"`
 	Required bool   `json:"required"`
 }
 

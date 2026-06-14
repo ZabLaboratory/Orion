@@ -899,10 +899,11 @@ func resolveSourceReads(nodes []GraphNode, adapters []ExternalAdapter, d *Diagno
 // Stdlib node references whose body carries a state-leaf-bearing config
 // (ADR 004 §7.2, source: Blue/src/blue/services/stdlib_seeder.py).
 const (
-	coreOutput      = "core.output@1"       // config.name → the leaf the runtime writes
-	coreInput       = "core.input@1"        // config.name → the interface input name
-	coreLiteral     = "core.literal@1"      // config.value → seeds graph.Defaults
-	coreVariableGet = "core.variable.get@1" // config.variable → reads __vars.<key>.<variable>
+	coreOutput       = "core.output@1"         // config.name → the leaf the runtime writes
+	coreInput        = "core.input@1"          // config.name → the interface input name
+	coreLiteral      = "core.literal@1"        // config.value → seeds graph.Defaults
+	coreVariableGet  = "core.variable.get@1"   // config.variable → reads __vars.<key>.<variable>
+	coreEventOnStart = "core.event.on-start@1" // exec entry that fires at scene load
 )
 
 // varsLeafPrefix is the namespace `variable.set`/`variable.get` share for
