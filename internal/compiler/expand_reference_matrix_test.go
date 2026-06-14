@@ -258,7 +258,10 @@ func TestMatrix_MutualCycle_ABtoA(t *testing.T) {
 		"bp-a@1": bpA,
 		"bp-b@1": bpB,
 	})
-	assertHasCode(t, err, ErrBlueprintRefExpansionLimit)
+	// #179 landed real inter-blueprint cycle detection: A→B→A is now caught
+	// as a cycle on the resolution path (before the depth bound), not by
+	// exhausting BLUEPRINT_REF_EXPANSION_LIMIT.
+	assertHasCode(t, err, ErrCyclicBlueprintReference)
 }
 
 // ---------------------------------------------------------------------------
