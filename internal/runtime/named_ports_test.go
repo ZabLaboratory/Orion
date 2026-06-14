@@ -26,6 +26,9 @@ func (f *stubFetcher) FetchCanvasLayout(context.Context, string) (*compiler.Canv
 func (f *stubFetcher) FetchBlueprint(context.Context, string) (*compiler.BlueprintGraph, error) {
 	return f.blueprint, nil
 }
+func (f *stubFetcher) FetchBlueprintGraph(context.Context, string, int) (*compiler.ResolvedBlueprintGraph, error) {
+	return nil, errors.New("no blueprint references in this test")
+}
 func (f *stubFetcher) FetchComponent(context.Context, compiler.ComponentRef) (*compiler.UserComponent, error) {
 	return nil, errors.New("no components in this test")
 }

@@ -76,7 +76,20 @@ func Compile(
 			d.AddError(ErrFetchUpstream, "fetch blueprint %s (key %q): %v", ref.ID, ref.Key, ferr)
 			return nil, nil, "", &CompileError{Diagnostics: *d}
 		}
-		keyedBlueprints = append(keyedBlueprints, keyedBlueprint{key: ref.Key, graph: bp})
+		// Expand blueprint-reference nodes (ADR 014) BEFORE manifest
+		// validation / topo-sort / conformance: each `reference:
+		// {blueprint_id, version}` node is replaced in-line, recursively, by
+		// its pinned published sub-graph until the blueprint is flat core.*.
+		// The per-blueprint validation loop below then sees only core.* —
+		// byte-identical in nature to a scene authored without references, so
+		// it (and the runtime) need no change. A reference-free blueprint is
+		// returned unchanged (no reference node to expand → same graph).
+		flat, expandDiags := expandReferences(ctx, bp, fetcher)
+		if len(expandDiags) > 0 {
+			d.Items = append(d.Items, expandDiags...)
+			return nil, nil, "", &CompileError{Diagnostics: *d}
+		}
+		keyedBlueprints = append(keyedBlueprints, keyedBlueprint{key: ref.Key, graph: flat})
 	}
 	manifest, err := fetcher.FetchComputeManifest(ctx)
 	if err != nil {

@@ -43,6 +43,10 @@ func (finaleFetcher) FetchBlueprint(_ context.Context, _ string) (*compiler.Blue
 	}, nil
 }
 
+func (finaleFetcher) FetchBlueprintGraph(_ context.Context, _ string, _ int) (*compiler.ResolvedBlueprintGraph, error) {
+	return nil, errors.New("no blueprint references")
+}
+
 func (finaleFetcher) FetchComponent(_ context.Context, _ compiler.ComponentRef) (*compiler.UserComponent, error) {
 	return nil, errors.New("no components")
 }

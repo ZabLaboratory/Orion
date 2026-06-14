@@ -213,6 +213,50 @@ type BlueprintGraph struct {
 	Edges []BlueprintEdge `json:"edges"`
 }
 
+// ResolvedBlueprintGraph is one published (blueprint_id, version) graph as
+// served by Blue's pinned graph-resolution endpoint (Blue #94 /
+// Blue/docs/contracts/graph-resolution.md), the unit the compiler inlines
+// when expanding a `reference` node (ADR 014). It carries the raw graph
+// PLUS the declared interface (used to map the call node's pins onto the
+// sub-graph's core.input@1 / core.output@1 nodes by name) and the served
+// purity (stamped onto the expanded sub-tree, never recomputed — ADR 006).
+type ResolvedBlueprintGraph struct {
+	BlueprintID string             `json:"blueprint_id"`
+	Version     int                `json:"version"`
+	Nodes       []BlueprintNode    `json:"nodes"`
+	Edges       []BlueprintEdge    `json:"edges"`
+	Interface   BlueprintInterface `json:"interface"`
+	Purity      BlueprintPurity    `json:"purity"`
+}
+
+// BlueprintInterface is the version's declared pins. Orion matches the
+// calling `reference` node's port names against these to find which inlined
+// core.input@1 / core.output@1 each rewired edge connects to (same
+// convention as Blue's executor `_run_subgraph`, which seeds the child
+// activation record by input name and reads named outputs back).
+type BlueprintInterface struct {
+	Inputs  []BlueprintInterfacePin `json:"inputs"`
+	Outputs []BlueprintInterfacePin `json:"outputs"`
+}
+
+// BlueprintInterfacePin is one declared input or output pin: its name (the
+// matching key against a call node's port and against the inlined
+// core.input@1 / core.output@1 config.name) and type.
+type BlueprintInterfacePin struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Required bool   `json:"required"`
+}
+
+// BlueprintPurity is the served {is_pure, is_bounded} the compiler stamps
+// onto the expanded sub-tree's nodes (ADR 014 §3.5). Derived recursively by
+// Blue from the same source as /_compute-manifest; Orion consumes it, never
+// recomputes (ADR 006: purity = scheduling metadata).
+type BlueprintPurity struct {
+	IsPure    bool `json:"is_pure"`
+	IsBounded bool `json:"is_bounded"`
+}
+
 // BlueprintNode is one node in the blueprint. Compute is the registry
 // id ("core.math.add@1", "quasar.twitch.chat@1", …); the compiler probes
 // Blue's manifest for is_pure / is_bounded.
@@ -251,6 +295,25 @@ type BlueprintNode struct {
 	Config  map[string]json.RawMessage `json:"config,omitempty"`
 	Inputs  []BlueprintPort            `json:"inputs,omitempty"`
 	Outputs []BlueprintPort            `json:"outputs,omitempty"`
+	// Reference, when present, marks this node as a blueprint-CALL: the
+	// node delegates to another published blueprint's graph rather than to
+	// a leaf compute. The compiler expands it at push (ADR 014) into the
+	// referenced sub-graph's flat `core.*` nodes, mapping the call node's
+	// pins onto the sub-graph's core.input@1 / core.output@1 by name; the
+	// runtime never sees a `reference` (it sees only the inlined core.*).
+	// Pinned on (blueprint_id, version) — never the slug, never
+	// current_version (Blue/docs/contracts/graph-resolution.md).
+	Reference *BlueprintReference `json:"reference,omitempty"`
+}
+
+// BlueprintReference pins the (blueprint_id, version) a `reference` node
+// calls. Both fields are required; the slug is never used. version is the
+// PUBLISHED Blue version number, resolved verbatim against
+// GET /blueprints/{id}/versions/{version}/graph (no current_version
+// fall-back, ADR 014 §3.4).
+type BlueprintReference struct {
+	BlueprintID string `json:"blueprint_id"`
+	Version     int    `json:"version"`
 }
 
 // BlueprintPort mirrors Blue's Port schema

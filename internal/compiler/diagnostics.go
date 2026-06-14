@@ -68,6 +68,27 @@ const (
 	// (a compute has no error pin). Mirrors DATASOURCE_NOT_DECLARED for
 	// db.query — fail at push, never on air.
 	ErrSourceNotDeclared DiagnosticCode = "SOURCE_NOT_DECLARED"
+
+	// Blueprint-reference compile-time expansion (ADR 014).
+	//
+	// ErrBlueprintRefUnresolved: a `reference: {blueprint_id, version}` node
+	// could not be resolved to a published Blue graph — the blueprint or
+	// version does not exist, or the version is still a draft. Maps Blue's
+	// typed BLUEPRINT_NOT_FOUND (404) / BLUEPRINT_VERSION_NOT_FOUND (404) /
+	// BLUEPRINT_VERSION_NOT_PUBLISHED (422) onto one push-time reject. The
+	// push fails closed (latest_pushed_version unchanged), exactly like a
+	// malformed envelope — never a silent current_version substitution
+	// (ADR 014 §3.4 / §5 version-drift mitigation).
+	ErrBlueprintRefUnresolved DiagnosticCode = "BLUEPRINT_REF_UNRESOLVED"
+
+	// ErrBlueprintRefExpansionLimit (ADR 014 §5 graph-explosion mitigation):
+	// recursive expansion exceeded the depth/count bound. A deep or wide
+	// reference tree blowing up the expanded graph is rejected at push, not
+	// at runtime (the cost is paid once, at compile). This is the bound; the
+	// full cyclic-reference detector (CYCLIC_BLUEPRINT_REFERENCE) is issue
+	// #179 — but a trivial cycle on the resolution stack also trips this
+	// bound, so the compiler never loops forever even before #179 lands.
+	ErrBlueprintRefExpansionLimit DiagnosticCode = "BLUEPRINT_REF_EXPANSION_LIMIT"
 )
 
 // Diagnostic is a single error or warning produced during compilation.

@@ -105,6 +105,56 @@ func (f *HTTPFetcher) FetchBlueprint(ctx context.Context, id string) (*Blueprint
 	return &BlueprintGraph{ID: meta.ID, Nodes: ver.Graph.Nodes, Edges: ver.Graph.Edges}, nil
 }
 
+// blueRefUnresolvedCodes are the typed Blue error codes that mean the
+// pinned (blueprint_id, version) cannot be resolved to a published graph
+// (Blue/docs/contracts/graph-resolution.md). Any of them maps to
+// BLUEPRINT_REF_UNRESOLVED at the compiler (a push-time reject), never a
+// retry or a current_version fall-back.
+var blueRefUnresolvedCodes = map[string]struct{}{
+	"BLUEPRINT_NOT_FOUND":             {},
+	"BLUEPRINT_VERSION_NOT_FOUND":     {},
+	"BLUEPRINT_VERSION_NOT_PUBLISHED": {},
+}
+
+// ErrRefUnresolved wraps a Blue typed error (404/422) that means a
+// referenced (blueprint_id, version) is absent or unpublished. The compiler
+// surfaces it as a BLUEPRINT_REF_UNRESOLVED diagnostic (ADR 014 §3.4). It is
+// a distinct sentinel (distinct from the DiagnosticCode constant
+// ErrBlueprintRefUnresolved) so the expansion pass can tell a hard "no such
+// published graph" apart from a transport hiccup (which is FETCH_UPSTREAM).
+var ErrRefUnresolved = errors.New("compiler: blueprint reference unresolved")
+
+// FetchBlueprintGraph calls GET {blue}/api/v1/blueprints/{id}/versions/{version}/graph,
+// the PINNED, published-only endpoint (Blue #94). Unlike FetchBlueprint it
+// never reads current_version — the version is exactly the calling node's
+// reference.version. A typed 404/422 (BLUEPRINT_NOT_FOUND /
+// BLUEPRINT_VERSION_NOT_FOUND / BLUEPRINT_VERSION_NOT_PUBLISHED) is wrapped
+// into ErrBlueprintRefUnresolved so the compiler fails the push closed with
+// BLUEPRINT_REF_UNRESOLVED rather than silently substituting another version.
+func (f *HTTPFetcher) FetchBlueprintGraph(ctx context.Context, id string, version int) (*ResolvedBlueprintGraph, error) {
+	var out ResolvedBlueprintGraph
+	url := fmt.Sprintf("%s/api/v1/blueprints/%s/versions/%d/graph", f.BlueBase, id, version)
+	if err := f.getJSON(ctx, url, &out); err != nil {
+		// A typed Blue error (404/422) means the pinned pair is absent or
+		// unpublished — a hard reference-resolution failure. getStatusErr
+		// carries the response body so we can read the top-level `code`.
+		var se *statusError
+		if errors.As(err, &se) {
+			var typed struct {
+				Code string `json:"code"`
+			}
+			if jerr := json.Unmarshal(se.body, &typed); jerr == nil {
+				if _, unresolved := blueRefUnresolvedCodes[typed.Code]; unresolved {
+					return nil, fmt.Errorf("blue blueprint %s version %d: %s: %w",
+						id, version, typed.Code, ErrRefUnresolved)
+				}
+			}
+		}
+		return nil, fmt.Errorf("blue blueprint %s version %d graph: %w", id, version, err)
+	}
+	return &out, nil
+}
+
 // FetchComponent calls GET {canvas}/api/v1/components/{id}/{version}.
 func (f *HTTPFetcher) FetchComponent(ctx context.Context, ref ComponentRef) (*UserComponent, error) {
 	var out UserComponent
@@ -228,7 +278,22 @@ func (f *HTTPFetcher) getJSON(ctx context.Context, url string, out any) error {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<14))
-		return fmt.Errorf("status %d: %s", resp.StatusCode, body)
+		return &statusError{status: resp.StatusCode, body: body}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// statusError is a non-200 HTTP response. It carries the status code and a
+// bounded body copy so callers (FetchBlueprintGraph) can inspect a typed
+// error envelope — the body is never logged by getJSON itself (a token is
+// never in a GET body, but the body may carry a Blue diagnostic the caller
+// chooses to surface). Error() keeps the historical "status N: body" text so
+// existing FETCH_UPSTREAM messages are unchanged.
+type statusError struct {
+	status int
+	body   []byte
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("status %d: %s", e.status, e.body)
 }
