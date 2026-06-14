@@ -169,10 +169,15 @@ ADR avec son propre threat-model — pas un besoin actuel.
 
 **Contrat Blue ↔ Orion (Conduit).** Le manifest seul ne suffit plus pour les
 scènes à references : Orion doit pouvoir **fetch le graphe d'une fonction
-référencée à une version pinnée**, au push. Conduit arrête : endpoint dédié
-(recommandé) vs enrichissement manifest ; forme du graphe servie (réutiliser
-`/blueprints/{id}/resolve` / le DB lookup de `_run_subgraph`) ; comportement
-version inexistante. Versioning : strictement par `reference.version`.
+référencée à une version pinnée**, au push. **Arrêté (issue Blue #94)** :
+endpoint dédié `GET /blue/api/v1/blueprints/{id}/versions/{version}/graph`,
+**publié + pinné uniquement** (jamais `current_version`), erreurs typées
+`BLUEPRINT_NOT_FOUND` / `BLUEPRINT_VERSION_NOT_FOUND` (404) /
+`BLUEPRINT_VERSION_NOT_PUBLISHED` (422), sert `nodes`/`edges`/`variables` bruts
++ `interface` + `purity` (dérivée du même source que `/_compute-manifest`, non
+recalculée). **Un seul niveau** — un `reference` imbriqué est servi verbatim,
+Orion recurse. Auth = chemin service-token existant compilo→Blue, aucune
+surface nouvelle. Forme complète + mapping ports : **`Blue/docs/contracts/graph-resolution.md`**.
 
 **Orion compilateur.** Une passe d'expansion récursive avant la validation
 manifest ; un client HTTP de résolution (au push, memoïsé) ; un cycle-check
