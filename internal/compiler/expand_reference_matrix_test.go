@@ -36,7 +36,7 @@ import (
 // TestMatrix_AlphaRename_NoIDCollision prouve que deux expansions du MÊME
 // blueprint@version sur deux call-nodes distincts produisent des node-ids
 // tous distincts (aucune collision). Comble le gap de expand_reference_test.go
-// qui vérifie la PRÉSENCE du préfixe mais pas l'unicité cross-site.
+// qui regarde le préfixe mais pas l unicité cross-site.
 func TestMatrix_AlphaRename_NoIDCollision(t *testing.T) {
 	// Scène : 3 call-nodes vers la même fonction doublerGraph@3.
 	bp := &BlueprintGraph{
@@ -112,7 +112,7 @@ func buildChainGraphs(depth int) (sceneBP *BlueprintGraph, graphs map[string]*Re
 	const leafID = "bp-leaf"
 	graphs["bp-leaf@1"] = doublerGraph(leafID, 1)
 
-	// Niveaux intermédiaires : chacun a un seul nœud reference vers le niveau suivant.
+	// Niveaux du milieu : chacun a un seul nœud reference vers le niveau suivant.
 	for i := depth - 1; i >= 1; i-- {
 		id := func(n int) string {
 			return strings.Repeat("bp-lvl", 1) + strings.Repeat("x", n)
@@ -172,7 +172,7 @@ func buildChainGraphs(depth int) (sceneBP *BlueprintGraph, graphs map[string]*Re
 // doit passer — le check `depth >= max` n'est pas encore déclenché.
 //
 // Sémantique de buildChainGraphs(N) : crée N-1 niveaux d'imbrication de
-// références non-terminales, donc la profondeur de récursion maximale
+// références internes (non finales), donc la profondeur de récursion maximale
 // effective est N-1. La borne maxBlueprintRefExpansionDepth est atteinte
 // pour la première fois quand buildChainGraphs(max+1) est appelé.
 func TestMatrix_DepthBound_BelowMax_Passes(t *testing.T) {
@@ -204,7 +204,7 @@ func TestMatrix_DepthBound_AtMax_Fails(t *testing.T) {
 
 // TestMatrix_MutualCycle_ABtoA prouve que A référence B et B référence A
 // déclenche BLUEPRINT_REF_EXPANSION_LIMIT (le détecteur de stack avant
-// CYCLIC_BLUEPRINT_REFERENCE issue #179) sans boucle infinie.
+// CYCLIC_BLUEPRINT_REFERENCE issue #179) sans boucle sans fin.
 func TestMatrix_MutualCycle_ABtoA(t *testing.T) {
 	bpA := &ResolvedBlueprintGraph{
 		BlueprintID: "bp-a",
@@ -812,7 +812,6 @@ func TestMatrix_HTTPFetcher_ThreeTypedErrorCodes_EndToEnd(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			const graphBody = `{"code":"` // intentionnellement partiel : remplacé par tc.code
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if strings.HasSuffix(r.URL.Path, "/graph") {
 					w.Header().Set("Content-Type", "application/json")
@@ -845,7 +844,7 @@ func TestMatrix_HTTPFetcher_ThreeTypedErrorCodes_EndToEnd(t *testing.T) {
 // jamais un silent current_version fallback.
 func TestMatrix_HTTPFetcher_NetworkError_IsFetchUpstream(t *testing.T) {
 	// Serveur qui ferme la connexion immédiatement.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// Ferme le hijack sans écrire de réponse HTTP valide.
 		hj, ok := w.(http.Hijacker)
 		if !ok {
@@ -870,7 +869,7 @@ func TestMatrix_HTTPFetcher_NetworkError_IsFetchUpstream(t *testing.T) {
 // TestMatrix_HTTPFetcher_Non2xxNonTyped_IsFetchUpstream prouve qu'un 500
 // sans code Blue typé dans le body n'est pas traité comme ErrRefUnresolved.
 func TestMatrix_HTTPFetcher_Non2xxNonTyped_IsFetchUpstream(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_, _ = w.Write([]byte(`{"error":"internal server error"}`))
 	}))
