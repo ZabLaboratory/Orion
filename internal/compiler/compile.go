@@ -180,6 +180,17 @@ func Compile(
 			return nil, nil, "", &CompileError{Diagnostics: *d}
 		}
 
+		// Fold the `__vars..` constant seeds the reference expander harvested
+		// from inlined functions' `variables[].value` (Orion #192) into this
+		// blueprint's defaults. They are in the empty-key `__vars..<var>` form
+		// (varsLeaf), so prefixDefaultLeaf below substitutes the blueprint key
+		// INSIDE the prefix — byte-identical to the leaf prefixGraphNodes wrote
+		// on the reading `core.variable.get@1`. A blueprint with no such seed
+		// leaves bpDefaults untouched (kb.graph.Defaults nil).
+		for path, v := range kb.graph.Defaults {
+			bpDefaults[path] = v
+		}
+
 		bpSorted, topoErr := topologicalSort(graphNodes, kb.graph.Edges)
 		if topoErr != nil {
 			d.AddError(ErrTopologySort, "blueprint %q sort: %v", kb.key, topoErr)
@@ -190,7 +201,7 @@ func Compile(
 		prefixGraphNodes(bpSorted, kb.key)
 		sorted = append(sorted, bpSorted...)
 		for path, v := range bpDefaults {
-			defaults[prefixLeaf(kb.key, path)] = v
+			defaults[prefixDefaultLeaf(kb.key, path)] = v
 		}
 
 		if prog != nil {
@@ -357,6 +368,36 @@ func prefixLeaf(key, path string) string {
 		return path
 	}
 	return key + "." + path
+}
+
+// prefixDefaultLeaf key-namespaces a DEFAULT leaf address the same three ways
+// prefixGraphNodes namespaces a node's runtime leaf — so a default seed always
+// lands on the byte-identical address its reading node binds to:
+//
+//   - `__inputs.platform.*` : exempt (global Quasar address, never prefixed).
+//   - `__vars.*`            : the blueprint key goes INSIDE the prefix
+//     (`__vars..<v>` → `__vars.<key>.<v>`), matching execVariableSet's write
+//     and the `core.variable.get@1` leaf prefixGraphNodes rewrites — NOT the
+//     front-prefixed `<key>.__vars..<v>` plain prefixLeaf would produce.
+//   - everything else        : plain `<key>.` front-prefix (prefixLeaf).
+//
+// The legacy key "" is a no-op for all three (prefixLeaf returns the path; the
+// `__vars` branch reduces to inserting "" → the unchanged `__vars..<v>` form).
+// Pre-#192 defaults (literal leaves, unwired-port fallbacks) are node-id-based
+// and never carry the `__vars.`/`__inputs.platform.` prefixes, so they take the
+// default branch — byte-identical to the prior `prefixLeaf(key, path)`.
+func prefixDefaultLeaf(key, path string) string {
+	switch {
+	case key == "" || path == "":
+		return path
+	case strings.HasPrefix(path, platformLeafPrefix):
+		return path // global Quasar address — exempt (issue #84)
+	case strings.HasPrefix(path, varsLeafPrefix):
+		rest := path[len(varsLeafPrefix):] // ".<name>"
+		return varsLeafPrefix + key + rest
+	default:
+		return prefixLeaf(key, path)
+	}
 }
 
 // prefixGraphNodes namespaces a blueprint's runtime nodes by its key in place

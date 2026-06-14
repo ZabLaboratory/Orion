@@ -211,6 +211,17 @@ type BlueprintGraph struct {
 	ID    string          `json:"id"`
 	Nodes []BlueprintNode `json:"nodes"`
 	Edges []BlueprintEdge `json:"edges"`
+	// Defaults is an OUTPUT-ONLY carrier (never deserialised — json:"-"):
+	// expandReferences fills it with the `__vars..<var>` seeds harvested from
+	// each inlined reference's `variables[].value` (Orion #192). A referenced
+	// function declares a blueprint-local constant (e.g. score-to-color's
+	// `palette` colour list) in `variables[]`, read at runtime by a
+	// `core.variable.get@1`. That value reaches the runtime ONLY as a graph
+	// default seed — no edge or unwired port carries it — so the expander
+	// surfaces it here, namespaced per reference INSTANCE (varNS), for the
+	// per-blueprint compile loop to fold into graph.Defaults. A reference-free
+	// (or variable-free) blueprint leaves this nil — byte-identical to before.
+	Defaults map[string]json.RawMessage `json:"-"`
 }
 
 // ResolvedBlueprintGraph is one published (blueprint_id, version) graph as
@@ -221,12 +232,35 @@ type BlueprintGraph struct {
 // sub-graph's core.input@1 / core.output@1 nodes by name) and the served
 // purity (stamped onto the expanded sub-tree, never recomputed — ADR 006).
 type ResolvedBlueprintGraph struct {
-	BlueprintID string             `json:"blueprint_id"`
-	Version     int                `json:"version"`
-	Nodes       []BlueprintNode    `json:"nodes"`
-	Edges       []BlueprintEdge    `json:"edges"`
-	Interface   BlueprintInterface `json:"interface"`
-	Purity      BlueprintPurity    `json:"purity"`
+	BlueprintID string          `json:"blueprint_id"`
+	Version     int             `json:"version"`
+	Nodes       []BlueprintNode `json:"nodes"`
+	Edges       []BlueprintEdge `json:"edges"`
+	// Variables are the blueprint-local constants / shared-state slots Blue
+	// serves alongside the graph (Blue schemas/version.py: `variables[]`,
+	// schemas/graph.py Variable). A variable carrying a `value` is a CONSTANT
+	// seed: `core.variable.get@1 {variable: <name>}` reads it at runtime off
+	// the `__vars..<name>` leaf, but nothing wires that leaf — so the value
+	// reaches the runtime only as a compile-time graph default. Without this
+	// field the JSON `variables[]` was dropped on deserialisation (Go ignores
+	// unknown keys), the leaf never seeded, and the get resolved null (Orion
+	// #192 — the score-to-color palette stuck at the COLD_COLOR guard).
+	Variables []BlueprintVariable `json:"variables,omitempty"`
+	Interface BlueprintInterface  `json:"interface"`
+	Purity    BlueprintPurity     `json:"purity"`
+}
+
+// BlueprintVariable mirrors Blue's served `variables[]` element (schemas/
+// graph.py Variable): a named constant or shared-state slot. When Value is
+// present it is a CONSTANT — the expander seeds it into graph.Defaults under
+// the per-instance-namespaced `__vars..<varNS(name)>` leaf the inlined
+// `core.variable.get@1` reads. A Value-less variable (pure shared state,
+// written by a `variable.set` before any read) carries no seed and is skipped.
+type BlueprintVariable struct {
+	ID    string          `json:"id"`
+	Name  string          `json:"name"`
+	Type  string          `json:"type"`
+	Value json.RawMessage `json:"value,omitempty"`
 }
 
 // BlueprintInterface is the version's declared pins. Orion matches the
