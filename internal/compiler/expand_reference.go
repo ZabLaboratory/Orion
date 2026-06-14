@@ -6,16 +6,17 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // maxBlueprintRefExpansionDepth bounds recursive blueprint-reference
 // expansion (ADR 014 §5 graph-explosion mitigation). It is a compiler
 // constant, not an env var: it is a structural safety bound on the SHAPE of
 // an authored graph, not an operator-tunable runtime parameter, and the cost
-// is paid once at push (never per tick). A deep or self-referential tree
-// crosses it and is rejected with BLUEPRINT_REF_EXPANSION_LIMIT — which also
-// guarantees the recursion terminates before the dedicated cyclic detector
-// (CYCLIC_BLUEPRINT_REFERENCE, issue #179) lands.
+// is paid once at push (never per tick). A deep (acyclic) reference tree
+// crosses it and is rejected with BLUEPRINT_REF_EXPANSION_LIMIT; a true cycle
+// is caught first and more precisely by the dedicated detector
+// (CYCLIC_BLUEPRINT_REFERENCE, issue #179) before this bound is reached.
 const maxBlueprintRefExpansionDepth = 16
 
 // expandReferences rewrites a blueprint graph so it contains NO `reference`
@@ -68,8 +69,9 @@ type flatGraph struct {
 
 // expandGraph expands every reference node in (nodes, edges) into flat
 // core.* and returns the merged result. depth bounds the recursion; stack is
-// the (blueprint_id@version) resolution path used to trip the bound on a
-// trivial cycle (A→A or A→B→A) before issue #179's full cycle detector.
+// the (blueprint_id@version) resolution path — the chain of references on the
+// CURRENT branch — against which expandOne detects cycles (A→A or A→B→A,
+// CYCLIC_BLUEPRINT_REFERENCE, issue #179).
 func (ex *refExpander) expandGraph(
 	ctx context.Context,
 	nodes []BlueprintNode,
@@ -154,10 +156,28 @@ func (ex *refExpander) expandOne(
 
 	key := fmt.Sprintf("%s@%d", ref.BlueprintID, ref.Version)
 
-	// Depth bound (ADR 014 §5). Crossing it rejects the push; it also caps
-	// the recursion so a trivial cycle (the same key already on the stack)
-	// can never loop forever even before issue #179's full detector lands.
-	if depth >= maxBlueprintRefExpansionDepth || onStack(stack, key) {
+	// Cycle detection (ADR 014 §5 / issue #179). If this key is already on the
+	// CURRENT resolution path, inlining it loops forever — reject with the
+	// precise CYCLIC_BLUEPRINT_REFERENCE, citing the offending chain. This is
+	// the path STACK, not the memoised fetch set (ex.resolved): a function
+	// legitimately reused across sibling branches of a DAG (diamond A→B, A→C,
+	// B→D, C→D) appears in the fetch set twice but never twice on one path, so
+	// it is NOT a cycle and expands normally.
+	if onStack(stack, key) {
+		return flatGraph{}, []Diagnostic{{
+			Code:     ErrCyclicBlueprintReference,
+			Severity: "error",
+			Message: fmt.Sprintf(
+				"reference node %s: cyclic blueprint reference: %s",
+				callID, strings.Join(append(stack, key), " → ")),
+			Path: callID,
+		}}
+	}
+
+	// Depth/size bound (ADR 014 §5). With cycles caught above, crossing this
+	// genuinely means the (acyclic) reference tree is too deep/wide; the
+	// blow-up is rejected at push, not at runtime (cost paid once, at compile).
+	if depth >= maxBlueprintRefExpansionDepth {
 		return flatGraph{}, []Diagnostic{{
 			Code:     ErrBlueprintRefExpansionLimit,
 			Severity: "error",
@@ -294,8 +314,8 @@ func (ex *refExpander) expandOne(
 
 	// Recurse: the sub-graph may itself contain reference nodes (Blue serves
 	// ONE level raw — Orion re-fetches each nested reference, contract "One
-	// level only"). Push this key onto the resolution stack so a cycle back
-	// to it trips the bound.
+	// level only"). Push this key onto the resolution stack so a reference
+	// back to it (on this path) is detected as a cycle by expandOne.
 	nested, nestedDiags := ex.expandGraph(ctx, sub.nodes, sub.edges, depth+1, append(stack, key))
 	if len(nestedDiags) > 0 {
 		return flatGraph{}, nestedDiags
