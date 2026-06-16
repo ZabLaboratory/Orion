@@ -237,5 +237,12 @@ Le clone reste `SetValidationMode()` → B10 → zéro-effet. Le garde
   sur `/validate/simulate` ? Rejoint ADR Blue 004 §7. Options : token-bucket en mémoire
   Orion (process-local, simple) vs limite côté ZabGate (transverse). **Arbitrage porteur /
   à cadrer avec Conduit** ; peut être livré en suivi sans bloquer le MVP de cet ADR.
+
+  > **Risque résiduel accepté (Bastion, clearance #198) :** `/validate/simulate` est
+  > CPU-bound et exécute un graphe fourni par l'appelant, borné par-requête (steps/wall/413)
+  > mais sans throttle par-débit (Q1). Accepté pour le MVP — surface limitée au seul
+  > service-token `bluemcp-agent` derrière ZabGate, exécution synchrone single-goroutine
+  > bornée, aucune amplification. Throttle par token (token-bucket Orion ou limite ZabGate)
+  > à livrer en suivi, sans bloquer ce merge.
 - **Q2 — `blueprint_ref` (phase 2b).** Garde-t-on la résolution d'une version poussée, et
   avec quelle gate scope additionnelle ? Descope par défaut ici.
