@@ -470,6 +470,69 @@ func TestSimulateR7_DanglingExecTarget_CompileFailed(t *testing.T) {
 	}
 }
 
+// TestSimulateR7_UnknownUnwiredNode_CompileFailed closes the residue this
+// change targets: an unknown `definition` that is NOT wired into an exec spine
+// (no exec pin, no edge) used to slip through — the exec partition only fires
+// EXEC_OP_UNMAPPED for an exec-pinned node, so the unknown node was treated as
+// a data node the in-body seam never compiles, and the endpoint returned a
+// silent 200 blueprints:null (the live `core.nonexistent.fake-node@99` case).
+// The up-front conformance pass now rejects it as UNKNOWN_NODE under
+// COMPILE_FAILED, never blueprints:null.
+func TestSimulateR7_UnknownUnwiredNode_CompileFailed(t *testing.T) {
+	bp := &compiler.BlueprintGraph{
+		ID: "unknown-unwired",
+		Nodes: []compiler.BlueprintNode{
+			{ID: "start", Compute: "core.event.on-start@1",
+				Outputs: []compiler.BlueprintPort{execOut("then")}},
+			// Unknown definition, DATA pin only, no edge — exactly the live shape.
+			{ID: "ghost", Compute: "core.nonexistent.fake-node@99",
+				Outputs: []compiler.BlueprintPort{dataPort("out")}},
+		},
+	}
+	diags := simulateCompileFail(t, bp)
+	found := false
+	for _, d := range diags {
+		if m, ok := d.(map[string]any); ok && m["code"] == "UNKNOWN_NODE" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected an UNKNOWN_NODE diagnostic for an unknown unwired node, got %+v", diags)
+	}
+}
+
+// TestSimulateR7_NoExecProgram_CompileFailed: a well-formed graph of only known
+// nodes but with NO exec spine (no on-start/on-tick/on-event) produces zero
+// exec programs. Simulate fires entrypoints against a synthetic event, so there
+// is nothing to exercise — the endpoint must NOT return a silent 200
+// blueprints:null but a 400 COMPILE_FAILED / NO_EXEC_PROGRAM (ADR 015 R7).
+func TestSimulateR7_NoExecProgram_CompileFailed(t *testing.T) {
+	bp := &compiler.BlueprintGraph{
+		ID: "no-spine",
+		Nodes: []compiler.BlueprintNode{
+			{ID: "in", Compute: "core.input@1",
+				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"score"`)},
+				Outputs: []compiler.BlueprintPort{dataPort("out")}},
+			{ID: "out", Compute: "core.output@1",
+				Config: map[string]json.RawMessage{"name": json.RawMessage(`"display"`)},
+				Inputs: []compiler.BlueprintPort{dataPort("in")}},
+		},
+		Edges: []compiler.BlueprintEdge{
+			{FromNode: "in", FromPort: "out", ToNode: "out", ToPort: "in"},
+		},
+	}
+	diags := simulateCompileFail(t, bp)
+	found := false
+	for _, d := range diags {
+		if m, ok := d.(map[string]any); ok && m["code"] == "NO_EXEC_PROGRAM" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected a NO_EXEC_PROGRAM diagnostic, got %+v", diags)
+	}
+}
+
 // TestSimulateR7_ReferenceNode_CompileFailed: a `reference` node (ADR 014
 // expansion needs a Fetcher → egress) is descoped MVP and rejected
 // REFERENCE_NOT_SUPPORTED under COMPILE_FAILED — the invariant that keeps the
