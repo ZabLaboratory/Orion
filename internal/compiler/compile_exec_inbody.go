@@ -1,6 +1,10 @@
 package compiler
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/ZabLaboratory/Orion/internal/conformance"
+)
 
 // This file is the in-body exec-compile seam (ADR 015 Amendment 1 §A1.3):
 // the validate/simulate endpoint must compile an authoring-level Blue graph
@@ -35,15 +39,42 @@ import "encoding/json"
 // that the graph produced no entrypoints.
 const ErrReferenceNotSupported DiagnosticCode = "REFERENCE_NOT_SUPPORTED"
 
+// ErrUnknownNode rejects a node whose `definition` is not in Orion's served
+// set (ADR 015 §A1.3 step 3: "noeud `definition` inconnu / non servi →
+// diagnostic compilateur"). The exec partition's EXEC_OP_UNMAPPED only fires
+// for an unknown node that ALSO carries an exec pin (so it is routed to the
+// exec layer); an unknown node with no exec pin — the live-observed
+// `core.nonexistent.fake-node@99` left UNWIRED — would otherwise fall through
+// as a "data node" the in-body seam never compiles, and the request returned
+// a silent `blueprints: null` (the muteness this amendment closes). This pass
+// validates EVERY node id against conformance.Classify (the single served-set
+// source of truth, CI-cross-checked) up front, so an unknown definition fails
+// loud under COMPILE_FAILED whether or not it sits in an exec spine.
+const ErrUnknownNode DiagnosticCode = "UNKNOWN_NODE"
+
+// ErrNoExecProgram rejects an in-body simulate graph that compiles cleanly but
+// produces ZERO exec programs (ADR 015 §A1.3 step 4 expects a non-null
+// `blueprints`). Simulate is a dry-run that FIRES entrypoints against a
+// synthetic event; a graph with no exec node — no on-start/on-tick/on-event
+// spine — has nothing to fire, so returning a silent 200 `blueprints: null`
+// hides an authoring mistake (the residue the parent issue reports). Unlike
+// the push path (where a pure-dataflow scene trivially validates — Harness
+// doc), submitting such a graph TO SIMULATE is almost certainly an author
+// error: there is no executable program to exercise. We fail loud so the
+// bluemcp agent learns "no entrypoint" instead of an empty report.
+const ErrNoExecProgram DiagnosticCode = "NO_EXEC_PROGRAM"
+
 // CompiledExecInBody is the result of an in-body exec compile: the marshalled
 // exec programs (the bytes graph.ExecPrograms carries) plus the constant
 // `__vars..` seeds harvested from the graph's variables[]. The caller folds
 // both onto a minimal compiler.Graph the harness then drives.
 type CompiledExecInBody struct {
 	// Programs is one marshalled runtime.ExecProgram per exec-bearing
-	// blueprint — here always 0 or 1 (a single draft blueprint per request,
-	// legacy key "", ADR 015 §A1.2). Empty when the graph carries no exec
-	// node (a pure-dataflow draft: no exec spine to fire).
+	// blueprint — here always exactly 1 (a single draft blueprint per request,
+	// legacy key "", ADR 015 §A1.2). CompileExecPrograms never returns a
+	// CompiledExecInBody with zero programs: a graph with no exec spine is
+	// rejected as NO_EXEC_PROGRAM (nothing to simulate), so a successful
+	// compile always carries at least one program.
 	Programs []json.RawMessage
 	// Defaults are the `__vars.<key>.<name>` constant seeds the exec
 	// interpreter's variable.get reads (Orion #192 mechanism), key-prefixed
@@ -78,6 +109,24 @@ func CompileExecPrograms(bp *BlueprintGraph, key string) (*CompiledExecInBody, *
 		return nil, &CompileError{Diagnostics: *d}
 	}
 
+	// Validate EVERY node's `definition` against the served set up front, so an
+	// unknown node is rejected whether or not it carries an exec pin (§A1.3
+	// step 3). The exec partition's EXEC_OP_UNMAPPED only catches an unknown
+	// node routed to the exec layer (one with an exec pin); an unknown node
+	// left as a "data node" (no exec pin, unwired — the live `fake-node@99`
+	// case) would otherwise slip through silently, because the in-body seam
+	// compiles only the exec tranche. conformance.Classify is the single
+	// served-set source of truth (CI-cross-checked); ok=false ⇒ unknown.
+	for _, n := range bp.Nodes {
+		if _, ok := conformance.Classify(n.Compute); !ok {
+			d.AddErrorAt(ErrUnknownNode, n.ID,
+				"node %s definition %q is not a served Orion node", n.ID, n.Compute)
+		}
+	}
+	if d.HasErrors() {
+		return nil, &CompileError{Diagnostics: *d}
+	}
+
 	// Run the EXACT push-path partition (exec_partition.go) — it consumes
 	// only the in-body graph. partitionBlueprint already appends
 	// validateExecTargets' dangling-target diagnostics.
@@ -96,6 +145,21 @@ func CompileExecPrograms(bp *BlueprintGraph, key string) (*CompiledExecInBody, *
 			return nil, &CompileError{Diagnostics: *d}
 		}
 		out.Programs = append(out.Programs, raw)
+	}
+
+	// Zero exec programs means the graph carries no exec spine — no
+	// on-start/on-tick/on-event entrypoint to fire. For simulate (a dry-run
+	// AGAINST a synthetic event) there is nothing to exercise, so a silent 200
+	// `blueprints: null` would hide an authoring mistake. Fail loud with
+	// NO_EXEC_PROGRAM so the caller learns "no entrypoint" rather than reading
+	// an empty report (the residue this change closes). Note this is the
+	// in-body simulate contract; the push path's pure-dataflow scene still
+	// validates trivially (Harness.Validate doc) — that path never reaches here.
+	if len(out.Programs) == 0 {
+		d.AddError(ErrNoExecProgram,
+			"graph produced no executable program — no recognised entrypoint "+
+				"(on-start/on-tick/on-event) is wired into an exec spine; nothing to simulate")
+		return nil, &CompileError{Diagnostics: *d}
 	}
 
 	// Fold this blueprint's `variables[].value` constants into the seeds the

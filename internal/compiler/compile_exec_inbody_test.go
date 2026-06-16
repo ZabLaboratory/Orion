@@ -145,8 +145,14 @@ func TestCompileExecPrograms_DanglingTarget(t *testing.T) {
 	}
 }
 
-// TestCompileExecPrograms_PureDataflowNoProgram: a graph with no exec node
-// compiles to zero programs (not an error) — a pure-dataflow draft.
+// TestCompileExecPrograms_PureDataflowNoProgram: a graph with no exec spine
+// (no on-start/on-tick/on-event) produces zero exec programs. On the SIMULATE
+// path that is an author error — a dry-run fires entrypoints against a
+// synthetic event, and there is nothing to fire. The seam rejects it loud as
+// NO_EXEC_PROGRAM rather than returning a silent `blueprints: null` (ADR 015
+// §A1.3 step 4 / R7: jamais 200 muet). NB: the PUSH path still treats a
+// pure-dataflow scene as trivially validated (Harness.Validate doc) — that
+// path never calls CompileExecPrograms.
 func TestCompileExecPrograms_PureDataflowNoProgram(t *testing.T) {
 	bp := &BlueprintGraph{
 		ID: "bp",
@@ -160,11 +166,39 @@ func TestCompileExecPrograms_PureDataflowNoProgram(t *testing.T) {
 		},
 		Edges: []BlueprintEdge{{FromNode: "in", FromPort: "out", ToNode: "out", ToPort: "in"}},
 	}
-	out, cerr := CompileExecPrograms(bp, "")
-	if cerr != nil {
-		t.Fatalf("pure-dataflow graph should not error: %v", cerr)
+	_, cerr := CompileExecPrograms(bp, "")
+	if cerr == nil || !cerr.HasCode(ErrNoExecProgram) {
+		t.Fatalf("want NO_EXEC_PROGRAM for a graph with no exec spine, got %v", cerr)
 	}
-	if len(out.Programs) != 0 {
-		t.Fatalf("pure-dataflow graph should yield 0 programs, got %d", len(out.Programs))
+	if !errors.Is(cerr, ErrCompileFailed) {
+		t.Fatalf("compile error should match ErrCompileFailed sentinel")
+	}
+}
+
+// TestCompileExecPrograms_RejectsUnknownUnwiredNode: an unknown `definition`
+// that is NOT wired into an exec spine (no exec pin) must still fail loud as
+// UNKNOWN_NODE. This is the live-observed residue: `core.nonexistent.fake-
+// node@99` left unwired slipped through the exec partition (it only fires
+// EXEC_OP_UNMAPPED for an exec-pinned node) and the request returned a silent
+// `blueprints: null`. The up-front conformance.Classify pass catches it
+// regardless of pins. An on-start is included so the failure is the unknown
+// node, NOT NO_EXEC_PROGRAM.
+func TestCompileExecPrograms_RejectsUnknownUnwiredNode(t *testing.T) {
+	bp := &BlueprintGraph{
+		ID: "bp",
+		Nodes: []BlueprintNode{
+			{ID: "start", Compute: "core.event.on-start@1", Outputs: []BlueprintPort{execOutP("then")}},
+			// Unknown definition, no exec pin, no edge — a "data node" the
+			// partition never routes to the exec layer.
+			{ID: "ghost", Compute: "core.nonexistent.fake-node@99",
+				Outputs: []BlueprintPort{dataP("out")}},
+		},
+	}
+	_, cerr := CompileExecPrograms(bp, "")
+	if cerr == nil || !cerr.HasCode(ErrUnknownNode) {
+		t.Fatalf("want UNKNOWN_NODE for an unknown unwired node, got %v", cerr)
+	}
+	if !errors.Is(cerr, ErrCompileFailed) {
+		t.Fatalf("compile error should match ErrCompileFailed sentinel")
 	}
 }
