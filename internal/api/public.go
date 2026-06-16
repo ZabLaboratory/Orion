@@ -77,6 +77,13 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// prod, so every report drops as an unknown wake key, 202.
 	mux.HandleFunc("POST /api/v1/scenes/{id}/exec/completion", postExecCompletion(deps))
 
+	// Service-scoped simulate (ADR 015, issues #194/#195/#196/#197): a
+	// synchronous dry-run of a draft graph against a synthetic event for
+	// the bluemcp agent. Separate /validate/* surface gated by exact scope
+	// `orion.validate.session` — NOT under /show/* (operator-only path
+	// untouched: regression-guard R2). No persistence, zero effect (B10).
+	mux.HandleFunc("POST /api/v1/validate/simulate", postSimulate(deps))
+
 	mux.HandleFunc("GET /api/v1/show", getShow(deps))
 	mux.HandleFunc("POST /api/v1/show/active-scene", postActiveScene(deps))
 	mux.HandleFunc("POST /api/v1/show/test-sessions", postTestSession(deps))
