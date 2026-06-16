@@ -55,9 +55,9 @@ func requireServiceScope(scope string, handler http.HandlerFunc) http.HandlerFun
 }
 
 type simulateBody struct {
-	Graph          json.RawMessage          `json:"graph"`
-	SyntheticEvent runtime.SyntheticEvent   `json:"synthetic_event"`
-	Entrypoints    []string                 `json:"entrypoints,omitempty"`
+	Graph          json.RawMessage        `json:"graph"`
+	SyntheticEvent runtime.SyntheticEvent `json:"synthetic_event"`
+	Entrypoints    []string               `json:"entrypoints,omitempty"`
 }
 
 // postSimulate handles POST /api/v1/validate/simulate. It decodes a draft
@@ -82,16 +82,49 @@ func postSimulate(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
-		// Decode the draft graph; a corrupt artefact fails loudly (400),
-		// never airs an unproven scene (ADR 015 §3.3 step 2).
-		graph := &compiler.Graph{}
-		if err := json.Unmarshal(body.Graph, graph); err != nil {
+		// Decode the AUTHORING-level Blue graph the caller submits — a
+		// compiler.BlueprintGraph ({nodes, edges, variables}), NOT a
+		// compiler.Graph (ADR 015 Amendment 1 §A1.2). The earlier code decoded
+		// into compiler.Graph, whose ExecPrograms field nothing in a Blue graph
+		// fills, so the harness fired zero programs and returned blueprints:null
+		// muet (#199, A1.1). A corrupt artefact, or one with no nodes, is a
+		// malformed body → 400 INVALID_GRAPH.
+		bp := &compiler.BlueprintGraph{}
+		if err := json.Unmarshal(body.Graph, bp); err != nil || len(bp.Nodes) == 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_GRAPH"})
 			return
 		}
+
+		// Compile the exec layer in-body, with NO Fetcher and zero egress
+		// (§A1.3 step 2 / §A1.4): the partition reads only the in-body graph.
+		// A compile error (unknown exec op, dangling exec target, cyclic
+		// component, or a descoped `reference` node) → 400 COMPILE_FAILED with
+		// the diagnostics — DISTINCT from INVALID_GRAPH (a malformed body) and
+		// from INVALID_BUNDLE. Never a silent blueprints:null on a graph the
+		// compiler rejects (§A1.3 step 3).
+		compiled, cerr := compiler.CompileExecPrograms(bp, "")
+		if cerr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"code":        "COMPILE_FAILED",
+				"diagnostics": compileDiagnostics(cerr),
+			})
+			return
+		}
+
+		// Build the minimal data-empty Graph the harness drives: the compiled
+		// exec programs + the variable seeds, nothing else (rendering and the
+		// data tranche are not exercised in simulate — §A1.3 step 2).
+		graph := &compiler.Graph{
+			SceneID:      bp.ID,
+			ExecPrograms: compiled.Programs,
+			Defaults:     compiled.Defaults,
+		}
 		progs, err := runtime.ExecProgramsFromGraph(graph)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_GRAPH"})
+			// The programs were just marshalled by our own compiler, so a
+			// decode failure here is an internal contract break, not bad input.
+			deps.Logger.Error("simulate: exec program decode of freshly compiled graph failed", "err", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
 			return
 		}
 
@@ -109,6 +142,27 @@ func postSimulate(deps PublicDeps) http.HandlerFunc {
 		report := deps.Harness.Simulate(graph, bundle, progs, body.SyntheticEvent, body.Entrypoints)
 		writeJSON(w, http.StatusOK, report)
 	})
+}
+
+// compileDiagnostics projects a *compiler.CompileError into the
+// {code, message} list the COMPILE_FAILED response carries (ADR 015 §A1.3
+// step 3). Only error-severity items surface — a warning never fails the
+// compile, so it would mislead the caller into thinking the graph was
+// rejected. Path is included when present so the agent can point at the
+// offending node.
+func compileDiagnostics(cerr *compiler.CompileError) []map[string]string {
+	out := make([]map[string]string, 0, len(cerr.Diagnostics.Items))
+	for _, it := range cerr.Diagnostics.Items {
+		if it.Severity != "error" {
+			continue
+		}
+		d := map[string]string{"code": string(it.Code), "message": it.Message}
+		if it.Path != "" {
+			d["path"] = it.Path
+		}
+		out = append(out, d)
+	}
+	return out
 }
 
 // readBounded reads up to max bytes; if the body has more, it returns

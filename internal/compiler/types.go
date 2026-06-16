@@ -211,6 +211,21 @@ type BlueprintGraph struct {
 	ID    string          `json:"id"`
 	Nodes []BlueprintNode `json:"nodes"`
 	Edges []BlueprintEdge `json:"edges"`
+	// Variables are the blueprint-local constants Blue serves on the
+	// authoring graph (Blue/src/blue/schemas/graph.py `variables[]`). On the
+	// PUSH path a top-level blueprint's variables reach the compile loop via
+	// expandReferences harvesting them into Defaults (Orion #192); a
+	// reference-free top-level blueprint has no expander pass, so its own
+	// `variables[].value` would be dropped (Go ignores unknown JSON keys
+	// unless a field binds them). It was previously absent here because the
+	// push path's only `variables[]` carrier is reference inlining
+	// (ResolvedBlueprintGraph.Variables). The in-body simulate compile path
+	// (ADR 015 A1.3) decodes a top-level authoring graph directly — no
+	// expander runs — so it reads this field to seed `__vars..<name>` itself
+	// (CompileExecPrograms). A variable carrying a `value` is a CONSTANT seed
+	// the inlined `core.variable.get@1` reads off `__vars..<name>`; a
+	// value-less variable (pure shared state) carries no seed.
+	Variables []BlueprintVariable `json:"variables,omitempty"`
 	// Defaults is an OUTPUT-ONLY carrier (never deserialised — json:"-"):
 	// expandReferences fills it with the `__vars..<var>` seeds harvested from
 	// each inlined reference's `variables[].value` (Orion #192). A referenced

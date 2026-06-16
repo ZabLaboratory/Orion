@@ -1,12 +1,21 @@
 # ADR 015 — Service-scoped simulate endpoint
 
-- **Status:** accepted
+- **Status:** accepted (**Amendment 1**, 2026-06-16)
 - **Date:** 2026-06-16
 - **Decided:** 2026-06-16
 - **Deciders:** @ClodoCapeo
 - **Author:** Atlas
 - **Supersedes:** —
 - **Superseded by:** —
+
+> **⚠️ Amendment 1 (2026-06-16) en vigueur.** Le contrat de requête de §3.2 et le
+> flux d'exécution de §3.3 ont été **corrigés** : l'entrée n'est PAS un `compiler.Graph`
+> pré-compilé mais le **graphe d'authoring Blue** (`BlueprintGraph`), qu'Orion **compile
+> in-body** avant `Harness.Simulate`. Lire §3.2/§3.3 **à travers** la section
+> [Amendment 1](#amendment-1--2026-06-16--compilation-in-body-du-graphe-blue) en fin de
+> document — elle prime sur le texte original là où ils divergent. Le reste de l'ADR
+> (transport REST §3.1, auth/scope §3.2, isolation B10, budget, descope `blueprint_ref`)
+> est inchangé.
 
 ## 1. Context
 
@@ -245,4 +254,137 @@ Le clone reste `SetValidationMode()` → B10 → zéro-effet. Le garde
   > bornée, aucune amplification. Throttle par token (token-bucket Orion ou limite ZabGate)
   > à livrer en suivi, sans bloquer ce merge.
 - **Q2 — `blueprint_ref` (phase 2b).** Garde-t-on la résolution d'une version poussée, et
-  avec quelle gate scope additionnelle ? Descope par défaut ici.
+  avec quelle gate scope additionnelle ? Descope par défaut ici. **(Amendment 1 : reste
+  descope — l'Option A, graphe in-body compilé par Orion, rend `blueprint_ref` non
+  nécessaire pour le MVP simulate ; il n'apporterait qu'un accès store/read au
+  service-token, repoussé à 2b avec sa gate additionnelle.)**
+
+---
+
+## Amendment 1 — 2026-06-16 — Compilation in-body du graphe Blue
+
+### A1.1 Cause racine (bug constaté en prod, post-#198)
+
+L'endpoint `POST /api/v1/validate/simulate`, mergé tel quel (#198), **ne produit jamais
+de rapport per-entrypoint** (`blueprints: null`) en usage réel. Diagnostic (Lens,
+preuves file:line) :
+
+- `postSimulate` (`internal/api/validate_simulate.go:87-92`) décode le corps `graph`
+  dans un `compiler.Graph` (`json.Unmarshal`). Tous les champs de `compiler.Graph` sont
+  `omitempty` → le décode **réussit silencieusement** sur un graphe Blue, mais le champ
+  `ExecPrograms` reste **vide** (rien dans le JSON Blue ne le porte).
+- `runtime.ExecProgramsFromGraph` (`validation_harness.go:59-72`) voit
+  `len(graph.ExecPrograms) == 0` → retourne `(nil, nil)`. `Harness.Simulate` boucle alors
+  sur **zéro programme** → `blueprints: null`. Aucune erreur, aucun signal.
+
+**Hypothèse fausse de l'ADR original (§3.2 ligne 121, §3.3 step 1-2).** Le commentaire
+« `compiler.Graph` draft, déjà compilé par Blue » est **faux**. Blue ne produit pas de
+`compiler.Graph` Orion : il produit un **graphe d'authoring** (`Blue/src/blue/schemas/
+graph.py` → `{nodes:[{id, definition, config, inputs, outputs}], edges:[{from_node,
+from_port, to_node, to_port}], variables}`). Le champ `compiler.Graph.ExecPrograms`
+n'est rempli **que par le compilateur Orion** au push de scène
+(`internal/compiler/exec_partition.go::partitionBlueprint` → `marshalExecProgram`,
+assigné en `compile.go:312`). **L'étape de compilation manquait** dans le chemin simulate.
+
+Les tests #198 construisaient des `ExecProgram` directement en Go et ne passaient jamais
+par le décodage d'un graphe Blue authoring-level — d'où le faux sentiment de couverture
+(cf. A1.5).
+
+### A1.2 Décision — Option A : compilation in-body (remplace §3.2 ligne 121, §3.3 step 1-2)
+
+L'endpoint accepte le **graphe d'authoring Blue**, le **compile dans Orion** via la chaîne
+de compilation existante, puis appelle `Harness.Simulate`. Options écartées : **B**
+(`blueprint_ref` → resolve d'une version poussée = read store + egress + gate scope
+additionnelle + clearance Bastion) ; **C** (compilateur en Python côté Blue/bluemcp =
+drift de sémantique, viole D3/R5 et R6 ADR 003). L'Option A ne touche aucune surface
+sensible nouvelle (cf. A1.4).
+
+**Forme d'entrée exacte (corrige le bloc requête §3.2).** Le champ `graph` est un
+`BlueprintGraph` (`internal/compiler/types.go:208-225`, miroir de
+`Blue/src/blue/schemas/graph.py`), tel que `create_draft_version` le produit :
+
+```jsonc
+{
+  "graph": {
+    "id": "…",
+    "nodes": [
+      { "id": "n1", "definition": "core.input@1", "config": { "name": "…" },
+        "inputs": [ /* BlueprintPort: name,type,kind(data|exec),default */ ],
+        "outputs": [ … ] }
+      // … core.* uniquement ; PAS de noeud `reference` en MVP (cf. A1.3 c)
+    ],
+    "edges": [ { "from_node":"n1","from_port":"out","to_node":"n2","to_port":"in" } ],
+    "variables": [ { "id":"v1","name":"…","type":"…","value": … } ]
+  },
+  "synthetic_event": { "topic": "chat", "payload": { … } },
+  "entrypoints": [ "optional/explicit/keys" ]
+}
+```
+
+Le champ `graph` se décode désormais dans un **`compiler.BlueprintGraph`**, jamais dans un
+`compiler.Graph`. La clé blueprint scene-local par défaut est `""` (legacy single-key,
+ADR 001 §3.2) — un seul blueprint draft par requête en MVP.
+
+### A1.3 Flux d'exécution (remplace §3.3 step 1-3)
+
+1. Décoder `graph` dans un `compiler.BlueprintGraph`. Échec JSON ou `nodes` vide →
+   **400 `INVALID_GRAPH`** (inchangé en code, corrigé en cible de décode).
+2. **Compiler in-body, sans Fetcher (zéro egress).** Nouveau seam exporté dans le package
+   `compiler` (ex. `CompileExecPrograms(bp *BlueprintGraph, key string)
+   ([]json.RawMessage, *CompileError)`) qui exécute la partition exec existante
+   (`partitionBlueprint` + `validateExecTargets` + `marshalExecProgram`) **sans** appeler
+   `Compile()` (lequel exige un `Fetcher` HTTP vers Blue/Canvas — l'egress qu'on refuse).
+   La partition n'a besoin **que** du graphe in-body : elle lit `node.definition`,
+   `inputs/outputs[].kind`, `edges`, `variables` — pas de manifest réseau. Le résultat
+   alimente `graph.ExecPrograms` d'un `compiler.Graph` minimal (data-tranche vide : le
+   rendu n'est pas exercé en simulate).
+3. **Comportement d'erreur de compilation (nouveau).** Toute diagnostic error-severity de
+   la partition → **400 `COMPILE_FAILED`** avec la liste des diagnostics
+   (`{code, message}` par item), **distinct** de `INVALID_GRAPH` (corps mal formé) et de
+   `INVALID_BUNDLE`. Couvre au minimum :
+   - noeud `definition` inconnu / non servi → diagnostic compilateur ;
+   - cible exec danglante (`EXEC_UNKNOWN_NODE`, `validateExecTargets`) ;
+   - cycle de composant (`CYCLIC_COMPONENT`) le cas échéant ;
+   - **noeud `reference` présent** (ADR 014) : l'expansion exige un `Fetcher` (resolve
+     d'une version poussée) → **descope MVP**, rejeté `COMPILE_FAILED` code
+     `REFERENCE_NOT_SUPPORTED`. Plus jamais de `blueprints: null` muet.
+4. `progs, _ := runtime.ExecProgramsFromGraph(graph)` lit maintenant un `ExecPrograms`
+   **non vide** ; `Harness.Simulate(graph, bundle, progs, syntheticEvent, entrypoints)`
+   tire les entrypoints (inchangé). Sérialise le `ValidationReport` → **200**, `blueprints`
+   non-null.
+
+### A1.4 Invariants préservés (aucune surface sensible nouvelle)
+
+- **Isolation B10 / validation-mode :** inchangée — le seam compile produit des
+  `ExecProgram` ; l'exécution reste `Harness.Simulate` sur clone validation-mode, seam
+  d'effet inerte. `ValidateValidationModeCoverage()` reste appelée avant exécution.
+- **Budget steps/wall, borne de corps (`maxSimulateBody` 1 MiB → 413) :** inchangés. La
+  compilation in-body est bornée par la taille du corps (un graphe draft reste petit).
+- **Gate exact-scope `orion.validate.session` (fail-closed, `hasExactScope`) :** inchangée.
+- **Pas d'egress réseau nouveau :** le seam compile **n'utilise pas de `Fetcher`** ; il ne
+  touche ni Blue, ni Canvas, ni le store. `reference` (qui exigerait un resolve réseau)
+  est explicitement rejeté. **C'est l'invariant clé qui maintient la clearance Bastion
+  #198 valable** : la surface reste « exécuter un graphe fourni par l'appelant, borné,
+  zéro-effet » — la compilation in-body est du **CPU pur sur l'entrée déjà bornée**, pas
+  une nouvelle capacité réseau ni store. → **Pas de nouvelle clearance Bastion requise.**
+  (Si une itération future réintroduisait `reference`/`blueprint_ref` avec resolve réseau
+  ou read store, **cela** rouvrirait R4 et exigerait Bastion — hors de cet amendement.)
+- **Pas de persistance :** aucun record `scene_validations`, aucun reload roster (inchangé).
+
+### A1.5 Resolution criteria — ajout (ferme le trou de couverture)
+
+Les critères §6.1-6.6 restent valides. **R3 (§6.3) est renforcé** et un **R7** est ajouté :
+
+7. **R7 (compile in-body end-to-end — trou de couverture #198).** Un **graphe Blue
+   authoring-level en JSON** (forme `BlueprintGraph` `{nodes,edges,variables}` avec au
+   moins un entrypoint on-event/on-start et un noeud exec, tel qu'émis par
+   `create_draft_version` — **PAS** un `ExecProgram` construit en Go) envoyé à l'endpoint
+   produit une réponse 200 dont `blueprints` est **non-null**, avec **un `EntrypointResult`
+   par entrypoint tiré** (steps, wall_ms, leaves_written, effects_attempted,
+   exec_node_coverage, pass/fail_reason). Ce test **doit** décoder via `BlueprintGraph` et
+   passer par la compilation in-body — c'est exactement le chemin que #198 ne testait pas.
+   En complément :
+   - un graphe avec une `definition` inconnue, une cible exec danglante, ou un noeud
+     `reference` → **400 `COMPILE_FAILED`** (jamais `blueprints: null`, jamais 200 muet) ;
+   - le code `COMPILE_FAILED` est **distinct** de `INVALID_GRAPH` (corps mal formé /
+     `nodes` vide → 400 `INVALID_GRAPH`).
