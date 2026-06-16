@@ -113,12 +113,12 @@ func postSimulate(deps PublicDeps) http.HandlerFunc {
 
 // readBounded reads up to max bytes; if the body has more, it returns
 // errBodyTooLarge. It reads max+1 to distinguish "exactly max" from "over".
-func readBounded(body io.Reader, max int64) ([]byte, error) {
-	raw, err := io.ReadAll(io.LimitReader(body, max+1))
+func readBounded(body io.Reader, limit int64) ([]byte, error) {
+	raw, err := io.ReadAll(io.LimitReader(body, limit+1))
 	if err != nil {
 		return nil, err
 	}
-	if int64(len(raw)) > max {
+	if int64(len(raw)) > limit {
 		return nil, errBodyTooLarge
 	}
 	return raw, nil
