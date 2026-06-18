@@ -251,3 +251,61 @@ func TestEmitLSML_K_ShapeMaskIdRoundTrip(t *testing.T) {
 		t.Fatalf("#K: referenced shape geometry altered: %v", ref["geometry"])
 	}
 }
+
+// #O (ADR 002 A4.3) — a group/frame-source mask references a GROUP/FRAME
+// container by id ; the runtime composites its visible children. The wire
+// requirement is identical to #K but the referenced node is a `frame` and the
+// source discriminant is `kind:"group"`. Orion's emit must preserve both
+// VERBATIM (the container's typed `id`, and the masked node's opaque
+// `mask.source.kind:"group"` + `ref`). A drop silently breaks every
+// group-source mask at the antenna (the two residual 817:3 masks).
+func TestEmitLSML_O_GroupMaskRoundTrip(t *testing.T) {
+	layout := LayoutNode{
+		Kind: "frame",
+		ID:   "root",
+		Children: []LayoutNode{
+			{
+				Kind: "shape",
+				ID:   "masked",
+				Props: map[string]json.RawMessage{
+					"geometry": json.RawMessage(`"rect"`),
+					"mask":     json.RawMessage(`{"source":{"kind":"group","ref":"fig-817:2011"},"type":"alpha","op":"intersect"}`),
+				},
+			},
+			{
+				// The referenced GROUP/FRAME container, kept in the tree so the
+				// runtime composites its visible children. Carries the stable id.
+				Kind: "frame",
+				ID:   "fig-817:2011",
+				Children: []LayoutNode{
+					{Kind: "shape", Props: map[string]json.RawMessage{"geometry": json.RawMessage(`"circle"`)}},
+				},
+			},
+		},
+	}
+
+	bundle, _, _, err := EmitLSML("scene-o", layout, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EmitLSML: %v", err)
+	}
+
+	// (1) The masked node keeps its mask, and the group-source ref is intact.
+	masked := lsmlFindNode(t, bundle.Layout, "masked")
+	mask, ok := masked["mask"].(map[string]any)
+	if !ok {
+		t.Fatalf("mask dropped or wrong type: %v", masked["mask"])
+	}
+	src, _ := mask["source"].(map[string]any)
+	if src["kind"] != "group" || src["ref"] != "fig-817:2011" {
+		t.Fatalf("#O: mask.source (group) not preserved: %v", mask["source"])
+	}
+
+	// (2) The referenced container keeps its STABLE id verbatim (the index key).
+	ref := lsmlFindNode(t, bundle.Layout, "fig-817:2011")
+	if ref["id"] != "fig-817:2011" {
+		t.Fatalf("#O: referenced container id not preserved verbatim: %v", ref["id"])
+	}
+	if ref["kind"] != "frame" {
+		t.Fatalf("#O: referenced container kind altered: %v", ref["kind"])
+	}
+}
