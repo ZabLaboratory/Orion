@@ -188,3 +188,66 @@ func TestEmitLSML_1_2_AssetsNeverSilentlyDropped(t *testing.T) {
 		t.Fatalf("empty assets object must emit no block, got %+v", bundle.Assets)
 	}
 }
+
+// TestEmitLSML_K_ShapeMaskIdRoundTrip is the Orion half of ADR 002 A2.1 (#K).
+//
+// The mapper assigns a STABLE, deterministic `id` (`fig-<safeIdRef>`) on a
+// shape referenced by a `mask.source.kind:"shape"` ref, and the runtime
+// resolves that ref against an `id → shape` index to inline the geometry. For
+// that to work end-to-end, Orion's emit MUST preserve, verbatim:
+//   - the referenced shape's `id` (a TYPED LayoutNode field, not a prop), and
+//   - the masked node's `mask.source.ref` (an opaque prop) pointing at it.
+//
+// A drop of either silently breaks every shape-source mask at the antenna.
+func TestEmitLSML_K_ShapeMaskIdRoundTrip(t *testing.T) {
+	layout := LayoutNode{
+		Kind: "frame",
+		ID:   "root",
+		Children: []LayoutNode{
+			{
+				Kind: "shape",
+				ID:   "masked",
+				Props: map[string]json.RawMessage{
+					"geometry": json.RawMessage(`"rect"`),
+					"mask":     json.RawMessage(`{"source":{"kind":"shape","ref":"fig-817:1991"},"type":"alpha","op":"intersect"}`),
+				},
+			},
+			{
+				// The mapper emits this stable id ONLY because this shape is
+				// referenced by the mask above (no id inflation).
+				Kind: "shape",
+				ID:   "fig-817:1991",
+				Props: map[string]json.RawMessage{
+					"geometry": json.RawMessage(`"circle"`),
+				},
+			},
+		},
+	}
+
+	bundle, _, _, err := EmitLSML("scene-k", layout, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("EmitLSML: %v", err)
+	}
+
+	// (1) The masked node keeps its mask, and the shape-source ref is intact.
+	masked := lsmlFindNode(t, bundle.Layout, "masked")
+	mask, ok := masked["mask"].(map[string]any)
+	if !ok {
+		t.Fatalf("mask dropped or wrong type: %v", masked["mask"])
+	}
+	src, _ := mask["source"].(map[string]any)
+	if src["kind"] != "shape" || src["ref"] != "fig-817:1991" {
+		t.Fatalf("#K: mask.source.ref not preserved: %v", mask["source"])
+	}
+
+	// (2) The referenced shape keeps its STABLE id verbatim — the index key.
+	//     `lsmlFindNode` locates it BY id, so finding it at all proves the id
+	//     survived as the emitted `"id"` field (typed, not via a prop).
+	ref := lsmlFindNode(t, bundle.Layout, "fig-817:1991")
+	if ref["id"] != "fig-817:1991" {
+		t.Fatalf("#K: referenced shape id not preserved verbatim: %v", ref["id"])
+	}
+	if ref["geometry"] != "circle" {
+		t.Fatalf("#K: referenced shape geometry altered: %v", ref["geometry"])
+	}
+}
