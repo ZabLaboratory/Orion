@@ -176,9 +176,9 @@ func TestLowerWipeCover_ParityWithBuildWipeCoverNode(t *testing.T) {
 	cases := []struct{ reveal, hold, retract int }{
 		{400, 500, 400}, // the fixture timings
 		{200, 100, 300},
-		{1, 1, 1},          // edge: reveal == hold == retract
-		{1000, 1, 1000},    // wide reveal/retract, thin hold
-		{333, 333, 333},    // repeating-decimal ratios — float64 parity check
+		{1, 1, 1},       // edge: reveal == hold == retract
+		{1000, 1, 1000}, // wide reveal/retract, thin hold
+		{333, 333, 333}, // repeating-decimal ratios — float64 parity check
 	}
 	for _, c := range cases {
 		node := LayoutNode{
@@ -262,7 +262,7 @@ func TestLowerWipeCover_LSMLHashUnperturbed(t *testing.T) {
 
 	// EmitLSML is the exact production C4 path (scenes_push.go:215).
 	lsmlBundle, hashA, _, err := EmitLSML(
-		"scene-m10", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		"scene-m10", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("EmitLSML: %v", err)
@@ -288,7 +288,7 @@ func TestLowerWipeCover_LSMLHashUnperturbed(t *testing.T) {
 	// Determinism: re-emitting the same authoring tree yields the same hash
 	// (the property adopt-on-verify relies on).
 	_, hashB, _, err := EmitLSML(
-		"scene-m10", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		"scene-m10", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("EmitLSML (2nd): %v", err)

@@ -75,7 +75,7 @@ func TestEmitLSML_CrossLanguageHashParity_MultiBlueprint(t *testing.T) {
 	g := loadXlangMultiGolden(t)
 	root := multiBlueprintLSMLRoot(g)
 
-	bundle, version, canon, err := EmitLSML(g.SceneID, root, nil, nil, nil)
+	bundle, version, canon, err := EmitLSML(g.SceneID, root, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("EmitLSML: %v", err)
 	}

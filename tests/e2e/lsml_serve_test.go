@@ -70,7 +70,7 @@ func seedLSMLScene(t *testing.T, st *store.Store, sceneID uuid.UUID) (string, []
 	// dual|lsdp mode — from the AUTHORING tree (ADR 007 §9.6 / §C.4), not
 	// the lowered render Root.
 	lsmlBundle, lsmlHash, _, err := compiler.EmitLSML(
-		sceneID.String(), bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		sceneID.String(), bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, bundle.LSMLAssets,
 	)
 	if err != nil {
 		t.Fatalf("emit lsml: %v", err)
@@ -234,7 +234,7 @@ func TestE2E_LSMLIdentityCollapseResolvesServe(t *testing.T) {
 	// Canvas would have supplied, so adoption uses it as scene_version.
 	// Hashed from the AUTHORING tree (ADR 007 §9.6 / §C.4).
 	lsmlBundle, lsmlHash, _, err := compiler.EmitLSML(
-		sceneID.String(), bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		sceneID.String(), bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, bundle.LSMLAssets,
 	)
 	if err != nil {
 		t.Fatalf("emit lsml: %v", err)

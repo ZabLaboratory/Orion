@@ -58,7 +58,7 @@ func representativeBundle() *compiler.RenderBundle {
 // AUTHORING tree (ADR 007 §9.6 / §C.4), NOT the lowered render Root.
 func orionHashOf(t *testing.T, sceneID string, bundle *compiler.RenderBundle) string {
 	t.Helper()
-	_, hash, _, err := compiler.EmitLSML(sceneID, bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil)
+	_, hash, _, err := compiler.EmitLSML(sceneID, bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, nil)
 	if err != nil {
 		t.Fatalf("EmitLSML: %v", err)
 	}

@@ -339,6 +339,11 @@ func Compile(
 		// returned a fresh tree), so they never alias. Fixes Vigil's
 		// finding on PR #42 (EmitLSML was fed bundle.Root lowered).
 		AuthoringRoot: expanded,
+		// Carry the bundle-level asset block (allowedHosts/fonts/preload)
+		// verbatim from the authoring layout to EmitLSML, which preserves it
+		// on the LSML bundle (ADR 002 §3.4 T6). Opaque passthrough — Orion
+		// neither fabricates a host nor strips the block; nil when unauthored.
+		LSMLAssets: layout.Assets,
 	}
 
 	version, err := computeSceneVersion(graph, bundle)

@@ -86,6 +86,18 @@ type CanvasLayout struct {
 	// + additive: a layout without animations leaves it nil → every
 	// `animation` element falls through inert.
 	Animations json.RawMessage `json:"animations,omitempty"`
+
+	// Assets is the bundle-level asset declaration block (LSML §11 / 1.2 §5):
+	// `{allowedHosts[], fonts[], preload[]}`. Its `allowedHosts` is the host
+	// allowlist that arms the runtime double-gate in Solar (isHostAllowed,
+	// Bastion T1/T6). Authored upstream (ZabCanvas / @lumencast/compiler),
+	// forwarded verbatim onto the served CanvasLayout, and carried through to
+	// EmitLSML which preserves it on the LSML bundle (ADR 002 §3.4 T6).
+	// Opaque json.RawMessage: Orion is a transport for it — it neither
+	// fabricates a host nor strips the block. Optional + additive: a layout
+	// without assets leaves it nil → no assets block on the emitted bundle,
+	// deny-by-default downstream.
+	Assets json.RawMessage `json:"assets,omitempty"`
 }
 
 // LayoutNode is one node in the layout tree. Either a Solar primitive

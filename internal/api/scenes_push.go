@@ -265,8 +265,14 @@ func persistLSMLAndMaybeAdopt(
 	// (Vigil's finding on PR #42). bundle.AuthoringRoot is the pre-lowering
 	// `expanded` tree the compiler now carries (compiler.RenderBundle,
 	// json:"-" — never on the wire, so Solar's served Root stays lowered).
+	// The trailing nil/assets args carry the operator-authored animation
+	// tree (always nil on this path) and the bundle-level asset block
+	// (allowedHosts/fonts/preload) the compiler lifted from the authoring
+	// layout. EmitLSML preserves the asset block verbatim so the host
+	// allowlist reaches Solar's runtime gate (ADR 002 §3.4 T6) — Orion
+	// fabricates no host and strips nothing.
 	lsmlBundle, lsmlHash, _, emitErr := compiler.EmitLSML(
-		sceneID.String(), bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		sceneID.String(), bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, bundle.LSMLAssets,
 	)
 	if emitErr != nil {
 		deps.Logger.Warn("lsml emit failed; persisting bespoke only",

@@ -31,7 +31,7 @@ func TestEmitLSML_FromCompile_CarriesAuthoringVocab(t *testing.T) {
 	// Emit from the SAME tree the production push path now uses
 	// (scenes_push.go: EmitLSML(..., bundle.AuthoringRoot, ...)).
 	lsmlBundle, _, _, err := EmitLSML(
-		"scene-1", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		"scene-1", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("EmitLSML: %v", err)
@@ -101,7 +101,7 @@ func TestEmitLSML_FromLoweredRoot_IsRenderVocab(t *testing.T) {
 	bundle := compileAuthoring(t)
 
 	lsmlBundle, _, _, err := EmitLSML(
-		"scene-1", bundle.Root, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		"scene-1", bundle.Root, bundle.OperatorInputs, bundle.ExternalAdapters, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("EmitLSML: %v", err)

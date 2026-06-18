@@ -1,8 +1,8 @@
 {
-  "_comment": "Cross-language LSML hash-parity golden fixture (ADR 007 §C.4, issue #22 acceptance #3). Produced by the real TS @lumencast/compiler hashBundle()+canonicalize() against a bundle whose text value carries the '&'/'<'/'>' HTML-escape trap the parity fix corrected. Regenerate: see scenes-Orion cross-language test doc. Orion's lsml.HashBundle of the equivalent layout MUST byte-match `hash` and `canonical`.",
+  "_comment": "Cross-language LSML hash-parity golden fixture (ADR 007 §C.4, issue #22 acceptance #3). Produced by the real TS @lumencast/compiler hashBundle()+canonicalize() against a bundle whose text value carries the '&'/'<'/'>' HTML-escape trap the parity fix corrected. Regenerate: see scenes-Orion cross-language test doc. Orion's lsml.HashBundle of the equivalent layout MUST byte-match `hash` and `canonical`. [Regenerated for LSML 1.2 (ADR 002 §3.5 #G): the only delta vs the 1.1 golden is the `lsml` version token; both SDK canonicalizers are byte-identical (asserted by this test), so the 1.2 canonical bytes + sha256 are deterministic.]",
   "scene_id": "xlang-scene",
   "text_value": "A & B < C > D",
   "binding_path": "scene.title",
-  "canonical": "{\"layout\":{\"children\":[{\"bind\":{\"value\":\"scene.title\"},\"id\":\"title\",\"kind\":\"text\",\"value\":\"A & B < C > D\"}],\"id\":\"root\",\"kind\":\"frame\"},\"lsml\":\"1.1\",\"scene_id\":\"xlang-scene\",\"scene_version\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}",
-  "hash": "sha256:494fa4ebd9076433bbbd723a57e05e3eee4e23db397a73d8dc36ed55069eba65"
+  "canonical": "{\"layout\":{\"children\":[{\"bind\":{\"value\":\"scene.title\"},\"id\":\"title\",\"kind\":\"text\",\"value\":\"A & B < C > D\"}],\"id\":\"root\",\"kind\":\"frame\"},\"lsml\":\"1.2\",\"scene_id\":\"xlang-scene\",\"scene_version\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\"}",
+  "hash": "sha256:c97d876a88feebbed8eb75a7cf5649aa9f13666050fccc4afd79b4931cc30be5"
 }
