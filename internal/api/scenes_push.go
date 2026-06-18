@@ -81,6 +81,52 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
+		// ADR 002 §3.4 T6 / #I — authoring validation gate. Orion emits the
+		// LSML bundle and RE-VALIDATES it independently (defence in depth: it
+		// trusts no upstream figma/Canvas diagnostic that travelled on the
+		// wire). A bundle that trips any `error` — a `src`/`mask.source` host
+		// outside assets.allowedHosts (T1/T2), an enum outside the closed set
+		// (T4), a dangling/cyclic mask shape-ref (#K), or a complexity budget
+		// overflow (T5) — is REFUSED here, BEFORE it is persisted or served to
+		// the antenna. Authoring is NOT silently dropped: the author gets a
+		// clear 422 LSML_GATE_REJECTED. The runtime keeps re-gating (Solar
+		// host-allow/css-color) as defence in depth, not the only barrier.
+		//
+		// The gate runs in EVERY LSDP mode (it gates the artefact bound for
+		// the antenna, independent of whether Orion also persists LSML). In
+		// LSDP-persisting mode the same emitted bundle is reused below to avoid
+		// a second emit. An emit FAILURE here is itself a gate refusal — Orion
+		// must not serve a scene whose LSML it could not even produce.
+		gateBundle, _, _, emitErr := compiler.EmitLSML(
+			sceneID.String(), bundle.AuthoringRoot, bundle.OperatorInputs,
+			bundle.ExternalAdapters, nil, bundle.LSMLAssets,
+		)
+		if emitErr != nil {
+			deps.Metrics.PushTotal.WithLabelValues("gate_error").Inc()
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"code": lsmlGateRejectedCode,
+				"diagnostics": map[string]any{
+					"errors": []map[string]string{{
+						"code":    "GATE_EMIT_FAILED",
+						"message": "could not emit LSML bundle for validation",
+					}},
+					"warnings": []string{},
+				},
+			})
+			return
+		}
+		if gd := compiler.GateLSMLBundle(gateBundle); gd.HasErrors() {
+			deps.Metrics.PushTotal.WithLabelValues("gate_rejected").Inc()
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"code": lsmlGateRejectedCode,
+				"diagnostics": map[string]any{
+					"errors":   gd.Errors(),
+					"warnings": gd.Warnings(),
+				},
+			})
+			return
+		}
+
 		definitionID := uuid.New()
 
 		pv := store.ScenePushedVersion{

@@ -33,6 +33,15 @@ import (
 // sceneNotValidatedCode is the refusal surfaced on every gated path.
 const sceneNotValidatedCode = "SCENE_NOT_VALIDATED"
 
+// lsmlGateRejectedCode is the refusal surfaced by the authoring validation
+// gate (ADR 002 §3.4 T6 / #I). Unlike SCENE_NOT_VALIDATED — which still
+// persists the version and merely holds the antenna — a gate rejection is a
+// HARD refusal: the bundle violates a 0-loss / security invariant (hostile
+// src, out-of-enum value, dangling/cyclic mask ref, or a blown complexity
+// budget), so it is neither persisted nor served. The author must fix the
+// source. This is the one place authoring IS blocked, by design.
+const lsmlGateRejectedCode = "LSML_GATE_REJECTED"
+
 // isAirEligible reports whether (sceneID, sceneVersion) carries a
 // `validated` record for the current harness_version. It FAILS CLOSED: a
 // DB error returns (false, err) so the caller refuses rather than airing
