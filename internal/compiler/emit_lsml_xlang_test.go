@@ -68,7 +68,7 @@ func TestEmitLSML_CrossLanguageHashParity(t *testing.T) {
 		},
 	}
 
-	bundle, version, canon, err := EmitLSML(g.SceneID, root, nil, nil, nil)
+	bundle, version, canon, err := EmitLSML(g.SceneID, root, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("EmitLSML: %v", err)
 	}

@@ -85,11 +85,12 @@ func representativeInputs() []OperatorInput {
 
 func intp(i int) *int { return &i }
 
-// Acceptance #1 — the emitter produces a valid LSML 1.1 bundle from a
+// Acceptance #1 — the emitter produces a valid LSML 1.2 bundle from a
 // Canvas+Blue+components input. We assert the structural shape that
-// @lumencast/compiler.compileBundle() requires: lsml == "1.1", a
-// scene_id, a scene_version, and a layout tree over the known primitive
-// catalog with the static-props-vs-bind split.
+// @lumencast/compiler.compileBundle() requires: lsml == "1.2" (ADR 002
+// §3.5 #G bump; 1.2 is a pure superset of 1.1), a scene_id, a
+// scene_version, and a layout tree over the known primitive catalog with
+// the static-props-vs-bind split.
 func TestEmitLSML_ValidBundleShape(t *testing.T) {
 	bundle, version, _, err := EmitLSML(
 		"scene-1",
@@ -97,13 +98,14 @@ func TestEmitLSML_ValidBundleShape(t *testing.T) {
 		representativeInputs(),
 		nil,
 		nil,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("EmitLSML: %v", err)
 	}
 
-	if bundle.LSML != "1.1" {
-		t.Fatalf("lsml = %q, want \"1.1\"", bundle.LSML)
+	if bundle.LSML != "1.2" {
+		t.Fatalf("lsml = %q, want \"1.2\"", bundle.LSML)
 	}
 	if bundle.SceneID != "scene-1" {
 		t.Fatalf("scene_id = %q, want scene-1", bundle.SceneID)
@@ -153,11 +155,11 @@ func TestEmitLSML_ValidBundleShape(t *testing.T) {
 // Acceptance #2 — lsml.HashBundle is deterministic and the emitted
 // scene_version equals that hash (prefixed sha256:).
 func TestEmitLSML_DeterministicHash(t *testing.T) {
-	b1, v1, canon1, err := EmitLSML("scene-1", representativeLayout(), representativeInputs(), nil, nil)
+	b1, v1, canon1, err := EmitLSML("scene-1", representativeLayout(), representativeInputs(), nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b2, v2, canon2, err := EmitLSML("scene-1", representativeLayout(), representativeInputs(), nil, nil)
+	b2, v2, canon2, err := EmitLSML("scene-1", representativeLayout(), representativeInputs(), nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +190,7 @@ func TestEmitLSML_DeterministicHash(t *testing.T) {
 // node and is byte-preserved (Orion never parses it — ADR 007 §C.1).
 func TestEmitLSML_AnimationsRideOpaque(t *testing.T) {
 	anim := json.RawMessage(`[{"id":"a","kind":"sequence","children":[]}]`)
-	bundle, _, _, err := EmitLSML("scene-1", representativeLayout(), nil, nil, anim)
+	bundle, _, _, err := EmitLSML("scene-1", representativeLayout(), nil, nil, anim, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +214,7 @@ func TestEmitLSML_AnimationsRideOpaque(t *testing.T) {
 // When no animations are authored, the field is absent (back-compat with
 // consumers that don't expect it).
 func TestEmitLSML_NoAnimationsOmitsField(t *testing.T) {
-	bundle, _, _, err := EmitLSML("scene-1", representativeLayout(), nil, nil, nil)
+	bundle, _, _, err := EmitLSML("scene-1", representativeLayout(), nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +230,7 @@ func TestEmitLSML_ExternalAdapters(t *testing.T) {
 	adapters := []ExternalAdapter{
 		{Key: "poll-scores", Label: "Scores", Kind: "http-poll", TargetPaths: []string{"score.value"}, FrequencyHz: &hz, URL: "https://x/scores"},
 	}
-	bundle, _, _, err := EmitLSML("scene-1", representativeLayout(), nil, adapters, nil)
+	bundle, _, _, err := EmitLSML("scene-1", representativeLayout(), nil, adapters, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

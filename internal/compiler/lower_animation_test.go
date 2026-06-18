@@ -427,7 +427,7 @@ func TestLowerAnimation_LSMLHashUnperturbed(t *testing.T) {
 	bundle := compileAnimation(t, animationLayout("v1"))
 
 	lsmlBundle, hashA, _, err := EmitLSML(
-		"scene-anim", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		"scene-anim", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("EmitLSML: %v", err)
@@ -440,7 +440,7 @@ func TestLowerAnimation_LSMLHashUnperturbed(t *testing.T) {
 		t.Fatal("keyframes leaked into the LSML authoring tree — would perturb the C4 hash (A5.5 violation)")
 	}
 	_, hashB, _, err := EmitLSML(
-		"scene-anim", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		"scene-anim", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("EmitLSML (2nd): %v", err)

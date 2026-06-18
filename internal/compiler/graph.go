@@ -127,4 +127,17 @@ type RenderBundle struct {
 	// returns a fresh tree and never mutates its input), so reading one
 	// never disturbs the other.
 	AuthoringRoot LayoutNode `json:"-"`
+
+	// LSMLAssets is the bundle-level asset block (allowedHosts/fonts/preload,
+	// LSML §11 / 1.2 §5) carried from the authoring CanvasLayout straight to
+	// EmitLSML, which preserves it on the LSML bundle (ADR 002 §3.4 T6 — the
+	// host allowlist arms Solar's runtime gate). Distinct from `Assets`
+	// above, which is the bespoke render bundle's content-addressed binary
+	// AssetRef list. It is `json:"-"`: like AuthoringRoot it is an
+	// LSML-emit-only carrier and never travels on the bespoke RenderBundle
+	// wire nor enters its scene_version hash, so the served bespoke artefact
+	// is byte-identical with or without it. Opaque json.RawMessage — Orion
+	// neither fabricates nor strips it; nil when the layout authored no
+	// assets.
+	LSMLAssets json.RawMessage `json:"-"`
 }

@@ -232,7 +232,7 @@ func TestLowerAnimateInitial_LSMLHashUnperturbed(t *testing.T) {
 
 	// EmitLSML is the exact production C4 path (scenes_push.go:215).
 	lsmlBundle, hashA, _, err := EmitLSML(
-		"scene-m10-animated", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		"scene-m10-animated", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("EmitLSML: %v", err)
@@ -252,7 +252,7 @@ func TestLowerAnimateInitial_LSMLHashUnperturbed(t *testing.T) {
 
 	// Determinism: re-emitting yields the same hash (adopt-on-verify relies on it).
 	_, hashB, _, err := EmitLSML(
-		"scene-m10-animated", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil,
+		"scene-m10-animated", bundle.AuthoringRoot, bundle.OperatorInputs, bundle.ExternalAdapters, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("EmitLSML (2nd): %v", err)
