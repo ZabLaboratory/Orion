@@ -1,26 +1,34 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
   pull_request:
     branches: [main]
-  workflow_dispatch:
 
 permissions:
   contents: read
 
-# PR re-pushes cancel in-progress runs (saves runner minutes when
-# someone amends a branch). Main pushes never cancel — once a deploy
-# job is queued or running, a follow-up push must wait its turn.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
+
+# ---------------------------------------------------------------------------
+# Self-hosted runners on vps-ovh (org GitHub Actions billing frozen).
+# All jobs run on the shared org-scoped ephemeral pool (label `vps-ovh`).
+# No Docker daemon in the runner:
+#   - the `e2e` job installs PostgreSQL natively (apt) instead of a
+#     `services: postgres` container,
+#   - the old `docker-build` smoke job is dropped (the deploy's
+#     `docker compose build` on the host covers Dockerfile validity),
+#   - trufflehog runs as the native binary (the docker action exits 125).
+# setup-go downloads the toolchain on the runner. CI on PR only; merge to
+# main triggers deploy.yml.
+# ---------------------------------------------------------------------------
 
 jobs:
   build:
     name: build-test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, vps-ovh]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -42,52 +50,38 @@ jobs:
 
   e2e:
     name: e2e (Postgres)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, vps-ovh]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: build
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: orion
-          POSTGRES_PASSWORD: orion_e2e_ci
-          POSTGRES_DB: orion_e2e
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U orion -d orion_e2e"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 10
     env:
       ORION_E2E_DATABASE_URL: postgres://orion:orion_e2e_ci@localhost:5432/orion_e2e?sslmode=disable
     steps:
       - uses: actions/checkout@v5
+      - name: Start PostgreSQL natively (no Docker on the runner)
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          apt-get install -y -qq postgresql postgresql-client
+          PGVER=$(pg_lsclusters -h | awk 'NR==1{print $1}')
+          pg_ctlcluster "$PGVER" main start
+          for i in $(seq 1 30); do pg_isready -h localhost -p 5432 && break; sleep 1; done
+          su - postgres -c "psql -v ON_ERROR_STOP=1 -c \"CREATE USER orion WITH PASSWORD 'orion_e2e_ci' SUPERUSER;\""
+          su - postgres -c "psql -v ON_ERROR_STOP=1 -c \"CREATE DATABASE orion_e2e OWNER orion;\""
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
           cache: true
       # Whole tests/e2e tree: the Probe-authored API contract tests
-      # (tests/e2e/contract/, ADR-002 §6) AND the Forge e2e tests in
-      # tests/e2e/ (push_test.go, lsml_serve_test.go). The latter previously
-      # failed to compile against the removed compiler.BlueprintNode.OutputAt
-      # field; that Forge defect is repaired (config.name form) and the
-      # shared-DB schema apply is now idempotent, so the full tree runs.
+      # (tests/e2e/contract/, ADR-002 §6) AND the Forge e2e tests.
       - name: run e2e tests (ADR-002 §6 contract + Forge e2e)
         run: go test -v -tags e2e -count=1 -timeout 120s ./tests/e2e/...
 
   perf-20k:
-    # 20 k-node performance regression gate — issue #80, ADR 003
-    # §3.1.5 / resolution criterion 5. Runs the synthetic 20 k scene
-    # through compile → load → live input and HARD-FAILS the pipeline
-    # if cold-start > 2 s or single-input→delta p95 > 50 ms (cone
-    # ≤ 1 000 nodes). Deliberately WITHOUT -race: the race build
-    # multiplies wall time 5–20× and would gate on detector overhead,
-    # not the engine. The same tests are race-skipped in build-test
-    # (see internal/runtime/race_on_test.go); the cone-semantics tests
-    # (dirtycone_test.go) DO run under race there. No
-    # continue-on-error — a budget regression is a red pipeline.
+    # 20 k-node performance regression gate (issue #80, ADR 003 §3.1.5).
+    # HARD-FAILS if cold-start > 2 s or single-input→delta p95 > 50 ms.
     name: perf-20k gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, vps-ovh]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -98,20 +92,13 @@ jobs:
         run: go test -v -count=1 -run 'TestPerf20k' ./internal/runtime/
 
   conformance-matrix:
-    # Total-conformance matrix — issue #88, ADR 003 §3.4 phase 5 /
-    # §6 criterion 1 (the MASTER criterion). HARD-FAILS the pipeline if:
-    #   - any Blue compute-manifest node id is neither served by a
-    #     registered Orion executor nor on conformance_allowlist.txt
-    #     (doctrine §1.1: Orion serves the entirety of Blue), or
-    #   - the allowlist GROWS past its frozen ceiling (the shrink-to-zero
-    #     ratchet), or
-    #   - the id→executor classification drifts from the real runtime
-    #     registries (a node claimed served that nobody registered), or
-    #   - any served executor fails to run through the REAL engine
-    #     (TestConformance_Every* in internal/runtime).
-    # No continue-on-error: an unserved Blue node is a red pipeline.
+    # Total-conformance matrix (issue #88, ADR 003 §6 criterion 1).
+    # HARD-FAILS if any Blue manifest node is unserved/off-allowlist, the
+    # allowlist grows, the id→executor classification drifts, or any served
+    # executor fails through the real engine.
     name: conformance-matrix gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, vps-ovh]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -124,23 +111,12 @@ jobs:
         run: go test -v -count=1 -run 'TestConformance_Every' ./internal/runtime/
 
   exec-port-parity:
-    # Exec-port-parity gate (Conduit, contract-port-parity-alignment).
-    # HARD-FAILS if any port/config NAME the Orion runtime hardcodes for a
-    # served node is absent from that node's Blue seed signature
-    # (internal/conformance/signatures.json, vendored from stdlib_seeder.py
-    # by scripts/gen_conformance_manifest.py) — the class of bug where a
-    # Prism-authored node compiles and runs but the runtime reads a pin
-    # nobody wired / fires a pin nobody listens to, failing SILENTLY on
-    # air. It also asserts no seed EXEC pin is dropped by the runtime. The
-    # pinned runtime strings are double-checked against the live engine by
-    # the conformance matrix (every op is driven through a real Scene), so
-    # a pinned-but-unread string makes that probe go dark. No
-    # continue-on-error: a contract drift is a red pipeline. This job would
-    # FAIL on today's pre-fix drifts if reintroduced (for-each list/items,
-    # gate exit/then, print message/value, variable name/variable, source
-    # source/source_id, http response/body).
+    # Exec-port-parity gate (Conduit). HARD-FAILS if any port/config name the
+    # runtime hardcodes for a served node is absent from that node's Blue seed
+    # signature, or a seed EXEC pin is dropped by the runtime.
     name: exec-port-parity gate
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, vps-ovh]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -154,7 +130,8 @@ jobs:
 
   staticcheck:
     name: staticcheck
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, vps-ovh]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -168,7 +145,8 @@ jobs:
 
   govulncheck:
     name: govulncheck
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, vps-ovh]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -177,374 +155,40 @@ jobs:
           cache: true
       - name: install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      # Hard-fail: a known, reachable CVE in a called function is a red
-      # pipeline. No continue-on-error. setup-go resolves 1.26.x to the
-      # latest patch, so stdlib advisories are cleared by a runner bump.
       - name: run
         run: govulncheck ./...
 
   golangci-lint:
     name: golangci-lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, vps-ovh]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
           cache: true
-      # Install golangci-lint from source so it uses *our* Go
-      # toolchain. The pre-built binaries (released ~v1.64) were
-      # built with Go 1.24 and refuse modules declaring `go 1.26`.
+      # Install from source so it uses our Go toolchain (pre-built binaries
+      # refuse modules declaring `go 1.26`).
       - name: install golangci-lint from source
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
       - name: run
         run: golangci-lint run --timeout=5m
 
-  docker:
-    name: docker-build
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      - uses: actions/checkout@v5
-      - uses: docker/setup-buildx-action@v4
-      - name: build image
-        run: docker buildx build -t orion:ci .
-
   secret-scan:
     name: secret-scan
-    runs-on: ubuntu-latest
-    # PR-only: on push events post-merge HEAD == BASE so TruffleHog
-    # has nothing to diff. Pre-merge PR scans catch every introduced
-    # secret.
-    if: github.event_name == 'pull_request'
+    runs-on: [self-hosted, vps-ovh]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
+      - name: Install trufflehog
+        # Native binary — the docker action exits 125 on the no-Docker runner.
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/trufflesecurity/trufflehog/main/scripts/install.sh \
+            | sh -s -- -b "$RUNNER_TEMP/bin" v3.90.10
+          "$RUNNER_TEMP/bin/trufflehog" --version
       - name: trufflehog
-        uses: trufflesecurity/trufflehog@main
-        with:
-          path: ./
-          base: ${{ github.event.pull_request.base.sha }}
-          head: ${{ github.event.pull_request.head.sha }}
-          extra_args: --only-verified
-
-  # ---- Deploy pipeline (push to main only) -------------------------------
-  # Preflight runs in parallel with the CI jobs so a missing-secret
-  # error surfaces fast even if CI is slow. The deploy job itself
-  # gates on every CI job + preflight succeeding.
-
-  preflight-deploy:
-    name: Preflight (deploy secrets)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    timeout-minutes: 2
-    steps:
-      - name: Verify secrets
         run: |
-          if [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_USERNAME }}" ] || [ -z "${{ secrets.VPS_SSH_KEY }}" ] || [ -z "${{ secrets.VPS_APP_PATH }}" ] || [ -z "${{ secrets.ORION_PG_PASSWORD }}" ] || [ -z "${{ secrets.ORION_SERVICE_TOKEN }}" ]; then
-            echo "::error::Missing required secrets (VPS_HOST, VPS_USERNAME, VPS_SSH_KEY, VPS_APP_PATH, ORION_PG_PASSWORD, ORION_SERVICE_TOKEN)"
-            exit 1
-          fi
-
-  deploy:
-    name: Deploy
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build, e2e, perf-20k, conformance-matrix, exec-port-parity, staticcheck, golangci-lint, docker, preflight-deploy]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    # Job-level concurrency: a follow-up push to main lines up behind
-    # the in-flight deploy rather than cancelling it. The CI jobs above
-    # share the workflow-level concurrency group which only cancels on
-    # pull_request events.
-    concurrency:
-      group: deploy-orion
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Setup SSH
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/deploy_key
-          chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
-
-      - name: Ensure target dir exists
-        env:
-          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
-          APP_PATH: ${{ secrets.VPS_APP_PATH }}
-        run: |
-          $SSH_CMD "mkdir -p '$APP_PATH' && ls -ld '$APP_PATH'"
-
-      - name: Sync code to VPS
-        env:
-          SSH_OPTS: -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new
-          TARGET: ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}:${{ secrets.VPS_APP_PATH }}
-        run: |
-          # solar/ is populated on the VPS by the next step from Solar
-          # GitHub Releases ; rsync must not delete it.
-          rsync -az --delete \
-            --exclude '.git' \
-            --exclude '.github' \
-            --exclude '.env' \
-            --exclude '.env.*' \
-            --exclude 'bin' \
-            --exclude 'dist' \
-            --exclude 'coverage.out' \
-            --exclude 'coverage.html' \
-            --exclude 'solar' \
-            -e "ssh $SSH_OPTS" \
-            ./ "$TARGET/"
-
-      - name: Install Solar bundles
-        env:
-          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
-          APP_PATH: ${{ secrets.VPS_APP_PATH }}
-          # Pinned versions consumed by Orion's static handler at
-          # /static/solar/v{N.N.N}/*. Bumping here in a PR is the
-          # operational handle to roll Pulsar CEF / browser hosts
-          # forward to a new Solar release. Multiple values supported
-          # to allow canarying a new version alongside the previous.
-          # Reconciled to the actually-served set (the box served v0.2.8
-          # via one-off solar-deploy.yml dispatches while this list still
-          # said v0.1.1). v0.2.9 = ADR 011 I7 runtime compositing fix
-          # (KeyframePlayer box geometry + translateX->x transform).
-          # Older v0.1.x / v0.2.0-7 stay on disk (no --delete); they are
-          # no longer pinned consumers, so they drop off the durable handle.
-          SOLAR_VERSIONS: "v0.2.8 v0.2.9"
-        run: |
-          # Interpolate APP_PATH / SOLAR_VERSIONS into the remote command
-          # the same safe way as "Ensure target dir exists" — single-quoted
-          # values baked into a leading shell preamble — rather than passing
-          # them as positional args to `bash -s -- …`. The positional path
-          # transmits the *runner-local* expansion of the args through the
-          # ssh argv before the remote shell ever runs, where it was getting
-          # mangled (root cause: see PR/commit body). Here the script reads
-          # APP_PATH/VERSIONS as plain shell vars set on the remote side.
-          $SSH_CMD "APP_PATH='$APP_PATH' VERSIONS='$SOLAR_VERSIONS' bash -s" << 'INSTALL_SCRIPT'
-          set -euo pipefail
-          mkdir -p "$APP_PATH/solar"
-          cd "$APP_PATH/solar"
-          for v in $VERSIONS; do
-            target="$APP_PATH/solar/$v"
-            mkdir -p "$target"
-            if [ -f "$target/.installed" ]; then
-              echo "→ Solar $v already installed, skipping"
-              continue
-            fi
-            tmp=$(mktemp -d)
-            # ZabLaboratory/Solar is a PUBLIC repo: its release assets are
-            # downloadable anonymously over HTTPS, so we pull the tarball
-            # directly instead of `gh release download` (which needed the
-            # VPS PAT, now rejected by org policy — root cause of the
-            # 8-run deploy red). Asset name matches Solar's release.yml
-            # (`solar-<tag>.tgz`, tag = $v, e.g. solar-v0.1.1.tgz).
-            # -f makes curl fail on HTTP >=400, so a partial/failed
-            # download leaves the directory unmarked and the next deploy
-            # retries — preserving the .installed idempotency contract.
-            curl -fsSL --retry 3 -o "$tmp/solar-$v.tgz" \
-              "https://github.com/ZabLaboratory/Solar/releases/download/$v/solar-$v.tgz"
-            tar -xzf "$tmp/solar-$v.tgz" -C "$target"
-            rm -rf "$tmp"
-            # Marker is the success signal — set last so a partial
-            # extract leaves the directory unmarked and the next
-            # deploy retries.
-            touch "$target/.installed"
-            echo "✓ installed Solar $v at $target"
-            ls -la "$target/" | head -10
-          done
-          echo "=== Final layout ==="
-          find "$APP_PATH/solar" -maxdepth 2 -type d
-          INSTALL_SCRIPT
-
-      - name: Write remote .env
-        env:
-          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
-          APP_PATH: ${{ secrets.VPS_APP_PATH }}
-          ORION_PG_PASSWORD: ${{ secrets.ORION_PG_PASSWORD }}
-          ORION_SERVICE_TOKEN: ${{ secrets.ORION_SERVICE_TOKEN }}
-          ORION_OPERATOR_TOKEN: ${{ secrets.ORION_OPERATOR_TOKEN }}
-          # Lumencast convergence flag (ADR 007 §C.5). Defaults to bespoke
-          # (no-op) when the secret/var is unset, so an un-flipped service is
-          # unchanged. Set the ORION_LSDP_MODE repo variable to `dual` to keep
-          # the flip durable across code deploys (otherwise this heredoc would
-          # silently revert a manual VPS flip back to bespoke).
-          ORION_LSDP_MODE: ${{ vars.ORION_LSDP_MODE }}
-          # db.query topology A (ADR 003 Amdt 1). Same durability contract as
-          # ORION_LSDP_MODE: this heredoc rewrites .env on every deploy, so these
-          # MUST come from repo variables or a manual VPS edit is silently
-          # reverted. Not secrets — scope strings + an internal gateway hostname.
-          #   ORION_SERVICE_PATHS — service-token scopes minted at boot. Strict
-          #     least-privilege allowlist (Bastion R9-T1): no wildcard, no admin.
-          #     Falls back to the Quasar-only default when the var is unset.
-          #   ORION_DATASOURCES   — db.query allowlist (<name>=<svc> CSV). Empty
-          #     ⇒ every db.query node fails compile (DATASOURCE_NOT_DECLARED).
-          #   ORION_ZABGATE_URL   — gateway base for _query delegation; REQUIRED
-          #     by config validation iff ORION_DATASOURCES is non-empty.
-          ORION_SERVICE_PATHS: ${{ vars.ORION_SERVICE_PATHS }}
-          ORION_DATASOURCES: ${{ vars.ORION_DATASOURCES }}
-          ORION_ZABGATE_URL: ${{ vars.ORION_ZABGATE_URL }}
-        run: |
-          $SSH_CMD "cat > $APP_PATH/.env && chmod 600 $APP_PATH/.env" << EOF
-          # Public surface
-          ORION_LISTEN_ADDR=0.0.0.0:4007
-          ORION_INTERNAL_ADDR=0.0.0.0:4017
-          ORION_PUBLIC_BASE_URL=https://zabgate.cyell.dev/orion
-
-          # Database — orion-postgres on zab-internal
-          ORION_DATABASE_URL=postgres://orion:$ORION_PG_PASSWORD@orion-postgres:5432/orion?sslmode=disable
-          ORION_PG_USER=orion
-          ORION_PG_PASSWORD=$ORION_PG_PASSWORD
-          ORION_PG_DB=orion
-
-          # Filesystem roots
-          ORION_ASSET_ROOT=/var/lib/orion/assets
-          ORION_SOLAR_ROOT=/var/lib/orion/solar
-
-          # Auth — Orion validates show-tokens against ZabAuth via the gateway.
-          ORION_ZABAUTH_VALIDATE_URL=http://zabgate:4000/auth/api/v1/tokens
-          ORION_AUTH_CACHE_TTL_S=60
-          ORION_SERVICE_TOKEN=$ORION_SERVICE_TOKEN
-
-          # Live service-token mint + refresh — when ORION_OPERATOR_TOKEN
-          # is set, Orion mints a fresh token at boot and rotates it
-          # before expiry. Empty operator token → static fallback above.
-          ORION_OPERATOR_TOKEN=$ORION_OPERATOR_TOKEN
-          # Default to the Quasar-only scope when the repo var is unset.
-          ORION_SERVICE_PATHS=${ORION_SERVICE_PATHS:-quasar.credentials.read}
-
-          # db.query topology A — empty unless the repo variables are set.
-          # ZABGATE_URL is required by config validation when DATASOURCES is set.
-          ORION_DATASOURCES=${ORION_DATASOURCES:-}
-          ORION_ZABGATE_URL=${ORION_ZABGATE_URL:-}
-
-          # Upstream services (compile-time fetch through the gateway)
-          ORION_CANVAS_BASE_URL=http://zabgate:4000/canvas
-          ORION_BLUE_BASE_URL=http://zabgate:4000/blue
-          ORION_QUASAR_BASE_URL=http://zabgate:4000/quasar
-
-          # Runtime
-          ORION_TICK_HZ=60
-          ORION_PUSH_TIMEOUT_S=10
-          ORION_HTTP_POLL_USER_AGENT=orion-poller/1.0
-          ORION_LOG_LEVEL=info
-          ORION_LOG_FORMAT=json
-
-          # Empty (bespoke) unless the ORION_LSDP_MODE repo variable is set.
-          ORION_LSDP_MODE=${ORION_LSDP_MODE:-bespoke}
-          EOF
-
-      - name: Build, migrate, restart
-        env:
-          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
-          APP_PATH: ${{ secrets.VPS_APP_PATH }}
-          # Passed through to docker compose build so the OCI image labels
-          # (org.opencontainers.image.revision/.source) carry the deployed
-          # commit instead of the Dockerfile `unknown` defaults.
-          GIT_REVISION: ${{ github.sha }}
-          GIT_SOURCE: ${{ github.server_url }}/${{ github.repository }}
-        run: |
-          # Same safe interpolation as "Ensure target dir exists" / "Install
-          # Solar bundles": single-quoted values baked into a leading remote
-          # shell preamble, not positional args to `bash -s -- …`. This step
-          # shares the Solar step's root cause — the positional path was being
-          # mangled in transit — so it gets the same treatment.
-          $SSH_CMD "APP_PATH='$APP_PATH' ORION_GIT_REVISION='$GIT_REVISION' ORION_GIT_SOURCE='$GIT_SOURCE' bash -s" << 'DEPLOY_SCRIPT'
-          set -euo pipefail
-          # Exported so compose's build.args ${ORION_GIT_REVISION/SOURCE}
-          # interpolation picks them up at build time.
-          export ORION_GIT_REVISION ORION_GIT_SOURCE
-          cd "$APP_PATH"
-
-          echo "=== Network preflight ==="
-          # zab-internal is the shared backend network; caddy-public is
-          # the gateway's outward-facing one. Both must exist before
-          # compose up (idempotent).
-          for net in caddy-public zab-internal; do
-            if ! docker network inspect "$net" >/dev/null 2>&1; then
-              echo "  Creating missing network: $net"
-              docker network create "$net"
-            else
-              echo "  Network present: $net"
-            fi
-          done
-
-          echo "=== Build ==="
-          docker compose -f docker-compose.prod.yml build --quiet
-
-          echo "=== Ensure DB is up ==="
-          docker compose -f docker-compose.prod.yml up -d orion-db
-          for i in $(seq 1 30); do
-            if docker compose -f docker-compose.prod.yml ps orion-db | grep -q healthy; then break; fi
-            sleep 2
-          done
-
-          echo "=== Migrate (goose) ==="
-          # The runtime image bundles /goose alongside /orion for exactly
-          # this purpose. -T disables the pseudo-tty so the heredoc stdin
-          # doesn't bleed into the compose run.
-          docker compose -f docker-compose.prod.yml run --rm -T \
-            --entrypoint /goose orion \
-            -dir /migrations postgres \
-            "$(grep '^ORION_DATABASE_URL=' .env | cut -d= -f2-)" up < /dev/null
-
-          echo "=== Up all services ==="
-          docker compose -f docker-compose.prod.yml up -d
-          docker compose -f docker-compose.prod.yml up -d --force-recreate orion
-
-          echo "=== Health (internal) ==="
-          sleep 5
-          HEALTHY=0
-          for i in $(seq 1 15); do
-            if docker run --rm --network zab-internal curlimages/curl:latest -sf http://orion:4007/api/v1/health > /dev/null 2>&1; then
-              HEALTHY=1; break
-            fi
-            echo "  Waiting... ($i/15)"; sleep 3
-          done
-          if [ $HEALTHY -eq 0 ]; then
-            echo "::error::Internal health check failed"
-            docker compose -f docker-compose.prod.yml logs --tail=50 orion
-            exit 1
-          fi
-          echo "Orion healthy"
-          DEPLOY_SCRIPT
-
-      - name: Smoke test via gateway
-        env:
-          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
-          APP_PATH: ${{ secrets.VPS_APP_PATH }}
-        run: |
-          # Gateway-first: the deploy must validate the full
-          # Caddy + DNS + TLS path, not just the container. /orion/api/v1/health
-          # is unauthenticated per ADR 004 § 2 so we can probe it directly.
-          #
-          # Bounded retry/backoff (not continue-on-error): the preceding
-          # "Build, migrate, restart" step does `up -d --force-recreate orion`,
-          # after which ZabGate/Caddy must re-resolve the new container in its
-          # upstream pool. That refresh lags the in-container health gate by a
-          # few seconds, so a single immediate probe can catch a transient 503
-          # (gateway has no healthy upstream yet) even though Orion is UP —
-          # the exact flake that reddened run 27113773755. We retry the public
-          # probe up to 8 times with linear backoff (~1.5s→~12s, ~54s ceiling).
-          # A persistent failure (real Caddy/DNS/TLS/routing/auth break) still
-          # exhausts the loop and fails the deploy — the failure mode is kept,
-          # only the recreate transient is absorbed. Mirrors the internal
-          # health gate, which already retries 15×.
-          ATTEMPTS=8
-          ok=0
-          for i in $(seq 1 $ATTEMPTS); do
-            if $SSH_CMD 'curl -fsS --max-time 5 https://zabgate.cyell.dev/orion/api/v1/health > /dev/null'; then
-              ok=1
-              echo "Gateway probe OK on attempt $i/$ATTEMPTS"
-              break
-            fi
-            echo "Gateway probe attempt $i/$ATTEMPTS not yet ready (likely upstream re-resolve after --force-recreate); backing off..."
-            sleep $((i + i / 2 + 1))
-          done
-          if [ "$ok" -ne 1 ]; then
-            echo "::error::Public gateway probe failed after $ATTEMPTS attempts (Caddy/DNS/TLS or routing)"
-            $SSH_CMD "docker compose -f '$APP_PATH'/docker-compose.prod.yml logs --tail=50 orion"
-            exit 1
-          fi
-          echo "Orion reachable via https://zabgate.cyell.dev/orion/*"
+          "$RUNNER_TEMP/bin/trufflehog" git file://. --fail --no-update --results=verified
