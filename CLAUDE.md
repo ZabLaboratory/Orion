@@ -9,15 +9,16 @@
 @../agents/_shared/projects.md
 @../agents/_shared/live-testing.md
 
-## Status — v2 scaffold landed
+## Status — production (205 PRs on main)
 
-Orion v2 (Go) scaffold lives under this repo per
-**[ADR 004 — Orion v2 (reactive runtime)](../docs/adr/004-orion-v2-runtime.md)**.
-
-The v0.x Python implementation was deleted on 2026-05-02. The v2
-scaffold went onto `feature/v2-go-scaffold` on 2026-05-02, all tests
-green locally (`go test ./...` + `go test -tags e2e ./...`), awaiting
-maintainer push.
+Orion v2 (Go) is in production on `main`. The v0.x Python implementation
+was deleted on 2026-05-02; the Go rewrite shipped progressively through
+205 merged PRs. ADR 004 (Orion v2 runtime) and ADR 005 (Quasar concerns
+relocation) were superseded or absorbed during the build campaign — their
+slot numbers (004, 005) are no longer present in `docs/adr/`; the
+numbering jumps 003 → 006 (ADR 006 = exec-activation R9-lift). This is
+not a gap: ADR 004/005 content was folded into ADR 003 §3.x and the
+Quasar CLAUDE.md respectively before the slot files were removed.
 
 ## Stack
 
@@ -59,28 +60,36 @@ Orion/
 └── go.mod                               go 1.26.2
 ```
 
-## Endpoints (ADR 004 § 2)
+## Endpoints
 
 All routes start at `/api/v1/...` (ZabGate strips its `/orion`
-prefix on the way in).
+prefix on the way in). Source: `internal/api/public.go`.
 
 | Method + path | Purpose |
 |---|---|
 | `GET /api/v1/health` | liveness |
 | `GET /api/v1/ready` | readiness (DB ping + scene roster) |
 | `POST /api/v1/scenes/{id}/push` | compile + persist + activate |
-| `GET /api/v1/scenes/{id}/render-bundle?v={hash}` | Solar fetch |
+| `GET /api/v1/scenes/{id}/render-bundle?v={hash}` | Solar fetch (content-hashed) |
+| `GET /api/v1/scenes/{id}/lsml-bundle?v={hash}` | LSML bundle for authoring tools (ADR 002) |
 | `GET /api/v1/scenes/{id}/operator-inputs?v={hash}` | non-Solar surface |
 | `GET /api/v1/scenes/{id}/graph?v={hash}` | internal debug |
 | `POST /api/v1/scenes/{id}/status` | archive / reactivate |
+| `POST /api/v1/scenes/{id}/validate` | validate + gate antenna-eligibility (ADR 003 §3.2.2) |
+| `GET /api/v1/scenes/{id}/validation` | read last validation record |
+| `POST /api/v1/scenes/{id}/exec/completion` | exec completion probe (ADR 006) |
+| `POST /api/v1/validate/simulate` | service-scoped simulate (ADR 015, Amendment 1) |
 | `GET /api/v1/show` | show summary |
 | `POST /api/v1/show/active-scene` | switch active scene |
 | `POST /api/v1/show/test-sessions` | open isolated test session |
+| `POST /api/v1/show/stream-rules` | create stream-level Blue rule (ADR 009) |
+| `DELETE /api/v1/show/stream-rules/{id}` | delete stream-level rule |
 | `GET /api/v1/assets/{id}` | content-addressed binary |
 | `GET /api/v1/credentials/{id}/stream-key` | preserved verbatim — currently 503 until Quasar wires it |
-| WS `/api/v1/show/stream` | live show |
-| WS `/api/v1/scenes/{id}/test?session={uuid}` | isolated scene preview |
-| `GET /static/solar/v{N.N.N}/*` | static Solar bundle (immutable) |
+| WS `/api/v1/show/stream` | live show (legacy) |
+| WS `/api/v1/show/stream.lsdp` | LSDP wire — `ORION_LSDP_MODE=dual` required; subprotocol `lsdp.v1.1` |
+| WS `/api/v1/scenes/{id}/test` | isolated scene preview (`?session={uuid}`) |
+| `GET /static/solar/v{N.N.N}/*` | static Solar bundle (immutable, long TTL) |
 
 ## Resolution criteria — coverage
 
@@ -119,9 +128,13 @@ chantier-specific). Status updated post-#88 (conformance matrix merged,
 | 010 | `core.http.request@1` canonical executor + content hardening | accepted | PR #160 · query/headers/response_headers/timeout_ms + host-only logging |
 | 011 | `core.animation.play@1` keyframe lowering (ADR 003 §3.4 reconciliation) | accepted | PR #161 #164 #167 · scalar gen leaf, compiler lowering, I7 live proof |
 | 012 | `core.source.read@1` reclassified to pure compute (Option B) | accepted | PR #165 #166 · compile-time resolution, `__resolved_source` in Config; Blue `is_pure` flip pending |
+| 013 | Platform-event exec entrypoint (`core.event.on-platform-event@1`) | accepted | PR #170 #171 #173 #175 · exec entrypoint arming `__events` leaf, reactive payload binding, stream-level rule finale |
+| 014 | Blueprint-reference support via compile-time subgraph expansion | accepted | PR #183 #184 #185 #189 #190 · expand at compile, cyclic detection (`CYCLIC_BLUEPRINT_REFERENCE`), `__vars` input-reader promotion |
+| 015 | Service-scoped simulate endpoint | accepted + Amendment 1 (2026-06-16) | PR #198 #200 #201 · `POST /validate/simulate`; Amendment 1 = compile Blue graph in-body (not pre-compiled) |
 
 > Full resolution criteria live in each ADR doc (`docs/adr/`).
 > ADR 010 and ADR 012 doc files were committed with this resync (scribe/solar-v029-adr-sync).
+> ADR 013/014/015 added by resync 2026-06-20 (drift report).
 
 ## Solar version history
 
