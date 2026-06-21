@@ -51,6 +51,14 @@ type PublicDeps struct {
 	// The handler internally routes /lsdp.v1, so the public route
 	// rewrites the path to it before delegating.
 	LSDPHandler http.Handler
+
+	// AuthSource is the seam through which requireOperator derives the
+	// request Identity (ADR 016 §3.2-2). Nil ⇒ HeaderAuthSource (the
+	// antenne default: read the X-Authenticated-* headers ZabGate
+	// injected). embedded-local supplies localOperatorAuth instead. The
+	// gate logic (role check) is byte-for-byte identical either way —
+	// only WHO derives the Identity changes.
+	AuthSource auth.AuthSource
 }
 
 // RegisterPublic wires every endpoint per ADR 004 § 2. Routes start
@@ -63,6 +71,13 @@ type PublicDeps struct {
 func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	if deps.ValidationRunner == nil {
 		deps.ValidationRunner = newValidationRunner()
+	}
+	// Select the identity source for the auth gates (ADR 016 §3.2-2).
+	// Default = HeaderAuthSource: byte-for-byte today's antenne behaviour.
+	if deps.AuthSource != nil {
+		authSource = deps.AuthSource
+	} else {
+		authSource = auth.HeaderAuthSource{}
 	}
 	mux.HandleFunc("GET /health", health)
 	mux.HandleFunc("GET /ready", ready(deps))
@@ -180,11 +195,21 @@ func ready(deps PublicDeps) http.HandlerFunc {
 	}
 }
 
+// authSource is the package-level identity source the auth gates read
+// through (ADR 016 §3.2-2). Set once by RegisterPublic from
+// PublicDeps.AuthSource; defaults to HeaderAuthSource so the gate stays
+// byte-for-byte the antenne behaviour when nothing is wired (e.g. in unit
+// tests that construct requests with X-Authenticated-* headers directly).
+var authSource auth.AuthSource = auth.HeaderAuthSource{}
+
 // requireOperator + requireService are tiny wrappers around the
-// auth.FromHeaders gate that every mutating handler reuses.
+// authSource gate that every mutating handler reuses. The gate logic is
+// unchanged from when it called auth.FromHeaders directly — only the
+// identity SOURCE is now pluggable (HeaderAuthSource on antenne,
+// localOperatorAuth on embedded-local).
 func requireOperator(handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := auth.FromHeaders(r.Header)
+		id := authSource.FromHeaders(r.Header)
 		if !id.IsAuthenticated() || (id.Role != auth.RoleOperator && id.Role != auth.RoleAdmin) {
 			http.Error(w, "operator role required", http.StatusForbidden)
 			return
