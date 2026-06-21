@@ -13,6 +13,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/auth"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/config"
+	"github.com/ZabLaboratory/Orion/internal/effects"
 	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/store"
@@ -38,6 +39,11 @@ type PublicDeps struct {
 	StaticDir     http.FileSystem // /static/solar/...
 	QuasarBaseURL string          // e.g. http://zabgate:4000/quasar
 	ServiceTokens *auth.ServiceTokenManager
+
+	// SchemaClient fetches a datasource's read-only catalog (`_schema`)
+	// for the DB-catalog surface (ADR Blue 008 §3.4). Nil ⇒ the catalog
+	// routes degrade (503 / empty listing); no behaviour change otherwise.
+	SchemaClient *effects.SchemaClient
 
 	// LSDPHandler is the lumencast-go LSDP/1.1 WebSocket handler
 	// (ADR 007 §C.3b). Non-nil only in dual/lsdp mode; in bespoke mode
@@ -91,6 +97,11 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// promotion/demotion of a roster scene into an always-on rule.
 	mux.HandleFunc("POST /api/v1/show/stream-rules", postStreamRule(deps))
 	mux.HandleFunc("DELETE /api/v1/show/stream-rules/{id}", deleteStreamRule(deps))
+
+	// DB catalog surface (ADR Blue 008 §3.4, issue #211): read-only
+	// introspection of whitelisted datasources for cockpit selectors.
+	mux.HandleFunc("GET /api/v1/db/datasources", listDatasources(deps))
+	mux.HandleFunc("GET /api/v1/db/{service}/schema", getDBSchema(deps))
 
 	mux.HandleFunc("GET /api/v1/assets/{id}", getAsset(deps))
 	mux.HandleFunc("GET /api/v1/credentials/{id}/stream-key", getStreamKey(deps))
