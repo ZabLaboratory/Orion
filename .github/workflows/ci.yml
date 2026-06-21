@@ -37,7 +37,17 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
-          cache: true
+          # cache disabled on purpose (all 8 Go jobs). The setup-go cache
+          # never helps on this self-hosted pool: runners are EPHEMERAL so
+          # the on-disk Go cache never survives, and the GitHub Actions cache
+          # service is remote+slow from the VPS — observed 100% restore miss
+          # ("Cache is not found") and ~7/8 save failures ("Unable to reserve
+          # cache, another job may be creating this cache") because 8 parallel
+          # jobs race the same key. The save step tarred ~1.1 GB (GOMODCACHE +
+          # GOCACHE) and uploaded at ~0.6 MB/s, hanging the job 30+ min for
+          # zero benefit. With cache off, `go` re-fetches from the module
+          # proxy in seconds. Re-enable only behind a fast local cache backend.
+          cache: false
       - name: go mod tidy check
         run: |
           go mod tidy
@@ -128,7 +138,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
-          cache: true
+          cache: false
       # Whole tests/e2e tree: the Probe-authored API contract tests
       # (tests/e2e/contract/, ADR-002 §6) AND the Forge e2e tests.
       - name: run e2e tests (ADR-002 §6 contract + Forge e2e)
@@ -145,7 +155,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
-          cache: true
+          cache: false
       - name: run 20k benchmark gate
         run: go test -v -count=1 -run 'TestPerf20k' ./internal/runtime/
 
@@ -162,7 +172,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
-          cache: true
+          cache: false
       - name: structural matrix + ratchet + registry cross-check
         run: go test -v -count=1 ./internal/conformance/
       - name: every served executor runs through the real engine
@@ -180,7 +190,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
-          cache: true
+          cache: false
       - name: seed-vs-runtime port/config parity
         run: go test -v -count=1 -run 'TestExecPortParity' ./internal/conformance/
       - name: cross-repo QueryDescriptor golden parity (Orion arm)
@@ -195,7 +205,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
-          cache: true
+          cache: false
       - name: install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
       - name: run
@@ -210,7 +220,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
-          cache: true
+          cache: false
       - name: install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: run
@@ -225,7 +235,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
-          cache: true
+          cache: false
       # Install from source so it uses our Go toolchain (pre-built binaries
       # refuse modules declaring `go 1.26`).
       - name: install golangci-lint from source
