@@ -72,7 +72,23 @@ func expandReferences(ctx context.Context, b *BlueprintGraph, fetcher Fetcher) (
 	// referenced function's declared constant (e.g. a colour palette read by
 	// `core.variable.get@1`) reaches the runtime. Nil when no reference
 	// declared a valued variable — byte-identical to pre-#192.
-	return &BlueprintGraph{ID: b.ID, Nodes: flat.nodes, Edges: flat.edges, Defaults: flat.defaults}, nil
+	// Carry the TOP-LEVEL blueprint's OWN declared `variables[]` through the
+	// rebuild (ADR 016 RC-6 / e2e #152): the expander constructs a fresh
+	// BlueprintGraph, so a reference-free top-level blueprint that declares its
+	// own constant (e.g. a `palette` read by `core.variable.get@1`) would
+	// otherwise have its `variables[]` dropped here — the compile loop's
+	// foldDeclaredVariables would then see none and the `__vars..palette` leaf
+	// would never seed → score-to-color resolves null. Inlined references'
+	// constants ride out on flat.defaults above (Orion #192); the host
+	// blueprint's own constants ride out on Variables here. Nil/empty when the
+	// blueprint declares none — byte-identical to before.
+	return &BlueprintGraph{
+		ID:        b.ID,
+		Nodes:     flat.nodes,
+		Edges:     flat.edges,
+		Defaults:  flat.defaults,
+		Variables: b.Variables,
+	}, nil
 }
 
 type refExpander struct {

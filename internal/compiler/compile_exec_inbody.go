@@ -164,17 +164,20 @@ func CompileExecPrograms(bp *BlueprintGraph, key string) (*CompiledExecInBody, *
 
 	// Fold this blueprint's `variables[].value` constants into the seeds the
 	// inlined `core.variable.get@1` reads (Orion #192). On the push path the
-	// reference expander harvests these into BlueprintGraph.Defaults; in-body
-	// there is no expander, so we harvest them here directly from the
-	// authoring graph. The empty-key `__vars..<name>` form (varsLeaf) is
-	// key-namespaced by prefixDefaultLeaf, byte-identical to the leaf
-	// prefixGraphNodes wrote on the reading node and to execVariableSet's
-	// write address. A value-less variable (pure shared state) is skipped.
-	for _, v := range bp.Variables {
-		if len(v.Value) == 0 || v.Name == "" {
-			continue
-		}
-		out.Defaults[prefixDefaultLeaf(key, varsLeaf(v.Name))] = v.Value
+	// reference expander harvests INLINED references' constants into
+	// BlueprintGraph.Defaults, and the compile loop now also folds a top-level
+	// blueprint's OWN declared variables via the SAME foldDeclaredVariables
+	// helper (ADR 016 RC-6); in-body there is no expander, so we harvest the
+	// authoring graph's variables here with that shared helper — guaranteeing
+	// the two paths never drift. foldDeclaredVariables emits the empty-key
+	// `__vars..<name>` form; prefixDefaultLeaf then key-namespaces it,
+	// byte-identical to the leaf prefixGraphNodes wrote on the reading node and
+	// to execVariableSet's write address. A value-less variable (pure shared
+	// state) is skipped by the helper.
+	declared := map[string]json.RawMessage{}
+	foldDeclaredVariables(declared, bp.Variables)
+	for leaf, v := range declared {
+		out.Defaults[prefixDefaultLeaf(key, leaf)] = v
 	}
 
 	return out, nil
