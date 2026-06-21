@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/ZabLaboratory/Orion/internal/store"
 )
@@ -69,7 +68,7 @@ func TestE2E_UpsertScene_IdempotentPreservesRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	ptr := "scene-version-abc"
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := st.Tx(ctx, func(tx store.Tx) error {
 		return st.SetLatestPushedVersion(ctx, tx, id, &ptr)
 	}); err != nil {
 		t.Fatal(err)

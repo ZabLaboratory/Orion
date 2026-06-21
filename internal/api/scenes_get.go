@@ -7,14 +7,15 @@ import (
 	"net/http"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/store"
 )
 
-// pgxTx is a local alias so we don't name pgx.Tx in handler bodies.
-type pgxTx = pgx.Tx
+// pgxTx is a local alias to the store-neutral transaction handle so we
+// don't name the backend tx type in handler bodies (#222 generalised the
+// Store tx coupling off pgx).
+type pgxTx = store.Tx
 
 // getRenderBundle serves /api/v1/scenes/{id}/render-bundle?v={hash}.
 // Cacheable forever by hash (immutable artefact). Without ?v= the

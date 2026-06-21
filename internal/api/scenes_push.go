@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/store"
@@ -172,7 +171,7 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 		// → 23505 → 500 (Probe #56 / PR #61). InsertPushedVersion's
 		// ON CONFLICT DO NOTHING keeps the deterministic-scene_version re-push
 		// idempotent (criterion 6.2/6.8).
-		err = deps.Store.Tx(ctx, func(tx pgx.Tx) error {
+		err = deps.Store.Tx(ctx, func(tx store.Tx) error {
 			nextDefVer, err := deps.Store.NextDefinitionVersionTx(ctx, tx, sceneID)
 			if err != nil {
 				return err
@@ -401,7 +400,7 @@ func handleRollback(ctx context.Context, w http.ResponseWriter, deps PublicDeps,
 		return
 	}
 
-	err = deps.Store.Tx(ctx, func(tx pgx.Tx) error {
+	err = deps.Store.Tx(ctx, func(tx store.Tx) error {
 		return deps.Store.SetLatestPushedVersion(ctx, tx, sceneID, &pv.SceneVersion)
 	})
 	if err != nil {

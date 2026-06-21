@@ -65,6 +65,7 @@ func applyMigration(ctx context.Context, pool *pgxpool.Pool) error {
 		"../../migrations/0002_lsml_bundle.sql",
 		"../../migrations/0003_scene_validations.sql",
 		"../../migrations/0004_show_state.sql",
+		"../../migrations/0005_show_stream_rules.sql",
 	} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
@@ -252,7 +253,7 @@ func TestE2E_PushAdvancesPointer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = st.Tx(context.Background(), func(tx pgx.Tx) error {
+	err = st.Tx(context.Background(), func(tx store.Tx) error {
 		gjson, _ := json.Marshal(graph)
 		bjson, _ := json.Marshal(bundle)
 		pv := store.ScenePushedVersion{
