@@ -58,7 +58,7 @@ func catalogDeps(gateway string) PublicDeps {
 func decodeBody(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	var out map[string]any
-	if err := json.Unmarshal([]byte(w.Body.String()), &out); err != nil {
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode: %v (body=%s)", err, w.Body.String())
 	}
 	return out
