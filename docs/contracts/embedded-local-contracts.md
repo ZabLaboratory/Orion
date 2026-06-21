@@ -203,6 +203,21 @@ layout, so the frozen layout must not carry them (parity with the live fetch).
 > Freeze recipe (#224): capture the live `GET /canvas/api/v1/layouts/<ver>`
 > 200 body verbatim into the bundle under key `<ver>`. No transform.
 
+> **⚠ AMENDMENT 2 (2026-06-21, e2e #152 defect 2) — `assets.allowedHosts` must
+> be present.** The LSML authoring gate (`authoring_gate.go::checkAssetURL`, T1)
+> rejects any remote asset whose parsed host is not in `assets.allowedHosts`; an
+> absent/empty block denies every remote host (deny-by-default) → a 422 on push.
+> The frozen canvas-chat-sponso layout was captured WITHOUT an `assets` block
+> while referencing remote hosts (`ddragon.leagueoflegends.com` champion
+> portraits via `pl.*.champ` operator-input defaults; `www.figma.com` MCP
+> placeholders in `<image src>`). When ZabCanvas omits the block, the freeze
+> step derives `allowedHosts` from the hosts the layout actually references (tree
+> + operator-input defaults; exact-match, never a wildcard).
+> **`www.figma.com` is an authoring leak** — ephemeral design-to-code URLs that
+> expire/401; allowlisting only unblocks the gate. Re-pointing those 3 portrait
+> assets to a durable host is an AUTHORING follow-up (ZabCanvas layout re-gen /
+> Forge), not a wiring fix — the freeze script emits a loud warning.
+
 ### B.2 `FetchBlueprint(ctx, blueprintID) (*BlueprintGraph, error)`
 
 Production is a **TWO-CALL** fetch (`http_fetcher.go:87-106`):
@@ -233,6 +248,28 @@ lookup, returning:
 > Freeze recipe: for the scene's default-version blueprints, capture the lifted
 > `{nodes,edges,variables}` (i.e. the `graph` block of the published
 > `current_version`) under the blueprint id.
+
+> **⚠ AMENDMENT 1 (2026-06-21, e2e #152 defect 1) — node ports MUST be baked.**
+> Blue STORES authoring graphs whose nodes carry EMPTY `inputs`/`outputs`. Both
+> `GET /versions/{v}` AND `GET /versions/{v}/graph` serve them empty (verified
+> live against `34f4b958` v5: 316 nodes, 0 ports on every node, on both
+> endpoints). The per-port specs — crucially the `data`|`exec` discriminator
+> Orion's exec partition reads (`exec_partition.go::isExecNode` keys off
+> `BlueprintPort.Kind`) — live ONLY on the node-definition signature
+> (`GET /node-definitions`), NOT on the compute manifest (which carries
+> declared-input *names* but no `kind`). On the live antenna path the editor
+> hydrates node ports from `def.signature`; a verbatim graph capture loses
+> them, so the exec partition builds 0 programs and no on-call entrypoint arms.
+>
+> **Therefore the freeze step MUST bake each non-`reference` node's
+> `inputs`/`outputs` from its node-definition signature** (keyed by
+> `definition`), projecting `name`/`type`/`kind`/`required`/`default` onto
+> `BlueprintPort`. `reference` nodes are skipped (their pins come from the
+> resolved interface). The `bundledFetcher` does NOT enrich — it returns frozen
+> graphs verbatim — so the ports must already be on disk. Producer:
+> `Prism/scripts/build-scene-bundle.mjs` (port bake from
+> `node_definitions.json`). Proof: `frozen_bundle_exec_ports_test.go`
+> (portless on-call arms nothing; baked on-call arms the entrypoint).
 
 ### B.3 `FetchBlueprintGraph(ctx, blueprintID, version) (*ResolvedBlueprintGraph, error)`
 
