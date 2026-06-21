@@ -31,6 +31,36 @@ import (
 // maxOperatorBody bounds the call/resolve request body read.
 const maxOperatorBody = 64 << 10
 
+// defaultBlueprintToken is the addressing token the operator routes and the
+// cockpit contract use to name the DEFAULT (legacy single / blueprint-free)
+// blueprint of a scene, whose real scene-local key is the empty string ""
+// (ADR 001 §3.2 — the legacy key, byte-identical leaf paths; compiler/
+// blueprints.go). The empty key cannot ride a path segment: Go 1.22 ServeMux
+// never matches an empty `{blueprint_id}` segment, so a cockpit that emitted
+// `blueprint_id:""` produced `POST /operator/call//on_lck` → an unroutable
+// 404, leaving a legacy scene's on-call unreachable over HTTP even though the
+// runtime fire (FireOnCall) worked (e2e #152 gap, ADR 016 RC-6).
+//
+// The fix is an API-boundary alias ONLY: `/cockpit/contracts` emits `_` for
+// the empty key, and the operator routes decode `_` back to "" before any
+// runtime call (resolveBlueprintKey). The runtime keying is unchanged — the
+// scene's exec program is still keyed "" — so the invariant local==antenne
+// holds (same route, same contract, same resolution everywhere). `_` is
+// reserved: the compiler rejects an authored non-empty blueprint key equal to
+// `_` (compiler RESERVED_BLUEPRINT_KEY), so the alias is unambiguous.
+const defaultBlueprintToken = "_"
+
+// resolveBlueprintKey maps the HTTP addressing token to the runtime
+// scene-local blueprint key. The default token `_` resolves to the empty
+// (legacy/default) key; every other value passes through verbatim. This is the
+// single decode point the three operator routes share.
+func resolveBlueprintKey(token string) string {
+	if token == defaultBlueprintToken {
+		return ""
+	}
+	return token
+}
+
 // operatorCallBody is the POST /operator/call body: the payload bound under
 // the on-call node's data-out pin. Absent/empty body = null payload.
 type operatorCallBody struct {
@@ -49,7 +79,7 @@ type operatorResolveBody struct {
 // unknown/not an on-call (dormant — ADR 008 active-only).
 func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
-		blueprintID := r.PathValue("blueprint_id")
+		blueprintID := resolveBlueprintKey(r.PathValue("blueprint_id"))
 		entrypointID := r.PathValue("entrypoint_id")
 
 		active := deps.Show.Active()
@@ -83,7 +113,7 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 // inactive blueprint has no awaits (empty list — ADR 008 active-only).
 func getRuntimePending(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
-		blueprintID := r.PathValue("blueprint_id")
+		blueprintID := resolveBlueprintKey(r.PathValue("blueprint_id"))
 		pending := []runtime.PendingAwait{}
 		if active := deps.Show.Active(); active != nil && active.HostsBlueprint(blueprintID) {
 			pending = active.PendingAwaits(blueprintID)
@@ -100,7 +130,7 @@ func getRuntimePending(deps PublicDeps) http.HandlerFunc {
 // type mismatch.
 func postOperatorResolve(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
-		blueprintID := r.PathValue("blueprint_id")
+		blueprintID := resolveBlueprintKey(r.PathValue("blueprint_id"))
 		awaitName := r.PathValue("await_name")
 
 		var body operatorResolveBody

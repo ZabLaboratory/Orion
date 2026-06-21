@@ -45,6 +45,16 @@ const (
 	// the leaf-path namespacing collides.
 	ErrDuplicateBlueprintKey DiagnosticCode = "DUPLICATE_BLUEPRINT_KEY"
 
+	// ErrReservedBlueprintKey (Blue ADR 008 §3.2 / ADR 016 RC-6): a non-empty
+	// blueprint key equal to the operator addressing token "_" is rejected.
+	// The cockpit contract and the operator routes use "_" as the HTTP
+	// addressing alias for the DEFAULT (empty/legacy) key — see
+	// api.defaultBlueprintToken. Allowing an authored key "_" would make the
+	// alias ambiguous (a real "_" blueprint vs. the default one), so the
+	// compiler reserves it. The empty key itself is always allowed (it IS the
+	// default the token aliases).
+	ErrReservedBlueprintKey DiagnosticCode = "RESERVED_BLUEPRINT_KEY"
+
 	// Platform-event leaf expansion (ADR 003 §3.3.3, issue #84). These are
 	// STRUCTURAL validations of a platform node's authored config — never a
 	// capability rejection of the node type itself (Orion serves all of
