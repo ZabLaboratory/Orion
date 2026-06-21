@@ -90,6 +90,11 @@ prefix on the way in). Source: `internal/api/public.go`.
 | WS `/api/v1/show/stream.lsdp` | LSDP wire — `ORION_LSDP_MODE=dual` required; subprotocol `lsdp.v1.1` |
 | WS `/api/v1/scenes/{id}/test` | isolated scene preview (`?session={uuid}`) |
 | `GET /static/solar/v{N.N.N}/*` | static Solar bundle (immutable, long TTL) |
+| `POST /api/v1/operator/call/{blueprint_id}/{entrypoint}` | fire `core.operator.on-call@1` spine (active-only, 409 if dormant) — Blue ADR 008 §3.2 |
+| `POST /api/v1/operator/resolve/{blueprint_id}/{await_name}` | resolve `core.operator.await-value@1` (type-checked; 410 if scene inactive) — Blue ADR 008 §3.3 |
+| `GET /api/v1/runtime/{blueprint_id}/pending` | list armed await-value points — Blue ADR 008 §3.3 |
+| `GET /api/v1/cockpit/contracts?stream_id={id}` | aggregate operator-UI contract (params/triggers/awaits, scope scene|stream-level) — Blue ADR 008 §3.5 |
+| `GET /api/v1/db/{service}/schema` | introspectable DB catalogue for datasource selectors — Blue ADR 008 §3.4 |
 
 ## Resolution criteria — coverage
 
@@ -131,10 +136,12 @@ chantier-specific). Status updated post-#88 (conformance matrix merged,
 | 013 | Platform-event exec entrypoint (`core.event.on-platform-event@1`) | accepted | PR #170 #171 #173 #175 · exec entrypoint arming `__events` leaf, reactive payload binding, stream-level rule finale |
 | 014 | Blueprint-reference support via compile-time subgraph expansion | accepted | PR #183 #184 #185 #189 #190 · expand at compile, cyclic detection (`CYCLIC_BLUEPRINT_REFERENCE`), `__vars` input-reader promotion |
 | 015 | Service-scoped simulate endpoint | accepted + Amendment 1 (2026-06-16) | PR #198 #200 #201 · `POST /validate/simulate`; Amendment 1 = compile Blue graph in-body (not pre-compiled) |
+| Blue 008 | Operator-UI contract (runtime surface — Orion side) | accepted | PR #209 #210 #211 #213 #215 · operator call/resolve/pending routes, cockpit aggregate, DB catalog — see Blue ADR 008 |
 
 > Full resolution criteria live in each ADR doc (`docs/adr/`).
 > ADR 010 and ADR 012 doc files were committed with this resync (scribe/solar-v029-adr-sync).
 > ADR 013/014/015 added by resync 2026-06-20 (drift report).
+> Blue ADR 008 (operator-UI contract) added 2026-06-21 : Orion runtime surface delivered in #209/#210/#211/#213/#215.
 
 ## Solar version history
 
