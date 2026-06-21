@@ -1,8 +1,8 @@
 # ADR 016 — Profil d'exécution `embedded-local` : Orion embarqué dans Prism
 
-- **Status:** proposed
+- **Status:** accepted
 - **Date:** 2026-06-21
-- **Decided:** —
+- **Decided:** 2026-06-21
 - **Deciders:** @ClodoCapeo
 - **Author:** Atlas
 - **Supersedes:** —
