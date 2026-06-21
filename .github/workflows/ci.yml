@@ -15,8 +15,11 @@ concurrency:
 # Self-hosted runners on vps-ovh (org GitHub Actions billing frozen).
 # All jobs run on the shared org-scoped ephemeral pool (label `vps-ovh`).
 # No Docker daemon in the runner:
-#   - the `e2e` job installs PostgreSQL natively (apt) instead of a
-#     `services: postgres` container,
+#   - the `e2e` job uses PostgreSQL natively (no `services: postgres`
+#     container is possible without a Docker socket). It is idempotent +
+#     privilege-aware: it skips apt entirely when PG is already provisioned
+#     on the runner image, and only installs (with a lock-retry) on a fresh
+#     runner — so it stays green whatever the ephemeral runner's state,
 #   - the old `docker-build` smoke job is dropped (the deploy's
 #     `docker compose build` on the host covers Dockerfile validity),
 #   - trufflehog runs as the native binary (the docker action exits 125).
@@ -60,19 +63,52 @@ jobs:
       - name: Start PostgreSQL natively (no Docker on the runner)
         run: |
           export DEBIAN_FRONTEND=noninteractive
-          apt-get update -qq
-          apt-get install -y -qq postgresql postgresql-client
+          # Privilege-aware sudo shim: the org-scoped ephemeral runner image
+          # (myoung34/github-runner) usually runs jobs as root, but the
+          # effective user has varied across runs — a non-root, no-sudo
+          # runner made the unconditional `apt-get` fail with
+          # "Permission denied" on /var/lib/apt/lists/lock (the flake this
+          # step fixes). Resolve a privilege-escalation prefix once, or empty
+          # when already root.
+          if [ "$(id -u)" = "0" ]; then SUDO=; elif command -v sudo >/dev/null 2>&1; then SUDO="sudo -n"; else SUDO=; fi
+
+          # Install PostgreSQL ONLY if it is not already provisioned. On a
+          # pre-provisioned runner image this is a no-op (no apt, no lock, no
+          # privilege needed) — durable regardless of runner state. A fresh
+          # runner installs it once, guarding the apt lock with a short retry
+          # so a transient lock contention does not hard-fail the job.
+          if ! command -v pg_ctlcluster >/dev/null 2>&1; then
+            echo "PostgreSQL not present — installing via apt."
+            for attempt in 1 2 3 4 5; do
+              if $SUDO apt-get update -qq && \
+                 $SUDO apt-get install -y -qq postgresql postgresql-client; then
+                break
+              fi
+              if [ "$attempt" = "5" ]; then
+                echo "::error::apt-get failed after 5 attempts (lock/permission). Pre-provision PostgreSQL on the runner image." >&2
+                exit 1
+              fi
+              echo "apt-get attempt $attempt failed (lock/permission?) — retrying in 5s." >&2
+              sleep 5
+            done
+          else
+            echo "PostgreSQL already provisioned ($(pg_lsclusters -h | awk 'NR==1{print $1, $2}')) — skipping apt."
+          fi
+
           PGVER=$(pg_lsclusters -h | awk 'NR==1{print $1}')
-          pg_ctlcluster "$PGVER" main start || pg_ctlcluster "$PGVER" main restart
+          # Cluster start needs the postgres-cluster privilege; run via the
+          # same shim. Idempotent: start, else restart an already-running one.
+          $SUDO pg_ctlcluster "$PGVER" main start || $SUDO pg_ctlcluster "$PGVER" main restart
           for i in $(seq 1 30); do pg_isready -h localhost -p 5432 && break; sleep 1; done
-          # Idempotent bootstrap: this runner is self-hosted and reused across
-          # runs (vps-ovh), so the native PG cluster persists. Any residual
-          # `orion` role / `orion_e2e` DB from a prior run must not abort the
-          # job under ON_ERROR_STOP=1. We start each run from a clean, known
-          # state: drop the DB (terminating live backends first), recreate the
-          # role guarded by an existence check, then recreate a fresh DB.
-          # SQL is staged to a file then run as the postgres OS user — avoids
-          # nesting a heredoc inside `su -c "..."` (which would not expand).
+          # Idempotent bootstrap. The org runner pool is EPHEMERAL, so the PG
+          # cluster does NOT persist across runs — but a pre-provisioned image
+          # may carry residual `orion` role / `orion_e2e` DB. Either way we
+          # start each run from a clean, known state: drop the DB (terminating
+          # live backends first), recreate the role guarded by an existence
+          # check, then recreate a fresh DB — so ON_ERROR_STOP=1 never aborts
+          # on a residual object. SQL is staged to a file then run as the
+          # postgres OS user — avoids nesting a heredoc inside `su -c "..."`
+          # (which would not expand).
           cat > /tmp/orion_e2e_bootstrap.sql <<'SQL'
           SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'orion_e2e' AND pid <> pg_backend_pid();
           DROP DATABASE IF EXISTS orion_e2e;
@@ -88,7 +124,7 @@ jobs:
           CREATE DATABASE orion_e2e OWNER orion;
           SQL
           chmod 644 /tmp/orion_e2e_bootstrap.sql
-          su - postgres -c "psql -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql"
+          $SUDO su - postgres -c "psql -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql"
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
