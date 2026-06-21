@@ -103,6 +103,15 @@ func getCockpitContracts(deps PublicDeps) http.HandlerFunc {
 // appendScene derives one scene's contract and appends its facet items to the
 // aggregate, stamped with scope. A scene whose loop is gone (nil contracts)
 // contributes nothing.
+//
+// The runtime carries the DEFAULT (legacy single / blueprint-free) blueprint
+// under the empty scene-local key "". An empty `blueprint_id` cannot be
+// addressed by the operator routes — Go's ServeMux never matches an empty path
+// segment, so the cockpit would build an unroutable `POST /operator/call//…`
+// (404, e2e #152 gap). So the contract ANNOUNCES the empty key as the
+// addressing token `_` (defaultBlueprintToken); the operator routes decode it
+// back to "" (resolveBlueprintKey). This is an API-boundary alias only — the
+// runtime keying is untouched, the round-trip is exact.
 func appendScene(out *cockpitContracts, scene *runtime.Scene, scope string) {
 	sc := scene.OperatorContracts()
 	if sc == nil {
@@ -112,9 +121,22 @@ func appendScene(out *cockpitContracts, scene *runtime.Scene, scope string) {
 		out.Params = append(out.Params, cockpitParam{ContractParam: p, Scope: scope})
 	}
 	for _, t := range sc.Triggers {
+		t.BlueprintKey = addressBlueprintKey(t.BlueprintKey)
 		out.Triggers = append(out.Triggers, cockpitTrigger{ContractTrigger: t, Scope: scope})
 	}
 	for _, a := range sc.Awaits {
+		a.BlueprintKey = addressBlueprintKey(a.BlueprintKey)
 		out.Awaits = append(out.Awaits, cockpitAwait{ContractAwait: a, Scope: scope})
 	}
+}
+
+// addressBlueprintKey maps a runtime scene-local blueprint key to the HTTP
+// addressing token the cockpit emits in `blueprint_id`. The empty (default)
+// key becomes `_`; every other key passes through verbatim. Exact inverse of
+// resolveBlueprintKey (operator.go).
+func addressBlueprintKey(key string) string {
+	if key == "" {
+		return defaultBlueprintToken
+	}
+	return key
 }

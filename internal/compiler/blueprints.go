@@ -62,6 +62,20 @@ func validateBlueprintKeys(refs []BlueprintRef) []Diagnostic {
 	var diags []Diagnostic
 	seen := make(map[string]struct{}, len(refs))
 	for _, ref := range refs {
+		// "_" is reserved as the operator addressing token for the DEFAULT
+		// (empty) key (api.defaultBlueprintToken). A non-empty authored key "_"
+		// would make that alias ambiguous — reject it. The empty key is fine:
+		// it IS the default the token aliases.
+		if ref.Key == reservedBlueprintKey {
+			diags = append(diags, Diagnostic{
+				Code:     ErrReservedBlueprintKey,
+				Severity: "error",
+				Message: "blueprint key " + quoteKey(ref.Key) +
+					" is reserved as the operator default-blueprint addressing token",
+				Path: ref.Key,
+			})
+			continue
+		}
 		if _, dup := seen[ref.Key]; dup {
 			diags = append(diags, Diagnostic{
 				Code:     ErrDuplicateBlueprintKey,
@@ -75,6 +89,12 @@ func validateBlueprintKeys(refs []BlueprintRef) []Diagnostic {
 	}
 	return diags
 }
+
+// reservedBlueprintKey mirrors api.defaultBlueprintToken: the HTTP addressing
+// token for the default (empty/legacy) blueprint key. The compiler package
+// cannot import api (would cycle), so the constant is duplicated; a contract
+// test (api/operator_route_keying_test.go) asserts the two stay equal.
+const reservedBlueprintKey = "_"
 
 // declaredKeys returns the set of blueprint keys the normalised list declares.
 // Used by binding validation (§3.3) to reject a component binding whose

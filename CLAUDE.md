@@ -90,7 +90,7 @@ prefix on the way in). Source: `internal/api/public.go`.
 | WS `/api/v1/show/stream.lsdp` | LSDP wire — `ORION_LSDP_MODE=dual` required; subprotocol `lsdp.v1.1` |
 | WS `/api/v1/scenes/{id}/test` | isolated scene preview (`?session={uuid}`) |
 | `GET /static/solar/v{N.N.N}/*` | static Solar bundle (immutable, long TTL) |
-| `POST /api/v1/operator/call/{blueprint_id}/{entrypoint}` | fire `core.operator.on-call@1` spine (active-only, 409 if dormant) — Blue ADR 008 §3.2 |
+| `POST /api/v1/operator/call/{blueprint_id}/{entrypoint}` | fire `core.operator.on-call@1` spine (active-only, 409 if dormant) — Blue ADR 008 §3.2. `{blueprint_id}` = the scene-local blueprint key; the DEFAULT (legacy single / blueprint-free) key is addressed with the token `_` (the empty key cannot ride a path segment). Same token the cockpit announces; `_` is reserved as an authored key (ADR 016 RC-6). |
 | `POST /api/v1/operator/resolve/{blueprint_id}/{await_name}` | resolve `core.operator.await-value@1` (type-checked; 410 if scene inactive) — Blue ADR 008 §3.3 |
 | `GET /api/v1/runtime/{blueprint_id}/pending` | list armed await-value points — Blue ADR 008 §3.3 |
 | `GET /api/v1/cockpit/contracts?stream_id={id}` | aggregate operator-UI contract (params/triggers/awaits, scope scene|stream-level) — Blue ADR 008 §3.5 |
