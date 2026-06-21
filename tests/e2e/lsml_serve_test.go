@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/store"
@@ -89,7 +88,7 @@ func seedLSMLScene(t *testing.T, st store.Store, sceneID uuid.UUID) (string, []b
 		t.Fatal(err)
 	}
 
-	err = st.Tx(ctx, func(tx pgx.Tx) error {
+	err = st.Tx(ctx, func(tx store.Tx) error {
 		gjson, _ := json.Marshal(struct{}{})
 		bjson, _ := json.Marshal(bundle)
 		pv := store.ScenePushedVersion{
@@ -251,7 +250,7 @@ func TestE2E_LSMLIdentityCollapseResolvesServe(t *testing.T) {
 	}
 
 	// The adopted shape: scene_version == lsml_bundle_hash (collapsed).
-	err = st.Tx(ctx, func(tx pgx.Tx) error {
+	err = st.Tx(ctx, func(tx store.Tx) error {
 		gjson, _ := json.Marshal(struct{}{})
 		bjson, _ := json.Marshal(bundle)
 		pv := store.ScenePushedVersion{

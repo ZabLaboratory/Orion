@@ -33,10 +33,11 @@ var ErrNotFound = errors.New("store: not found")
 // every method — no jsonb-specific predicate leaks into the surface —
 // so a non-Postgres backend can store them verbatim (ADR 016 §3.2 D2).
 //
-// The transactional methods name pgx.Tx today: the push/archive paths
-// run a multi-statement transaction. That coupling is deliberately left
-// for the SQLite work (#222) to generalise; this issue (#218) only
-// extracts the interface with behaviour strictly unchanged.
+// The transactional methods take a store-neutral Tx (see tx.go) rather
+// than pgx.Tx: #222 generalised that coupling so a second backend can
+// satisfy the surface. Pool() stays pg-specific — it exists only for the
+// pg-listen adapter, which is wired in the antenne profile alone; a
+// non-Postgres backend returns nil (the adapter is never built for it).
 type Store interface {
 	Close()
 	Pool() *pgxpool.Pool
@@ -52,18 +53,18 @@ type Store interface {
 	GetScene(ctx context.Context, id uuid.UUID) (*Scene, error)
 	ListActiveScenesWithPush(ctx context.Context) ([]Scene, error)
 	SetSceneStatus(ctx context.Context, id uuid.UUID, status SceneStatus) error
-	SetLatestPushedVersion(ctx context.Context, tx pgx.Tx, id uuid.UUID, sceneVersion *string) error
+	SetLatestPushedVersion(ctx context.Context, tx Tx, id uuid.UUID, sceneVersion *string) error
 	InsertDefinition(ctx context.Context, def SceneDefinition) error
-	InsertDefinitionTx(ctx context.Context, tx pgx.Tx, def SceneDefinition) error
+	InsertDefinitionTx(ctx context.Context, tx Tx, def SceneDefinition) error
 	GetDefinition(ctx context.Context, id uuid.UUID) (*SceneDefinition, error)
-	InsertPushedVersion(ctx context.Context, tx pgx.Tx, pv ScenePushedVersion) error
+	InsertPushedVersion(ctx context.Context, tx Tx, pv ScenePushedVersion) error
 	GetLSMLBundleByHash(ctx context.Context, sceneID uuid.UUID, lsmlHash string) (json.RawMessage, error)
 	GetPushedVersion(ctx context.Context, sceneID uuid.UUID, sceneVersion string) (*ScenePushedVersion, error)
 	GetLatestPushedVersion(ctx context.Context, sceneID uuid.UUID) (*ScenePushedVersion, error)
-	PurgePushedVersions(ctx context.Context, tx pgx.Tx, sceneID uuid.UUID) (int64, error)
-	Tx(ctx context.Context, fn func(pgx.Tx) error) error
+	PurgePushedVersions(ctx context.Context, tx Tx, sceneID uuid.UUID) (int64, error)
+	Tx(ctx context.Context, fn func(Tx) error) error
 	MaxDefinitionVersion(ctx context.Context, sceneID uuid.UUID) (int, error)
-	NextDefinitionVersionTx(ctx context.Context, tx pgx.Tx, sceneID uuid.UUID) (int, error)
+	NextDefinitionVersionTx(ctx context.Context, tx Tx, sceneID uuid.UUID) (int, error)
 
 	// show state
 	GetActiveSceneID(ctx context.Context) (*uuid.UUID, error)

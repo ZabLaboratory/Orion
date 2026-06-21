@@ -136,6 +136,13 @@ type Config struct {
 	// Profile selects the execution-profile edge wiring at boot
 	// (ORION_PROFILE, ADR 016 §3.3). Default antenne = unchanged prod.
 	Profile Profile
+
+	// SQLitePath is the embedded-local store file (ADR 016 §3.2, #222),
+	// ORION_SQLITE_PATH. Unused in antenne. SceneBundlePath is the frozen
+	// scene bundle the bundledFetcher serves (#224), ORION_SCENE_BUNDLE_PATH.
+	// Both are required only in the embedded-local profile.
+	SQLitePath      string
+	SceneBundlePath string
 }
 
 // Load reads env vars, applies defaults, and validates required fields.
@@ -159,6 +166,8 @@ func Load() (Config, error) {
 		QuasarBaseURL:      strings.TrimRight(getenv("ORION_QUASAR_BASE_URL", ""), "/"),
 		CanvasBaseURL:      strings.TrimRight(getenv("ORION_CANVAS_BASE_URL", ""), "/"),
 		BlueBaseURL:        strings.TrimRight(getenv("ORION_BLUE_BASE_URL", ""), "/"),
+		SQLitePath:         getenv("ORION_SQLITE_PATH", ""),
+		SceneBundlePath:    getenv("ORION_SCENE_BUNDLE_PATH", ""),
 		HTTPPollUserAgent:  getenv("ORION_HTTP_POLL_USER_AGENT", "orion-poller/1.0"),
 		LogLevel:           strings.ToLower(getenv("ORION_LOG_LEVEL", "info")),
 	}
@@ -297,17 +306,32 @@ func Load() (Config, error) {
 		cfg.ValidationTimeout = time.Duration(v) * time.Second
 	}
 
-	if cfg.DatabaseURL == "" {
-		problems = append(problems, "ORION_DATABASE_URL is required")
+	// Required-field punch list is profile-keyed (ADR 016 §3.2/§3.3): antenne
+	// needs its Postgres DSN + Canvas/Blue HTTP bases; embedded-local needs the
+	// local SQLite file + frozen scene bundle instead (the HTTP edges and the
+	// pg DSN are unused there — requiring them would block a clean local boot).
+	// ZabAuth stays required in both: the validator/service-token plumbing is
+	// shared (the local-auth profile refinement is #223's scope).
+	if cfg.Profile.IsEmbeddedLocal() {
+		if cfg.SQLitePath == "" {
+			problems = append(problems, "ORION_SQLITE_PATH is required in the embedded-local profile")
+		}
+		if cfg.SceneBundlePath == "" {
+			problems = append(problems, "ORION_SCENE_BUNDLE_PATH is required in the embedded-local profile")
+		}
+	} else {
+		if cfg.DatabaseURL == "" {
+			problems = append(problems, "ORION_DATABASE_URL is required")
+		}
+		if cfg.CanvasBaseURL == "" {
+			problems = append(problems, "ORION_CANVAS_BASE_URL is required")
+		}
+		if cfg.BlueBaseURL == "" {
+			problems = append(problems, "ORION_BLUE_BASE_URL is required")
+		}
 	}
 	if cfg.ZabAuthValidateURL == "" {
 		problems = append(problems, "ORION_ZABAUTH_VALIDATE_URL is required")
-	}
-	if cfg.CanvasBaseURL == "" {
-		problems = append(problems, "ORION_CANVAS_BASE_URL is required")
-	}
-	if cfg.BlueBaseURL == "" {
-		problems = append(problems, "ORION_BLUE_BASE_URL is required")
 	}
 
 	if len(problems) > 0 {

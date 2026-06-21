@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/store"
@@ -44,7 +43,7 @@ func seedPushedVersion(t *testing.T, st store.Store, sceneID uuid.UUID, version 
 	}); err != nil {
 		t.Fatalf("insert definition: %v", err)
 	}
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := st.Tx(ctx, func(tx store.Tx) error {
 		pv := store.ScenePushedVersion{
 			SceneID: sceneID, SceneVersion: version, DefinitionID: defID,
 			GraphJSON: json.RawMessage(`{}`), BundleJSON: json.RawMessage(`{}`),
@@ -181,7 +180,7 @@ func TestE2E_Validation_ArchivePurgeCascade(t *testing.T) {
 
 	// Archive purge: delete the pushed versions. The FK ON DELETE CASCADE
 	// must take the validation record with it.
-	if err := st.Tx(ctx, func(tx pgx.Tx) error {
+	if err := st.Tx(ctx, func(tx store.Tx) error {
 		if _, err := st.PurgePushedVersions(ctx, tx, sceneID); err != nil {
 			return err
 		}

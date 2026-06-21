@@ -66,4 +66,8 @@ func withRequiredEnv(t *testing.T) {
 	t.Setenv("ORION_ZABAUTH_VALIDATE_URL", "http://zabauth/validate")
 	t.Setenv("ORION_CANVAS_BASE_URL", "http://zabgate/canvas")
 	t.Setenv("ORION_BLUE_BASE_URL", "http://zabgate/blue")
+	// embedded-local-only required fields (#222/#224). Ignored in antenne;
+	// set here so a profile-keyed Load() in either profile passes validation.
+	t.Setenv("ORION_SQLITE_PATH", "/tmp/orion-test.db")
+	t.Setenv("ORION_SCENE_BUNDLE_PATH", "/tmp/orion-test-bundle.json")
 }

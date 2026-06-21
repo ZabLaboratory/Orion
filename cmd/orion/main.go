@@ -73,15 +73,24 @@ func run() error {
 	_ = authSource // wired through call sites in #223; default is byte-identical to today.
 	logger.Info("auth source selected", "profile", string(cfg.Profile), "source", "header")
 
-	// Persistence. store.Open returns the Postgres-backed store.Store
-	// implementation (the antenne default; sqliteStore arrives in #222).
+	// Persistence — the second profile-keyed edge selection (ADR 016 §3.2,
+	// issue #222). antenne wires the Postgres-backed store.Open; embedded-local
+	// wires the single-file SQLite store under cfg.SQLitePath. Both satisfy the
+	// same store.Store surface, so every caller below is profile-blind — only
+	// THIS boot line differs, and the hot path never branches on the profile.
 	dbCtx, dbCancel := context.WithTimeout(ctx, 30*time.Second)
-	pgst, err := store.Open(dbCtx, cfg.DatabaseURL)
+	var st store.Store
+	if cfg.Profile.IsEmbeddedLocal() {
+		st, err = store.OpenSQLite(dbCtx, cfg.SQLitePath)
+		logger.Info("store selected", "profile", string(cfg.Profile), "backend", "sqlite", "path", cfg.SQLitePath)
+	} else {
+		st, err = store.Open(dbCtx, cfg.DatabaseURL)
+		logger.Info("store selected", "profile", string(cfg.Profile), "backend", "postgres")
+	}
 	dbCancel()
 	if err != nil {
 		return err
 	}
-	var st store.Store = pgst
 	defer st.Close()
 
 	// Runtime: compute registry → show → tick → test sessions.
@@ -196,14 +205,23 @@ func run() error {
 	poller := adapters.NewPoller(inbox, logger, cfg.HTTPPollUserAgent)
 	defer poller.StopAll()
 
-	pgListen := adapters.NewPGListener(st.Pool(), inbox, logger)
-	defer pgListen.StopAll()
+	// PG LISTEN/NOTIFY is a Postgres-only adapter (it acquires a raw pool
+	// connection). It is wired in the antenne profile alone; embedded-local's
+	// SQLite store has no pool (Pool() == nil) and no NOTIFY, so the listener
+	// is never built there. Pollers run in both profiles.
+	var pgListen *adapters.PGListener
+	if !cfg.Profile.IsEmbeddedLocal() {
+		pgListen = adapters.NewPGListener(st.Pool(), inbox, logger)
+		defer pgListen.StopAll()
+	}
 
 	// Wire pollers + listeners on every loaded scene.
 	for _, id := range show.IDs() {
 		if scene, err := show.Get(id); err == nil {
 			poller.Start(ctx, scene)
-			pgListen.Start(ctx, scene)
+			if pgListen != nil {
+				pgListen.Start(ctx, scene)
+			}
 		}
 	}
 
@@ -215,7 +233,24 @@ func run() error {
 	// to the static token in static mode, so dev/test posture is
 	// unchanged. Both bases stay ZabGate-fronted (C5/C6): no direct
 	// service-to-service path is introduced.
-	fetcher := compiler.NewHTTPFetcherWithTokenFunc(cfg.CanvasBaseURL, cfg.BlueBaseURL, serviceTokens.Token)
+	//
+	// Profile-keyed edge selection (ADR 016 §3.2, issue #224): antenne fetches
+	// authored artefacts over HTTP from Canvas/Blue; embedded-local serves the
+	// FROZEN scene bundle from disk (the same compiler.Fetcher surface, the same
+	// decoded structs — the compile path is byte-identical). A missing/malformed
+	// bundle is a hard boot error: the profile cannot compile its scene without it.
+	var fetcher compiler.Fetcher
+	if cfg.Profile.IsEmbeddedLocal() {
+		bundle, berr := compiler.LoadSceneBundle(cfg.SceneBundlePath)
+		if berr != nil {
+			return berr
+		}
+		fetcher = compiler.NewBundledFetcher(bundle)
+		logger.Info("fetcher selected", "profile", string(cfg.Profile), "source", "bundle", "path", cfg.SceneBundlePath)
+	} else {
+		fetcher = compiler.NewHTTPFetcherWithTokenFunc(cfg.CanvasBaseURL, cfg.BlueBaseURL, serviceTokens.Token)
+		logger.Info("fetcher selected", "profile", string(cfg.Profile), "source", "http")
+	}
 
 	wsServer := &ws.Server{
 		Show:    show,

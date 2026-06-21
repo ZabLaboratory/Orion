@@ -252,7 +252,7 @@ func TestE2E_PushAdvancesPointer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = st.Tx(context.Background(), func(tx pgx.Tx) error {
+	err = st.Tx(context.Background(), func(tx store.Tx) error {
 		gjson, _ := json.Marshal(graph)
 		bjson, _ := json.Marshal(bundle)
 		pv := store.ScenePushedVersion{

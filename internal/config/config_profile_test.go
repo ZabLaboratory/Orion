@@ -78,6 +78,28 @@ func TestLoad_ProfileEmbeddedLocalRespectsExplicitListen(t *testing.T) {
 	}
 }
 
+// TestLoad_EmbeddedLocalRequiresLocalPaths — the embedded-local profile
+// requires the SQLite file + scene bundle path (and does NOT require the pg
+// DSN / Canvas / Blue HTTP bases, which are unused there). #222/#224.
+func TestLoad_EmbeddedLocalRequiresLocalPaths(t *testing.T) {
+	t.Setenv("ORION_ZABAUTH_VALIDATE_URL", "http://zabauth/validate")
+	t.Setenv("ORION_PROFILE", "embedded-local")
+	// No SQLITE_PATH / SCENE_BUNDLE_PATH, no DB DSN.
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for embedded-local without local paths")
+	}
+	// With the local paths set, the missing pg DSN / HTTP bases are NOT errors.
+	t.Setenv("ORION_SQLITE_PATH", "/tmp/o.db")
+	t.Setenv("ORION_SCENE_BUNDLE_PATH", "/tmp/o-bundle.json")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("embedded-local with local paths must load (pg/HTTP edges unused): %v", err)
+	}
+	if cfg.SQLitePath != "/tmp/o.db" || cfg.SceneBundlePath != "/tmp/o-bundle.json" {
+		t.Fatalf("local paths not parsed: %+v", cfg)
+	}
+}
+
 // TestLoad_ProfileRejectsUnknown — an unrecognised profile is a config
 // error (fail-fast at boot, like every other enum flag).
 func TestLoad_ProfileRejectsUnknown(t *testing.T) {

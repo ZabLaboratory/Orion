@@ -158,15 +158,15 @@ func (s *PGStore) SetSceneStatus(ctx context.Context, id uuid.UUID, status Scene
 // Callers wrap this in the same transaction that wrote the pushed
 // version artefact so an external observer never sees a pointer
 // pointing at a non-existent (scene_id, scene_version).
-func (s *PGStore) SetLatestPushedVersion(ctx context.Context, tx pgx.Tx, id uuid.UUID, sceneVersion *string) error {
-	tag, err := tx.Exec(ctx,
+func (s *PGStore) SetLatestPushedVersion(ctx context.Context, tx Tx, id uuid.UUID, sceneVersion *string) error {
+	n, err := tx.Exec(ctx,
 		`UPDATE scenes SET latest_pushed_version = $2, updated_at = now() WHERE id = $1`,
 		id, sceneVersion,
 	)
 	if err != nil {
 		return fmt.Errorf("set latest pushed: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if n == 0 {
 		return ErrNotFound
 	}
 	return nil
@@ -186,8 +186,15 @@ func (s *PGStore) InsertDefinition(ctx context.Context, def SceneDefinition) err
 // computed def.DefinitionVersion via NextDefinitionVersionTx, so two concurrent
 // first-pushes can never both read MAX=0 and collide on
 // UNIQUE(scene_id, definition_version).
-func (s *PGStore) InsertDefinitionTx(ctx context.Context, tx pgx.Tx, def SceneDefinition) error {
-	return insertDefinition(ctx, tx, def)
+func (s *PGStore) InsertDefinitionTx(ctx context.Context, tx Tx, def SceneDefinition) error {
+	_, err := tx.Exec(ctx,
+		`INSERT INTO scene_definitions (id, scene_id, definition_version,
+		    canvas_version, blue_blueprint_id, components_jsonb, created_at)
+		   VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+		def.ID, def.SceneID, def.DefinitionVersion, def.CanvasVersion,
+		def.BlueBlueprintID, def.ComponentsJSON, def.CreatedAt,
+	)
+	return err
 }
 
 // querier is the common surface of *pgxpool.Pool and pgx.Tx the definition
@@ -219,7 +226,7 @@ func (s *PGStore) GetDefinition(ctx context.Context, id uuid.UUID) (*SceneDefini
 
 // InsertPushedVersion + SetLatestPushedVersion are typically called
 // together inside a single tx — see Store.Tx helper.
-func (s *PGStore) InsertPushedVersion(ctx context.Context, tx pgx.Tx, pv ScenePushedVersion) error {
+func (s *PGStore) InsertPushedVersion(ctx context.Context, tx Tx, pv ScenePushedVersion) error {
 	// lsml_bundle_jsonb / lsml_bundle_hash are nil/NULL in bespoke mode;
 	// pgx binds a nil json.RawMessage / *string as SQL NULL, so the
 	// additive columns stay empty unless the caller populated them.
@@ -282,18 +289,16 @@ func (s *PGStore) GetLatestPushedVersion(ctx context.Context, sceneID uuid.UUID)
 
 // PurgePushedVersions deletes every compiled artefact for a scene.
 // Used on archive (§ 10.1).
-func (s *PGStore) PurgePushedVersions(ctx context.Context, tx pgx.Tx, sceneID uuid.UUID) (int64, error) {
-	tag, err := tx.Exec(ctx, `DELETE FROM scene_pushed_versions WHERE scene_id = $1`, sceneID)
-	if err != nil {
-		return 0, err
-	}
-	return tag.RowsAffected(), nil
+func (s *PGStore) PurgePushedVersions(ctx context.Context, tx Tx, sceneID uuid.UUID) (int64, error) {
+	return tx.Exec(ctx, `DELETE FROM scene_pushed_versions WHERE scene_id = $1`, sceneID)
 }
 
-// Tx runs fn inside a transaction. Wraps pgx's BeginFunc with our
-// own naming so callers don't need to import pgx directly.
-func (s *PGStore) Tx(ctx context.Context, fn func(pgx.Tx) error) error {
-	return pgx.BeginFunc(ctx, s.pool, fn)
+// Tx runs fn inside a transaction. Wraps pgx's BeginFunc, adapting the
+// pgx.Tx to the store-neutral Tx so callers never import pgx.
+func (s *PGStore) Tx(ctx context.Context, fn func(Tx) error) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		return fn(pgxTx{tx: tx})
+	})
 }
 
 // MaxDefinitionVersion returns the highest definition_version stored
@@ -330,7 +335,7 @@ func (s *PGStore) MaxDefinitionVersion(ctx context.Context, sceneID uuid.UUID) (
 // the push handler's UpsertScene created it earlier in the same request.
 // ErrNotFound if the scene row is absent (defensive — the caller upserts
 // first, so this should not happen on the push path).
-func (s *PGStore) NextDefinitionVersionTx(ctx context.Context, tx pgx.Tx, sceneID uuid.UUID) (int, error) {
+func (s *PGStore) NextDefinitionVersionTx(ctx context.Context, tx Tx, sceneID uuid.UUID) (int, error) {
 	// Take the row lock first. The result is discarded; FOR UPDATE is the
 	// point. A separate aggregate query then reads the current MAX under
 	// the lock the loser is now waiting on.
