@@ -1,0 +1,177 @@
+# Local execution stack — Orion + its full upstream chain, for testing the
+# reactive engine end-to-end WITHOUT the Twitch antenna (no Quasar, no Pulsar).
+#
+# Brings up: ZabGate (auth + proxy) · ZabAuth (login/operator) · ZabTruth +
+# ZabRanking (db.query data sources) · Orion (engine) + one Postgres per service.
+# All on a single `zab_network` so cross-service hostnames resolve exactly like
+# prod (zabgate:4000, zabauth:4001, …) — the étage-1 .env files already point at
+# those hostnames, so no env rewrite is needed.
+#
+# This file lives in the Orion repo but is run FROM the structure root
+# (D:\Documents\Zab) so the relative build contexts (./ZabGate, ./ZabAuth, …)
+# resolve. See docs/runbooks/local-execution-stack.md for the exact commands.
+#
+# Differences vs each repo's own docker-compose.yml (intentional, local-only):
+#   - one shared network `zab_network` (Orion's own compose uses zab-internal);
+#   - Orion's API port 4007 is published to the host (its repo compose only
+#     publishes the DB) so a local smoke can hit the engine directly;
+#   - everything in one file so `up`/`down` manage the whole chain atomically.
+#
+# Secrets: every service reads its real config from ../.env.<service> at étage 1.
+# Nothing sensitive is written here or committed. NEVER inline a secret in this file.
+#
+# Prerequisite (one-off): docker network create zab_network
+
+name: zab-localstack
+
+services:
+  # --- Gateway (only public entry point; strips /<svc> prefix) ---------------
+  zabgate:
+    build: ../ZabGate
+    image: zabgate:local
+    container_name: zabgate-api
+    restart: unless-stopped
+    env_file: ../.env.zabgate
+    ports:
+      - "4000:4000"
+    networks:
+      zab_network:
+        aliases: [zabgate, zabgate-api]
+
+  # --- Auth (login, operator, token mint) -----------------------------------
+  zabauth:
+    build: ../ZabAuth
+    image: zabauth:local
+    container_name: zabauth-api
+    restart: unless-stopped
+    env_file: ../.env.zabauth
+    depends_on:
+      zabauth-db: {condition: service_healthy}
+    networks:
+      zab_network:
+        aliases: [zabauth, zabauth-api]
+  zabauth-db:
+    image: postgres:16-alpine
+    container_name: zabauth-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${ZABAUTH_PG_USER:-zabauth}
+      POSTGRES_PASSWORD: ${ZABAUTH_PG_PASSWORD:?set in ../.env.zabauth}
+      POSTGRES_DB: ${ZABAUTH_PG_DB:-zabauth}
+    ports: ["5441:5432"]
+    volumes: [zabauth_pg_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabauth -d zabauth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      zab_network:
+        aliases: [zabauth-postgres]
+
+  # --- Truth (match/player source of truth — db.query truth) ----------------
+  zabtruth:
+    build: ../ZabTruth
+    image: zabtruth:local
+    container_name: zabtruth-api
+    restart: unless-stopped
+    env_file: ../.env.zabtruth
+    depends_on:
+      zabtruth-db: {condition: service_healthy}
+    networks:
+      zab_network:
+        aliases: [zabtruth, zabtruth-api]
+  zabtruth-db:
+    image: postgres:16-alpine
+    container_name: zabtruth-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${ZABTRUTH_PG_USER:-zabtruth}
+      POSTGRES_PASSWORD: ${ZABTRUTH_PG_PASSWORD:?set in ../.env.zabtruth}
+      POSTGRES_DB: ${ZABTRUTH_PG_DB:-zabtruth}
+    ports: ["5442:5432"]
+    volumes: [zabtruth_pg_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabtruth -d zabtruth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      zab_network:
+        aliases: [zabtruth-postgres]
+
+  # --- Ranking (per-split scores — db.query ranking) ------------------------
+  zabranking:
+    build: ../ZabRanking
+    image: zabranking:local
+    container_name: zabranking-api
+    restart: unless-stopped
+    env_file: ../.env.zabranking
+    depends_on:
+      zabranking-db: {condition: service_healthy}
+    networks:
+      zab_network:
+        aliases: [zabranking, zabranking-api]
+  zabranking-db:
+    image: postgres:16-alpine
+    container_name: zabranking-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${ZABRANKING_PG_USER:-zabranking}
+      POSTGRES_PASSWORD: ${ZABRANKING_PG_PASSWORD:?set in ../.env.zabranking}
+      POSTGRES_DB: ${ZABRANKING_PG_DB:-zabranking}
+    ports: ["5443:5432"]
+    volumes: [zabranking_pg_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabranking -d zabranking"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      zab_network:
+        aliases: [zabranking-postgres]
+
+  # --- Orion (the engine) ---------------------------------------------------
+  # Goose migrations run at boot (entrypoint), unlike the Python services.
+  orion:
+    build: ../Orion
+    image: orion:local
+    container_name: orion
+    restart: unless-stopped
+    env_file: ../.env.orion
+    ports:
+      - "4007:4007"   # public API — published locally for direct smoke tests
+    depends_on:
+      orion-postgres: {condition: service_healthy}
+    networks:
+      zab_network:
+        aliases: [orion, orion-api]
+  orion-postgres:
+    image: postgres:16-alpine
+    container_name: orion-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${ORION_PG_USER:-orion}
+      POSTGRES_PASSWORD: ${ORION_PG_PASSWORD:?set in ../.env.orion}
+      POSTGRES_DB: ${ORION_PG_DB:-orion}
+    ports: ["5447:5432"]
+    volumes: [orion_pg_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U orion -d orion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      zab_network:
+        aliases: [orion-postgres, orion-db]
+
+volumes:
+  zabauth_pg_data: {name: zabauth_pg_data}
+  zabtruth_pg_data: {name: zabtruth_pg_data}
+  zabranking_pg_data: {name: zabranking_pg_data}
+  orion_pg_data: {name: orion_pg_data}
+
+networks:
+  zab_network:
+    name: zab_network
+    external: true
