@@ -112,6 +112,13 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/runtime/{blueprint_id}/pending", getRuntimePending(deps))
 	mux.HandleFunc("POST /api/v1/operator/resolve/{blueprint_id}/{await_name}", postOperatorResolve(deps))
 
+	// Cockpit contract aggregate (Orion #210, Blue ADR 008 §3.5): the single
+	// derived read the cockpit uses to render the live operator UI of every
+	// active rule — params + triggers + awaits over the active scene (scope
+	// `scene`) and promoted stream-level rules (scope `stream`). Operator-gated
+	// (reveals the live operator surface); read-only, never stored.
+	mux.HandleFunc("GET /api/v1/cockpit/contracts", getCockpitContracts(deps))
+
 	mux.HandleFunc("GET /api/v1/assets/{id}", getAsset(deps))
 	mux.HandleFunc("GET /api/v1/credentials/{id}/stream-key", getStreamKey(deps))
 
