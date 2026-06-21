@@ -69,9 +69,21 @@ func run() error {
 	// Until the local impls land (#222 sqliteStore, #223 localOperatorAuth),
 	// embedded-local wires the same antenne defaults, so it boots cleanly
 	// and shares the exact production code path.
+	// embedded-local (#223): localOperatorAuth grants operator on loopback
+	// requests carrying the Prism↔Orion handshake secret. NEVER wired on
+	// antenne — the profile branch keeps HeaderAuthSource there, so the
+	// production path is byte-for-byte unchanged (RC-1, invariant).
 	var authSource auth.AuthSource = auth.HeaderAuthSource{}
-	_ = authSource // wired through call sites in #223; default is byte-identical to today.
-	logger.Info("auth source selected", "profile", string(cfg.Profile), "source", "header")
+	authSourceKind := "header"
+	if cfg.Profile.IsEmbeddedLocal() {
+		local, err := auth.NewLocalOperatorAuth(cfg.LocalAuthSecret, cfg.LocalAuthUser)
+		if err != nil {
+			return err
+		}
+		authSource = local
+		authSourceKind = "local-operator"
+	}
+	logger.Info("auth source selected", "profile", string(cfg.Profile), "source", authSourceKind)
 
 	// Persistence — the second profile-keyed edge selection (ADR 016 §3.2,
 	// issue #222). antenne wires the Postgres-backed store.Open; embedded-local
@@ -277,6 +289,7 @@ func run() error {
 		QuasarBaseURL: cfg.QuasarBaseURL,
 		ServiceTokens: serviceTokens,
 		LSDPHandler:   lsdpHandler,
+		AuthSource:    authSource,
 		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway + live
 		// service token as the db.query client; proxies `_schema` only.
 		SchemaClient: effects.NewSchemaClientWithTokenFunc(cfg.ZabGateURL, serviceTokens.Token, nil),
@@ -290,9 +303,17 @@ func run() error {
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	// embedded-local (#223, ADR 016 D4): in-process loopback guard, the
+	// complement to the loopback-only listen addr. Even a mis-bind to a
+	// routable interface would refuse off-host callers before any handler
+	// (incl. the operator grant) runs. No-op on antenne — never wrapped.
+	var publicHandler http.Handler = obs.Recover(logger, publicMux)
+	if cfg.Profile.IsEmbeddedLocal() {
+		publicHandler = auth.LoopbackOnly(publicHandler)
+	}
 	publicSrv := &http.Server{
 		Addr:              cfg.ListenAddr,
-		Handler:           obs.Recover(logger, publicMux),
+		Handler:           publicHandler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	internalSrv := &http.Server{

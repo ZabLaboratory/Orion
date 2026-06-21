@@ -143,6 +143,17 @@ type Config struct {
 	// Both are required only in the embedded-local profile.
 	SQLitePath      string
 	SceneBundlePath string
+
+	// LocalAuthSecret is the Prism↔Orion handshake secret used by
+	// localOperatorAuth (ORION_LOCAL_OPERATOR_SECRET, ADR 016 §3.2-2). Prism
+	// generates it at sidecar spawn and passes it via env; Orion requires
+	// it on every loopback request before granting operator. Consulted
+	// ONLY in embedded-local; required there (boot fails without it so the
+	// sidecar can never grant operator unguarded — ADR 016 §5 R2).
+	LocalAuthSecret string
+	// LocalAuthUser is the cosmetic user id stamped on the local operator
+	// Identity (ORION_LOCAL_AUTH_USER). Optional; role is what gates.
+	LocalAuthUser string
 }
 
 // Load reads env vars, applies defaults, and validates required fields.
@@ -209,6 +220,14 @@ func Load() (Config, error) {
 		}
 		if _, ok := os.LookupEnv("ORION_INTERNAL_ADDR"); !ok {
 			cfg.InternalAddr = "127.0.0.1:4017"
+		}
+		// Handshake secret (ADR 016 §3.2-2, RC-4). Required in
+		// embedded-local: without it localOperatorAuth would grant operator
+		// to any loopback caller (R2). Fail the boot rather than open that.
+		cfg.LocalAuthSecret = os.Getenv("ORION_LOCAL_OPERATOR_SECRET")
+		cfg.LocalAuthUser = getenv("ORION_LOCAL_AUTH_USER", "local-operator")
+		if cfg.LocalAuthSecret == "" {
+			problems = append(problems, "ORION_LOCAL_OPERATOR_SECRET is required when ORION_PROFILE=embedded-local")
 		}
 	default:
 		problems = append(problems, "ORION_PROFILE must be 'antenne' or 'embedded-local'")

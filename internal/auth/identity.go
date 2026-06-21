@@ -19,6 +19,7 @@ package auth
 
 import (
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 )
@@ -152,3 +153,24 @@ var ErrUnauthenticated = errors.New("auth: unauthenticated")
 // ErrForbidden is returned when the identity is authenticated but
 // lacks the required role.
 var ErrForbidden = errors.New("auth: forbidden")
+
+// ErrNoHandshakeSecret is returned by NewLocalOperatorAuth when an
+// embedded-local boot supplies no handshake secret. Booting without it
+// would grant operator to any loopback caller (ADR 016 §5 R2) — so the
+// constructor refuses and the process must fail to start.
+var ErrNoHandshakeSecret = errors.New("auth: embedded-local requires a handshake secret")
+
+// isLoopbackRemote reports whether a net/http RemoteAddr (host:port, or a
+// bare host) resolves to a loopback address. Used by LoopbackOnly to
+// enforce the embedded-local off-host refusal (ADR 016 D4). A
+// non-parseable address is treated as non-loopback (fail-closed).
+func isLoopbackRemote(remoteAddr string) bool {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
+}
