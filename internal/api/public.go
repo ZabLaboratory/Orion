@@ -208,8 +208,17 @@ var authSource auth.AuthSource = auth.HeaderAuthSource{}
 // identity SOURCE is now pluggable (HeaderAuthSource on antenne,
 // localOperatorAuth on embedded-local).
 func requireOperator(handler http.HandlerFunc) http.HandlerFunc {
+	return operatorGate(authSource, handler)
+}
+
+// operatorGate is the role-check, parameterised on the identity source so
+// it can be unit-tested without mutating the package-level authSource
+// global (which would race the parallel handler tests). The check itself
+// is byte-for-byte the historical requireOperator logic — only the source
+// of the Identity is now injectable.
+func operatorGate(src auth.AuthSource, handler http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		id := authSource.FromHeaders(r.Header)
+		id := src.FromHeaders(r.Header)
 		if !id.IsAuthenticated() || (id.Role != auth.RoleOperator && id.Role != auth.RoleAdmin) {
 			http.Error(w, "operator role required", http.StatusForbidden)
 			return
