@@ -8,7 +8,7 @@ import (
 // HandshakeHeader is the request header carrying the Prism↔Orion shared
 // handshake secret (ADR 016 §3.2-2, §3.4). In the embedded-local profile
 // the Prism main process generates a high-entropy secret at sidecar spawn,
-// passes it to the Orion binary via ORION_LOCAL_AUTH_SECRET, and sets it
+// passes it to the Orion binary via ORION_LOCAL_OPERATOR_SECRET, and sets it
 // on every loopback request it issues. Orion grants the operator role
 // ONLY when this header matches — so another local process that finds the
 // loopback port cannot impersonate Prism and obtain operator (D4, R2).

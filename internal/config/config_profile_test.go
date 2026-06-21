@@ -47,7 +47,7 @@ func TestLoad_ProfileExplicitAntenne(t *testing.T) {
 func TestLoad_ProfileEmbeddedLocalCollapsesToLoopback(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "embedded-local")
-	t.Setenv("ORION_LOCAL_AUTH_SECRET", "prism-handshake") // required since #223
+	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "prism-handshake") // required since #223
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -69,7 +69,7 @@ func TestLoad_ProfileEmbeddedLocalCollapsesToLoopback(t *testing.T) {
 func TestLoad_ProfileEmbeddedLocalRespectsExplicitListen(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "embedded-local")
-	t.Setenv("ORION_LOCAL_AUTH_SECRET", "prism-handshake") // required since #223
+	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "prism-handshake") // required since #223
 	t.Setenv("ORION_LISTEN_ADDR", "127.0.0.1:5555")
 	cfg, err := Load()
 	if err != nil {
@@ -88,7 +88,7 @@ func TestLoad_EmbeddedLocalRequiresLocalPaths(t *testing.T) {
 	t.Setenv("ORION_PROFILE", "embedded-local")
 	// Handshake secret required since #223 (so the failure under test is the
 	// missing local paths, not the missing secret).
-	t.Setenv("ORION_LOCAL_AUTH_SECRET", "prism-handshake")
+	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "prism-handshake")
 	// No SQLITE_PATH / SCENE_BUNDLE_PATH, no DB DSN.
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for embedded-local without local paths")
@@ -106,13 +106,13 @@ func TestLoad_EmbeddedLocalRequiresLocalPaths(t *testing.T) {
 }
 
 // TestLoad_EmbeddedLocalRequiresHandshakeSecret proves boot fails when
-// the embedded-local profile is selected without ORION_LOCAL_AUTH_SECRET
+// the embedded-local profile is selected without ORION_LOCAL_OPERATOR_SECRET
 // (#223, ADR 016 §5 R2): booting without it would grant operator to any
 // loopback caller, the exact hole RC-4 forbids.
 func TestLoad_EmbeddedLocalRequiresHandshakeSecret(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "embedded-local")
-	// no ORION_LOCAL_AUTH_SECRET set
+	// no ORION_LOCAL_OPERATOR_SECRET set
 	_, err := Load()
 	if err == nil {
 		t.Fatal("Load succeeded without handshake secret, want failure")
@@ -124,7 +124,7 @@ func TestLoad_EmbeddedLocalRequiresHandshakeSecret(t *testing.T) {
 func TestLoad_EmbeddedLocalCarriesSecretAndUser(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "embedded-local")
-	t.Setenv("ORION_LOCAL_AUTH_SECRET", "prism-handshake")
+	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "prism-handshake")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -142,7 +142,7 @@ func TestLoad_EmbeddedLocalCarriesSecretAndUser(t *testing.T) {
 func TestLoad_AntenneIgnoresLocalAuthSecret(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "antenne")
-	t.Setenv("ORION_LOCAL_AUTH_SECRET", "should-be-ignored")
+	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "should-be-ignored")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)

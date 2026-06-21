@@ -224,10 +224,10 @@ func Load() (Config, error) {
 		// Handshake secret (ADR 016 §3.2-2, RC-4). Required in
 		// embedded-local: without it localOperatorAuth would grant operator
 		// to any loopback caller (R2). Fail the boot rather than open that.
-		cfg.LocalAuthSecret = os.Getenv("ORION_LOCAL_AUTH_SECRET")
+		cfg.LocalAuthSecret = os.Getenv("ORION_LOCAL_OPERATOR_SECRET")
 		cfg.LocalAuthUser = getenv("ORION_LOCAL_AUTH_USER", "local-operator")
 		if cfg.LocalAuthSecret == "" {
-			problems = append(problems, "ORION_LOCAL_AUTH_SECRET is required when ORION_PROFILE=embedded-local")
+			problems = append(problems, "ORION_LOCAL_OPERATOR_SECRET is required when ORION_PROFILE=embedded-local")
 		}
 	default:
 		problems = append(problems, "ORION_PROFILE must be 'antenne' or 'embedded-local'")
