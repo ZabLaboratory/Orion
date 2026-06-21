@@ -63,10 +63,32 @@ jobs:
           apt-get update -qq
           apt-get install -y -qq postgresql postgresql-client
           PGVER=$(pg_lsclusters -h | awk 'NR==1{print $1}')
-          pg_ctlcluster "$PGVER" main start
+          pg_ctlcluster "$PGVER" main start || pg_ctlcluster "$PGVER" main restart
           for i in $(seq 1 30); do pg_isready -h localhost -p 5432 && break; sleep 1; done
-          su - postgres -c "psql -v ON_ERROR_STOP=1 -c \"CREATE USER orion WITH PASSWORD 'orion_e2e_ci' SUPERUSER;\""
-          su - postgres -c "psql -v ON_ERROR_STOP=1 -c \"CREATE DATABASE orion_e2e OWNER orion;\""
+          # Idempotent bootstrap: this runner is self-hosted and reused across
+          # runs (vps-ovh), so the native PG cluster persists. Any residual
+          # `orion` role / `orion_e2e` DB from a prior run must not abort the
+          # job under ON_ERROR_STOP=1. We start each run from a clean, known
+          # state: drop the DB (terminating live backends first), recreate the
+          # role guarded by an existence check, then recreate a fresh DB.
+          # SQL is staged to a file then run as the postgres OS user — avoids
+          # nesting a heredoc inside `su -c "..."` (which would not expand).
+          cat > /tmp/orion_e2e_bootstrap.sql <<'SQL'
+          SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'orion_e2e' AND pid <> pg_backend_pid();
+          DROP DATABASE IF EXISTS orion_e2e;
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'orion') THEN
+              CREATE ROLE orion LOGIN PASSWORD 'orion_e2e_ci' SUPERUSER;
+            ELSE
+              ALTER ROLE orion LOGIN PASSWORD 'orion_e2e_ci' SUPERUSER;
+            END IF;
+          END
+          $$;
+          CREATE DATABASE orion_e2e OWNER orion;
+          SQL
+          chmod 644 /tmp/orion_e2e_bootstrap.sql
+          su - postgres -c "psql -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql"
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
