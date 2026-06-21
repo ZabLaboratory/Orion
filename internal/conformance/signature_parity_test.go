@@ -63,6 +63,17 @@ var runtimeContract = map[string]runtimeStrings{
 	// into the observed `__inputs.platform.*` leaf (ExecEntry.Event), the
 	// runtime reads no config string of its own (the leaf is on the entry).
 	"core.event.on-platform-event@1": {outputs: []string{"then", "payload"}, config: []string{"platform", "channel", "event_type"}},
+	// on-call (Orion #209, Blue ADR 008 §3.2): exec out `then` + data-out
+	// `payload` (the operator-call route binds the request payload here,
+	// FireOnCall). The runtime reads no config string of its own — the
+	// `entrypoint` name is the entry's addressing key (resolveEntry), and
+	// `ui` is published verbatim by the surface, never read by the runtime.
+	"core.operator.on-call@1": {outputs: []string{"then", "payload"}},
+	// await-value (Orion #209, Blue ADR 008 §3.3): exec in `in` + exec out
+	// `then`, data-out `value` (the resolved value is bound here on resume),
+	// config `await_name`/`value_type` (read by execOperatorAwait/resolve);
+	// `ui` is published, not read.
+	"core.operator.await-value@1": {outputs: []string{"then", "value"}, config: []string{"await_name", "value_type"}},
 
 	// --- flow control (exec_interpreter.go) ---------------------------
 	// branch: pullBool "condition"; fires "true"/"false".
@@ -193,6 +204,11 @@ func TestExecPortParity_EverySeedExecPinHonoured(t *testing.T) {
 		"core.event.on-tick@1":           {out: []string{"then"}},
 		"core.event.on-event@1":          {out: []string{"then"}},
 		"core.event.on-platform-event@1": {out: []string{"then"}},
+		// on-call: exec out `then` (no exec in — it is an entrypoint).
+		"core.operator.on-call@1": {out: []string{"then"}},
+		// await-value: exec in `in`, exec out `then` (the suspend twin of
+		// delay; `value` is a DATA out, bound on resume, not an exec pin).
+		"core.operator.await-value@1": {out: []string{"then"}},
 	}
 	for id, pins := range seedExecPins {
 		t.Run(id, func(t *testing.T) {

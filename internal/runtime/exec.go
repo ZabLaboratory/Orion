@@ -466,6 +466,7 @@ var ExecOps = []string{
 	OpBranch, OpSequence, OpGate, OpForLoop, OpForEach, OpWhile,
 	OpVariableSet, OpPrint, OpDelay,
 	OpAnimationPlay, OpHTTPRequest, OpDBQuery, OpShowEmit,
+	OpOperatorAwait,
 }
 
 // registerExecOp installs an additional exec op. Pre-Run only. This is
@@ -488,11 +489,8 @@ func (s *Scene) FireExec(entry, source string) bool {
 	return s.Input(InputMsg{FireExec: entry, Source: source})
 }
 
-// enqueueFire creates a task for an entrypoint fire — or sheds it
-// under B5 back-pressure. Scene goroutine only.
-func (s *Scene) enqueueFire(entry string) { s.enqueueFireEnv(entry, nil) }
-
-// enqueueFireEnv is enqueueFire with event-pin bindings seeded into
+// enqueueFireEnv creates a task for an entrypoint fire — or sheds it under
+// B5 back-pressure — with optional event-pin bindings seeded into
 // the task environment (on-tick's `<node>.delta_seconds`).
 func (s *Scene) enqueueFireEnv(entry string, env map[string]json.RawMessage) {
 	if len(s.execProgs) == 0 {

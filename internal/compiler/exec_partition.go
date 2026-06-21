@@ -80,6 +80,10 @@ var execEntryKind = map[string]string{
 	"core.event.on-tick@1":           "on-tick",
 	"core.event.on-event@1":          "on-event",
 	"core.event.on-platform-event@1": "on-platform-event",
+	// Operator entrypoint (Orion #209, Blue ADR 008 §3.2): armed at install,
+	// fired by an explicit operator dispatch (POST /operator/call/...), not a
+	// state write. Its `entrypoint` config names it on the operator surface.
+	"core.operator.on-call@1": "on-call",
 }
 
 // execEntryEventConfigKey is the single seam (mirroring nodeLeafPath's

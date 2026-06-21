@@ -1,5 +1,5 @@
 {
-  "count": 83,
+  "count": 85,
   "entries": [
     {
       "node_id": "core.animation.play@1",
@@ -623,6 +623,28 @@
       "name": "sub",
       "version": 1,
       "category": "math",
+      "is_pure": true,
+      "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.operator.await-value@1",
+      "namespace": "core.operator",
+      "name": "await-value",
+      "version": 1,
+      "category": "operator",
+      "is_pure": false,
+      "is_bounded": false,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.operator.on-call@1",
+      "namespace": "core.operator",
+      "name": "on-call",
+      "version": 1,
+      "category": "operator",
       "is_pure": true,
       "is_bounded": true,
       "source": "stdlib",
