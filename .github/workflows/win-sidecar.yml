@@ -1,0 +1,47 @@
+# On-demand cross-compile of the Windows sidecar binaries for Prism's
+# embedded-local mode (ADR 016 §3.1/§3.2, issues #150 + #225).
+#
+# Why a workflow: the porteur's Windows machine has no Go toolchain, and
+# Prism's scripts/build-orion-sidecar.cjs (which would cross-compile locally)
+# therefore can't run there. The self-hosted runner HAS Go, so we build
+# orion.exe + datasidecar.exe here and upload them as an artifact for
+# download into Prism/resources/orion/win32-x64/.
+#
+# Manual trigger only (workflow_dispatch) — this is a packaging aid, not a
+# CI gate. CGO off + trimpath + -s -w mirrors the Dockerfile / the sidecar
+# script, producing pure-static win32-x64 binaries.
+name: win-sidecar
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: cross-compile windows sidecars
+    runs-on: [self-hosted, vps-ovh]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.x"
+          cache: false
+      - name: build orion.exe + datasidecar.exe (GOOS=windows GOARCH=amd64)
+        env:
+          CGO_ENABLED: "0"
+          GOOS: windows
+          GOARCH: amd64
+        run: |
+          mkdir -p out/win32-x64
+          go build -trimpath -ldflags="-s -w" -o out/win32-x64/orion.exe ./cmd/orion
+          go build -trimpath -ldflags="-s -w" -o out/win32-x64/datasidecar.exe ./cmd/datasidecar
+          ls -l out/win32-x64
+      - name: upload windows sidecar artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: orion-win32-x64
+          path: out/win32-x64/*.exe
+          if-no-files-found: error
+          retention-days: 7
