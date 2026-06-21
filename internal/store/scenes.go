@@ -65,7 +65,7 @@ var ErrSceneInUse = errors.New("store: scene in use")
 
 // CreateScene inserts a fresh scene with status=active, no pushed
 // version. The first push is what makes the scene runnable.
-func (s *Store) CreateScene(ctx context.Context, id uuid.UUID, name string) (*Scene, error) {
+func (s *PGStore) CreateScene(ctx context.Context, id uuid.UUID, name string) (*Scene, error) {
 	row := s.pool.QueryRow(ctx,
 		`INSERT INTO scenes (id, name, status) VALUES ($1, $2, 'active')
 		   RETURNING id, name, status, latest_pushed_version, created_at, updated_at`,
@@ -90,7 +90,7 @@ func (s *Store) CreateScene(ctx context.Context, id uuid.UUID, name string) (*Sc
 // latest_pushed_version are never overwritten on an existing scene, so
 // an archived scene stays archived and the caller's archived guard runs
 // on the real row.
-func (s *Store) UpsertScene(ctx context.Context, id uuid.UUID, name string) (*Scene, error) {
+func (s *PGStore) UpsertScene(ctx context.Context, id uuid.UUID, name string) (*Scene, error) {
 	row := s.pool.QueryRow(ctx,
 		`INSERT INTO scenes (id, name, status) VALUES ($1, $2, 'active')
 		   ON CONFLICT (id) DO UPDATE SET id = scenes.id
@@ -101,7 +101,7 @@ func (s *Store) UpsertScene(ctx context.Context, id uuid.UUID, name string) (*Sc
 }
 
 // GetScene fetches one scene by id.
-func (s *Store) GetScene(ctx context.Context, id uuid.UUID) (*Scene, error) {
+func (s *PGStore) GetScene(ctx context.Context, id uuid.UUID) (*Scene, error) {
 	row := s.pool.QueryRow(ctx,
 		`SELECT id, name, status, latest_pushed_version, created_at, updated_at
 		   FROM scenes WHERE id = $1`, id,
@@ -112,7 +112,7 @@ func (s *Store) GetScene(ctx context.Context, id uuid.UUID) (*Scene, error) {
 // ListActiveScenesWithPush returns every scene Orion should bring
 // alive at startup (status=active and latest_pushed_version not null).
 // ADR 004 § 4.4.
-func (s *Store) ListActiveScenesWithPush(ctx context.Context) ([]Scene, error) {
+func (s *PGStore) ListActiveScenesWithPush(ctx context.Context) ([]Scene, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT id, name, status, latest_pushed_version, created_at, updated_at
 		   FROM scenes
@@ -140,7 +140,7 @@ func (s *Store) ListActiveScenesWithPush(ctx context.Context) ([]Scene, error) {
 // (ADR 004 § 14); this method just enforces the schema constraint.
 // On archive, the caller is expected to call PurgePushedVersions in
 // the same transaction so § 10.1's invariant holds.
-func (s *Store) SetSceneStatus(ctx context.Context, id uuid.UUID, status SceneStatus) error {
+func (s *PGStore) SetSceneStatus(ctx context.Context, id uuid.UUID, status SceneStatus) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE scenes SET status = $2, updated_at = now() WHERE id = $1`,
 		id, status,
@@ -158,7 +158,7 @@ func (s *Store) SetSceneStatus(ctx context.Context, id uuid.UUID, status SceneSt
 // Callers wrap this in the same transaction that wrote the pushed
 // version artefact so an external observer never sees a pointer
 // pointing at a non-existent (scene_id, scene_version).
-func (s *Store) SetLatestPushedVersion(ctx context.Context, tx pgx.Tx, id uuid.UUID, sceneVersion *string) error {
+func (s *PGStore) SetLatestPushedVersion(ctx context.Context, tx pgx.Tx, id uuid.UUID, sceneVersion *string) error {
 	tag, err := tx.Exec(ctx,
 		`UPDATE scenes SET latest_pushed_version = $2, updated_at = now() WHERE id = $1`,
 		id, sceneVersion,
@@ -177,7 +177,7 @@ func (s *Store) SetLatestPushedVersion(ctx context.Context, tx pgx.Tx, id uuid.U
 // (e.g. the e2e seed in tests/e2e/push_test.go); the push handler uses
 // InsertDefinitionTx so the MAX(definition_version)+1 read and this insert
 // share one transaction and one scenes-row lock (R2 — see NextDefinitionVersionTx).
-func (s *Store) InsertDefinition(ctx context.Context, def SceneDefinition) error {
+func (s *PGStore) InsertDefinition(ctx context.Context, def SceneDefinition) error {
 	return insertDefinition(ctx, s.pool, def)
 }
 
@@ -186,7 +186,7 @@ func (s *Store) InsertDefinition(ctx context.Context, def SceneDefinition) error
 // computed def.DefinitionVersion via NextDefinitionVersionTx, so two concurrent
 // first-pushes can never both read MAX=0 and collide on
 // UNIQUE(scene_id, definition_version).
-func (s *Store) InsertDefinitionTx(ctx context.Context, tx pgx.Tx, def SceneDefinition) error {
+func (s *PGStore) InsertDefinitionTx(ctx context.Context, tx pgx.Tx, def SceneDefinition) error {
 	return insertDefinition(ctx, tx, def)
 }
 
@@ -208,7 +208,7 @@ func insertDefinition(ctx context.Context, q querier, def SceneDefinition) error
 }
 
 // GetDefinition fetches a specific definition. ErrNotFound on miss.
-func (s *Store) GetDefinition(ctx context.Context, id uuid.UUID) (*SceneDefinition, error) {
+func (s *PGStore) GetDefinition(ctx context.Context, id uuid.UUID) (*SceneDefinition, error) {
 	row := s.pool.QueryRow(ctx,
 		`SELECT id, scene_id, definition_version, canvas_version,
 		        blue_blueprint_id, components_jsonb, created_at
@@ -219,7 +219,7 @@ func (s *Store) GetDefinition(ctx context.Context, id uuid.UUID) (*SceneDefiniti
 
 // InsertPushedVersion + SetLatestPushedVersion are typically called
 // together inside a single tx — see Store.Tx helper.
-func (s *Store) InsertPushedVersion(ctx context.Context, tx pgx.Tx, pv ScenePushedVersion) error {
+func (s *PGStore) InsertPushedVersion(ctx context.Context, tx pgx.Tx, pv ScenePushedVersion) error {
 	// lsml_bundle_jsonb / lsml_bundle_hash are nil/NULL in bespoke mode;
 	// pgx binds a nil json.RawMessage / *string as SQL NULL, so the
 	// additive columns stay empty unless the caller populated them.
@@ -240,7 +240,7 @@ func (s *Store) InsertPushedVersion(ctx context.Context, tx pgx.Tx, pv ScenePush
 // the by-hash GET path translates that to 404 (ADR 007 §C.2). Only ever
 // returns rows whose lsml_bundle_hash is non-NULL, so bespoke-mode
 // versions are invisible to this lookup.
-func (s *Store) GetLSMLBundleByHash(ctx context.Context, sceneID uuid.UUID, lsmlHash string) (json.RawMessage, error) {
+func (s *PGStore) GetLSMLBundleByHash(ctx context.Context, sceneID uuid.UUID, lsmlHash string) (json.RawMessage, error) {
 	var raw json.RawMessage
 	err := s.pool.QueryRow(ctx,
 		`SELECT lsml_bundle_jsonb
@@ -258,7 +258,7 @@ func (s *Store) GetLSMLBundleByHash(ctx context.Context, sceneID uuid.UUID, lsml
 // GetPushedVersion fetches the named version (rollback target reads
 // or test mode pin). ErrNotFound if the row doesn't exist (caller
 // translates to SCENE_NOT_PUSHED at the API level).
-func (s *Store) GetPushedVersion(ctx context.Context, sceneID uuid.UUID, sceneVersion string) (*ScenePushedVersion, error) {
+func (s *PGStore) GetPushedVersion(ctx context.Context, sceneID uuid.UUID, sceneVersion string) (*ScenePushedVersion, error) {
 	row := s.pool.QueryRow(ctx,
 		`SELECT scene_id, scene_version, definition_id, graph_jsonb, bundle_jsonb, created_at
 		   FROM scene_pushed_versions WHERE scene_id = $1 AND scene_version = $2`,
@@ -269,7 +269,7 @@ func (s *Store) GetPushedVersion(ctx context.Context, sceneID uuid.UUID, sceneVe
 
 // GetLatestPushedVersion resolves the scene's latest_pushed_version
 // pointer and fetches the artefact in one go.
-func (s *Store) GetLatestPushedVersion(ctx context.Context, sceneID uuid.UUID) (*ScenePushedVersion, error) {
+func (s *PGStore) GetLatestPushedVersion(ctx context.Context, sceneID uuid.UUID) (*ScenePushedVersion, error) {
 	row := s.pool.QueryRow(ctx,
 		`SELECT pv.scene_id, pv.scene_version, pv.definition_id, pv.graph_jsonb, pv.bundle_jsonb, pv.created_at
 		   FROM scenes s
@@ -282,7 +282,7 @@ func (s *Store) GetLatestPushedVersion(ctx context.Context, sceneID uuid.UUID) (
 
 // PurgePushedVersions deletes every compiled artefact for a scene.
 // Used on archive (§ 10.1).
-func (s *Store) PurgePushedVersions(ctx context.Context, tx pgx.Tx, sceneID uuid.UUID) (int64, error) {
+func (s *PGStore) PurgePushedVersions(ctx context.Context, tx pgx.Tx, sceneID uuid.UUID) (int64, error) {
 	tag, err := tx.Exec(ctx, `DELETE FROM scene_pushed_versions WHERE scene_id = $1`, sceneID)
 	if err != nil {
 		return 0, err
@@ -292,7 +292,7 @@ func (s *Store) PurgePushedVersions(ctx context.Context, tx pgx.Tx, sceneID uuid
 
 // Tx runs fn inside a transaction. Wraps pgx's BeginFunc with our
 // own naming so callers don't need to import pgx directly.
-func (s *Store) Tx(ctx context.Context, fn func(pgx.Tx) error) error {
+func (s *PGStore) Tx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return pgx.BeginFunc(ctx, s.pool, fn)
 }
 
@@ -300,7 +300,7 @@ func (s *Store) Tx(ctx context.Context, fn func(pgx.Tx) error) error {
 // for the scene, or 0 if none yet. Pool-scoped read — no lock; safe only
 // where the caller is the single writer for the scene. The push handler
 // uses NextDefinitionVersionTx instead.
-func (s *Store) MaxDefinitionVersion(ctx context.Context, sceneID uuid.UUID) (int, error) {
+func (s *PGStore) MaxDefinitionVersion(ctx context.Context, sceneID uuid.UUID) (int, error) {
 	var v *int
 	err := s.pool.QueryRow(ctx,
 		`SELECT MAX(definition_version) FROM scene_definitions WHERE scene_id = $1`,
@@ -330,7 +330,7 @@ func (s *Store) MaxDefinitionVersion(ctx context.Context, sceneID uuid.UUID) (in
 // the push handler's UpsertScene created it earlier in the same request.
 // ErrNotFound if the scene row is absent (defensive — the caller upserts
 // first, so this should not happen on the push path).
-func (s *Store) NextDefinitionVersionTx(ctx context.Context, tx pgx.Tx, sceneID uuid.UUID) (int, error) {
+func (s *PGStore) NextDefinitionVersionTx(ctx context.Context, tx pgx.Tx, sceneID uuid.UUID) (int, error) {
 	// Take the row lock first. The result is discarded; FOR UPDATE is the
 	// point. A separate aggregate query then reads the current MAX under
 	// the lock the loser is now waiting on.

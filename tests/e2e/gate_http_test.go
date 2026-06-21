@@ -38,7 +38,7 @@ import (
 
 func testGateLogger() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
-func gateTestServer(t *testing.T, st *store.Store, fetcher compiler.Fetcher) (*httptest.Server, *runtime.Show) {
+func gateTestServer(t *testing.T, st store.Store, fetcher compiler.Fetcher) (*httptest.Server, *runtime.Show) {
 	t.Helper()
 	logger := testGateLogger()
 	metrics := obs.NewMetrics()

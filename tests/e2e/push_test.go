@@ -31,7 +31,7 @@ import (
 // note in tests/e2e/contract/helpers_test.go for the root cause (the prod
 // migrations are strict bare CREATE TABLE; a re-apply collides on the implicit
 // pg_type row-type with SQLSTATE 23505). The schema is dropped on cleanup.
-func requireDB(t *testing.T) *store.Store {
+func requireDB(t *testing.T) store.Store {
 	t.Helper()
 	dsn := os.Getenv("ORION_E2E_DATABASE_URL")
 	if dsn == "" {

@@ -64,6 +64,31 @@ func FromHeaders(h http.Header) Identity {
 	return id
 }
 
+// AuthSource derives the request principal (ADR 016 §3.2). It is the
+// single seam through which Orion turns an inbound request into an
+// Identity. The antenne profile uses HeaderAuthSource (reads the
+// X-Authenticated-* headers ZabGate injected); the embedded-local
+// profile (issue #223) will plug a loopback handshake source behind
+// the same interface. requireOperator and every other consumer keep
+// reading an Identity exactly as today — only who derives it changes.
+type AuthSource interface {
+	FromHeaders(h http.Header) Identity
+}
+
+// HeaderAuthSource is the antenne-profile default: it trusts the
+// X-Authenticated-* headers injected by ZabGate after JWT validation
+// (architecture.md trust model). It is a thin, stateless adapter over
+// the package-level FromHeaders so the existing hot-path call sites
+// stay byte-for-byte identical.
+type HeaderAuthSource struct{}
+
+// compile-time assertion: HeaderAuthSource satisfies AuthSource.
+var _ AuthSource = HeaderAuthSource{}
+
+// FromHeaders delegates to the package-level FromHeaders, preserving
+// the exact antenne behaviour.
+func (HeaderAuthSource) FromHeaders(h http.Header) Identity { return FromHeaders(h) }
+
 // IsAuthenticated reports whether the identity carries any role
 // signal. Used by API handlers to gate routes that demand a real
 // principal.

@@ -18,7 +18,7 @@ import (
 // AddStreamRule persists a scene id as a promoted stream rule. Idempotent:
 // re-promoting an already-promoted scene leaves the row (and its original
 // promoted_at) unchanged rather than erroring.
-func (s *Store) AddStreamRule(ctx context.Context, sceneID uuid.UUID) error {
+func (s *PGStore) AddStreamRule(ctx context.Context, sceneID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO show_stream_rules (scene_id) VALUES ($1)
 		   ON CONFLICT (scene_id) DO NOTHING`,
@@ -32,7 +32,7 @@ func (s *Store) AddStreamRule(ctx context.Context, sceneID uuid.UUID) error {
 
 // RemoveStreamRule drops a scene id from the promoted rule set. A no-op
 // (zero rows) if the scene was not promoted — demotion is idempotent.
-func (s *Store) RemoveStreamRule(ctx context.Context, sceneID uuid.UUID) error {
+func (s *PGStore) RemoveStreamRule(ctx context.Context, sceneID uuid.UUID) error {
 	_, err := s.pool.Exec(ctx,
 		`DELETE FROM show_stream_rules WHERE scene_id = $1`,
 		sceneID,
@@ -45,7 +45,7 @@ func (s *Store) RemoveStreamRule(ctx context.Context, sceneID uuid.UUID) error {
 
 // IsStreamRule reports whether a scene id is currently a persisted
 // promoted rule.
-func (s *Store) IsStreamRule(ctx context.Context, sceneID uuid.UUID) (bool, error) {
+func (s *PGStore) IsStreamRule(ctx context.Context, sceneID uuid.UUID) (bool, error) {
 	var exists bool
 	err := s.pool.QueryRow(ctx,
 		`SELECT EXISTS (SELECT 1 FROM show_stream_rules WHERE scene_id = $1)`,
@@ -59,7 +59,7 @@ func (s *Store) IsStreamRule(ctx context.Context, sceneID uuid.UUID) (bool, erro
 
 // ListStreamRules returns every promoted rule id, sorted by promotion time
 // then id for a deterministic boot-reload order. Used by the boot reseed.
-func (s *Store) ListStreamRules(ctx context.Context) ([]uuid.UUID, error) {
+func (s *PGStore) ListStreamRules(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT scene_id FROM show_stream_rules ORDER BY promoted_at, scene_id`,
 	)

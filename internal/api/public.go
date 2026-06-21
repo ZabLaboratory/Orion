@@ -28,7 +28,7 @@ type PublicDeps struct {
 	Show          *runtime.Show
 	Inbox         *adapters.Inbox
 	Test          *runtime.TestSessionManager
-	Store         *store.Store
+	Store         store.Store
 	Fetcher       compiler.Fetcher
 	WSServer      *ws.Server
 

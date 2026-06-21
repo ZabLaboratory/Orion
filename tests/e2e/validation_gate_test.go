@@ -23,7 +23,7 @@ import (
 
 // seedPushedVersion creates a scene + definition + one pushed version with
 // the given scene_version hash. Returns nothing — the caller knows the ids.
-func seedPushedVersion(t *testing.T, st *store.Store, sceneID uuid.UUID, version string) {
+func seedPushedVersion(t *testing.T, st store.Store, sceneID uuid.UUID, version string) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := st.UpsertScene(ctx, sceneID, sceneID.String()); err != nil {

@@ -61,7 +61,7 @@ import (
 
 // requireDB opens a store bound to a fresh, isolated Postgres schema, applies
 // every migration into it, and drops the schema on cleanup.
-func requireDB(t *testing.T) *store.Store {
+func requireDB(t *testing.T) store.Store {
 	t.Helper()
 	dsn := os.Getenv("ORION_E2E_DATABASE_URL")
 	if dsn == "" {
@@ -158,7 +158,7 @@ func stripGooseMarkers(s string) string {
 
 // newServer wires a minimal PublicDeps and returns an httptest.Server.
 // Caller must call ts.Close().
-func newServer(t *testing.T, st *store.Store) *httptest.Server {
+func newServer(t *testing.T, st store.Store) *httptest.Server {
 	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	metrics := obs.NewMetrics()
