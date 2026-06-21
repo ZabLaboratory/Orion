@@ -228,6 +228,9 @@ func run() error {
 		QuasarBaseURL: cfg.QuasarBaseURL,
 		ServiceTokens: serviceTokens,
 		LSDPHandler:   lsdpHandler,
+		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway + live
+		// service token as the db.query client; proxies `_schema` only.
+		SchemaClient: effects.NewSchemaClientWithTokenFunc(cfg.ZabGateURL, serviceTokens.Token, nil),
 	})
 
 	// Internal-only HTTP surface for prom scrape + dev probes.
