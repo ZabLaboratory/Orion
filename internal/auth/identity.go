@@ -71,6 +71,11 @@ func FromHeaders(h http.Header) Identity {
 // profile (issue #223) will plug a loopback handshake source behind
 // the same interface. requireOperator and every other consumer keep
 // reading an Identity exactly as today — only who derives it changes.
+//
+// The name is fixed by ADR 016 §3.2 (the "AuthSource" abstraction); the
+// auth.AuthSource stutter is accepted deliberately to match the contract.
+//
+//nolint:revive // ADR 016 §3.2 names this abstraction AuthSource.
 type AuthSource interface {
 	FromHeaders(h http.Header) Identity
 }
