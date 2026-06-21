@@ -103,7 +103,7 @@ func execForAir(ctx context.Context, deps PublicDeps, sceneID uuid.UUID, sceneVe
 // it returns nil and logs: a single bad scene loads dataflow-only rather
 // than aborting cold start (the boot reseed degrades safe, never airing
 // an unproven or unresolved exec set).
-func ExecForBoot(ctx context.Context, st *store.Store, sceneID uuid.UUID, sceneVersion string, graph *compiler.Graph, logger *slog.Logger) []*runtime.ExecProgram {
+func ExecForBoot(ctx context.Context, st store.Store, sceneID uuid.UUID, sceneVersion string, graph *compiler.Graph, logger *slog.Logger) []*runtime.ExecProgram {
 	eligible, err := st.IsVersionValidated(ctx, sceneID, sceneVersion, runtime.HarnessVersion)
 	if err != nil {
 		logger.Warn("boot reseed: eligibility check failed; loading dataflow-only",

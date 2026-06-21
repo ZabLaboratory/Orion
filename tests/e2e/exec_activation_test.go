@@ -332,7 +332,7 @@ var counterKeys = []string{
 // bootReseed constructs a fresh Show and reloads every active+validated
 // scene through the exact ExecForBoot path cmd/orion uses, proving the
 // boot reseed installs exec (criterion #7).
-func bootReseed(t *testing.T, st *store.Store) *runtime.Show {
+func bootReseed(t *testing.T, st store.Store) *runtime.Show {
 	t.Helper()
 	logger := testGateLogger()
 	show := runtime.NewShow(runtime.NewComputeRegistry(), logger)
@@ -376,7 +376,7 @@ func bootReseed(t *testing.T, st *store.Store) *runtime.Show {
 
 // bootProgs mirrors api.ExecForBoot over the store (it is exported there;
 // re-resolved here to avoid importing the api package's logger plumbing).
-func bootProgs(ctx context.Context, st *store.Store, sceneID uuid.UUID, version string, graph *compiler.Graph) []*runtime.ExecProgram {
+func bootProgs(ctx context.Context, st store.Store, sceneID uuid.UUID, version string, graph *compiler.Graph) []*runtime.ExecProgram {
 	ok, err := st.IsVersionValidated(ctx, sceneID, version, runtime.HarnessVersion)
 	if err != nil || !ok {
 		return nil

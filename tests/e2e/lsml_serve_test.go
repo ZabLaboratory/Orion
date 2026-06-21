@@ -20,7 +20,7 @@ import (
 // and persists the pushed version with the LSML columns populated (the
 // dual|lsdp mode shape). Returns the LSML content address and the
 // stored bundle bytes for byte-equal assertions.
-func seedLSMLScene(t *testing.T, st *store.Store, sceneID uuid.UUID) (string, []byte) {
+func seedLSMLScene(t *testing.T, st store.Store, sceneID uuid.UUID) (string, []byte) {
 	t.Helper()
 	ctx := context.Background()
 

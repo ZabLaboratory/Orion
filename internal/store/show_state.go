@@ -13,7 +13,7 @@ import (
 // ON DELETE SET NULL — the on-air scene was archived/deleted). The boot path
 // (cmd/orion/main.go::loadActiveScenes) uses this to re-activate the same
 // scene after a redeploy so the antenna survives.
-func (s *Store) GetActiveSceneID(ctx context.Context) (*uuid.UUID, error) {
+func (s *PGStore) GetActiveSceneID(ctx context.Context) (*uuid.UUID, error) {
 	var id *uuid.UUID
 	err := s.pool.QueryRow(ctx,
 		`SELECT active_scene_id FROM show_state WHERE id = TRUE`,
@@ -27,7 +27,7 @@ func (s *Store) GetActiveSceneID(ctx context.Context) (*uuid.UUID, error) {
 // SetActiveSceneID persists the live-antenna pointer. Pass nil to clear it
 // (no scene on air). Updates the singleton show_state row seeded by the
 // migration, so this is always an UPDATE that touches exactly one row.
-func (s *Store) SetActiveSceneID(ctx context.Context, id *uuid.UUID) error {
+func (s *PGStore) SetActiveSceneID(ctx context.Context, id *uuid.UUID) error {
 	tag, err := s.pool.Exec(ctx,
 		`UPDATE show_state SET active_scene_id = $1, updated_at = now() WHERE id = TRUE`,
 		id,

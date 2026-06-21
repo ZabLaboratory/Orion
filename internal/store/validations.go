@@ -31,7 +31,7 @@ const ValidationValidated = "validated"
 // campaign for the same (scene, version, harness) replaces the prior
 // record — the latest campaign is authoritative. Pool-scoped: a campaign
 // is the single writer for its (scene, version, harness) triple.
-func (s *Store) UpsertValidation(ctx context.Context, v SceneValidation) error {
+func (s *PGStore) UpsertValidation(ctx context.Context, v SceneValidation) error {
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO scene_validations
 		   (scene_id, scene_version, harness_version, status, report, created_at)
@@ -51,7 +51,7 @@ func (s *Store) UpsertValidation(ctx context.Context, v SceneValidation) error {
 // GetValidation fetches the validation record for a specific
 // (scene, version, harness). ErrNotFound when no campaign has run for that
 // triple — which the gate treats as NOT air-eligible (no record ⇒ refuse).
-func (s *Store) GetValidation(ctx context.Context, sceneID uuid.UUID, sceneVersion, harnessVersion string) (*SceneValidation, error) {
+func (s *PGStore) GetValidation(ctx context.Context, sceneID uuid.UUID, sceneVersion, harnessVersion string) (*SceneValidation, error) {
 	row := s.pool.QueryRow(ctx,
 		`SELECT scene_id, scene_version, harness_version, status, report, created_at
 		   FROM scene_validations
@@ -72,7 +72,7 @@ func (s *Store) GetValidation(ctx context.Context, sceneID uuid.UUID, sceneVersi
 // the gate refuses, the campaign mints the record. Any other error
 // propagates (the caller fails closed on a DB error rather than airing an
 // unproven version).
-func (s *Store) IsVersionValidated(ctx context.Context, sceneID uuid.UUID, sceneVersion, harnessVersion string) (bool, error) {
+func (s *PGStore) IsVersionValidated(ctx context.Context, sceneID uuid.UUID, sceneVersion, harnessVersion string) (bool, error) {
 	v, err := s.GetValidation(ctx, sceneID, sceneVersion, harnessVersion)
 	if errors.Is(err, ErrNotFound) {
 		return false, nil

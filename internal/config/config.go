@@ -49,6 +49,32 @@ func (m LSDPMode) PersistsLSML() bool {
 	return m == LSDPModeDual || m == LSDPModeLSDP
 }
 
+// Profile is the embedded-local execution-profile flag (ADR 016 §3.3).
+// It is purely additive: it selects which edge implementations
+// (Store, AuthSource, Fetcher) are wired AT BOOT and the listen
+// posture — it introduces no branch on the hot path (requireOperator,
+// db.query, tick, inbox). An unset or "antenne" value reproduces
+// today's production behaviour exactly (RC-1).
+//
+//   - antenne (default): pgStore + headerAuth + httpFetcher, binding on
+//     ORION_LISTEN_ADDR as configured (0.0.0.0:4007 in prod). The strict
+//     production path — every existing test exercises this.
+//   - embedded-local: the single-binary, zero-infra Prism sidecar
+//     posture. Listen collapses to loopback only. The local edge impls
+//     (sqliteStore #222, localOperatorAuth #223, bundledFetcher) land in
+//     follow-up issues; until then this profile wires the same defaults,
+//     so it boots without panicking and shares the antenne hot path.
+type Profile string
+
+const (
+	ProfileAntenne       Profile = "antenne"
+	ProfileEmbeddedLocal Profile = "embedded-local"
+)
+
+// IsEmbeddedLocal reports whether the embedded-local edge wiring is
+// selected. The hot path never consults this — only boot wiring does.
+func (p Profile) IsEmbeddedLocal() bool { return p == ProfileEmbeddedLocal }
+
 // Config is the typed view of Orion's environment. Every field maps to
 // a single env var; empty defaults are filled in by Load.
 type Config struct {
@@ -107,6 +133,9 @@ type Config struct {
 	LogLevel           string
 	LogFormat          LogFormat
 	LSDPMode           LSDPMode
+	// Profile selects the execution-profile edge wiring at boot
+	// (ORION_PROFILE, ADR 016 §3.3). Default antenne = unchanged prod.
+	Profile Profile
 }
 
 // Load reads env vars, applies defaults, and validates required fields.
@@ -152,6 +181,28 @@ func Load() (Config, error) {
 		cfg.LSDPMode = LSDPModeLSDP
 	default:
 		problems = append(problems, "ORION_LSDP_MODE must be 'bespoke', 'dual', or 'lsdp'")
+	}
+
+	// Execution profile (ADR 016 §3.3). Additive: default antenne is
+	// byte-for-byte today's behaviour. embedded-local only changes boot
+	// wiring (edge impls + loopback listen), never the hot path.
+	switch Profile(strings.ToLower(getenv("ORION_PROFILE", string(ProfileAntenne)))) {
+	case ProfileAntenne:
+		cfg.Profile = ProfileAntenne
+	case ProfileEmbeddedLocal:
+		cfg.Profile = ProfileEmbeddedLocal
+		// Loopback-only posture: the embedded sidecar must never be
+		// reachable off-host (ADR 016 §3.3, D4 — refined in #223). If the
+		// operator left the listen addrs at their 0.0.0.0 prod defaults,
+		// pin them to loopback; an explicit override is respected.
+		if _, ok := os.LookupEnv("ORION_LISTEN_ADDR"); !ok {
+			cfg.ListenAddr = "127.0.0.1:4007"
+		}
+		if _, ok := os.LookupEnv("ORION_INTERNAL_ADDR"); !ok {
+			cfg.InternalAddr = "127.0.0.1:4017"
+		}
+	default:
+		problems = append(problems, "ORION_PROFILE must be 'antenne' or 'embedded-local'")
 	}
 
 	if v, err := getInt("ORION_TICK_HZ", 60); err != nil {

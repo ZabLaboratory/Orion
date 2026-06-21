@@ -56,18 +56,32 @@ func run() error {
 		"internal", cfg.InternalAddr,
 		"public_base_url", cfg.PublicBaseURL,
 		"tick_hz", cfg.TickHz,
+		"profile", string(cfg.Profile),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Persistence.
+	// Edge-implementation selection by execution profile (ADR 016 §3.3).
+	// This is the ONLY place the profile is consulted — it picks the
+	// AuthSource (and, below, the Store) impls at boot; the hot path
+	// (requireOperator, db.query, tick, inbox) never branches on it.
+	// Until the local impls land (#222 sqliteStore, #223 localOperatorAuth),
+	// embedded-local wires the same antenne defaults, so it boots cleanly
+	// and shares the exact production code path.
+	var authSource auth.AuthSource = auth.HeaderAuthSource{}
+	_ = authSource // wired through call sites in #223; default is byte-identical to today.
+	logger.Info("auth source selected", "profile", string(cfg.Profile), "source", "header")
+
+	// Persistence. store.Open returns the Postgres-backed store.Store
+	// implementation (the antenne default; sqliteStore arrives in #222).
 	dbCtx, dbCancel := context.WithTimeout(ctx, 30*time.Second)
-	st, err := store.Open(dbCtx, cfg.DatabaseURL)
+	pgst, err := store.Open(dbCtx, cfg.DatabaseURL)
 	dbCancel()
 	if err != nil {
 		return err
 	}
+	var st store.Store = pgst
 	defer st.Close()
 
 	// Runtime: compute registry → show → tick → test sessions.
@@ -295,7 +309,7 @@ func run() error {
 // one loads pure-dataflow only (the same invariant every other path
 // holds). Fail-closed on a per-scene error — one bad scene never aborts
 // the whole cold start; it loads dataflow-only and is logged.
-func loadActiveScenes(ctx context.Context, st *store.Store, show *runtime.Show, logger *slog.Logger) error {
+func loadActiveScenes(ctx context.Context, st store.Store, show *runtime.Show, logger *slog.Logger) error {
 	scenes, err := st.ListActiveScenesWithPush(ctx)
 	if err != nil {
 		return err
@@ -375,7 +389,7 @@ func loadActiveScenes(ctx context.Context, st *store.Store, show *runtime.Show, 
 // authoritative (a scene that is both persisted-active and persisted-rule —
 // which the API prevents — would simply be refused as a rule here, never
 // double-routed).
-func reloadStreamRules(ctx context.Context, st *store.Store, show *runtime.Show, logger *slog.Logger) {
+func reloadStreamRules(ctx context.Context, st store.Store, show *runtime.Show, logger *slog.Logger) {
 	ruleIDs, err := st.ListStreamRules(ctx)
 	if err != nil {
 		logger.Error("cold start: read stream rule set failed; rules stay dormant", "err", err)

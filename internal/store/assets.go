@@ -23,7 +23,7 @@ type Asset struct {
 // existing row's metadata. The ID stays stable across re-uploads
 // because the content hash determines it (callers derive the UUIDv5
 // from sha256_hex at the asset-handling layer).
-func (s *Store) PutAsset(ctx context.Context, a Asset) (*Asset, error) {
+func (s *PGStore) PutAsset(ctx context.Context, a Asset) (*Asset, error) {
 	row := s.pool.QueryRow(ctx,
 		`INSERT INTO assets (id, sha256_hex, mime, size_bytes, filesystem_path)
 		   VALUES ($1, $2, $3, $4, $5)
@@ -41,7 +41,7 @@ func (s *Store) PutAsset(ctx context.Context, a Asset) (*Asset, error) {
 }
 
 // GetAsset fetches by id (the caller has validated it as a uuid).
-func (s *Store) GetAsset(ctx context.Context, id uuid.UUID) (*Asset, error) {
+func (s *PGStore) GetAsset(ctx context.Context, id uuid.UUID) (*Asset, error) {
 	row := s.pool.QueryRow(ctx,
 		`SELECT id, sha256_hex, mime, size_bytes, filesystem_path, created_at
 		   FROM assets WHERE id = $1`, id,
