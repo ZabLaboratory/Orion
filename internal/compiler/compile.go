@@ -191,6 +191,19 @@ func Compile(
 			bpDefaults[path] = v
 		}
 
+		// Fold THIS top-level blueprint's own declared `variables[].value`
+		// constants (Orion #192 / ADR 016 RC-6). The expander above only
+		// harvested INLINED references' variables into kb.graph.Defaults; a
+		// reference-free top-level blueprint (e.g. one declaring `palette`)
+		// never ran the expander, so without this its `palette` leaf is never
+		// seeded → score-to-color resolves null (e2e #152). Shared with the
+		// in-body simulate path so the two can never drift. Value-less (pure
+		// mutable shared-state) variables are skipped — they reseed from
+		// declared defaults on activation (invariant ADR 003/006), they are not
+		// compile-time constants. bpDefaults is key-namespaced below by
+		// prefixDefaultLeaf, so the empty-key `__vars..<name>` form is correct.
+		foldDeclaredVariables(bpDefaults, kb.graph.Variables)
+
 		bpSorted, topoErr := topologicalSort(graphNodes, kb.graph.Edges)
 		if topoErr != nil {
 			d.AddError(ErrTopologySort, "blueprint %q sort: %v", kb.key, topoErr)
@@ -967,6 +980,35 @@ const varsLeafPrefix = "__vars."
 // `__vars..<name>` — byte-identical to execVariableSet's write with an empty
 // BlueprintKey. prefixGraphNodes substitutes the key for a keyed blueprint.
 func varsLeaf(name string) string { return varsLeafPrefix + "." + name }
+
+// foldDeclaredVariables seeds a blueprint's top-level `variables[].value`
+// CONSTANTS into its compile defaults under the empty-key `__vars..<name>`
+// address the inlined `core.variable.get@1` reads (Orion #192, ADR 016 RC-6).
+//
+// On the PUSH path the reference expander harvests an INLINED function's
+// variables into BlueprintGraph.Defaults, but a reference-free top-level
+// blueprint never runs the expander, so its OWN `variables[]` were dropped —
+// `palette` stayed empty at runtime → `score-to-color` resolved null → the
+// per-player `pl.*.color` leaves stuck at the COLD_COLOR placeholder (e2e #152).
+// This is the exact logic the in-body simulate path (compile_exec_inbody.go)
+// already applies; both call sites now share it so the two paths can never
+// drift.
+//
+// INVARIANT (ADR 003/006 §reseed): only a variable carrying a `value` is a
+// CONSTANT and gets folded. A value-less variable is pure mutable shared state
+// (written by a `variable.set` before any read, reseeded from declared defaults
+// on activation) — it MUST NOT be seeded here, so it is skipped. An empty-named
+// variable is malformed and skipped. The leaf is emitted in the empty-key form;
+// the caller's prefixDefaultLeaf substitutes the real blueprint key (no-op for
+// the legacy "" key → byte-identical to a blueprint without declared constants).
+func foldDeclaredVariables(dst map[string]json.RawMessage, vars []BlueprintVariable) {
+	for _, v := range vars {
+		if len(v.Value) == 0 || v.Name == "" {
+			continue
+		}
+		dst[varsLeaf(v.Name)] = v.Value
+	}
+}
 
 // nodeLeafPath returns the state leaf a blueprint node's result is
 // written to, or "" for an intermediate compute whose outputs only feed
