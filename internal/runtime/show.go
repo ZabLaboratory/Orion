@@ -466,6 +466,28 @@ func (sh *Show) IsStreamRule(id string) bool {
 	return ok
 }
 
+// StreamRuleScenes returns the promoted stream-level rule scenes, sorted by
+// id for a deterministic order (ADR 009 §3.3). Distinct from RouteTargets:
+// this excludes the active scene — it is purely the always-on rule set, the
+// `stream`-scoped contributors to the cockpit contract (ADR 008 §3.5). A
+// promoted id with no loaded scene is skipped.
+func (sh *Show) StreamRuleScenes() []*Scene {
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	ids := make([]string, 0, len(sh.streamRules))
+	for id := range sh.streamRules {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]*Scene, 0, len(ids))
+	for _, id := range ids {
+		if s := sh.scenes[id]; s != nil {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // SetActive flips the active-scene pointer, migrates every live-show
 // subscriber from the previous scene to the new one, and emits
 // scene_changed + fresh snapshot on the destination. ADR 004 § 4.4 +
