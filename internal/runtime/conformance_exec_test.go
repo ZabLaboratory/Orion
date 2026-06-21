@@ -91,6 +91,15 @@ func TestConformance_EveryExecOpExecutes(t *testing.T) {
 			}
 			startScene(t, sc)
 			mustFire(t, sc, "e")
+			// operator.await suspends until an external operator resolve
+			// (Orion #209): the probe arms it, then supplies a value so the
+			// `then` chain reaches the mark — the live resume path, no mock.
+			if op == OpOperatorAwait {
+				waitForPendingAwait(t, sc, "bp", "conf", 2*time.Second)
+				if err := sc.ResolveAwait("bp", "conf", raw(`"v"`)); err != nil {
+					t.Fatalf("resolve await: %v", err)
+				}
+			}
 			// Every probe ends by setting __vars.bp.reached = true via a
 			// trailing variable.set on the op's `then`/`completed` chain.
 			waitForState(t, sc, "__vars.bp.reached", `true`, 2*time.Second)
@@ -167,6 +176,11 @@ func execOpProbeProgram(op string) *ExecProgram {
 	case OpDBQuery:
 		head = &ExecNode{ID: "op", Op: OpDBQuery,
 			Config: map[string]json.RawMessage{"datasource": raw(`"ds"`)}, Next: mark}
+	case OpOperatorAwait:
+		head = &ExecNode{ID: "op", Op: OpOperatorAwait,
+			Config: map[string]json.RawMessage{
+				"await_name": raw(`"conf"`), "value_type": raw(`"core.primitive.json"`)},
+			Next: mark}
 	case OpShowEmit:
 		// show.emit fires `then` immediately (no error pin, Blue#73). The
 		// injection seam is nil on this bare scene → no-op injection, `then`

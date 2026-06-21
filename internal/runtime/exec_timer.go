@@ -203,6 +203,12 @@ func (s *Scene) cancelExecTasks() {
 	s.execEpoch++
 	s.execQueue = nil
 	clear(s.execParked)
+	// Invalidate every operator await of this scene version (ADR 008
+	// invariant 7, Orion #209): the parked continuations above are gone, so
+	// the awaits that referenced them must go too — a resolve arriving after
+	// the cut finds no registry entry and the route answers 410. The epoch
+	// bump also stales any wake key the resolve might still carry.
+	clear(s.pendingAwaits)
 	s.wheel.clear()
 	if s.wheelTimer != nil {
 		s.wheelTimer.Stop()

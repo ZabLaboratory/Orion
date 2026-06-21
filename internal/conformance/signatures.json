@@ -1,5 +1,5 @@
 {
-  "count": 69,
+  "count": 71,
   "signatures": {
     "core.animation.play@1": {
       "inputs": [
@@ -612,6 +612,31 @@
         "diff"
       ],
       "config": []
+    },
+    "core.operator.await-value@1": {
+      "inputs": [
+        "in"
+      ],
+      "outputs": [
+        "then",
+        "value"
+      ],
+      "config": [
+        "await_name",
+        "ui",
+        "value_type"
+      ]
+    },
+    "core.operator.on-call@1": {
+      "inputs": [],
+      "outputs": [
+        "payload",
+        "then"
+      ],
+      "config": [
+        "entrypoint",
+        "ui"
+      ]
     },
     "core.output@1": {
       "inputs": [

@@ -148,6 +148,7 @@ var served = map[string]ServedNode{
 	"core.event.on-tick@1":           {Kind: KindEntry, Test: "TestExec_OnTick_DeltaSeconds"},
 	"core.event.on-event@1":          {Kind: KindEntry, Test: "TestExec_OnEvent_FiresPerWrite"},
 	"core.event.on-platform-event@1": {Kind: KindEntry, Test: "TestExec_OnPlatformEvent_FiresPerWrite"},
+	"core.operator.on-call@1":        {Kind: KindEntry, Test: "TestOperator_OnCallFiresThenWithPayload"},
 
 	// --- Leaf-bound (compiler binds, no runtime executor) -------------
 	"core.input@1":        {Kind: KindLeafBound, Test: "TestCompile_InputLeafBound"},
@@ -155,20 +156,21 @@ var served = map[string]ServedNode{
 	"core.variable.get@1": {Kind: KindLeafBound, Test: "TestExec_B9_VarsIsolationBetweenInstances"},
 
 	// --- Exec-layer ops -----------------------------------------------
-	"core.flow.branch@1":    {Kind: KindExecOp, Op: "branch", Test: "TestExec_BranchBothArms"},
-	"core.flow.sequence@1":  {Kind: KindExecOp, Op: "sequence", Test: "TestExec_SequenceOrder"},
-	"core.flow.gate@1":      {Kind: KindExecOp, Op: "gate", Test: "TestExec_GateStartClosedThenOpened"},
-	"core.flow.for-loop@1":  {Kind: KindExecOp, Op: "for-loop", Test: "TestExec_ForLoop_ContinuationResumesAcrossSlices"},
-	"core.flow.for-each@1":  {Kind: KindExecOp, Op: "for-each", Test: "TestExec_ForEach"},
-	"core.flow.while@1":     {Kind: KindExecOp, Op: "while", Test: "TestExec_WhileTerminatesOnCondition"},
-	"core.flow.delay@1":     {Kind: KindExecOp, Op: "delay", Test: "TestExecDelay_FiresAtDeadline_FakeClock"},
-	"core.variable.set@1":   {Kind: KindExecOp, Op: "variable.set", Test: "TestExec_B9_VarsIsolationBetweenInstances"},
-	"core.print@1":          {Kind: KindExecOp, Op: "print", Test: "TestExec_Print_WritesDebugRing"},
-	"core.animation.play@1": {Kind: KindExecOp, Op: "animation.play", Test: "TestAnim_EmitsCommandAndThenImmediate"},
-	"core.http.request@1":   {Kind: KindExecOp, Op: "http.request", Test: "TestEffects_HTTPRequestResumesContinuation"},
-	"core.http-request@1":   {Kind: KindExecOp, Op: "http.request", Test: "TestEffects_HTTPRequestResumesContinuation"},
-	"core.db.query@1":       {Kind: KindExecOp, Op: "db.query", Test: "TestEffects_DBQueryTopologyA"},
-	"core.show.emit@1":      {Kind: KindExecOp, Op: "show.emit", Test: "TestShowEmit_RuleToActiveNoCascade"},
+	"core.flow.branch@1":          {Kind: KindExecOp, Op: "branch", Test: "TestExec_BranchBothArms"},
+	"core.flow.sequence@1":        {Kind: KindExecOp, Op: "sequence", Test: "TestExec_SequenceOrder"},
+	"core.flow.gate@1":            {Kind: KindExecOp, Op: "gate", Test: "TestExec_GateStartClosedThenOpened"},
+	"core.flow.for-loop@1":        {Kind: KindExecOp, Op: "for-loop", Test: "TestExec_ForLoop_ContinuationResumesAcrossSlices"},
+	"core.flow.for-each@1":        {Kind: KindExecOp, Op: "for-each", Test: "TestExec_ForEach"},
+	"core.flow.while@1":           {Kind: KindExecOp, Op: "while", Test: "TestExec_WhileTerminatesOnCondition"},
+	"core.flow.delay@1":           {Kind: KindExecOp, Op: "delay", Test: "TestExecDelay_FiresAtDeadline_FakeClock"},
+	"core.variable.set@1":         {Kind: KindExecOp, Op: "variable.set", Test: "TestExec_B9_VarsIsolationBetweenInstances"},
+	"core.print@1":                {Kind: KindExecOp, Op: "print", Test: "TestExec_Print_WritesDebugRing"},
+	"core.animation.play@1":       {Kind: KindExecOp, Op: "animation.play", Test: "TestAnim_EmitsCommandAndThenImmediate"},
+	"core.http.request@1":         {Kind: KindExecOp, Op: "http.request", Test: "TestEffects_HTTPRequestResumesContinuation"},
+	"core.http-request@1":         {Kind: KindExecOp, Op: "http.request", Test: "TestEffects_HTTPRequestResumesContinuation"},
+	"core.db.query@1":             {Kind: KindExecOp, Op: "db.query", Test: "TestEffects_DBQueryTopologyA"},
+	"core.show.emit@1":            {Kind: KindExecOp, Op: "show.emit", Test: "TestShowEmit_RuleToActiveNoCascade"},
+	"core.operator.await-value@1": {Kind: KindExecOp, Op: "operator.await", Test: "TestOperator_AwaitSuspendsAndResumes"},
 
 	// --- Compute registry (pure data layer) ---------------------------
 	"core.output@1": {Kind: KindCompute, Test: "TestPure_OutputPassthrough"},

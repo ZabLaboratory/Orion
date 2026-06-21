@@ -103,6 +103,15 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/db/datasources", listDatasources(deps))
 	mux.HandleFunc("GET /api/v1/db/{service}/schema", getDBSchema(deps))
 
+	// Operator runtime surface (Orion #209, Blue ADR 008 §3.2/§3.3):
+	// operator-gated injection of values into the ACTIVE scene's live exec
+	// graph — fire a named on-call entrypoint, list suspension points, and
+	// resolve an await. Active-only (ADR 008): a dormant blueprint answers
+	// 409 (call) / 410 (resolve) / empty (pending).
+	mux.HandleFunc("POST /api/v1/operator/call/{blueprint_id}/{entrypoint_id}", postOperatorCall(deps))
+	mux.HandleFunc("GET /api/v1/runtime/{blueprint_id}/pending", getRuntimePending(deps))
+	mux.HandleFunc("POST /api/v1/operator/resolve/{blueprint_id}/{await_name}", postOperatorResolve(deps))
+
 	mux.HandleFunc("GET /api/v1/assets/{id}", getAsset(deps))
 	mux.HandleFunc("GET /api/v1/credentials/{id}/stream-key", getStreamKey(deps))
 

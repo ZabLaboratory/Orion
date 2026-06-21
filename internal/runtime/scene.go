@@ -49,6 +49,19 @@ type InputMsg struct {
 	// Ownership transfers with the message — the producer (worker
 	// pool) never touches the map after Input.
 	ResumeEnv map[string]json.RawMessage
+
+	// FireEnv carries the data-out bindings seeded into a FireExec task's
+	// environment (Orion #209): the operator-call route binds the request
+	// `payload` under the on-call node's pin here, parity with on-event's
+	// `<node>.payload`. Empty for an unparametrised fire.
+	FireEnv map[string]json.RawMessage
+
+	// Control runs an arbitrary read/mutate closure ON the scene goroutine
+	// (Orion #209): the operator routes (resolve / pending list) need a
+	// synchronous result computed under single-writer, so they enqueue a
+	// closure that touches scene state and signals its own reply channel.
+	// Mutually exclusive with the other fields; nil for a plain input.
+	Control func(*Scene)
 }
 
 // SubscriberMsg is the union of messages a subscription receives.
@@ -288,6 +301,18 @@ type Scene struct {
 	// — single-writer, race-free under -race with no concurrent read.
 	triggersGated bool
 	onAir         bool
+
+	// pendingAwaits holds the live `operator.await-value` suspension points
+	// of this scene instance, keyed `<blueprint_key>/<await_name>` (Orion
+	// #209, Blue ADR 008 §3.3). Each entry carries the wake key of the
+	// parked continuation plus the metadata the operator surface publishes
+	// (value_type, ui). Scene-goroutine only — registered when a chain
+	// reaches an await node, consumed (and deleted) by a resolve, and
+	// cleared wholesale by cancelExecTasks: a switch-away / re-push / archive
+	// invalidates every await of the leaving scene version (ADR 008
+	// invariant 7), so a late resolve finds no entry and the route answers
+	// 410. nil until the first await parks.
+	pendingAwaits map[string]*pendingAwait
 }
 
 type computeEntry struct {
@@ -331,6 +356,10 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 	// no production path installs an ExecProgram before the phase-4
 	// gate (#87); without a program the op can never fire.
 	s.registerExecOp(OpAnimationPlay, execAnimationPlay)
+	// `operator.await` (Orion #209, Blue ADR 008 §3.3): the suspend twin of
+	// `delay` — parks the chain awaiting an external operator value, no
+	// timer. Pure scene-state machinery (park + registry), no dependency.
+	s.registerExecOp(OpOperatorAwait, execOperatorAwait)
 	// `show.emit` (ADR 009 §3.6, issue #155): the rule→antenna bridge. Pure
 	// scene machinery (read config/input + inject through the Show's emit
 	// seam), no external dependency — like animation.play. R9 holds because
@@ -634,11 +663,17 @@ func (s *Scene) applyInput(msg InputMsg) {
 	// sheds, B5) a task; a resume wakes a parked continuation. Both
 	// execute here, on the scene goroutine — single-writer holds.
 	if msg.FireExec != "" {
-		s.enqueueFire(msg.FireExec)
+		s.enqueueFireEnv(msg.FireExec, msg.FireEnv)
 		return
 	}
 	if msg.ResumeExec != "" {
 		s.resumeParkedWith(msg.ResumeExec, msg.ResumeEnv)
+		return
+	}
+	if msg.Control != nil {
+		// Scene-goroutine closure (Orion #209): operator resolve / pending
+		// list. Runs under single-writer; the closure owns its own reply.
+		msg.Control(s)
 		return
 	}
 	if msg.SetOnAir != nil {
