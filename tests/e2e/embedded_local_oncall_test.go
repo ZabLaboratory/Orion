@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -255,13 +256,13 @@ func snapshotLeaves(show *runtime.Show) map[string]string {
 	return out
 }
 
-// rosterLeafKeys is the 30 name/champ/score leaves — the proven chain
-// (on-call → var league → match-by-league → match-roster → score-for-player).
-// Color (the remaining 10) is GAP 2; asserted separately.
-func rosterLeafKeys() []string {
+// ccsLeafKeys is the 40 draft-overlay leaves the composer outputs: 5 blue
+// L0..L4 + 5 red R0..R4, each name/champ/score/color. Generated, not
+// hand-listed, so the test cannot silently drift from the scene.
+func ccsLeafKeys() []string {
 	sides := []string{"L0", "L1", "L2", "L3", "L4", "R0", "R1", "R2", "R3", "R4"}
-	fields := []string{"name", "champ", "score"}
-	out := make([]string, 0, 30)
+	fields := []string{"name", "champ", "score", "color"}
+	out := make([]string, 0, 40)
 	for _, s := range sides {
 		for _, f := range fields {
 			out = append(out, "pl."+s+"."+f)
@@ -270,21 +271,20 @@ func rosterLeafKeys() []string {
 	return out
 }
 
-// waitRosterLeaves polls the snapshot until every name/champ/score leaf is
-// present AND non-placeholder. `flip` (optional) anchors a value the new league
-// must reach, so the LEC poll does not pass on the stale LCK snapshot. On
-// timeout it fails with a precise break-point diagnosis (which leaves still
-// missing) — a stalled chain is localised, never masked.
-func waitRosterLeaves(t *testing.T, show *runtime.Show, flip ...string) map[string]string {
+// waitAllLeaves polls the snapshot until ALL 40 leaves are present AND
+// non-placeholder. `flip` anchors pl.L0.name to the new league so the LEC poll
+// never passes on the stale LCK snapshot. On timeout it fails with a precise
+// break-point diagnosis (which leaves still missing) — never a masked pass.
+func waitAllLeaves(t *testing.T, show *runtime.Show, flip string) map[string]string {
 	t.Helper()
-	keys := rosterLeafKeys()
+	keys := ccsLeafKeys()
 	deadline := time.Now().Add(15 * time.Second)
 	var last map[string]string
 	for time.Now().Before(deadline) {
 		last = snapshotLeaves(show)
 		if last != nil {
 			missing := pendingLeaves(last, keys)
-			flipped := len(flip) == 0 || unquote(last["pl.L0.name"]) == flip[0]
+			flipped := unquote(last["pl.L0.name"]) == flip
 			if len(missing) == 0 && flipped {
 				return last
 			}
@@ -293,9 +293,9 @@ func waitRosterLeaves(t *testing.T, show *runtime.Show, flip ...string) map[stri
 	}
 	missing := pendingLeaves(last, keys)
 	present := len(keys) - len(missing)
-	t.Fatalf("on-call did NOT materialise the 30 roster leaves: %d/30 populated, %d still missing/placeholder.\n"+
+	t.Fatalf("on-call did NOT materialise all 40 leaves: %d/40 populated, %d still missing/placeholder.\n"+
 		"  break point → the chain stops before these leaves: %v\n"+
-		"  (diagnose: var league armed? match-by-league rows? roster materialised? score-for-player fold?)\n"+
+		"  (diagnose: var league armed? match-by-league rows? roster materialised? score-to-color fold?)\n"+
 		"  last snapshot leaves present: %v",
 		present, len(missing), missing, sortedPresentLeaf(last, keys))
 	return nil
@@ -378,61 +378,55 @@ func TestE2E_EmbeddedLocal_OnCallLCKLEC(t *testing.T) {
 	}
 
 	// The cockpit advertises both armed on-call triggers — the authoritative
-	// operator surface (entrypoint_id = on_lck / on_lec).
+	// operator surface. The legacy-singular scene's empty blueprint key is
+	// announced as the addressing token "_" (#238), the exact path param the
+	// real cockpit button POSTs.
 	triggers := readCockpitTriggers(t, srv.URL)
 	if len(triggers) != 2 {
 		t.Fatalf("expected 2 armed on-call triggers (on_lck, on_lec), got %d: %+v", len(triggers), triggers)
 	}
-	assertTriggerKnown(t, triggers, "on_lck")
-	assertTriggerKnown(t, triggers, "on_lec")
+	assertTrigger(t, triggers, defaultBlueprintToken, "on_lck")
+	assertTrigger(t, triggers, defaultBlueprintToken, "on_lec")
 
-	// GAP 1 (HTTP operator route — reported): every trigger's blueprint_id is ""
-	// (legacy-singular empty key), so POST /operator/call/{blueprint_id}/{...}
-	// builds the unroutable path /operator/call//on_lck → 404. The route cannot
-	// fire an empty-key blueprint's on-call. We assert that break point, then
-	// drive the on-call through the runtime operator API FireOnCall — the EXACT
-	// code the route invokes after auth+routing — so the chain proof stands.
-	assertEmptyKeyRouteUnaddressable(t, srv.URL)
-
-	active := show.Active()
-	if active == nil {
-		t.Fatal("no active scene after activation")
-	}
-
-	// ---- Button LCK: HLE vs Gen.G ----
-	if !active.FireOnCall("on_lck", json.RawMessage(`{}`)) {
-		t.Fatal("FireOnCall(on_lck) not accepted (inbox full)")
-	}
-	lckLeaves := waitRosterLeaves(t, show)
+	// ---- Button LCK: HLE vs Gen.G — fired through the REAL HTTP route ----
+	// POST /api/v1/operator/call/_/on_lck with the handshake header: the exact
+	// cockpit path (auth gate → "_"→empty-key routing → FireOnCall → exec).
+	fireOnCallRoute(t, srv.URL, "on_lck")
+	lckLeaves := waitAllLeaves(t, show, lckExpect.names[0])
 	assertLeagueData(t, "LCK", lckLeaves, lckExpect)
 
-	// ---- Button LEC: Movistar KOI vs G2 ----
-	if !active.FireOnCall("on_lec", json.RawMessage(`{}`)) {
-		t.Fatal("FireOnCall(on_lec) not accepted (inbox full)")
-	}
-	lecLeaves := waitRosterLeaves(t, show, lecExpect.names[0])
+	// ---- Button LEC: Movistar KOI vs G2 — through the REAL HTTP route ----
+	fireOnCallRoute(t, srv.URL, "on_lec")
+	lecLeaves := waitAllLeaves(t, show, lecExpect.names[0])
 	assertLeagueData(t, "LEC", lecLeaves, lecExpect)
 }
 
-// assertTriggerKnown fails unless a trigger with the given entrypoint_id is
-// advertised by the cockpit.
-func assertTriggerKnown(t *testing.T, triggers []onCallTrigger, entrypointID string) {
+// defaultBlueprintToken mirrors the API alias (#238): the legacy default/empty
+// blueprint key is addressed on the operator route by this token.
+const defaultBlueprintToken = "_"
+
+// assertTrigger fails unless the cockpit advertises a trigger with this exact
+// (blueprint_id, entrypoint_id) pair — the addressing the real button uses.
+func assertTrigger(t *testing.T, triggers []onCallTrigger, blueprintID, entrypointID string) {
 	t.Helper()
 	for _, tr := range triggers {
-		if tr.EntrypointID == entrypointID {
+		if tr.BlueprintID == blueprintID && tr.EntrypointID == entrypointID {
 			return
 		}
 	}
-	t.Fatalf("cockpit did not advertise on-call trigger %q: %+v", entrypointID, triggers)
+	t.Fatalf("cockpit did not advertise trigger %s/%s: %+v", blueprintID, entrypointID, triggers)
 }
 
-// assertEmptyKeyRouteUnaddressable proves GAP 1: the HTTP operator route cannot
-// fire an empty-key (legacy-singular) blueprint's on-call, because the empty
-// blueprint_id collapses the URL path segment → 404.
-func assertEmptyKeyRouteUnaddressable(t *testing.T, srvURL string) {
+// fireOnCallRoute POSTs the on-call through the REAL HTTP operator route using
+// the "_" default-blueprint token and the handshake header — the cockpit's
+// actual path. Asserts the 202 fired envelope (a 404 would mean the "_" alias
+// regressed; a 403 would mean the handshake gate rejected operator).
+func fireOnCallRoute(t *testing.T, srvURL, entrypointID string) {
 	t.Helper()
-	if code, _ := localPost(t, srvURL+"/api/v1/operator/call//on_lck", `{}`, true); code != http.StatusNotFound {
-		t.Fatalf("empty-key on-call URL = %d, want 404 (GAP 1 break point moved — re-verify the route keying)", code)
+	url := srvURL + "/api/v1/operator/call/" + defaultBlueprintToken + "/" + entrypointID
+	code, body := localPost(t, url, `{}`, true)
+	if code != http.StatusAccepted {
+		t.Fatalf("POST operator/call/_/%s = %d %v, want 202 fired (real cockpit path)", entrypointID, code, body)
 	}
 }
 
@@ -495,13 +489,14 @@ var lecExpect = leagueExpect{
 	champs: [10]string{"Gnar", "Maokai", "Orianna", "Ezreal", "Braum", "KSante", "Skarner", "Sylas", "Jhin", "Leona"},
 }
 
-// assertLeagueData proves the 30 roster leaves carry the league's REAL data:
-// each player's name + champion match the seed roster, and every score is a
-// concrete number. The set of names must be exactly the roster (no placeholder
-// bleed-through). The 10 color leaves are GAP 2 (top-level `palette` variable
-// not seeded on the push path → null); their state is logged, not asserted, so
-// the genuine name/champ/score proof is not masked by the known color gap. When
-// GAP 2 is fixed, flip assertColorGap to a strict assertion.
+// hexColorRe matches a #RRGGBB color (the palette form the composer maps to).
+var hexColorRe = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
+
+// assertLeagueData proves ALL 40 leaves carry the league's REAL data: each
+// player's name + champion match the seed roster, every score is a concrete
+// number, AND every color is a concrete #RRGGBB hex mapped from the score (the
+// full chain incl. score-to-color, #237). The set of names must be exactly the
+// roster (no placeholder bleed-through).
 func assertLeagueData(t *testing.T, league string, leaves map[string]string, exp leagueExpect) {
 	t.Helper()
 	sides := []string{"L0", "L1", "L2", "L3", "L4", "R0", "R1", "R2", "R3", "R4"}
@@ -511,6 +506,7 @@ func assertLeagueData(t *testing.T, league string, leaves map[string]string, exp
 		name := unquote(leaves["pl."+s+".name"])
 		champ := unquote(leaves["pl."+s+".champ"])
 		score := leaves["pl."+s+".score"]
+		color := unquote(leaves["pl."+s+".color"])
 
 		if name != exp.names[i] {
 			t.Errorf("%s pl.%s.name = %q, want real player %q", league, s, name, exp.names[i])
@@ -522,6 +518,9 @@ func assertLeagueData(t *testing.T, league string, leaves map[string]string, exp
 		if err := json.Unmarshal([]byte(score), &n); err != nil || isPlaceholderLeaf(score) {
 			t.Errorf("%s pl.%s.score = %q, want a concrete numeric score", league, s, score)
 		}
+		if !hexColorRe.MatchString(color) {
+			t.Errorf("%s pl.%s.color = %q, want a concrete #RRGGBB mapped from the score", league, s, color)
+		}
 		gotNames[name] = true
 	}
 	for _, want := range exp.names {
@@ -530,37 +529,17 @@ func assertLeagueData(t *testing.T, league string, leaves map[string]string, exp
 		}
 	}
 	if t.Failed() {
-		t.Fatalf("%s on-call did not put the real league data on the 30 roster leaves; see errors above", league)
+		t.Fatalf("%s on-call did not put the real league data on all 40 leaves; see errors above", league)
 	}
 
-	// GAP 2 (color, reported): assert the chain reaches color OR document the
-	// exact gap — never silently pass over it.
-	colorsLive := 0
-	for _, s := range sides {
-		if !isPlaceholderLeaf(leaves["pl."+s+".color"]) {
-			colorsLive++
-		}
-	}
-	t.Logf("%s PROOF: 30/30 roster leaves real (name/champ/score). "+
-		"L0=%s/%s/%s  L4=%s/%s/%s  R0=%s/%s/%s  R4=%s/%s/%s  | colors live: %d/10%s",
+	t.Logf("%s PROOF (40/40 via HTTP route, real data + mapped color):\n"+
+		"  L0 %s/%s score=%s color=%s | L4 %s/%s score=%s color=%s\n"+
+		"  R0 %s/%s score=%s color=%s | R4 %s/%s score=%s color=%s",
 		league,
-		unquote(leaves["pl.L0.name"]), unquote(leaves["pl.L0.champ"]), leaves["pl.L0.score"],
-		unquote(leaves["pl.L4.name"]), unquote(leaves["pl.L4.champ"]), leaves["pl.L4.score"],
-		unquote(leaves["pl.R0.name"]), unquote(leaves["pl.R0.champ"]), leaves["pl.R0.score"],
-		unquote(leaves["pl.R4.name"]), unquote(leaves["pl.R4.champ"]), leaves["pl.R4.score"],
-		colorsLive, colorGapNote(colorsLive))
-}
-
-// colorGapNote annotates the color-leaf count with the GAP 2 diagnosis.
-func colorGapNote(live int) string {
-	if live == 10 {
-		return " (GAP 2 CLOSED — colors materialise; tighten assertLeagueData to assert color)"
-	}
-	return " — GAP 2: score-to-color reads __vars..palette, the top-level blueprint " +
-		"`palette` variable whose declared value is NOT seeded on the push path " +
-		"(only inlined-reference variables + the simulate path harvest variables[].value; " +
-		"compile.go folds the expander's Defaults, never the top-level graph.Variables). " +
-		"Orion compiler fix needed."
+		unquote(leaves["pl.L0.name"]), unquote(leaves["pl.L0.champ"]), leaves["pl.L0.score"], unquote(leaves["pl.L0.color"]),
+		unquote(leaves["pl.L4.name"]), unquote(leaves["pl.L4.champ"]), leaves["pl.L4.score"], unquote(leaves["pl.L4.color"]),
+		unquote(leaves["pl.R0.name"]), unquote(leaves["pl.R0.champ"]), leaves["pl.R0.score"], unquote(leaves["pl.R0.color"]),
+		unquote(leaves["pl.R4.name"]), unquote(leaves["pl.R4.champ"]), leaves["pl.R4.score"], unquote(leaves["pl.R4.color"]))
 }
 
 // unquote decodes a JSON-string leaf value to its bare string; non-strings
@@ -573,23 +552,32 @@ func unquote(v string) string {
 	return v
 }
 
-// TestE2E_EmbeddedLocal_OnCallRejectsWithoutHandshake is the guard half: the
-// SAME loopback on-call request WITHOUT the X-Orion-Local-Auth handshake falls
-// back to the anonymous identity and is rejected 403 (fail-closed, ADR 016 §5
-// R2). A local process that finds the loopback port cannot impersonate Prism.
-func TestE2E_EmbeddedLocal_OnCallRejectsWithoutHandshake(t *testing.T) {
+// TestE2E_EmbeddedLocal_OnCallGuards is the guard half:
+//   - an on-call WITHOUT the X-Orion-Local-Auth handshake → 403 (fail-closed,
+//     ADR 016 §5 R2): a local process that finds the loopback port cannot
+//     impersonate Prism.
+//   - WITH the handshake the gate admits it (not 403).
+//   - the OLD empty-segment form (//on_lck, no "_" token) does NOT fire — Go's
+//     ServeMux never matches an empty path segment, so it 404s (the gap #238
+//     closed; the "_" token is the only addressing form).
+func TestE2E_EmbeddedLocal_OnCallGuards(t *testing.T) {
 	sidecarURL := startDataSidecar(t)
 	srv, _ := embeddedLocalServer(t, sidecarURL)
 
 	// The route is gated BEFORE it inspects scene/blueprint state, so a call
 	// with no handshake is 403 regardless of whether a scene is active.
-	url := srv.URL + "/api/v1/operator/call/" + ccsBlueprintID + "/on_lck"
+	url := srv.URL + "/api/v1/operator/call/" + defaultBlueprintToken + "/on_lck"
 	if code, _ := localPost(t, url, `{}`, false); code != http.StatusForbidden {
 		t.Fatalf("on-call WITHOUT handshake = %d, want 403 (fail-closed operator gate)", code)
 	}
-	// And WITH the handshake the gate admits it (here 409: no scene active yet —
+	// WITH the handshake the gate admits it (here 409: no scene active yet —
 	// proving the rejection above was the auth gate, not a missing scene).
 	if code, body := localPost(t, url, `{}`, true); code == http.StatusForbidden {
 		t.Fatalf("on-call WITH handshake was still 403 %v — handshake not honoured", body)
+	}
+	// The old empty-segment form never fires (does not reach a handler) — it is
+	// not a valid addressing path; "_" (#238) is required.
+	if code, _ := localPost(t, srv.URL+"/api/v1/operator/call//on_lck", `{}`, true); code != http.StatusNotFound {
+		t.Fatalf("empty-segment on-call //on_lck = %d, want 404 (only the _ token addresses the default key)", code)
 	}
 }
