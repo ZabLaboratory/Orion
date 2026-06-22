@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,27 @@ type HTTPFetcher struct {
 	// unauthenticated stub) — see getJSON.
 	TokenFunc func() string
 	UserAgent string
+	// InjectAllowedHosts is a PREVIEW-ONLY escape hatch (embedded-local): when
+	// a fetched layout has no ``assets.allowedHosts`` block, synthesise one
+	// from the http(s) image hosts the layout itself references, so the
+	// anti-SSRF authoring gate (GATE_HOST_NOT_ALLOWED, T1) lets the operator
+	// preview a scene whose assets were authored against external hosts (e.g.
+	// raw Figma asset URLs). Scoped to the scene's OWN hosts — not a blanket
+	// allow — and NEVER set on the antenne profile. The bytes still fail to
+	// load if the upstream host 404s; this only unblocks the compile.
+	InjectAllowedHosts bool
+}
+
+// previewHostRe extracts http(s) hosts from a layout JSON blob for the
+// embedded-local allowedHosts synthesis (InjectAllowedHosts).
+var previewHostRe = regexp.MustCompile(`https?://([^/"'\s]+)`)
+
+// previewBaselineHosts are CDNs scenes resolve at RUNTIME from data leaves
+// (champion art), so they aren't in the static layout the host scan reads.
+// Allowed in the embedded-local preview only (InjectAllowedHosts).
+var previewBaselineHosts = []string{
+	"ddragon.leagueoflegends.com",
+	"ddragon.canisback.com",
 }
 
 // NewHTTPFetcher constructs a fetcher with sensible defaults. The
@@ -62,12 +84,71 @@ func NewHTTPFetcherWithTokenFunc(canvasBase, blueBase string, tokenFunc func() s
 	}
 }
 
-// FetchCanvasLayout calls GET {canvas}/api/v1/layouts/{version}.
+// FetchCanvasLayout calls GET {canvas}/api/v1/layouts/{version}, then
+// back-fills the literal ``defaults`` map from the content-addressed LSML
+// bundle store.
+//
+// The ``/layouts`` adapter serves a CanvasLayout that carries the binding tree
+// (``root``) but DROPS the bundle's ``defaults`` map — the constants every
+// static text/image binds to (``__lit.<kind>.<id>`` → "BROKEN BLADE" /
+// "assets/<sha>"). Without them a transcribed scene compiles to leaves nothing
+// produces and paints empty (the gray-canvas symptom). The FULL bundle —
+// including ``defaults`` — lives at ``GET /api/v1/lsml-bundles/{version}``, so
+// we read its ``defaults`` and attach them to the layout. Best-effort: if the
+// bundle store has no entry (e.g. a layout pushed without a stored bundle) the
+// layout proceeds without literal defaults rather than failing the compile.
 func (f *HTTPFetcher) FetchCanvasLayout(ctx context.Context, version string) (*CanvasLayout, error) {
 	var out CanvasLayout
 	url := f.CanvasBase + "/api/v1/layouts/" + version
 	if err := f.getJSON(ctx, url, &out); err != nil {
 		return nil, fmt.Errorf("canvas layout %s: %w", version, err)
+	}
+	if len(out.Defaults) == 0 {
+		// The store wraps the bundle: `{content_hash, bundle:{lsml, layout,
+		// defaults:{…}, …}, archive, …}`. The literal map lives at
+		// `.bundle.defaults`, NOT top-level.
+		var resp struct {
+			Bundle struct {
+				Defaults map[string]json.RawMessage `json:"defaults"`
+			} `json:"bundle"`
+		}
+		burl := f.CanvasBase + "/api/v1/lsml-bundles/" + version
+		if err := f.getJSON(ctx, burl, &resp); err == nil && len(resp.Bundle.Defaults) > 0 {
+			out.Defaults = resp.Bundle.Defaults
+		}
+		// A missing / errored bundle store is non-fatal: the layout still
+		// compiles (just without literal seeds), preserving the prior behaviour
+		// for layouts that never had a stored bundle.
+	}
+	// PREVIEW-ONLY (embedded-local): synthesise allowedHosts from the scene's
+	// own image hosts when the layout carries no assets block, so the SSRF
+	// authoring gate doesn't reject a preview of an externally-hosted scene.
+	if f.InjectAllowedHosts && len(out.Assets) == 0 {
+		blob, _ := json.Marshal(struct {
+			Root     LayoutNode                 `json:"root"`
+			Defaults map[string]json.RawMessage `json:"defaults"`
+		}{out.Root, out.Defaults})
+		seen := map[string]struct{}{}
+		// Baseline preview hosts: the champion/asset CDNs the scenes resolve at
+		// RUNTIME from data leaves (e.g. `pl.*.champ` → a Data Dragon URL), so
+		// they never appear in the static layout the scan below sees. Allowing
+		// them lets Solar's runtime host-allow fetch champion art in preview.
+		var hosts []string
+		for _, h := range previewBaselineHosts {
+			seen[h] = struct{}{}
+			hosts = append(hosts, h)
+		}
+		for _, m := range previewHostRe.FindAllStringSubmatch(string(blob), -1) {
+			h := strings.ToLower(m[1])
+			if _, ok := seen[h]; ok {
+				continue
+			}
+			seen[h] = struct{}{}
+			hosts = append(hosts, h)
+		}
+		if len(hosts) > 0 {
+			out.Assets, _ = json.Marshal(map[string][]string{"allowedHosts": hosts})
+		}
 	}
 	return &out, nil
 }
@@ -96,13 +177,27 @@ func (f *HTTPFetcher) FetchBlueprint(ctx context.Context, id string) (*Blueprint
 		Graph struct {
 			Nodes []BlueprintNode `json:"nodes"`
 			Edges []BlueprintEdge `json:"edges"`
+			// Variables carry the blueprint-local CONSTANT declarations (e.g.
+			// score-to-color's `palette` colour list). Previously dropped here —
+			// only nodes+edges were decoded — so a reference-free top-level
+			// blueprint's `variables[].value` never reached foldDeclaredVariables
+			// → `core.variable.get@1` read an unseeded `__vars..<name>` → null
+			// (the rating-colour squares rendered transparent). Decoding +
+			// carrying them lets the compile seed `__vars..<name>` as a graph
+			// default, same as the in-body simulate path already does.
+			Variables []BlueprintVariable `json:"variables"`
 		} `json:"graph"`
 	}
 	url := fmt.Sprintf("%s/api/v1/blueprints/%s/versions/%d", f.BlueBase, id, meta.CurrentVersion)
 	if err := f.getJSON(ctx, url, &ver); err != nil {
 		return nil, fmt.Errorf("blue blueprint %s version %d: %w", id, meta.CurrentVersion, err)
 	}
-	return &BlueprintGraph{ID: meta.ID, Nodes: ver.Graph.Nodes, Edges: ver.Graph.Edges}, nil
+	return &BlueprintGraph{
+		ID:        meta.ID,
+		Nodes:     ver.Graph.Nodes,
+		Edges:     ver.Graph.Edges,
+		Variables: ver.Graph.Variables,
+	}, nil
 }
 
 // blueRefUnresolvedCodes are the typed Blue error codes that mean the

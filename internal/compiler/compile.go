@@ -252,6 +252,19 @@ func Compile(
 		defaults[in.Path] = in.Default
 	}
 
+	// Seed graph.Defaults from the LAYOUT's literal map. Static text/image/media
+	// authored in Canvas bind to `__lit.<kind>.<id>` leaves whose constant VALUE
+	// lives in layout.Defaults (see CanvasLayout.Defaults). These are the only
+	// source for a transcribed scene's labels/photos; without them the bound
+	// components paint empty (the gray-canvas symptom). Layout-global, seeded
+	// verbatim. A blueprint/operator default already set above wins (data
+	// overrides a static literal), so only absent keys are filled.
+	for path, v := range layout.Defaults {
+		if _, exists := defaults[path]; !exists {
+			defaults[path] = v
+		}
+	}
+
 	// Validate that every component binding addressing the blueprint-key
 	// namespace names a DECLARED key (ADR 001 §3.3.4): in a multi-blueprint
 	// scene (≥1 non-empty key) a dotted binding's leading segment must be a

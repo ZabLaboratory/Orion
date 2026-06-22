@@ -98,6 +98,19 @@ type CanvasLayout struct {
 	// without assets leaves it nil → no assets block on the emitted bundle,
 	// deny-by-default downstream.
 	Assets json.RawMessage `json:"assets,omitempty"`
+
+	// Defaults is the layout-level literal map the LSML producer (Prism
+	// from-scene.ts / @lumencast compiler) emits alongside the binding tree:
+	// every static text / image / media authored in Canvas binds its value to a
+	// `__lit.<kind>.<id>` leaf and stashes the CONSTANT here (`{"__lit.text.x":
+	// "BROKEN BLADE", "__lit.image.y": "assets/<sha256>.png", …}`). Without
+	// seeding these into graph.Defaults the bound components resolve to a leaf
+	// nothing produces → the scene renders empty (only the frame fills show).
+	// Layout-global, NOT blueprint-keyed. Optional + additive: a layout without
+	// literals leaves it nil. Decoded here (the previous struct dropped it,
+	// which is why static-text scenes painted blank off the live httpFetcher
+	// path while the frozen render-bundle — values pre-baked — looked fine).
+	Defaults map[string]json.RawMessage `json:"defaults,omitempty"`
 }
 
 // LayoutNode is one node in the layout tree. Either a Solar primitive

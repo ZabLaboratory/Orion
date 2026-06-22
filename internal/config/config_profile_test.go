@@ -118,12 +118,13 @@ func TestLoad_EmbeddedLocalRequiresStoreAndBases(t *testing.T) {
 	}
 }
 
-// TestLoad_EmbeddedLocalRequiresEachEdge — each loopback base-URL AND the
-// validation mirror root is independently required in embedded-local; a
-// missing one is a clear boot failure (RC-A1/RC-A5 §2/§4). The scene bundle
-// path is optional, so its absence must never mask a missing edge.
+// TestLoad_EmbeddedLocalRequiresEachEdge — each Canvas/Blue/ZabGate base-URL is
+// independently required in embedded-local; a missing one is a clear boot
+// failure (RC-A1/RC-A5 §2/§4). The scene bundle path AND the validation mirror
+// root are optional (full-prod model), so their absence must never mask a
+// missing edge.
 func TestLoad_EmbeddedLocalRequiresEachEdge(t *testing.T) {
-	for _, missing := range []string{"ORION_CANVAS_BASE_URL", "ORION_BLUE_BASE_URL", "ORION_ZABGATE_URL", "ORION_VALIDATION_MIRROR_ROOT"} {
+	for _, missing := range []string{"ORION_CANVAS_BASE_URL", "ORION_BLUE_BASE_URL", "ORION_ZABGATE_URL"} {
 		t.Run("missing_"+missing, func(t *testing.T) {
 			t.Setenv("ORION_ZABAUTH_VALIDATE_URL", "http://zabauth/validate")
 			t.Setenv("ORION_PROFILE", "embedded-local")
@@ -132,12 +133,41 @@ func TestLoad_EmbeddedLocalRequiresEachEdge(t *testing.T) {
 			t.Setenv("ORION_CANVAS_BASE_URL", "http://127.0.0.1:4000/canvas")
 			t.Setenv("ORION_BLUE_BASE_URL", "http://127.0.0.1:4000/blue")
 			t.Setenv("ORION_ZABGATE_URL", "http://127.0.0.1:4000")
-			t.Setenv("ORION_VALIDATION_MIRROR_ROOT", "/tmp/o-mirror")
 			t.Setenv(missing, "")
 			if _, err := Load(); err == nil {
 				t.Fatalf("expected boot failure with %s unset in embedded-local", missing)
 			}
 		})
+	}
+}
+
+// TestLoad_EmbeddedLocalMirrorRootOptional — the validation mirror root is an
+// OPTIONAL offline fallback under the full-prod model: embedded-local boots
+// without it (the air gate then reads the local store), and parses it when set.
+func TestLoad_EmbeddedLocalMirrorRootOptional(t *testing.T) {
+	t.Setenv("ORION_ZABAUTH_VALIDATE_URL", "http://zabauth/validate")
+	t.Setenv("ORION_PROFILE", "embedded-local")
+	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "prism-handshake")
+	t.Setenv("ORION_SQLITE_PATH", "/tmp/o.db")
+	t.Setenv("ORION_CANVAS_BASE_URL", "https://zabgate.cyell.dev/canvas")
+	t.Setenv("ORION_BLUE_BASE_URL", "https://zabgate.cyell.dev/blue")
+	t.Setenv("ORION_ZABGATE_URL", "https://zabgate.cyell.dev")
+	// Mirror root unset → boot must still succeed (store-backed air gate).
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("embedded-local without mirror root must load (full-prod): %v", err)
+	}
+	if cfg.ValidationMirrorRoot != "" {
+		t.Fatalf("expected empty ValidationMirrorRoot, got %q", cfg.ValidationMirrorRoot)
+	}
+	// Mirror root set → parsed (offline fallback opt-in).
+	t.Setenv("ORION_VALIDATION_MIRROR_ROOT", "/tmp/o-mirror")
+	cfg, err = Load()
+	if err != nil {
+		t.Fatalf("embedded-local with mirror root must load: %v", err)
+	}
+	if cfg.ValidationMirrorRoot != "/tmp/o-mirror" {
+		t.Fatalf("mirror root not parsed: %q", cfg.ValidationMirrorRoot)
 	}
 }
 
