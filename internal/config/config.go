@@ -129,18 +129,20 @@ type Config struct {
 	EffectWorkers int
 	EffectQueue   int
 
-	HTTPPollUserAgent  string
-	LogLevel           string
-	LogFormat          LogFormat
-	LSDPMode           LSDPMode
+	HTTPPollUserAgent string
+	LogLevel          string
+	LogFormat         LogFormat
+	LSDPMode          LSDPMode
 	// Profile selects the execution-profile edge wiring at boot
 	// (ORION_PROFILE, ADR 016 §3.3). Default antenne = unchanged prod.
 	Profile Profile
 
 	// SQLitePath is the embedded-local store file (ADR 016 §3.2, #222),
-	// ORION_SQLITE_PATH. Unused in antenne. SceneBundlePath is the frozen
-	// scene bundle the bundledFetcher serves (#224), ORION_SCENE_BUNDLE_PATH.
-	// Both are required only in the embedded-local profile.
+	// ORION_SQLITE_PATH. Unused in antenne; required in embedded-local.
+	// SceneBundlePath is the frozen scene bundle the bundledFetcher serves
+	// (#224), ORION_SCENE_BUNDLE_PATH. Since #246 it is OPTIONAL in
+	// embedded-local — an offline fallback only; unset selects the nominal
+	// httpFetcher path. Unused in antenne.
 	SQLitePath      string
 	SceneBundlePath string
 
@@ -325,18 +327,28 @@ func Load() (Config, error) {
 		cfg.ValidationTimeout = time.Duration(v) * time.Second
 	}
 
-	// Required-field punch list is profile-keyed (ADR 016 §3.2/§3.3): antenne
-	// needs its Postgres DSN + Canvas/Blue HTTP bases; embedded-local needs the
-	// local SQLite file + frozen scene bundle instead (the HTTP edges and the
-	// pg DSN are unused there — requiring them would block a clean local boot).
-	// ZabAuth stays required in both: the validator/service-token plumbing is
-	// shared (the local-auth profile refinement is #223's scope).
+	// Required-field punch list is profile-keyed (ADR 016 §3.2/§3.3, refined by
+	// Amendment 1 / #246). antenne needs its Postgres DSN + Canvas/Blue HTTP
+	// bases. embedded-local needs the local SQLite file + the three loopback
+	// base-URLs (Canvas/Blue/ZabGate, pointed at the gateway sidecar #163): the
+	// httpFetcher is now the NOMINAL embedded-local fetch path, so the bases are
+	// required there too. The frozen scene bundle is RETAINED but OPTIONAL — set
+	// it for an offline fallback, leave it unset for the nominal HTTP path. The
+	// pg DSN stays unused in embedded-local (SQLite store). ZabAuth stays
+	// required in both (validator/service-token plumbing is shared).
 	if cfg.Profile.IsEmbeddedLocal() {
 		if cfg.SQLitePath == "" {
 			problems = append(problems, "ORION_SQLITE_PATH is required in the embedded-local profile")
 		}
-		if cfg.SceneBundlePath == "" {
-			problems = append(problems, "ORION_SCENE_BUNDLE_PATH is required in the embedded-local profile")
+		// ORION_SCENE_BUNDLE_PATH is OPTIONAL here (offline fallback) — see #246.
+		if cfg.CanvasBaseURL == "" {
+			problems = append(problems, "ORION_CANVAS_BASE_URL is required in the embedded-local profile (loopback gateway sidecar)")
+		}
+		if cfg.BlueBaseURL == "" {
+			problems = append(problems, "ORION_BLUE_BASE_URL is required in the embedded-local profile (loopback gateway sidecar)")
+		}
+		if cfg.ZabGateURL == "" {
+			problems = append(problems, "ORION_ZABGATE_URL is required in the embedded-local profile (loopback gateway sidecar)")
 		}
 	} else {
 		if cfg.DatabaseURL == "" {

@@ -248,22 +248,19 @@ func run() error {
 	// unchanged. Both bases stay ZabGate-fronted (C5/C6): no direct
 	// service-to-service path is introduced.
 	//
-	// Profile-keyed edge selection (ADR 016 §3.2, issue #224): antenne fetches
-	// authored artefacts over HTTP from Canvas/Blue; embedded-local serves the
-	// FROZEN scene bundle from disk (the same compiler.Fetcher surface, the same
-	// decoded structs — the compile path is byte-identical). A missing/malformed
-	// bundle is a hard boot error: the profile cannot compile its scene without it.
-	var fetcher compiler.Fetcher
-	if cfg.Profile.IsEmbeddedLocal() {
-		bundle, berr := compiler.LoadSceneBundle(cfg.SceneBundlePath)
-		if berr != nil {
-			return berr
-		}
-		fetcher = compiler.NewBundledFetcher(bundle)
-		logger.Info("fetcher selected", "profile", string(cfg.Profile), "source", "bundle", "path", cfg.SceneBundlePath)
+	// Profile-keyed edge selection (ADR 016 §3.2, issue #224; refined by
+	// Amendment 1, issue #246). Selection is factored into selectFetcher so it
+	// is unit-tested against RC-A1 (antenne parity, embedded-local nominal HTTP,
+	// optional offline bundle) without standing up the whole process.
+	fetcher, fetcherSource, ferr := selectFetcher(cfg, serviceTokens.Token)
+	if ferr != nil {
+		return ferr
+	}
+	if fetcherSource == fetcherSourceBundle {
+		logger.Info("fetcher selected", "profile", string(cfg.Profile), "source", fetcherSource, "path", cfg.SceneBundlePath)
 	} else {
-		fetcher = compiler.NewHTTPFetcherWithTokenFunc(cfg.CanvasBaseURL, cfg.BlueBaseURL, serviceTokens.Token)
-		logger.Info("fetcher selected", "profile", string(cfg.Profile), "source", "http")
+		logger.Info("fetcher selected", "profile", string(cfg.Profile), "source", fetcherSource,
+			"canvas_base", cfg.CanvasBaseURL, "blue_base", cfg.BlueBaseURL)
 	}
 
 	wsServer := &ws.Server{
@@ -365,6 +362,41 @@ func run() error {
 // loadActiveScenes brings every active+pushed scene into the runtime
 // roster on cold start. Per ADR 004 § 4.4.
 //
+// fetcherSource labels the selected compiler.Fetcher transport for boot
+// logging and the selectFetcher unit tests.
+const (
+	fetcherSourceHTTP   = "http"
+	fetcherSourceBundle = "bundle"
+)
+
+// selectFetcher picks the compiler.Fetcher for the active execution profile
+// (ADR 016 §3.2, issue #224; Amendment 1, issue #246).
+//
+// Both profiles wire the SAME httpFetcher — the real antenne fetch path — so
+// embedded-local is scene-agnostic: it compiles whatever the loopback gateway
+// sidecar serves over HTTP from its Canvas/Blue mirrors (#163 Prism), exactly
+// as antenne compiles from ZabGate. The base-URLs differ (loopback sidecar vs
+// ZabGate) but the surface, the decoded structs and the compile path are
+// byte-identical. tokenFunc reads Orion's live outbound service token on every
+// fetch (Bastion C1) in both profiles.
+//
+// The frozen bundle is RETAINED as an OPTIONAL offline fallback, not the
+// nominal path: in embedded-local with ORION_SCENE_BUNDLE_PATH set, the
+// bundledFetcher is selected (no gateway required); absent, the httpFetcher is
+// used (the nominal scene-agnostic path). Antenne is rigorously unchanged — it
+// always selects the httpFetcher against Canvas/Blue, never the bundle, so a
+// stray bundle path on antenne is ignored (RC-A1 §3).
+func selectFetcher(cfg config.Config, tokenFunc func() string) (compiler.Fetcher, string, error) {
+	if cfg.Profile.IsEmbeddedLocal() && cfg.SceneBundlePath != "" {
+		bundle, err := compiler.LoadSceneBundle(cfg.SceneBundlePath)
+		if err != nil {
+			return nil, "", err
+		}
+		return compiler.NewBundledFetcher(bundle), fetcherSourceBundle, nil
+	}
+	return compiler.NewHTTPFetcherWithTokenFunc(cfg.CanvasBaseURL, cfg.BlueBaseURL, tokenFunc), fetcherSourceHTTP, nil
+}
+
 // R9 boot reseed (ADR 006 §3.4 path 3, criterion #7): a validated exec
 // scene must come back with its exec INSTALLED after a restart, or it
 // would air with its logic silently dead. So each scene is loaded through
