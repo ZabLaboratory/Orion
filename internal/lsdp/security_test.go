@@ -13,8 +13,10 @@ import (
 // §C.3b. The gateway-first non-negotiable
 // (_shared/architecture.md §"NO local auth on microservices") forbids
 // Orion from validating any credential. This package mounts the LSDP
-// wire; it MUST derive identity ONLY from ZabGate's injected headers
-// (auth.FromHeaders) and MUST NEVER:
+// wire; it MUST derive identity ONLY through the configured AuthSource
+// (HeaderAuthSource on the antenne = ZabGate's injected headers;
+// localOperatorAuth on embedded-local = the loopback handshake), never a
+// locally-validated credential, and MUST NEVER:
 //
 //   - import a JWT library;
 //   - instantiate the kit's token Authenticator (server.StaticTokens,
@@ -41,7 +43,7 @@ func TestSecurity_NoLocalAuth(t *testing.T) {
 		"subFrame.Token", // explicit token read
 	}
 
-	sawFromHeaders := false
+	sawHeaderTrust := false
 	for _, f := range files {
 		src, err := os.ReadFile(f)
 		if err != nil {
@@ -53,13 +55,18 @@ func TestSecurity_NoLocalAuth(t *testing.T) {
 				t.Errorf("%s: forbidden token %q present — gateway-first violation (no local auth)", filepath.Base(f), bad)
 			}
 		}
-		if strings.Contains(text, "auth.FromHeaders") {
-			sawFromHeaders = true
+		// Header-trust is proven by the default identity source being
+		// HeaderAuthSource (which delegates to auth.FromHeaders, ADR 016
+		// §3.2). The wire derives identity through the AuthSource seam, so
+		// the literal auth.FromHeaders no longer appears in code — the
+		// HeaderAuthSource default is the byte-for-byte equivalent.
+		if strings.Contains(text, "auth.HeaderAuthSource") {
+			sawHeaderTrust = true
 		}
 	}
 
-	if !sawFromHeaders {
-		t.Error("identity is not derived via auth.FromHeaders anywhere in the LSDP wire — header-trust not proven")
+	if !sawHeaderTrust {
+		t.Error("identity does not default to auth.HeaderAuthSource anywhere in the LSDP wire — header-trust not proven")
 	}
 }
 

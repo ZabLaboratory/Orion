@@ -60,7 +60,7 @@ func TestLSDP_LateJoinAfterSceneSwitchGetsKeyframe(t *testing.T) {
 	defer cancel()
 
 	logger := quietLogger(t)
-	wire, err := NewWire(logger)
+	wire, err := NewWire(logger, nil)
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}

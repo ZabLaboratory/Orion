@@ -25,7 +25,7 @@ func dualShow(t *testing.T) (*Wire, *runtime.Scene, string) {
 	t.Helper()
 	logger := quietLogger(t)
 
-	wire, err := NewWire(logger)
+	wire, err := NewWire(logger, nil)
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
