@@ -524,3 +524,62 @@ tranches :
   sidecar gateway loopback-only ; le pull de sync (seul flux sortant) authentifié et borné
   au périmètre opérateur (Bastion).
 - **Bundle figé** : conservé comme **fallback offline/smoke**, plus jamais le chemin nominal.
+
+---
+
+## Amendment 2 — Topologie du miroir gateway : deux process loopback acceptés (2026-06-22)
+
+- **Author:** Atlas
+- **Status:** accepted (Amendment) — `proposed → accepted` par Vigil le 2026-06-22
+- **Portée :** précise §A1.2 (« un sidecar gateway loopback, un seul binaire Go ») au vu
+  de l'implémentation #163 (Prism PR #167). N'altère **aucun** invariant ni *Resolution
+  criteria*.
+
+### A2.1 — Constat
+
+L'Amendment 1 §A1.2 **recommandait** de servir `/canvas` + `/blue` en **étendant le
+`datasidecar` Go** (repo Orion, `cmd/datasidecar`, qui sert déjà `_query`) — un seul
+binaire de bord. L'implémentation a divergé : Forge sert `/canvas` + `/blue` en
+**Node/Fastify dans le main process de Prism** (PR #167), laissant `_query` sur le
+`datasidecar` Go. Raison : #163 est une issue/branche **Prism** ; étendre le `datasidecar`
+Go = un change **Orion** cross-repo + re-bundle ; et le Contract C.0 (Conduit) autorise
+explicitement **deux bases loopback**.
+
+Topologie réelle en embedded-local : **deux process loopback** — (a) `datasidecar` Go
+(`_query`, Orion) + (b) gateway-miroir Node/Fastify (`/canvas` + `/blue`, main Prism, qui
+héberge déjà `scene-server` Fastify).
+
+### A2.2 — Décision : ACCEPTÉ pour la livraison de validation, convergence en follow-up
+
+**GO sur la topologie à deux process.** Le « un seul binaire Go » de §A1.2 était une
+**préconisation d'économie**, **pas un invariant**. Tous les invariants durs restent
+tenus :
+
+- **`local == antenne` (D2)** intact : l'invariant porte sur le **chemin de code d'Orion**
+  (même `httpFetcher`, même `push`/`active-scene`/exec), **pas** sur la topologie ni le
+  langage des sidecars de bord. Orion voit deux base-URLs loopback servant des octets
+  **verbatim** ; il est aveugle à ce qui sert en face. **Aucun chemin moteur dédoublé.**
+- **D1 (zéro Docker)** intact : un process Node de plus dans un main Electron qui héberge
+  déjà Fastify — **zéro infra neuve**.
+- **D4 (sécurité de bord)** intact : loopback-only des deux côtés.
+- **C.0 (Conduit)** autorise déjà deux bases loopback — pas un contournement.
+
+**Le seul coût réel** de la divergence : un **2ᵉ implémenteur du décodage** d'artefacts
+publiés (Node, en plus du Go pour `_query`). Il est **borné** tant que :
+1. le **contrat #245 reste la source de vérité byte-for-byte** ;
+2. les **goldens du contrat sont exécutés contre l'impl Node** dans la CI Prism (RC-A2
+   prouvé sur le **serveur réel**, pas seulement sur le doc de contrat) ;
+3. le périmètre Node reste **strictement** le serving read-only `/canvas` + `/blue` depuis
+   le miroir — **aucune** logique moteur, **aucune** transformation d'artefact (substitue
+   le transport, jamais la forme).
+
+### A2.3 — Conséquences
+
+- **Pas de change de contrat** (#245 inchangé) ni d'invariant. RC-A1..A7 inchangés ;
+  RC-A2 est désormais prouvé contre l'impl **Node** (condition A2.2-2).
+- **Follow-up non bloquant** (après #166 verte / livraison de validation) : converger le
+  serving `/canvas` + `/blue` vers `cmd/datasidecar` Go (un seul binaire de bord). Refacto
+  de **topologie** pure — gain = un process de moins + un seul décodeur d'artefacts. À
+  ouvrir en **issue Orion** à ce moment-là (dette de convergence), pas avant : elle ne
+  doit pas retarder la preuve porteur (canvas-chat-sponso live, triggers `lck`/`lec`).
+- **Cockpit / Orion** : inchangés — la divergence est confinée au repo Prism.
