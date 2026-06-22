@@ -105,6 +105,21 @@ func run() error {
 	}
 	defer st.Close()
 
+	// Air-eligibility validator (ADR 016 Amendment 1 / #247). antenne reads
+	// the `validated` record from the store (PG row — unchanged). embedded-local
+	// imports it from the validation mirror seeded by Prism (#163), a filesystem
+	// read instead of a DB row; the gate logic is identical, only the source
+	// differs. Wired here so both the boot reseed (ExecForBoot) and the request
+	// gate (PublicDeps.AirValidator) consult the same source.
+	var airValidator api.AirValidator
+	if cfg.Profile.IsEmbeddedLocal() {
+		airValidator = store.MirrorValidator{Root: cfg.ValidationMirrorRoot}
+		logger.Info("air validator selected", "profile", string(cfg.Profile), "source", "mirror", "root", cfg.ValidationMirrorRoot)
+	} else {
+		airValidator = api.NewStoreAirValidator(st)
+		logger.Info("air validator selected", "profile", string(cfg.Profile), "source", "store")
+	}
+
 	// Runtime: compute registry → show → tick → test sessions.
 	registry := runtime.NewComputeRegistry()
 	show := runtime.NewShow(registry, logger)
@@ -205,7 +220,7 @@ func run() error {
 	// latest_pushed_version and load its compiled artefacts into
 	// the show. ADR 004 § 4.4. Runs AFTER SetEffects so a validated exec
 	// scene reseeded here arms its effects on boot (criterion #7).
-	if err := loadActiveScenes(ctx, st, show, logger); err != nil {
+	if err := loadActiveScenes(ctx, st, airValidator, show, logger); err != nil {
 		logger.Error("scene cold start failed", "err", err)
 	}
 
@@ -286,6 +301,7 @@ func run() error {
 		Inbox:         inbox,
 		Test:          testMgr,
 		Store:         st,
+		AirValidator:  airValidator,
 		Fetcher:       fetcher,
 		WSServer:      wsServer,
 		Harness:       harness,
@@ -404,7 +420,7 @@ func selectFetcher(cfg config.Config, tokenFunc func() string) (compiler.Fetcher
 // one loads pure-dataflow only (the same invariant every other path
 // holds). Fail-closed on a per-scene error — one bad scene never aborts
 // the whole cold start; it loads dataflow-only and is logged.
-func loadActiveScenes(ctx context.Context, st store.Store, show *runtime.Show, logger *slog.Logger) error {
+func loadActiveScenes(ctx context.Context, st store.Store, av api.AirValidator, show *runtime.Show, logger *slog.Logger) error {
 	scenes, err := st.ListActiveScenesWithPush(ctx)
 	if err != nil {
 		return err
@@ -426,7 +442,7 @@ func loadActiveScenes(ctx context.Context, st store.Store, show *runtime.Show, l
 			logger.Warn("cold start: bad bundle json", "scene_id", sc.ID, "err", err)
 			continue
 		}
-		progs := api.ExecForBoot(ctx, st, sc.ID, pv.SceneVersion, &graph, logger)
+		progs := api.ExecForBoot(ctx, av, sc.ID, pv.SceneVersion, &graph, logger)
 		show.LoadExec(sc.ID.String(), &graph, &bundle, progs...)
 		loaded[sc.ID.String()] = true
 	}
@@ -468,7 +484,7 @@ func loadActiveScenes(ctx context.Context, st store.Store, show *runtime.Show, l
 		logger.Error("cold start: re-activate persisted scene failed",
 			"scene_id", activeID.String(), "err", err)
 	}
-	reloadStreamRules(ctx, st, show, logger)
+	reloadStreamRules(ctx, st, av, show, logger)
 	return nil
 }
 
@@ -484,7 +500,7 @@ func loadActiveScenes(ctx context.Context, st store.Store, show *runtime.Show, l
 // authoritative (a scene that is both persisted-active and persisted-rule —
 // which the API prevents — would simply be refused as a rule here, never
 // double-routed).
-func reloadStreamRules(ctx context.Context, st store.Store, show *runtime.Show, logger *slog.Logger) {
+func reloadStreamRules(ctx context.Context, st store.Store, av api.AirValidator, show *runtime.Show, logger *slog.Logger) {
 	ruleIDs, err := st.ListStreamRules(ctx)
 	if err != nil {
 		logger.Error("cold start: read stream rule set failed; rules stay dormant", "err", err)
@@ -507,7 +523,7 @@ func reloadStreamRules(ctx context.Context, st store.Store, show *runtime.Show, 
 			logger.Warn("cold start: stream rule bad bundle json; skipped", "scene_id", id.String(), "err", err)
 			continue
 		}
-		progs := api.ExecForBoot(ctx, st, id, pv.SceneVersion, &graph, logger)
+		progs := api.ExecForBoot(ctx, av, id, pv.SceneVersion, &graph, logger)
 		if err := show.PromoteStreamRule(id.String(), &graph, &bundle, progs...); err != nil {
 			logger.Warn("cold start: stream rule promotion refused; skipped",
 				"scene_id", id.String(), "err", err)

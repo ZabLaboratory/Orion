@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -85,12 +86,22 @@ func startDataSidecar(t *testing.T) string {
 	return hs.URL
 }
 
+// embeddedLocalEnv carries the embedded-local seams a test drives directly:
+// the store (to read the validated record a campaign minted) and the
+// validation mirror root (to seed it, simulating Prism's seed — #247).
+type embeddedLocalEnv struct {
+	store      store.Store
+	mirrorRoot string
+}
+
 // embeddedLocalServer boots Orion's public surface through the SAME
 // RegisterPublic wiring main.go uses, with EVERY embedded-local edge impl:
-// SQLite store, BundledFetcher over the frozen bundle, localOperatorAuth, and
-// the effect bundle whose db.query client points at the loopback data sidecar.
-// No Postgres, no HTTP fetcher, no ZabGate/ZabAuth.
-func embeddedLocalServer(t *testing.T, sidecarURL string) (*httptest.Server, *runtime.Show) {
+// SQLite store, BundledFetcher over the frozen bundle, localOperatorAuth, the
+// effect bundle whose db.query client points at the loopback data sidecar, and
+// the MirrorValidator gate (#247 — the gate imports the `validated` record from
+// the mirror, NOT the local store). No Postgres, no HTTP fetcher, no
+// ZabGate/ZabAuth.
+func embeddedLocalServer(t *testing.T, sidecarURL string) (*httptest.Server, *runtime.Show, embeddedLocalEnv) {
 	t.Helper()
 	logger := testGateLogger()
 	metrics := obs.NewMetrics()
@@ -142,21 +153,69 @@ func embeddedLocalServer(t *testing.T, sidecarURL string) (*httptest.Server, *ru
 		Metrics: metrics,
 	})
 
+	// Validation mirror (ADR 016 Amendment 1 / #247): in embedded-local the
+	// air-eligibility gate imports the `validated` record from this mirror, the
+	// same wiring main.go applies. Prism seeds it in production; this harness
+	// returns the root so the test can seed it after a local campaign.
+	mirrorRoot := filepath.Join(t.TempDir(), "validation-mirror")
+
 	mux := http.NewServeMux()
 	api.RegisterPublic(mux, api.PublicDeps{
-		Logger:     logger,
-		Metrics:    metrics,
-		Config:     config.Config{PushTimeout: 30 * time.Second, ValidationTimeout: 60 * time.Second, Profile: config.ProfileEmbeddedLocal},
-		Show:       show,
-		Test:       testMgr,
-		Store:      st,
-		Fetcher:    fetcher,
-		Harness:    harness,
-		AuthSource: authSrc,
+		Logger:       logger,
+		Metrics:      metrics,
+		Config:       config.Config{PushTimeout: 30 * time.Second, ValidationTimeout: 60 * time.Second, Profile: config.ProfileEmbeddedLocal},
+		Show:         show,
+		Test:         testMgr,
+		Store:        st,
+		AirValidator: store.MirrorValidator{Root: mirrorRoot},
+		Fetcher:      fetcher,
+		Harness:      harness,
+		AuthSource:   authSrc,
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return srv, show
+	return srv, show, embeddedLocalEnv{store: st, mirrorRoot: mirrorRoot}
+}
+
+// seedMirrorFromStore copies the `validated` record a local campaign minted in
+// the store into the validation mirror at the frozen layout
+// (canvas/validated/<scene_id>/<bare-64hex>.json) — simulating Prism's seed of
+// the ZabCanvas export (#247). After this, the embedded-local gate (which reads
+// the mirror, not the store) treats the version as air-eligible.
+func seedMirrorFromStore(t *testing.T, env embeddedLocalEnv, sceneID uuid.UUID, sceneVersion string) {
+	t.Helper()
+	v, err := env.store.GetValidation(context.Background(), sceneID, sceneVersion, runtime.HarnessVersion)
+	if err != nil {
+		t.Fatalf("read validated record from store: %v", err)
+	}
+	bare := strings.TrimPrefix(sceneVersion, "sha256:")
+	dir := filepath.Join(env.mirrorRoot, "canvas", "validated", sceneID.String())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir mirror: %v", err)
+	}
+	body, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal validated record: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, bare+".json"), body, 0o600); err != nil {
+		t.Fatalf("write mirror seed: %v", err)
+	}
+}
+
+// sceneVersionOf reads the current scene_version (the content hash) off the
+// /validation surface, so the test can address the mirror seed by it.
+func sceneVersionOf(t *testing.T, base string) string {
+	t.Helper()
+	_, raw := localGet(t, base+"/validation")
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatalf("parse /validation: %v", err)
+	}
+	ver, _ := body["scene_version"].(string)
+	if ver == "" {
+		t.Fatalf("no scene_version on /validation: %s", string(raw))
+	}
+	return ver
 }
 
 // localPost issues a loopback POST carrying the handshake secret (the Prism
@@ -343,7 +402,7 @@ func TestE2E_EmbeddedLocal_OnCallLCKLEC(t *testing.T) {
 	assertBundleExecCompilable(t)
 
 	sidecarURL := startDataSidecar(t)
-	srv, show := embeddedLocalServer(t, sidecarURL)
+	srv, show, env := embeddedLocalServer(t, sidecarURL)
 
 	// Push the frozen scene by its frozen content addresses (the bundledFetcher
 	// resolves both from disk). LEGACY-SINGULAR push (blue_blueprint_id): the
@@ -364,11 +423,16 @@ func TestE2E_EmbeddedLocal_OnCallLCKLEC(t *testing.T) {
 		t.Fatalf("validate = %d %v", code, body)
 	}
 	localWaitValidated(t, base)
+	// Seed the validation mirror from the campaign record (#247): in
+	// embedded-local the gate imports `validated` from the mirror, not the local
+	// store, so the version is air-eligible ONLY once Prism (here, the test)
+	// seeds it. Without this seed the re-push below would load dataflow-only.
+	seedMirrorFromStore(t, env, sceneID, sceneVersionOf(t, base))
 	// Re-push the now-validated, byte-identical version: execForAir returns the
-	// exec program set (the version carries a `validated` record), so LoadExec
-	// arms the on-call entrypoints before activation (ADR 006 §3.4 re-push
-	// semantics — the first push of a fresh hash is never validated yet, so it
-	// loads dataflow-only; the re-push arms exec).
+	// exec program set (the version carries a `validated` record in the mirror),
+	// so LoadExec arms the on-call entrypoints before activation (ADR 006 §3.4
+	// re-push semantics — the first push of a fresh hash is never validated yet,
+	// so it loads dataflow-only; the re-push arms exec).
 	if code, body := localPost(t, base+"/push", pushBody, true); code != 200 {
 		t.Fatalf("re-push (arm exec) = %d %v", code, body)
 	}
@@ -399,6 +463,44 @@ func TestE2E_EmbeddedLocal_OnCallLCKLEC(t *testing.T) {
 	fireOnCallRoute(t, srv.URL, "on_lec")
 	lecLeaves := waitAllLeaves(t, show, lecExpect.names[0])
 	assertLeagueData(t, "LEC", lecLeaves, lecExpect)
+}
+
+// TestE2E_EmbeddedLocal_UnseededMirrorBlocksActivation is the RC-A5 §2/§4
+// fail-closed proof: in embedded-local the gate imports `validated` from the
+// mirror, so a pushed scene whose mirror seed is ABSENT is refused at
+// activation with SCENE_NOT_VALIDATED — even though the push itself succeeded.
+// A local /validate record (in the SQLite store) does NOT make it eligible;
+// only the mirror seed does. This is the embedded-local complement to the
+// antenne DB gate.
+func TestE2E_EmbeddedLocal_UnseededMirrorBlocksActivation(t *testing.T) {
+	assertBundleExecCompilable(t)
+	sidecarURL := startDataSidecar(t)
+	srv, _, _ := embeddedLocalServer(t, sidecarURL)
+
+	sceneID := uuid.New()
+	base := srv.URL + "/api/v1/scenes/" + sceneID.String()
+	pushBody := fmt.Sprintf(`{"canvas_version":%q,"blue_blueprint_id":%q}`, ccsCanvasVersion, ccsBlueprintID)
+	if code, body := localPost(t, base+"/push", pushBody, true); code != 200 {
+		t.Fatalf("push = %d %v", code, body)
+	}
+
+	// Run a LOCAL campaign: this writes a `validated` record to the SQLite store
+	// — which on antenne would make the scene eligible. In embedded-local the
+	// gate reads the MIRROR, which is still unseeded, so it must NOT air.
+	if code, body := localPost(t, base+"/validate", `{}`, true); code != http.StatusAccepted {
+		t.Fatalf("validate = %d %v", code, body)
+	}
+	localWaitValidated(t, base)
+
+	// Activation must be REFUSED: the mirror has no seed for this version.
+	code, body := localPost(t, srv.URL+"/api/v1/show/active-scene",
+		`{"scene_id":"`+sceneID.String()+`"}`, true)
+	if code != http.StatusConflict {
+		t.Fatalf("activate without mirror seed = %d %v, want 409 SCENE_NOT_VALIDATED", code, body)
+	}
+	if got, _ := body["code"].(string); got != "SCENE_NOT_VALIDATED" {
+		t.Fatalf("activate refusal code = %q, want SCENE_NOT_VALIDATED", got)
+	}
 }
 
 // defaultBlueprintToken mirrors the API alias (#238): the legacy default/empty
@@ -562,7 +664,7 @@ func unquote(v string) string {
 //     closed; the "_" token is the only addressing form).
 func TestE2E_EmbeddedLocal_OnCallGuards(t *testing.T) {
 	sidecarURL := startDataSidecar(t)
-	srv, _ := embeddedLocalServer(t, sidecarURL)
+	srv, _, _ := embeddedLocalServer(t, sidecarURL)
 
 	// The route is gated BEFORE it inspects scene/blueprint state, so a call
 	// with no handshake is 403 regardless of whether a scene is active.

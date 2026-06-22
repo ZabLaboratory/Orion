@@ -72,10 +72,13 @@ func withRequiredEnv(t *testing.T) {
 	//   - ZabGate loopback base (#246): required in embedded-local since the
 	//     httpFetcher is now the nominal fetch path; also the `_query`
 	//     delegation base. Harmless in antenne.
+	//   - Validation mirror root (#247): required in embedded-local since the
+	//     air-eligibility gate imports the `validated` record from the mirror.
 	// ORION_SCENE_BUNDLE_PATH is deliberately NOT seeded: since #246 it is
 	// OPTIONAL in embedded-local (offline fallback only), so the helper
 	// exercises the nominal HTTP fetch path; tests that need the bundle set
 	// it themselves.
 	t.Setenv("ORION_SQLITE_PATH", "/tmp/orion-test.db")
 	t.Setenv("ORION_ZABGATE_URL", "http://zabgate")
+	t.Setenv("ORION_VALIDATION_MIRROR_ROOT", "/tmp/orion-test-mirror")
 }
