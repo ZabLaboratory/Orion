@@ -113,7 +113,7 @@ func run() error {
 	// gate (PublicDeps.AirValidator) consult the same source.
 	var airValidator api.AirValidator
 	if cfg.Profile.IsEmbeddedLocal() {
-		airValidator = store.MirrorValidator{Root: cfg.ValidationMirrorRoot}
+		airValidator = store.MirrorValidator{Root: cfg.ValidationMirrorRoot, Store: st}
 		logger.Info("air validator selected", "profile", string(cfg.Profile), "source", "mirror", "root", cfg.ValidationMirrorRoot)
 	} else {
 		airValidator = api.NewStoreAirValidator(st)

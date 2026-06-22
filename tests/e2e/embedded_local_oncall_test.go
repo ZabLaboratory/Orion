@@ -167,7 +167,7 @@ func embeddedLocalServer(t *testing.T, sidecarURL string) (*httptest.Server, *ru
 		Show:         show,
 		Test:         testMgr,
 		Store:        st,
-		AirValidator: store.MirrorValidator{Root: mirrorRoot},
+		AirValidator: store.MirrorValidator{Root: mirrorRoot, Store: st},
 		Fetcher:      fetcher,
 		Harness:      harness,
 		AuthSource:   authSrc,
@@ -179,16 +179,24 @@ func embeddedLocalServer(t *testing.T, sidecarURL string) (*httptest.Server, *ru
 
 // seedMirrorFromStore copies the `validated` record a local campaign minted in
 // the store into the validation mirror at the frozen layout
-// (canvas/validated/<scene_id>/<bare-64hex>.json) — simulating Prism's seed of
-// the ZabCanvas export (#247). After this, the embedded-local gate (which reads
-// the mirror, not the store) treats the version as air-eligible.
-func seedMirrorFromStore(t *testing.T, env embeddedLocalEnv, sceneID uuid.UUID, sceneVersion string) {
+// (canvas/validated/<scene_id>/<bare-canvas_version>.json) — simulating the
+// ZabCanvas export / Prism seed (#247, Conduit A1). The campaign keyed the
+// store record by Orion's COMPILED scene_version, but the mirror is keyed by
+// the canvas_version (the address the producer knows — the gate resolves it
+// from the pushed definition), so we RE-KEY: write the seed under the bare
+// canvas_version and set its scene_version field to the canvas_version. After
+// this, the embedded-local gate (which reads the mirror, not the store) treats
+// the version as air-eligible. “canvasVersion“ is the layout content address
+// the test pushed (“ccsCanvasVersion“).
+func seedMirrorFromStore(t *testing.T, env embeddedLocalEnv, sceneID uuid.UUID, sceneVersion, canvasVersion string) {
 	t.Helper()
 	v, err := env.store.GetValidation(context.Background(), sceneID, sceneVersion, runtime.HarnessVersion)
 	if err != nil {
 		t.Fatalf("read validated record from store: %v", err)
 	}
-	bare := strings.TrimPrefix(sceneVersion, "sha256:")
+	// Re-key onto the canvas_version (the mirror contract key).
+	v.SceneVersion = "sha256:" + strings.TrimPrefix(canvasVersion, "sha256:")
+	bare := strings.TrimPrefix(canvasVersion, "sha256:")
 	dir := filepath.Join(env.mirrorRoot, "canvas", "validated", sceneID.String())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir mirror: %v", err)
@@ -427,7 +435,7 @@ func TestE2E_EmbeddedLocal_OnCallLCKLEC(t *testing.T) {
 	// embedded-local the gate imports `validated` from the mirror, not the local
 	// store, so the version is air-eligible ONLY once Prism (here, the test)
 	// seeds it. Without this seed the re-push below would load dataflow-only.
-	seedMirrorFromStore(t, env, sceneID, sceneVersionOf(t, base))
+	seedMirrorFromStore(t, env, sceneID, sceneVersionOf(t, base), ccsCanvasVersion)
 	// Re-push the now-validated, byte-identical version: execForAir returns the
 	// exec program set (the version carries a `validated` record in the mirror),
 	// so LoadExec arms the on-call entrypoints before activation (ADR 006 §3.4
