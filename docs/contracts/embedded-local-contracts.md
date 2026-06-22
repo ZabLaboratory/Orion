@@ -351,3 +351,308 @@ No breaking change to any live antenna contract: this is additive (a new
 transport behind the existing `Fetcher` / `_query` shapes). Eleven decides merge
 order; producer-before-consumer does not apply (no shared schema changes — the
 sidecars consume the frozen shapes, they do not alter them).
+
+---
+
+## Contract C — `/canvas` + `/blue` loopback (ADR 016 Amendment 1)
+
+> Conduit-finalized for **issue #245** (ADR 016 Amendment 1, scene-agnostic
+> embedded-local). Proven against BOTH live sides on `origin/main`, 2026-06-22:
+> consumer = Orion `internal/compiler/{http_fetcher,fetcher,types}.go`; producers
+> = ZabCanvas `src/zabcanvas/routes/{layouts,user_components}.py` + Blue
+> `src/blue/routes/{blueprints,versions,compute_manifest,node_definitions}.py`
+> and `src/blue/schemas/{graph,version,blueprint}.py`. NOT self-merged: Eleven
+> decides the merge per the merge gate (`docs/rules/git.md`).
+>
+> **Why this exists.** Amendment 1 reverses §3.2(4): embedded-local stops using
+> `bundledFetcher` (one frozen scene) and re-uses the **antenna `httpFetcher`**
+> (`http_fetcher.go`) pointed at a **loopback gateway sidecar** bundled in Prism,
+> exactly as the antenna points it at ZabGate→ZabCanvas/Blue. Scene-agnostic in
+> local needs no new engine mechanism — only that the sidecar serve, byte-for-byte,
+> the same routes the `httpFetcher` already calls. The single rule of §B holds
+> here too: **substitute the transport, never the shape.**
+
+### C.0 Base URLs & path discipline
+
+In embedded-local Prism wires Orion's three base URLs at the loopback sidecar:
+
+| Orion config | Antenna value | Embedded-local value |
+|---|---|---|
+| `ORION_CANVAS_BASE_URL` (`CanvasBase`) | `http://zabgate:4000/canvas` | `http://127.0.0.1:<port>/canvas` |
+| `ORION_BLUE_BASE_URL` (`BlueBase`) | `http://zabgate:4000/blue` | `http://127.0.0.1:<port>/blue` |
+| `ORION_ZABGATE_URL` (`gatewayURL`) | `http://zabgate:4000` | `http://127.0.0.1:<port>` |
+
+The `httpFetcher` writes the **full `/api/v1/...` suffix** onto `CanvasBase` /
+`BlueBase` (`http_fetcher.go:68,92,101,136,161,182`). **There is no `/canvas` or
+`/blue` prefix strip** like ZabGate does for `_query`'s `<svc>` segment — whatever
+`CanvasBase`/`BlueBase` already carry is the full origin, and Orion appends
+`/api/v1/...`. The sidecar may serve one base routed by path or two bases; the
+contract below is **per absolute path the fetcher emits** (the `{canvas}`/`{blue}`
+token = the configured base, e.g. `…/canvas` or `…/blue`).
+
+Auth on loopback: ZabGate's `X-Authenticated-*` injection does not exist here.
+The `httpFetcher` sends `Authorization: Bearer <token>` when `TokenFunc` is
+non-nil, else anonymous (`http_fetcher.go:265-271`). Sidecar auth stance =
+same two valid options as `_query` §A.5 (no-auth loopback, or parity stub); the
+**200 body is byte-identical either way**. Bastion touch-point (loopback auth
+surface) → clearance before the sidecar merges (#163), same as #225.
+
+### C.1 — `R1` `GET {canvas}/api/v1/layouts/{version}` → `CanvasLayout`
+
+Consumer `FetchCanvasLayout` (`http_fetcher.go:65-73`). Producer ZabCanvas
+`routes/layouts.py:51` (`get_layout_endpoint`, mounted `prefix=/api/v1`), serving
+`adapt_bundle_to_layout` (`services/layout_adapter.py`). `{version}` is the bare
+sha256 64-hex content address, **producer-validated** `^[0-9a-f]{64}$`
+(`layouts.py::_HASH_PATTERN`) — a non-matching version is rejected upstream and
+must be by the mirror too.
+
+Decoded into `CanvasLayout` (`types.go:71-101`):
+
+```jsonc
+{
+  "version": "<64-hex>",            // == the path key, == PushEnvelope.CanvasVersion
+  "root": { /* LayoutNode tree */ },
+  "operator_inputs": [ /* OperatorInput */ ]?,   // omitempty
+  "animations": { /* opaque */ }?,               // omitempty — verbatim bytes
+  "assets":     { "allowedHosts":[], "fonts":[], "preload":[] }?  // omitempty — verbatim bytes
+}
+```
+
+`LayoutNode` (`types.go:106-164`): `kind`, `id?`, `props?` (`map[str]raw`),
+`bindings?` (`map[str]str`), `transitions?`, `children?`, `component_args?`.
+`animations`/`assets` are opaque `json.RawMessage` — the mirror stores the **exact
+bytes ZabCanvas served** (they feed the C4 LSML content-hash and the Solar host
+allowlist; reshaping breaks the runtime double-gate). `keyframes`/`animate_initial`
+are render-bundle-only (Orion lowering) and must **never** appear on this fetched
+layout. **`assets.allowedHosts` must be present when the layout references remote
+hosts** or the LSML authoring gate 422s on push (Amendment 2, §B.1) — a property
+of the published artefact the mirror captures, not a sidecar transform.
+
+### C.2 — `R2`+`R3` `FetchBlueprint` (two-call)
+
+Consumer `FetchBlueprint` (`http_fetcher.go:87-106`) is a **two-call** fetch:
+
+- **R2** `GET {blue}/api/v1/blueprints/{id}` → Orion reads only `current_version`
+  (int). Producer Blue `routes/blueprints.py:79` (`BlueprintRead`,
+  `schemas/blueprint.py:46`, field `current_version:int` at `:58`). The mirror
+  may serve the full `BlueprintRead` or the minimum `{ "id", "current_version" }`.
+- **R3** `GET {blue}/api/v1/blueprints/{id}/versions/{current_version}` → Orion
+  lifts nested `graph.{nodes,edges}`. Producer Blue `routes/versions.py:111`
+  (`VersionRead`, `schemas/version.py:48`; router prefix
+  `/blueprints/{blueprint_id}/versions`).
+
+`VersionRead.graph` is a `Graph` (`schemas/graph.py:118`):
+
+```jsonc
+{ "graph": { "nodes": [ /* Node */ ], "edges": [ /* Edge */ ], "variables": [ /* Variable */ ] }, … }
+```
+
+`Node` (`graph.py:71`): `id`, `definition` (qualified `namespace.name@version` —
+**wire field is `definition`, not `compute`**), `config?`, `inputs:[Port]`,
+`outputs:[Port]`. `Port` (`graph.py:59`): `id`, `name`, `type`, `required`,
+`default?` — **note: a graph `Port` has NO `kind` field** (see écart B). `Edge`
+(`graph.py:90`): snake_case `from_node`/`from_port`/`to_node`/`to_port`.
+`Variable` (`graph.py:107`): `id`, `name`, `type`, `value?`. These map onto
+Orion's `BlueprintNode`/`BlueprintEdge`/`BlueprintVariable` (`types.go:220-291`).
+
+### C.3 — `R4` `GET {blue}/api/v1/blueprints/{id}/versions/{version}/graph` → `ResolvedGraph`
+
+Consumer `FetchBlueprintGraph` (`http_fetcher.go:127-156`): the **PINNED,
+published-only** endpoint for ADR 014 reference expansion. Producer Blue
+`routes/versions.py:130` (`response_model=ResolvedGraph`, `schemas/version.py:89`).
+Decoded into `ResolvedBlueprintGraph` (`types.go:261-278`):
+
+```jsonc
+{
+  "blueprint_id": "<uuid>",
+  "version": <int>,
+  "status": "published",          // always "published" on a 200; Orion ignores it
+  "nodes": [ /* Node */ ],
+  "edges": [ /* Edge */ ],
+  "variables": [ /* Variable */ ],
+  "interface": { "inputs": [ InterfacePort ], "outputs": [ InterfacePort ] },
+  "purity": { "is_pure": <bool>, "is_bounded": <bool> }
+}
+```
+
+`InterfacePort` (`graph.py:128`) carries `name`, `type`, `kind` (`data|exec`,
+empty⇒data), `required` — **the interface is the only wire surface that carries
+the exec/data discriminant** (see écart B).
+
+**R4 typed errors — MANDATORY, fail-closed.** A referenced `(id, version)` absent
+or unpublished in the mirror MUST return the same typed body the live Blue raises,
+so Orion maps it to `BLUEPRINT_REF_UNRESOLVED` and rejects the push (never
+substitutes another version). Producer `versions.py` `/graph` (`ResolveError`,
+`version.py:121`):
+
+| Status | top-level `code` | Trigger |
+|---|---|---|
+| `404` | `BLUEPRINT_NOT_FOUND` | blueprint id unknown |
+| `404` | `BLUEPRINT_VERSION_NOT_FOUND` | version absent / non-existent |
+| `422` | `BLUEPRINT_VERSION_NOT_PUBLISHED` | version exists but is a draft |
+
+Body: `{ "code", "message", "blueprint_id", "version" }`. Orion's
+`blueRefUnresolvedCodes` (`http_fetcher.go:113-156`) keys off the top-level `code`.
+A mirror that materialises every referenced version never hits this — but a
+**missing artefact must fail closed** (a 404 `BLUEPRINT_VERSION_NOT_FOUND` is the
+correct route→file miss response), never a silent substitution.
+
+### C.4 — `R5` `GET {blue}/api/v1/_compute-manifest` → `{entries,count}`
+
+Consumer `FetchComputeManifest` (`http_fetcher.go:168-204`). Producer Blue
+`routes/compute_manifest.py:79` (`ComputeManifestResponse`, mounted `/api/v1`):
+
+```jsonc
+{ "entries": [ ManifestEntryDTO ], "count": <int> }
+```
+
+`ManifestEntryDTO` (`compute_manifest.py:32`): `node_id` (`namespace.name@version`),
+`is_pure`, `is_bounded`, `declared_inputs` (`list[dict]`), `declared_output_type`
+(`str | list[str] | null`), `version` (int) — plus `namespace`/`name`/`source`/
+`platform` which Orion ignores. The manifest MUST contain every `definition` the
+scene's blueprints reference or the compiler rejects the node
+(`UNKNOWN_COMPUTE_NODE`). Deploy-constant ⇒ a verbatim snapshot is sufficient.
+
+### C.5 — `R6` `GET {canvas}/api/v1/components/{id}/{version}` → `UserComponent` (OPTIONAL — deferred)
+
+Consumer `FetchComponent` (`http_fetcher.go:158-166`) calls
+`/api/v1/components/{id}/{version}` → `UserComponent` (`types.go:206-212`):
+`id`, `version`, `parameters[]`, `body{LayoutNode}`, `operator_inputs?`.
+
+**R6 is OPTIONAL for the MVP and DEFERRED (Eleven decision A).** Two facts:
+1. **Path mismatch (pre-existing antenna bug, see écart A):** Orion calls
+   `/api/v1/components/{id}/{version}`, but ZabCanvas mounts NO `/components`
+   router — components live at `/api/v1/user-components/{id}` and pushed versions
+   at `/api/v1/user-components/{id}/pushed-versions/{version}`
+   (`user_components.py:44,240`). This mismatch already exists at the antenna; it
+   has never fired because no pushed scene carries a user component.
+2. The MVP is **component-free** (canvas-chat-sponso uses none). A `FetchComponent`
+   call is therefore a correct hard fetch error in the MVP.
+
+**Decision:** R6 is a **known blind spot**, not wired for the MVP. Aligning the
+antenna path (`/components` vs `/user-components`) is an authoring follow-up
+(ZabCanvas issue, route through Eleven → Forge) **before** any component-bearing
+scene is made selectable in local. Until then the mirror MAY omit components and
+the sidecar returns 404 on R6 (a correct bundle-miss). If/when enabled, the mirror
+stores under the path the **fetcher** emits (`canvas/components/<id>/<version>.json`,
+§C.7), and the sidecar route→file mapping resolves the antenna mismatch locally.
+
+### C.6 — Écarts de shape (loopback risks)
+
+- **A — `FetchComponent` path mismatch (deferred).** Orion `/components/{id}/{v}`
+  vs ZabCanvas `/user-components/{id}/pushed-versions/{v}`. Pre-existing, unexercised
+  (component-free MVP). Known blind spot; R6 optional; antenna alignment is a
+  separate ZabCanvas follow-up. See §C.5.
+- **B — Blue graph ports + exec/data `kind` (resolved by Eleven decision B).** A
+  graph `Port` (`graph.py:59`) has **no `kind`**; the `data|exec` discriminant
+  `exec_partition.go::isExecNode` reads lives ONLY on `InterfacePort`
+  (`graph.py:128`, served on R4) and on node-definition signatures
+  (`GET /api/v1/node-definitions/{node_id}`), **not** on the compute manifest.
+  Separately, Blue STORES authoring graphs whose nodes carry **empty**
+  `inputs`/`outputs` (verified live `34f4b958` v5: 316 nodes, 0 ports, on both
+  `/versions/{v}` and `/versions/{v}/graph`); on the antenna the editor hydrates
+  node ports from `def.signature` **before publishing**. **Decision B:** the
+  mirror seed contains **PUBLISHED versions that are already hydrated** (ports
+  present on disk); the `httpFetcher` stays **pure pass-through** and the sidecar
+  does **NOT** re-bake. `node-definitions` is a safety-net mirror path (§C.7) but
+  is **not** on the hot fetch path under this decision. Verify on ≥2 real scenes
+  (RC-A2/RC-A3) that published versions carry ports; if a published version is
+  found portless, that is a Blue publish-time defect to fix upstream, not a sidecar
+  workaround.
+- **C — No ZabGate header injection on loopback.** Sidecar auth stance per §A.5
+  (no-auth loopback or parity stub); 200 byte-identical either way. Bastion
+  clearance before sidecar merge.
+- **D — Extra fields (`status`, etc.).** Blue serves `status` on `ResolvedGraph`/
+  `VersionRead` and extra fields on `BlueprintRead`/`ManifestEntryDTO` that Orion's
+  structs omit; `json.Decoder` is non-strict, so verbatim mirror bytes decode fine.
+  No risk.
+- **E — No scalar re-serialisation.** Unlike `_query` (SQLite↔Postgres coercion,
+  §A.6), canvas/blue artefacts are JSON blobs the mirror stores and serves
+  **verbatim**. No coercion risk on these routes — the scalar-parity work of §A.6
+  stays scoped to `_query` only.
+
+### C.7 — Mirror on-disk layout (export ↔ sidecar interface)
+
+> The interface between the artefact **exports** (ZabCanvas #144, Blue #174 — they
+> WRITE this tree) and the **gateway sidecar** (Prism #163 — it READS this tree).
+> Conduit fixes the canonical form. **Invariant: each published response body is
+> stored VERBATIM at a path that maps 1:1 to the route the `httpFetcher` emits**, so
+> the sidecar is a trivial **route→file** read serving bytes unchanged. No transform
+> on either side; if a byte differs from the live 200 body, the hot path is broken.
+
+Mirror root = `<sidecar-data-dir>` (Prism `userData`, loopback-only). Tree:
+
+```
+<mirror-root>/
+├── canvas/
+│   └── layouts/
+│       └── <version>.json                          # R1  body of GET /canvas/api/v1/layouts/<version>
+│                                                    #     <version> = bare sha256 64-hex (^[0-9a-f]{64}$)
+│   └── components/                                  # R6 — OPTIONAL/deferred (§C.5), omitted in MVP
+│       └── <id>/<version>.json                      #     body of GET /canvas/api/v1/components/<id>/<version>
+├── blue/
+│   ├── blueprints/
+│   │   ├── <id>.json                                # R2  body of GET /blue/api/v1/blueprints/<id>
+│   │   │                                            #     MUST carry current_version:int
+│   │   └── <id>/
+│   │       └── versions/
+│   │           ├── <v>.json                         # R3  body of GET …/blueprints/<id>/versions/<v>
+│   │           │                                    #     graph.nodes[*] ports PRESENT (decision B)
+│   │           └── <v>/
+│   │               └── graph.json                   # R4  body of GET …/versions/<v>/graph (ResolvedGraph)
+│   ├── _compute-manifest.json                       # R5  body of GET /blue/api/v1/_compute-manifest
+│   └── node-definitions/                            # SAFETY-NET (decision B: not hot-path); present so a
+│       └── <node_id>.json                           #     future re-bake/diagnostic can read def signatures.
+│                                                    #     <node_id> = namespace.name@version (filename-encoded, see below)
+```
+
+**Canonical rules (binding for #144 / #174 producers and #163 consumer):**
+
+1. **Route→file is mechanical.** Sidecar maps the request path to a file by
+   stripping the configured base, dropping `/api/v1`, and appending `.json`:
+   `GET /blue/api/v1/blueprints/<id>/versions/<v>/graph`
+   → `<root>/blue/blueprints/<id>/versions/<v>/graph.json`. The collection-vs-item
+   collision on `blueprints/<id>` (R2 is `<id>.json`, R3/R4 nest under `<id>/`) is
+   resolved by the `.json` suffix on the item and the bare dir for the subtree —
+   both coexist (`<id>.json` file alongside `<id>/` dir).
+2. **Verbatim bytes.** Each `*.json` = the **exact 200 response body** the live
+   service emitted (`Content-Type: application/json`). No re-indent, no key
+   reorder, no field drop. The export captures the live body; the sidecar serves
+   it with `200 + application/json` unchanged.
+3. **Version tokens.** `<version>` (canvas) = bare 64-hex, no `sha256:` prefix.
+   `<v>` (blue) = the integer version, decimal, no padding (e.g. `5`, not `005`).
+4. **`<node_id>` filename encoding.** `namespace.name@version` contains `@` and
+   `.`; store as-is (`core.operator.on-call@1.json`) — `@`/`.` are filesystem-safe
+   on all target OSes. If a node_id ever contains `/` it MUST be percent-encoded
+   (`%2F`); none do today.
+5. **R4 typed-miss = 404 on disk.** An absent `graph.json` for a referenced
+   `(id, v)` ⇒ sidecar returns `404 {"code":"BLUEPRINT_VERSION_NOT_FOUND", …}`
+   (§C.3), never an empty 200. Fail-closed is a route→file miss returning the typed
+   body, not a silent skip.
+6. **Mirror scope.** Seed (#A1-mirror-seed) materialises ≥2 published scenes
+   (RC-A3); refresh (#A1-mirror-sync, Bastion-cleared) adds more within the
+   operator's permitted perimeter. The sync mechanism is out of scope of THIS
+   contract — it only changes WHICH artefacts populate the tree, never the tree
+   shape or the verbatim-bytes rule.
+
+### C.8 — Verdict
+
+**Aligned.** Contract C is derived from the live producer **and** consumer on
+`origin/main`, not from memory. The five hot-path routes (R1–R5; R6 deferred) and
+their shapes are unambiguous; the R4 typed-error envelope is reproduced fail-closed;
+the mirror tree is a mechanical route→file map serving verbatim bytes.
+
+- **#163 (gateway sidecar)** — UNBLOCKED. Serve R1–R5 by route→file (§C.7),
+  verbatim bytes, R4 typed misses fail-closed. R6 omitted (MVP component-free).
+  Bastion touch-point on loopback auth stance (écart C) before merge.
+- **#144 (ZabCanvas export) / #174 (Blue export)** — UNBLOCKED. Write the §C.7
+  tree: capture each published 200 body verbatim at its route→file path. Blue
+  export MUST emit **published, port-hydrated** version bodies (decision B) so R3
+  graphs carry node ports; node-definitions written as a non-hot-path safety net.
+- **Known blind spot (écart A / decision A):** R6 component path mismatch
+  (`/components` vs `/user-components`) is unfixed; aligning the antenna is a
+  ZabCanvas follow-up before any component-bearing scene is selectable in local.
+
+No breaking change to any live antenna contract: additive, a loopback transport
+behind the existing `httpFetcher` shapes. Eleven decides the merge per the merge
+gate.
