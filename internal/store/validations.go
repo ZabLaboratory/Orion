@@ -15,13 +15,20 @@ import (
 // a given harness_version. Keyed by (scene_id, scene_version,
 // harness_version); the FK to scene_pushed_versions with ON DELETE CASCADE
 // is the archive-purge coherence guarantee.
+//
+// The json tags are the embedded-local validation-mirror wire contract
+// (Conduit A1): the ZabCanvas export (#145) writes the seed in snake_case
+// and MirrorValidator (#247) reads it back into this struct, so the tags
+// must match the producer's casing or the unmarshal silently yields a
+// zero-value record and the gate refuses every scene. The DB path does not
+// use these tags (pgx scans columns), so adding them is inert for antenne.
 type SceneValidation struct {
-	SceneID        uuid.UUID
-	SceneVersion   string
-	HarnessVersion string
-	Status         string // "validated" | "failed"
-	Report         json.RawMessage
-	CreatedAt      time.Time
+	SceneID        uuid.UUID       `json:"scene_id"`
+	SceneVersion   string          `json:"scene_version"`
+	HarnessVersion string          `json:"harness_version"`
+	Status         string          `json:"status"` // "validated" | "failed"
+	Report         json.RawMessage `json:"report"`
+	CreatedAt      time.Time       `json:"created_at,omitempty"`
 }
 
 // ValidationValidated is the status that makes a version air-eligible.

@@ -635,6 +635,50 @@ Mirror root = `<sidecar-data-dir>` (Prism `userData`, loopback-only). Tree:
    contract — it only changes WHICH artefacts populate the tree, never the tree
    shape or the verbatim-bytes rule.
 
+### C.7bis — Validated-record seed (`canvas/validated/...`, Conduit A1, 2026-06-22)
+
+> The air-eligibility seed (#247 / #144-145) was added after C.7 was written;
+> this clause fixes its canonical form. It is the interface between the
+> ZabCanvas export (PRODUCER — `services/mirror_export_service.py`) and Orion's
+> `store.MirrorValidator` (CONSUMER — `internal/store/mirror_validation.go`).
+
+```
+<mirror-root>/canvas/validated/<scene_id>/<bare-canvas_version>.json
+```
+
+1. **Casing — snake_case.** The record is JSON `{scene_id, scene_version,
+   harness_version, status, report}` in **snake_case** (the producer's
+   convention). Orion's `store.SceneValidation` carries matching `json` tags so
+   the unmarshal resolves; a PascalCase file would silently decode to a
+   zero-value record (the original A1 bug) and the gate would refuse every
+   scene. **No PascalCase.**
+
+2. **Key — the `canvas_version`, NOT the compiled `scene_version`.** Both the
+   filename (`<bare-canvas_version>.json`) and the record's `scene_version`
+   field (prefixed `sha256:<canvas_version>`) are keyed by the **canvas_version**
+   — the layout content address the producer pushes (`PushEnvelope.canvas_version`)
+   and Orion fetches at `GET /canvas/api/v1/layouts/<canvas_version>`. The
+   producer is OUTSIDE Orion and **cannot compute Orion's compiled
+   scene_version** (that needs a live compile), so the canvas_version is the
+   only address both sides share at push time. `MirrorValidator` resolves the
+   canvas_version from the scene's latest pushed definition
+   (`SceneDefinition.canvas_version`) and looks the seed up by it; the
+   `sceneVersion` arg the gate seam passes (Orion's compiled scene_version) is
+   ignored in embedded-local.
+
+3. **`status` only.** The gate reads `status == "validated"`; `report` is `{}`
+   in the seed (no remote campaign report reproduced). `harness_version` must
+   equal Orion's `runtime.HarnessVersion` (default `"1"`).
+
+4. **Antenne parity (RC-A1) is preserved.** The antenne path is UNCHANGED: the
+   PG `scene_validations` row is minted and read keyed by the compiled
+   `scene_version` (`storeAirValidator` → DB). Only the embedded-local SOURCE
+   diverges (mirror file keyed by canvas_version); the air-eligibility DECISION
+   is identical (a (scene, version) is eligible iff it carries a `validated`
+   record at the harness). **Semantics note (RC-A5):** the *version identity*
+   used to key the seed differs from antenne (canvas_version vs compiled
+   scene_version) — see RC-A5 precision.
+
 ### C.8 — Verdict
 
 **Aligned.** Contract C is derived from the live producer **and** consumer on
