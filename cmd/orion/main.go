@@ -118,11 +118,13 @@ func run() error {
 	// only in dual/lsdp mode, before cold-start so every loaded scene is
 	// paired with a kit scene. In bespoke mode the wire is nil: the kit
 	// is never constructed and the bespoke WS is the only wire (no-op
-	// deploy). Gateway-first holds by construction — the wire's only
-	// identity source is auth.FromHeaders (no JWT, no token).
+	// deploy). Gateway-first holds by construction — the wire derives
+	// identity from the SAME AuthSource as the HTTP gates and the bespoke
+	// WS (HeaderAuthSource on antenne, localOperatorAuth on embedded-local);
+	// no JWT, no token.
 	var lsdpHandler http.Handler
 	if cfg.LSDPMode == config.LSDPModeDual || cfg.LSDPMode == config.LSDPModeLSDP {
-		wire, err := lsdp.NewWire(logger)
+		wire, err := lsdp.NewWire(logger, authSource)
 		if err != nil {
 			return err
 		}

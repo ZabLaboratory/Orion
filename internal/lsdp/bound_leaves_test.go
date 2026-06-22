@@ -83,7 +83,7 @@ var m3WantDropped = []string{
 // that slipped through #132's shape filter and the scalar work leaves
 // `catA0`/`getScore0` — is dropped at the tap.
 func TestBoundLeaves_SnapshotEmitsOnlyBound(t *testing.T) {
-	wire, err := NewWire(quietLogger(t))
+	wire, err := NewWire(quietLogger(t), nil)
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
@@ -149,8 +149,8 @@ func TestBoundLeaves_RepeatItemDescendantsSurvive(t *testing.T) {
 	bundle := &compiler.RenderBundle{
 		SceneVersion: "sha256:rep",
 		Root: compiler.LayoutNode{
-			Kind: "repeat",
-			ID:   "rows",
+			Kind:     "repeat",
+			ID:       "rows",
 			Bindings: map[string]string{"items": "rows"},
 			Children: []compiler.LayoutNode{
 				{Kind: "text", Bindings: map[string]string{"value": "name"}},
@@ -185,7 +185,7 @@ func TestBoundLeaves_DisabledWhenNoBindings(t *testing.T) {
 
 	// Through the mirror: with no bundle, a scalar work leaf still passes
 	// (scalar filter only), exactly as before this change.
-	wire, err := NewWire(quietLogger(t))
+	wire, err := NewWire(quietLogger(t), nil)
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestBoundLeaves_DisabledWhenNoBindings(t *testing.T) {
 // path: a delta touching the bound board scalar alongside an unbound
 // empty-array literal emits only the board scalar.
 func TestBoundLeaves_DeltaEmitsOnlyBound(t *testing.T) {
-	wire, err := NewWire(quietLogger(t))
+	wire, err := NewWire(quietLogger(t), nil)
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
@@ -253,7 +253,7 @@ func TestBoundLeaves_RealDecoderRendersBoard(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wire, err := NewWire(quietLogger(t))
+	wire, err := NewWire(quietLogger(t), nil)
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}

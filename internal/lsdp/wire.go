@@ -18,9 +18,11 @@
 //
 // It is NOT an auth layer. Orion validates no JWT — the gateway-first
 // non-negotiable (_shared/architecture.md §"NO local auth on
-// microservices") holds **by construction**: the only identity source
-// here is auth.FromHeaders (gateway-injected headers, already validated
-// at the edge), and the kit's token Authenticator is never instantiated.
+// microservices") holds **by construction**: the identity comes from the
+// configured AuthSource (HeaderAuthSource on the antenne = gateway-injected
+// headers already validated at the edge; localOperatorAuth on
+// embedded-local = the loopback handshake), and the kit's token
+// Authenticator is never instantiated.
 package lsdp
 
 import (
@@ -52,22 +54,28 @@ type Wire struct {
 	scenes map[string]*lserver.Scene
 }
 
-// NewWire builds the kit server in header-trust mode. The kit Server is
-// constructed but its own Run() is never called — Orion mounts the
-// handler on its existing public mux (Handler()), so the kit shares
-// Orion's listener rather than binding a second port.
+// NewWire builds the kit server. The kit Server is constructed but its
+// own Run() is never called — Orion mounts the handler on its existing
+// public mux (Handler()), so the kit shares Orion's listener rather than
+// binding a second port.
 //
 // IdentityFromRequest is the ADR 007 §C.3a seam: serveLSDP calls it
-// instead of Auth.Authenticate(token). Auth is left nil — header-trust
-// deployments need no token validator, and the kit's New() accepts
-// IdentityFromRequest alone.
-func NewWire(logger *slog.Logger) (*Wire, error) {
+// instead of Auth.Authenticate(token). Auth is left nil — Orion validates
+// no JWT, and the kit's New() accepts IdentityFromRequest alone.
+//
+// src is the SAME identity seam the HTTP gates and the bespoke WS use
+// (ADR 016 §3.2-2): HeaderAuthSource on the antenne (ZabGate-injected
+// X-Authenticated-* headers), localOperatorAuth on embedded-local (the
+// loopback handshake header X-Orion-Local-Auth). nil ⇒ HeaderAuthSource,
+// keeping the antenne path byte-for-byte. Only WHO derives the Identity
+// changes; the role mapping below is identical either way.
+func NewWire(logger *slog.Logger, src auth.AuthSource) (*Wire, error) {
 	srv, err := lserver.New(lserver.Config{
 		// ListenAddr is required by New() even though we never call
 		// Run(); a sentinel keeps construction valid. The kit handler
 		// is mounted on Orion's mux via Handler(), not bound here.
 		ListenAddr:          "127.0.0.1:0",
-		IdentityFromRequest: IdentityFromRequest,
+		IdentityFromRequest: identityFromRequest(src),
 		Logger:              logger.With("component", "lsdp"),
 	})
 	if err != nil {
@@ -133,11 +141,18 @@ func (w *Wire) Drop(sceneID string) {
 	delete(w.scenes, sceneID)
 }
 
-// IdentityFromRequest is the header-trust seam Orion supplies to the
-// kit (ADR 007 §C.3a/§C.3.seam). It maps ZabGate's injected
-// X-Authenticated-* headers to the kit's server.Identity — the exact
-// same trust path the bespoke WS uses (ws/server.go:45). The Subscribe
-// frame's Token is never consulted; no JWT is validated here.
+// identityFromRequest builds the kit's identity seam (ADR 007
+// §C.3a/§C.3.seam) over a configurable AuthSource — the SAME seam the
+// HTTP gates and the bespoke WS use (ADR 016 §3.2-2). It maps the derived
+// Orion Identity onto the kit's server.Identity. The Subscribe frame's
+// Token is never consulted; no JWT is validated here.
+//
+// On the antenne the source is HeaderAuthSource (ZabGate-injected
+// X-Authenticated-* headers — the historical behaviour); on embedded-local
+// it is localOperatorAuth, so the loopback handshake header
+// X-Orion-Local-Auth is honoured on the .lsdp route too. A nil source
+// defaults to HeaderAuthSource, keeping every existing call site
+// byte-for-byte.
 //
 // Role mapping: Orion's RoleAdmin has no kit equivalent (the kit knows
 // viewer/operator/service/test). Admins write everywhere, which is the
@@ -145,15 +160,20 @@ func (w *Wire) Drop(sceneID string) {
 // unrecognised role yields an Anonymous identity, which the kit treats
 // as auth failure (closes with AUTH_DENIED) — same as the bespoke
 // wire's IsAuthenticated gate.
-func IdentityFromRequest(r *http.Request) (lserver.Identity, error) {
-	id := auth.FromHeaders(r.Header)
-	role, ok := mapRole(id.Role)
-	if !ok {
-		return lserver.Anonymous(), nil
+func identityFromRequest(src auth.AuthSource) func(*http.Request) (lserver.Identity, error) {
+	if src == nil {
+		src = auth.HeaderAuthSource{}
 	}
-	return lserver.Identity{
-		Subject: id.UserID,
-		Role:    role,
-		Paths:   id.Paths,
-	}, nil
+	return func(r *http.Request) (lserver.Identity, error) {
+		id := src.FromHeaders(r.Header)
+		role, ok := mapRole(id.Role)
+		if !ok {
+			return lserver.Anonymous(), nil
+		}
+		return lserver.Identity{
+			Subject: id.UserID,
+			Role:    role,
+			Paths:   id.Paths,
+		}, nil
+	}
 }

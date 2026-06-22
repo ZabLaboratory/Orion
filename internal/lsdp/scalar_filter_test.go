@@ -78,7 +78,7 @@ func assertOnlyScalars(t *testing.T, label string, got map[string]string) {
 // kit store (what a late joiner's keyframe carries) must hold only the
 // scalars.
 func TestLSDP_SnapshotEmitsOnlyScalars(t *testing.T) {
-	wire, err := NewWire(quietLogger(t))
+	wire, err := NewWire(quietLogger(t), nil)
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestLSDP_SnapshotEmitsOnlyScalars(t *testing.T) {
 // path: a delta that updates row_k (an array-of-object intermediate)
 // alongside the board scalar must emit only the scalar.
 func TestLSDP_DeltaEmitsOnlyScalars(t *testing.T) {
-	wire, err := NewWire(quietLogger(t))
+	wire, err := NewWire(quietLogger(t), nil)
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestLSDP_DeltaEmitsOnlyScalars(t *testing.T) {
 // intermediates must not reach Emit (which rejects empty maps) and must
 // not error — it is silently dropped.
 func TestLSDP_AllNonScalarDeltaIsDropped(t *testing.T) {
-	wire, err := NewWire(quietLogger(t))
+	wire, err := NewWire(quietLogger(t), nil)
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestLSDP_RealDecoderAcceptsFilteredSnapshot(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	wire, err := NewWire(quietLogger(t))
+	wire, err := NewWire(quietLogger(t), nil)
 	if err != nil {
 		t.Fatalf("NewWire: %v", err)
 	}
