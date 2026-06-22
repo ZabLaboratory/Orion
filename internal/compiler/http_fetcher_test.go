@@ -403,3 +403,102 @@ func TestBlueprintNode_DecodesDefinitionWireField(t *testing.T) {
 		t.Fatalf("validateBlueprint emitted %d diagnostic(s) for a valid pure node, want 0: %+v", len(diags), diags)
 	}
 }
+
+// TestFetchCanvasLayout_BackfillsDefaultsFromBundle proves the literal
+// back-fill: the `/layouts` adapter serves a layout WITHOUT a `defaults` map,
+// so FetchCanvasLayout reads the constants from the wrapped LSML-bundle store
+// (`/lsml-bundles/{v}` → `.bundle.defaults`) and attaches them to the layout.
+// Without this, every static text/image binds to a `__lit.*` leaf nothing
+// seeds and the scene paints empty.
+func TestFetchCanvasLayout_BackfillsDefaultsFromBundle(t *testing.T) {
+	var hits []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits = append(hits, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/layouts/v1":
+			// The adapter drops defaults — only version + root.
+			_, _ = w.Write([]byte(`{"version":"v1","root":{"kind":"stack"}}`))
+		case r.URL.Path == "/api/v1/lsml-bundles/v1":
+			// The store wraps the bundle; defaults live at .bundle.defaults.
+			_, _ = w.Write([]byte(`{"content_hash":"v1","bundle":{"defaults":{"__lit.text.text_7":"BROKEN BLADE","__lit.image.image_6":"assets/abc.png"}}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher(srv.URL, srv.URL, "tok")
+	layout, err := f.FetchCanvasLayout(context.Background(), "v1")
+	if err != nil {
+		t.Fatalf("FetchCanvasLayout: %v", err)
+	}
+	if len(layout.Defaults) != 2 {
+		t.Fatalf("Defaults = %d, want 2 (back-fill from .bundle.defaults failed)", len(layout.Defaults))
+	}
+	if got := string(layout.Defaults["__lit.text.text_7"]); got != `"BROKEN BLADE"` {
+		t.Fatalf("__lit.text.text_7 = %s, want \"BROKEN BLADE\"", got)
+	}
+	// It must have consulted the bundle store after the bare /layouts read.
+	if len(hits) != 2 || hits[0] != "/api/v1/layouts/v1" || hits[1] != "/api/v1/lsml-bundles/v1" {
+		t.Fatalf("request sequence = %v, want [layouts, lsml-bundles]", hits)
+	}
+}
+
+// TestFetchCanvasLayout_KeepsInlineDefaults proves the back-fill is skipped
+// when the layout already carries defaults inline (forward-compatible with a
+// fixed /layouts adapter): no second request, inline values preserved.
+func TestFetchCanvasLayout_KeepsInlineDefaults(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"version":"v1","root":{"kind":"stack"},"defaults":{"__lit.text.a":"hi"}}`))
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher(srv.URL, srv.URL, "tok")
+	layout, err := f.FetchCanvasLayout(context.Background(), "v1")
+	if err != nil {
+		t.Fatalf("FetchCanvasLayout: %v", err)
+	}
+	if len(layout.Defaults) != 1 || string(layout.Defaults["__lit.text.a"]) != `"hi"` {
+		t.Fatalf("inline defaults not preserved: %v", layout.Defaults)
+	}
+	if hits != 1 {
+		t.Fatalf("made %d requests, want 1 (no bundle back-fill when defaults inline)", hits)
+	}
+}
+
+// TestFetchBlueprint_CarriesVariables proves the blueprint variables back-fill:
+// FetchBlueprint must decode `graph.variables` so a top-level blueprint's
+// CONSTANT declarations (e.g. score-to-color's `palette`) reach
+// foldDeclaredVariables and seed `__vars..<name>`. Dropping them (only
+// nodes+edges decoded) left `core.variable.get@1` reading an unseeded leaf →
+// null → the rating-colour squares rendered transparent.
+func TestFetchBlueprint_CarriesVariables(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/blueprints/bp1":
+			_, _ = w.Write([]byte(`{"id":"bp1","current_version":5}`))
+		case r.URL.Path == "/api/v1/blueprints/bp1/versions/5":
+			_, _ = w.Write([]byte(`{"graph":{"nodes":[],"edges":[],"variables":[{"id":"v_palette","name":"palette","type":"core.primitive.json","value":["#B31A1A","#4D4DFF"]}]}}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher("http://canvas.invalid", srv.URL, "tok")
+	bp, err := f.FetchBlueprint(context.Background(), "bp1")
+	if err != nil {
+		t.Fatalf("FetchBlueprint: %v", err)
+	}
+	if len(bp.Variables) != 1 || bp.Variables[0].Name != "palette" {
+		t.Fatalf("Variables = %+v, want the palette declaration carried", bp.Variables)
+	}
+	if got := string(bp.Variables[0].Value); got != `["#B31A1A","#4D4DFF"]` {
+		t.Fatalf("palette value = %s, want the colour list", got)
+	}
+}

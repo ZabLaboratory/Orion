@@ -105,14 +105,17 @@ func run() error {
 	}
 	defer st.Close()
 
-	// Air-eligibility validator (ADR 016 Amendment 1 / #247). antenne reads
-	// the `validated` record from the store (PG row — unchanged). embedded-local
-	// imports it from the validation mirror seeded by Prism (#163), a filesystem
-	// read instead of a DB row; the gate logic is identical, only the source
-	// differs. Wired here so both the boot reseed (ExecForBoot) and the request
-	// gate (PublicDeps.AirValidator) consult the same source.
+	// Air-eligibility validator (ADR 016 Amendment 1 / #247). Both antenne and
+	// the full-prod embedded-local model read the `validated` record from the
+	// STORE: on antenne it's the PG row; in embedded-local the local push→
+	// validate→activate chain writes the record to the SQLite store, so the
+	// gate reads the very validation the local engine just computed — local==
+	// antenna by construction, no mirror. A seeded validated-record mirror
+	// stays supported as an OPTIONAL offline fallback (set ORION_VALIDATION_
+	// MIRROR_ROOT to opt in). Wired here so both the boot reseed (ExecForBoot)
+	// and the request gate (PublicDeps.AirValidator) consult the same source.
 	var airValidator api.AirValidator
-	if cfg.Profile.IsEmbeddedLocal() {
+	if cfg.Profile.IsEmbeddedLocal() && cfg.ValidationMirrorRoot != "" {
 		airValidator = store.MirrorValidator{Root: cfg.ValidationMirrorRoot, Store: st}
 		logger.Info("air validator selected", "profile", string(cfg.Profile), "source", "mirror", "root", cfg.ValidationMirrorRoot)
 	} else {
@@ -410,7 +413,12 @@ func selectFetcher(cfg config.Config, tokenFunc func() string) (compiler.Fetcher
 		}
 		return compiler.NewBundledFetcher(bundle), fetcherSourceBundle, nil
 	}
-	return compiler.NewHTTPFetcherWithTokenFunc(cfg.CanvasBaseURL, cfg.BlueBaseURL, tokenFunc), fetcherSourceHTTP, nil
+	hf := compiler.NewHTTPFetcherWithTokenFunc(cfg.CanvasBaseURL, cfg.BlueBaseURL, tokenFunc)
+	// PREVIEW-ONLY: in embedded-local, synthesise allowedHosts from a scene's
+	// own image hosts so the SSRF authoring gate doesn't reject previewing a
+	// scene authored against external (e.g. Figma) asset URLs. NEVER on antenne.
+	hf.InjectAllowedHosts = cfg.Profile.IsEmbeddedLocal()
+	return hf, fetcherSourceHTTP, nil
 }
 
 // R9 boot reseed (ADR 006 §3.4 path 3, criterion #7): a validated exec

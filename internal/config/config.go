@@ -337,34 +337,32 @@ func Load() (Config, error) {
 	}
 
 	// Required-field punch list is profile-keyed (ADR 016 §3.2/§3.3, refined by
-	// Amendment 1 / #246). antenne needs its Postgres DSN + Canvas/Blue HTTP
-	// bases. embedded-local needs the local SQLite file + the three loopback
-	// base-URLs (Canvas/Blue/ZabGate, pointed at the gateway sidecar #163): the
-	// httpFetcher is now the NOMINAL embedded-local fetch path, so the bases are
-	// required there too. The frozen scene bundle is RETAINED but OPTIONAL — set
-	// it for an offline fallback, leave it unset for the nominal HTTP path. The
-	// pg DSN stays unused in embedded-local (SQLite store). ZabAuth stays
-	// required in both (validator/service-token plumbing is shared).
+	// Amendment 1 / #246 and the full-prod pivot). antenne needs its Postgres
+	// DSN + Canvas/Blue HTTP bases. embedded-local needs the local SQLite file +
+	// the three base-URLs (Canvas/Blue/ZabGate) — pointed at PROD ZabGate under
+	// the full-prod model (the httpFetcher reads prod artefacts directly; no
+	// local mirror). The frozen scene bundle and the validation mirror root are
+	// both OPTIONAL offline fallbacks. The pg DSN stays unused in embedded-local
+	// (SQLite store). ZabAuth stays required in both (validator/service-token
+	// plumbing is shared).
 	if cfg.Profile.IsEmbeddedLocal() {
 		if cfg.SQLitePath == "" {
 			problems = append(problems, "ORION_SQLITE_PATH is required in the embedded-local profile")
 		}
 		// ORION_SCENE_BUNDLE_PATH is OPTIONAL here (offline fallback) — see #246.
 		if cfg.CanvasBaseURL == "" {
-			problems = append(problems, "ORION_CANVAS_BASE_URL is required in the embedded-local profile (loopback gateway sidecar)")
+			problems = append(problems, "ORION_CANVAS_BASE_URL is required in the embedded-local profile")
 		}
 		if cfg.BlueBaseURL == "" {
-			problems = append(problems, "ORION_BLUE_BASE_URL is required in the embedded-local profile (loopback gateway sidecar)")
+			problems = append(problems, "ORION_BLUE_BASE_URL is required in the embedded-local profile")
 		}
 		if cfg.ZabGateURL == "" {
-			problems = append(problems, "ORION_ZABGATE_URL is required in the embedded-local profile (loopback gateway sidecar)")
+			problems = append(problems, "ORION_ZABGATE_URL is required in the embedded-local profile")
 		}
-		// Validation mirror root (ADR 016 Amendment 1 / #247): the gate imports
-		// the `validated` record from this mirror in embedded-local, so it must
-		// be set or no scene could ever air.
-		if cfg.ValidationMirrorRoot == "" {
-			problems = append(problems, "ORION_VALIDATION_MIRROR_ROOT is required in the embedded-local profile")
-		}
+		// ORION_VALIDATION_MIRROR_ROOT is OPTIONAL (full-prod model): the local
+		// push→validate→activate chain writes the `validated` record to the
+		// store, which the air gate reads. Set it only to opt into a seeded
+		// validated-record mirror as an offline fallback (see cmd/orion).
 	} else {
 		if cfg.DatabaseURL == "" {
 			problems = append(problems, "ORION_DATABASE_URL is required")

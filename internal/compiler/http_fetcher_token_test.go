@@ -19,7 +19,10 @@ func TestHTTPFetcher_ReadsTokenLivePerRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = append(seen, r.Header.Get("Authorization"))
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"version":"v1"}`))
+		// Carry a non-empty ``defaults`` so FetchCanvasLayout takes the
+		// nominal single-request path (no lsml-bundle back-fill) — this test
+		// asserts the live-token-per-request behaviour, one request per fetch.
+		_, _ = w.Write([]byte(`{"version":"v1","defaults":{"__lit.text.x":"v"}}`))
 	}))
 	defer srv.Close()
 
