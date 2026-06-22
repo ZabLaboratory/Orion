@@ -504,7 +504,24 @@ tranches :
 - **RC-A4** — Un refresh miroir importe une scène publiée non présente au seed et la rend
   sélectionnable, sans exposer de scène hors périmètre opérateur (clearance Bastion).
 - **RC-A5** — `postActiveScene` local applique la même gate `isAirEligible` que l'antenne
-  (une scène non-validée est refusée `SCENE_NOT_VALIDATED`).
+  (une scène non-validée est refusée `SCENE_NOT_VALIDATED`). **Implémenté (#247, PR #252) :**
+  seam `AirValidator` (`internal/api/validator.go`, 1 méthode `IsVersionValidated`),
+  profile-keyed — antenne = adaptateur store (lecture PG inchangée, parité prouvée par
+  `TestAirValidator_NilFallsBackToStore`) ; embedded-local = `store.MirrorValidator` qui lit
+  le **verdict importé** depuis le miroir, fail-closed iso-DB (absent→(false,nil),
+  corrompu→(false,err)). Env figé : **`ORION_VALIDATION_MIRROR_ROOT`** (répertoire racine
+  contenant `canvas/validated/<scene_id>/<bare-64hex>.json`), requis en embedded-local
+  (boot fail clair si absent), inutilisé en antenne. Lecture **filesystem**, pas de route
+  `httpFetcher` (décision Eleven). Forme du record = `store.SceneValidation` (scene_version
+  préfixée `sha256:` dans le record, bare-64hex dans le nom de fichier ; le validateur
+  strippe le préfixe pour le chemin et vérifie l'identité interne).
+  > **Sémantique (tranchée par Eleven, actée ici) :** en embedded-local le gate **importe le
+  > verdict** — il lit le miroir et **ignore les records `/validate` locaux** (store SQLite).
+  > L'endpoint `/validate` reste câblé (il écrit en store + recharge le dataflow) mais
+  > **n'arme plus l'exec** sans seed miroir : seul le verdict importé rend une scène
+  > éligible à l'antenne locale. Prouvé : e2e seedé (LCK/LEC aire) + e2e **non-seedé bloque
+  > l'activation** (409 `SCENE_NOT_VALIDATED` même après un `/validate` local). Cohérent avec
+  > A1.3 §3 (la validation est un artefact publié importé, pas re-jugé en local).
 - **RC-A6** — Dans le cockpit, sélectionner une scène B alors que A est active déclenche
   `push`(B)+`active-scene`(B) sur l'Orion loopback et bascule l'aperçu (parité ADR 008
   active-only : seule B exécute).
