@@ -270,6 +270,11 @@ func run() error {
 		Test:    testMgr,
 		Logger:  logger,
 		Metrics: metrics,
+		// Same identity seam as the HTTP gates (ADR 016 §3.2-2): on antenne
+		// this is HeaderAuthSource (byte-for-byte header-trust); on
+		// embedded-local it is localOperatorAuth, so the loopback handshake
+		// header X-Orion-Local-Auth is honoured on /show/stream too.
+		AuthSource: authSource,
 	}
 
 	// Public mux: HTTP + WS surface routed through ZabGate.

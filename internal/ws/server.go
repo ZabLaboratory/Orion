@@ -38,11 +38,33 @@ type Server struct {
 	Test    *runtime.TestSessionManager
 	Logger  *slog.Logger
 	Metrics *obs.Metrics
+
+	// AuthSource is the seam through which the show WS endpoints derive
+	// the caller Identity — the SAME seam the HTTP gates use (ADR 016
+	// §3.2-2). Nil ⇒ HeaderAuthSource: byte-for-byte today's antenne
+	// behaviour (read the X-Authenticated-* headers ZabGate injected after
+	// validating the JWT / show-token). embedded-local supplies
+	// localOperatorAuth so the loopback handshake header X-Orion-Local-Auth
+	// is honoured on the WS, not just on HTTP. Only WHO derives the
+	// Identity changes; the role checks below are identical either way.
+	AuthSource auth.AuthSource
+}
+
+// identityFrom derives the caller Identity through the configured
+// AuthSource, defaulting to HeaderAuthSource so a Server constructed
+// without an explicit source keeps the exact antenne header-trust
+// behaviour (unit tests, and any antenne wiring that leaves it nil).
+func (s *Server) identityFrom(h http.Header) auth.Identity {
+	src := s.AuthSource
+	if src == nil {
+		src = auth.HeaderAuthSource{}
+	}
+	return src.FromHeaders(h)
 }
 
 // ServeShowStream is the live show subscription handler.
 func (s *Server) ServeShowStream(w http.ResponseWriter, r *http.Request) {
-	id := auth.FromHeaders(r.Header)
+	id := s.identityFrom(r.Header)
 	if !id.IsAuthenticated() {
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
@@ -74,7 +96,7 @@ func (s *Server) ServeShowStream(w http.ResponseWriter, r *http.Request) {
 
 // ServeTestSession is the per-scene test mode handler.
 func (s *Server) ServeTestSession(w http.ResponseWriter, r *http.Request) {
-	id := auth.FromHeaders(r.Header)
+	id := s.identityFrom(r.Header)
 	if !id.IsAuthenticated() {
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
