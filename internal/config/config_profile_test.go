@@ -82,42 +82,48 @@ func TestLoad_ProfileEmbeddedLocalRespectsExplicitListen(t *testing.T) {
 
 // TestLoad_EmbeddedLocalRequiresStoreAndBases — the embedded-local profile
 // requires the SQLite store + the three loopback base-URLs (Canvas/Blue/
-// ZabGate, gateway sidecar #163). It does NOT require the pg DSN (SQLite
-// store) nor the scene bundle path (optional offline fallback since #246).
+// ZabGate, gateway sidecar #163) + the validation mirror root (#247). It does
+// NOT require the pg DSN (SQLite store) nor the scene bundle path (optional
+// offline fallback since #246).
 func TestLoad_EmbeddedLocalRequiresStoreAndBases(t *testing.T) {
 	t.Setenv("ORION_ZABAUTH_VALIDATE_URL", "http://zabauth/validate")
 	t.Setenv("ORION_PROFILE", "embedded-local")
 	// Handshake secret required since #223 (so the failure under test is the
 	// missing store/bases, not the missing secret).
 	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "prism-handshake")
-	// No SQLITE_PATH / base-URLs, no DB DSN.
+	// No SQLITE_PATH / base-URLs / mirror root, no DB DSN.
 	if _, err := Load(); err == nil {
-		t.Fatal("expected error for embedded-local without store/bases")
+		t.Fatal("expected error for embedded-local without store/bases/mirror")
 	}
-	// With the SQLite store + the three loopback bases set, the missing pg DSN
-	// is NOT an error, and the scene bundle path is NOT required (#246).
+	// With the SQLite store + the three loopback bases + the mirror root set,
+	// the missing pg DSN is NOT an error, and the scene bundle path is NOT
+	// required (#246).
 	t.Setenv("ORION_SQLITE_PATH", "/tmp/o.db")
 	t.Setenv("ORION_CANVAS_BASE_URL", "http://127.0.0.1:4000/canvas")
 	t.Setenv("ORION_BLUE_BASE_URL", "http://127.0.0.1:4000/blue")
 	t.Setenv("ORION_ZABGATE_URL", "http://127.0.0.1:4000")
+	t.Setenv("ORION_VALIDATION_MIRROR_ROOT", "/tmp/o-mirror")
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("embedded-local with store+bases must load (pg unused, bundle optional): %v", err)
+		t.Fatalf("embedded-local with store+bases+mirror must load (pg unused, bundle optional): %v", err)
 	}
 	if cfg.SQLitePath != "/tmp/o.db" {
 		t.Fatalf("SQLite path not parsed: %+v", cfg)
+	}
+	if cfg.ValidationMirrorRoot != "/tmp/o-mirror" {
+		t.Fatalf("mirror root not parsed: %q", cfg.ValidationMirrorRoot)
 	}
 	if cfg.SceneBundlePath != "" {
 		t.Fatalf("scene bundle path leaked when unset: %q", cfg.SceneBundlePath)
 	}
 }
 
-// TestLoad_EmbeddedLocalRequiresEachBase — each loopback base-URL is
-// independently required in embedded-local; a missing one is a clear boot
-// failure (RC-A1 §2/§4). The scene bundle path is optional, so its absence
-// must never mask a missing base.
-func TestLoad_EmbeddedLocalRequiresEachBase(t *testing.T) {
-	for _, missing := range []string{"ORION_CANVAS_BASE_URL", "ORION_BLUE_BASE_URL", "ORION_ZABGATE_URL"} {
+// TestLoad_EmbeddedLocalRequiresEachEdge — each loopback base-URL AND the
+// validation mirror root is independently required in embedded-local; a
+// missing one is a clear boot failure (RC-A1/RC-A5 §2/§4). The scene bundle
+// path is optional, so its absence must never mask a missing edge.
+func TestLoad_EmbeddedLocalRequiresEachEdge(t *testing.T) {
+	for _, missing := range []string{"ORION_CANVAS_BASE_URL", "ORION_BLUE_BASE_URL", "ORION_ZABGATE_URL", "ORION_VALIDATION_MIRROR_ROOT"} {
 		t.Run("missing_"+missing, func(t *testing.T) {
 			t.Setenv("ORION_ZABAUTH_VALIDATE_URL", "http://zabauth/validate")
 			t.Setenv("ORION_PROFILE", "embedded-local")
@@ -126,6 +132,7 @@ func TestLoad_EmbeddedLocalRequiresEachBase(t *testing.T) {
 			t.Setenv("ORION_CANVAS_BASE_URL", "http://127.0.0.1:4000/canvas")
 			t.Setenv("ORION_BLUE_BASE_URL", "http://127.0.0.1:4000/blue")
 			t.Setenv("ORION_ZABGATE_URL", "http://127.0.0.1:4000")
+			t.Setenv("ORION_VALIDATION_MIRROR_ROOT", "/tmp/o-mirror")
 			t.Setenv(missing, "")
 			if _, err := Load(); err == nil {
 				t.Fatalf("expected boot failure with %s unset in embedded-local", missing)

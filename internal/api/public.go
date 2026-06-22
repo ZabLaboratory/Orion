@@ -22,23 +22,32 @@ import (
 
 // PublicDeps groups every dependency the public router needs.
 type PublicDeps struct {
-	Logger        *slog.Logger
-	Metrics       *obs.Metrics
-	Config        config.Config
-	Show          *runtime.Show
-	Inbox         *adapters.Inbox
-	Test          *runtime.TestSessionManager
-	Store         store.Store
-	Fetcher       compiler.Fetcher
-	WSServer      *ws.Server
+	Logger   *slog.Logger
+	Metrics  *obs.Metrics
+	Config   config.Config
+	Show     *runtime.Show
+	Inbox    *adapters.Inbox
+	Test     *runtime.TestSessionManager
+	Store    store.Store
+	Fetcher  compiler.Fetcher
+	WSServer *ws.Server
+
+	// AirValidator is the air-eligibility read seam (ADR 016 Amendment 1,
+	// issue #247). Nil ⇒ the store (antenne: read the PG `validated` row —
+	// byte-for-byte the prior path). embedded-local supplies a
+	// store.MirrorValidator that reads the validated-record seed from the
+	// mirror filesystem instead. The gate logic is identical either way;
+	// only the source of the `validated` record changes. Resolved via
+	// deps.airValidator() at every gate call site.
+	AirValidator AirValidator
 
 	// Harness runs scene-validation campaigns (ADR 003 §3.2, issue #87).
 	// ValidationRunner serialises campaigns per (scene, version).
 	Harness          *runtime.Harness
 	ValidationRunner *validationRunner
-	StaticDir     http.FileSystem // /static/solar/...
-	QuasarBaseURL string          // e.g. http://zabgate:4000/quasar
-	ServiceTokens *auth.ServiceTokenManager
+	StaticDir        http.FileSystem // /static/solar/...
+	QuasarBaseURL    string          // e.g. http://zabgate:4000/quasar
+	ServiceTokens    *auth.ServiceTokenManager
 
 	// SchemaClient fetches a datasource's read-only catalog (`_schema`)
 	// for the DB-catalog surface (ADR Blue 008 §3.4). Nil ⇒ the catalog

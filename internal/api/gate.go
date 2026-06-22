@@ -10,7 +10,6 @@ import (
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
-	"github.com/ZabLaboratory/Orion/internal/store"
 )
 
 // The scene-validation enforcement gate (ADR 003 §3.2.2, issue #87). A
@@ -44,11 +43,16 @@ const lsmlGateRejectedCode = "LSML_GATE_REJECTED"
 
 // isAirEligible reports whether (sceneID, sceneVersion) carries a
 // `validated` record for the current harness_version. It FAILS CLOSED: a
-// DB error returns (false, err) so the caller refuses rather than airing
+// read error returns (false, err) so the caller refuses rather than airing
 // an unproven version. A missing record is (false, nil) — refuse, not
 // error (the author must run /validate).
+//
+// The validated record is read through deps.airValidator() (ADR 016
+// Amendment 1, #247): the store on antenne (PG row, unchanged), or the
+// mirror seed file in embedded-local. The eligibility logic — and this
+// fail-closed posture — is identical regardless of the source.
 func isAirEligible(ctx context.Context, deps PublicDeps, sceneID uuid.UUID, sceneVersion string) (bool, error) {
-	return deps.Store.IsVersionValidated(ctx, sceneID, sceneVersion, runtime.HarnessVersion)
+	return deps.airValidator().IsVersionValidated(ctx, sceneID, sceneVersion, runtime.HarnessVersion)
 }
 
 // execForAir is the SINGLE seam every production activation path uses to
@@ -96,15 +100,16 @@ func execForAir(ctx context.Context, deps PublicDeps, sceneID uuid.UUID, sceneVe
 }
 
 // ExecForBoot is the boot-path entry to the execForAir seam (ADR 006
-// §3.4 path 3, criterion #7). cmd/orion holds only a *store.Store at cold
-// start, not a PublicDeps, so this wrapper resolves the validated exec
-// set for one scene over the store directly, sharing the exact same gate
-// composition (fail-closed eligibility + fail-loud decode). On ANY error
-// it returns nil and logs: a single bad scene loads dataflow-only rather
-// than aborting cold start (the boot reseed degrades safe, never airing
-// an unproven or unresolved exec set).
-func ExecForBoot(ctx context.Context, st store.Store, sceneID uuid.UUID, sceneVersion string, graph *compiler.Graph, logger *slog.Logger) []*runtime.ExecProgram {
-	eligible, err := st.IsVersionValidated(ctx, sceneID, sceneVersion, runtime.HarnessVersion)
+// §3.4 path 3, criterion #7). cmd/orion holds no PublicDeps at cold start,
+// so this wrapper resolves the validated exec set for one scene over an
+// AirValidator directly, sharing the exact same gate composition
+// (fail-closed eligibility + fail-loud decode). The validator is the store
+// on antenne (unchanged) or the mirror in embedded-local (#247). On ANY
+// error it returns nil and logs: a single bad scene loads dataflow-only
+// rather than aborting cold start (the boot reseed degrades safe, never
+// airing an unproven or unresolved exec set).
+func ExecForBoot(ctx context.Context, av AirValidator, sceneID uuid.UUID, sceneVersion string, graph *compiler.Graph, logger *slog.Logger) []*runtime.ExecProgram {
+	eligible, err := av.IsVersionValidated(ctx, sceneID, sceneVersion, runtime.HarnessVersion)
 	if err != nil {
 		logger.Warn("boot reseed: eligibility check failed; loading dataflow-only",
 			"scene_id", sceneID.String(), "scene_version", sceneVersion, "err", err)

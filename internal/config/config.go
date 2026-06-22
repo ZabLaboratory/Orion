@@ -146,6 +146,14 @@ type Config struct {
 	SQLitePath      string
 	SceneBundlePath string
 
+	// ValidationMirrorRoot is the embedded-local validation mirror root
+	// (ORION_VALIDATION_MIRROR_ROOT, ADR 016 Amendment 1 / #247): the
+	// directory that contains `canvas/validated/<scene_id>/<bare-64hex>.json`
+	// seeds. In embedded-local the air-eligibility gate imports the
+	// `validated` record from this mirror instead of a DB row; required
+	// there, unused in antenne.
+	ValidationMirrorRoot string
+
 	// LocalAuthSecret is the Prism↔Orion handshake secret used by
 	// localOperatorAuth (ORION_LOCAL_OPERATOR_SECRET, ADR 016 §3.2-2). Prism
 	// generates it at sidecar spawn and passes it via env; Orion requires
@@ -166,23 +174,24 @@ func Load() (Config, error) {
 	var problems []string
 
 	cfg := Config{
-		ListenAddr:         getenv("ORION_LISTEN_ADDR", "0.0.0.0:4007"),
-		InternalAddr:       getenv("ORION_INTERNAL_ADDR", "0.0.0.0:4017"),
-		PublicBaseURL:      strings.TrimRight(getenv("ORION_PUBLIC_BASE_URL", ""), "/"),
-		DatabaseURL:        os.Getenv("ORION_DATABASE_URL"),
-		AssetRoot:          getenv("ORION_ASSET_ROOT", "/var/lib/orion/assets"),
-		SolarRoot:          getenv("ORION_SOLAR_ROOT", "/var/lib/orion/solar"),
-		ZabAuthValidateURL: strings.TrimRight(getenv("ORION_ZABAUTH_VALIDATE_URL", ""), "/"),
-		ServiceToken:       os.Getenv("ORION_SERVICE_TOKEN"),
-		OperatorToken:      os.Getenv("ORION_OPERATOR_TOKEN"),
-		ServicePaths:       splitCSV(getenv("ORION_SERVICE_PATHS", "quasar.credentials.read")),
-		QuasarBaseURL:      strings.TrimRight(getenv("ORION_QUASAR_BASE_URL", ""), "/"),
-		CanvasBaseURL:      strings.TrimRight(getenv("ORION_CANVAS_BASE_URL", ""), "/"),
-		BlueBaseURL:        strings.TrimRight(getenv("ORION_BLUE_BASE_URL", ""), "/"),
-		SQLitePath:         getenv("ORION_SQLITE_PATH", ""),
-		SceneBundlePath:    getenv("ORION_SCENE_BUNDLE_PATH", ""),
-		HTTPPollUserAgent:  getenv("ORION_HTTP_POLL_USER_AGENT", "orion-poller/1.0"),
-		LogLevel:           strings.ToLower(getenv("ORION_LOG_LEVEL", "info")),
+		ListenAddr:           getenv("ORION_LISTEN_ADDR", "0.0.0.0:4007"),
+		InternalAddr:         getenv("ORION_INTERNAL_ADDR", "0.0.0.0:4017"),
+		PublicBaseURL:        strings.TrimRight(getenv("ORION_PUBLIC_BASE_URL", ""), "/"),
+		DatabaseURL:          os.Getenv("ORION_DATABASE_URL"),
+		AssetRoot:            getenv("ORION_ASSET_ROOT", "/var/lib/orion/assets"),
+		SolarRoot:            getenv("ORION_SOLAR_ROOT", "/var/lib/orion/solar"),
+		ZabAuthValidateURL:   strings.TrimRight(getenv("ORION_ZABAUTH_VALIDATE_URL", ""), "/"),
+		ServiceToken:         os.Getenv("ORION_SERVICE_TOKEN"),
+		OperatorToken:        os.Getenv("ORION_OPERATOR_TOKEN"),
+		ServicePaths:         splitCSV(getenv("ORION_SERVICE_PATHS", "quasar.credentials.read")),
+		QuasarBaseURL:        strings.TrimRight(getenv("ORION_QUASAR_BASE_URL", ""), "/"),
+		CanvasBaseURL:        strings.TrimRight(getenv("ORION_CANVAS_BASE_URL", ""), "/"),
+		BlueBaseURL:          strings.TrimRight(getenv("ORION_BLUE_BASE_URL", ""), "/"),
+		SQLitePath:           getenv("ORION_SQLITE_PATH", ""),
+		SceneBundlePath:      getenv("ORION_SCENE_BUNDLE_PATH", ""),
+		ValidationMirrorRoot: getenv("ORION_VALIDATION_MIRROR_ROOT", ""),
+		HTTPPollUserAgent:    getenv("ORION_HTTP_POLL_USER_AGENT", "orion-poller/1.0"),
+		LogLevel:             strings.ToLower(getenv("ORION_LOG_LEVEL", "info")),
 	}
 
 	switch strings.ToLower(getenv("ORION_LOG_FORMAT", "json")) {
@@ -349,6 +358,12 @@ func Load() (Config, error) {
 		}
 		if cfg.ZabGateURL == "" {
 			problems = append(problems, "ORION_ZABGATE_URL is required in the embedded-local profile (loopback gateway sidecar)")
+		}
+		// Validation mirror root (ADR 016 Amendment 1 / #247): the gate imports
+		// the `validated` record from this mirror in embedded-local, so it must
+		// be set or no scene could ever air.
+		if cfg.ValidationMirrorRoot == "" {
+			problems = append(problems, "ORION_VALIDATION_MIRROR_ROOT is required in the embedded-local profile")
 		}
 	} else {
 		if cfg.DatabaseURL == "" {
