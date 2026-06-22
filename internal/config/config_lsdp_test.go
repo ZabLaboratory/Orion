@@ -66,8 +66,16 @@ func withRequiredEnv(t *testing.T) {
 	t.Setenv("ORION_ZABAUTH_VALIDATE_URL", "http://zabauth/validate")
 	t.Setenv("ORION_CANVAS_BASE_URL", "http://zabgate/canvas")
 	t.Setenv("ORION_BLUE_BASE_URL", "http://zabgate/blue")
-	// embedded-local-only required fields (#222/#224). Ignored in antenne;
-	// set here so a profile-keyed Load() in either profile passes validation.
+	// embedded-local-only required fields. Ignored in antenne; set here so a
+	// profile-keyed Load() in either profile passes validation.
+	//   - SQLite store (#222).
+	//   - ZabGate loopback base (#246): required in embedded-local since the
+	//     httpFetcher is now the nominal fetch path; also the `_query`
+	//     delegation base. Harmless in antenne.
+	// ORION_SCENE_BUNDLE_PATH is deliberately NOT seeded: since #246 it is
+	// OPTIONAL in embedded-local (offline fallback only), so the helper
+	// exercises the nominal HTTP fetch path; tests that need the bundle set
+	// it themselves.
 	t.Setenv("ORION_SQLITE_PATH", "/tmp/orion-test.db")
-	t.Setenv("ORION_SCENE_BUNDLE_PATH", "/tmp/orion-test-bundle.json")
+	t.Setenv("ORION_ZABGATE_URL", "http://zabgate")
 }
