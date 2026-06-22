@@ -322,3 +322,205 @@ data locale · **[C]** Conduit (contrat) · **[B]** clearance Bastion.
 
 > `proposed → accepted` : **Vigil**. La clearance **Bastion** (R2/RC-4) conditionne le
 > merge du volet auth local (#O-local-auth), pas l'acceptation de l'ADR.
+
+---
+
+## Amendment 1 — Scène arbitraire en conditions réelles : abandon du bundle figé (2026-06-22)
+
+- **Author:** Atlas
+- **Status:** accepted (Amendment) — `proposed → accepted` par Vigil le 2026-06-22
+- **Renverse:** §3.2(4) (`bundledFetcher` / bundle de scène figé) + la **cible MVP
+  « scène figée canvas-chat-sponso »** comme finalité. Le reste de l'ADR (sidecar Orion,
+  store SQLite, auth loopback, sidecar data, profil additif) **reste valable**.
+- **Conserve l'historique** : on n'efface pas §3.2(4) ni les RC-5/RC-6 d'origine — ils
+  documentent l'étape figée déjà livrée (#224 `bundledFetcher`, #232 `SCENE_BUNDLE_PATH`,
+  Prism #150/#151). Cet amendement **déplace la cible** au-delà.
+
+### A1.1 — Contexte : pourquoi le figé est un mur
+
+La cible d'origine (§1, §3.5, RC-6) était d'exécuter **une** scène (canvas-chat-sponso)
+bakée dans un `scene-bundle.json`, servie par `BundledFetcher` à partir d'un
+`ORION_SCENE_BUNDLE_PATH` **requis au boot** (`config.go` fait échouer le boot
+embedded-local sans lui). C'est livré et ça prouve le chemin chaud local == antenne
+**pour une scène**.
+
+**Décision porteur (2026-06-22, non négociable) :** la preview locale du cockpit Prism
+doit reproduire **totalement** l'antenne pour **n'importe quelle scène** que l'opérateur
+sélectionne, **dans les conditions réelles** — pas une scène pré-bakée. Tout contournement
+côté Prism (re-push pour armer l'exec d'une scène arbitraire par-dessus le bundle figé)
+est du rafistolage **rejeté**. Le `bundledFetcher` ne peut servir qu'**un** jeu d'artefacts
+gelé : il est structurellement incapable du scene-agnostic.
+
+**Constat d'archi (vérifié sur `origin/main`) :** le chemin scène-arbitraire de l'antenne
+**existe déjà et n'a rien de spécial** — c'est `POST /api/v1/scenes/{id}/push` (envelope →
+`compiler.Compile(ctx, id, envelope, deps.Fetcher)` → `Store` pushed version) puis
+`POST /api/v1/show/active-scene` (gate validation `isAirEligible` → `Show.SetActive`).
+Le seul composant qui « connaît » les scènes est le **`Fetcher`**, et l'antenne le câble
+sur **`httpFetcher`** (`NewHTTPFetcherWithTokenFunc(CanvasBaseURL, BlueBaseURL, …)`) qui
+GET `/<canvas>/api/v1/layouts/{v}`, `/<blue>/api/v1/blueprints/{id}/…`,
+`/_compute-manifest`. **Tous ces champs config (`CanvasBaseURL`, `BlueBaseURL`,
+`ZabGateURL`) existent déjà dans `config.go` en embedded-local** — ils sont juste
+court-circuités par la branche `IsEmbeddedLocal()` de `main.go` qui force le
+`bundledFetcher`.
+
+⇒ **Le scene-agnostic en local ne demande PAS un nouveau mécanisme.** Il demande que
+embedded-local **réutilise le `httpFetcher`** pointé sur une **gateway loopback locale**,
+exactement comme l'antenne pointe sur ZabGate. C'est la suite logique de l'invariant D2
+(`local == antenne`) que le bundle figé **violait partiellement** (chemin fetch dédoublé,
+non exercé à l'antenne).
+
+### A1.2 — Décision : `gatewayFetcher` loopback, abandon du bundle figé requis
+
+**GO.** En embedded-local, le `Fetcher` redevient le **`httpFetcher`** (le chemin antenne,
+inchangé), pointé sur une **gateway loopback bundlée dans Prism** qui sert les surfaces
+`/canvas/*` et `/blue/*` (et `/<svc>/api/v1/_query` déjà prévu §3.2(3)). Le profil
+embedded-local cesse d'exiger `ORION_SCENE_BUNDLE_PATH` ; le `bundledFetcher` est conservé
+comme **mode dégradé optionnel** (offline / smoke) mais n'est plus le chemin nominal ni
+requis.
+
+**Arbitrage clé — « gateway locale » ≠ « stack microservices Docker ».** C'est la tension
+réelle de cet amendement, tranchée franchement :
+
+- **Le porteur interdit Docker / la stack microservices côté client** (D1). Lever
+  ZabCanvas+Blue+ZabGate complets en local **rétablirait** cette stack — **rejeté**, comme
+  l'ADR le disait déjà en écartant « embarquer Blue/ZabCanvas complets ».
+- **Mais** servir les surfaces `/canvas` et `/blue` **ne requiert pas les services
+  d'authoring** : ce sont des surfaces de **lecture d'artefacts publiés** (layouts par
+  version, blueprints par version pinnée, compute-manifest, components). Le **sidecar data
+  loopback déjà décidé (§3.2(3))** est étendu pour servir ces routes depuis des **miroirs
+  locaux** (SQLite/fichiers) des artefacts publiés — **un seul sidecar Go bundlé**, zéro
+  Docker, zéro Python d'authoring.
+- **Modèle cible :** Prism bundle **un sidecar « gateway loopback »** (extension du sidecar
+  data) qui réunit, derrière une base loopback unique (`ORION_ZABGATE_URL` /
+  `ORION_CANVAS_BASE_URL` / `ORION_BLUE_BASE_URL` pointés sur lui) :
+  1. `GET /canvas/api/v1/layouts/{version}` + `/components/{id}/{v}` — miroir des layouts
+     publiés ZabCanvas ;
+  2. `GET /blue/api/v1/blueprints/{id}`, `/versions/{v}`, `/versions/{v}/graph`,
+     `/_compute-manifest` — miroir des blueprints/graphes publiés Blue ;
+  3. `POST /<svc>/api/v1/_query` — déjà §3.2(3), inchangé.
+  Orion en embedded-local utilise alors **strictement le chemin antenne** : `httpFetcher`
+  + `pushScene` + `postActiveScene` + boucle d'exec — **aucune branche moteur** propre au
+  local au-delà du choix d'impl de bord au boot.
+
+**Pourquoi c'est conforme D1 ET D2 :** D1 (zéro infra client) tenu car c'est **un binaire
+Go loopback** bundlé comme Pulsar, pas une stack ; D2 (`local == antenne`) **renforcé** —
+on supprime le seul chemin fetch dédoublé (le `bundledFetcher`) au profit du chemin
+antenne réel. L'invariant byte-for-byte passe du seul `_query` à **fetch + push + compile
++ exec** entiers.
+
+### A1.3 — Provenance des artefacts : miroirs vs services (arbitrage `_query` data live)
+
+Le moteur ne change pas ; reste à **alimenter** la gateway loopback. Trois questions, trois
+tranches :
+
+1. **Artefacts de scène (layouts/blueprints publiés)** — le sidecar gateway sert des
+   **miroirs locaux** des versions publiées. Seed = **export depuis ZabCanvas/Blue**
+   (snapshot des artefacts publiés) materialisé dans le store local du sidecar.
+   **Provenance du miroir = en ligne au moment où l'opérateur ouvre Prism connecté**, ou
+   pré-seedé au packaging. **Tranche :** pour la **parité conditions réelles**, le miroir
+   doit pouvoir être **rafraîchi à la demande** (sync des scènes publiées que l'opérateur
+   est autorisé à voir) — sinon « n'importe quelle scène » se limite aux scènes seedées.
+   Le **mécanisme de sync** (pull authentifié ZabCanvas/Blue → miroir local) est une issue
+   dédiée (#A1-mirror-sync), **distincte** de l'exécution. Hors-ligne total = mode dégradé
+   sur le dernier miroir.
+2. **Données live `_query` (ZabTruth/ZabRanking)** — **inchangé §3.2(3)** : sidecar
+   `_query` iso-contrat sur miroirs SQLite. **Tranche sur le « réel » :** en preview,
+   `_query` sur miroir local **est** la condition réelle acceptable (la doctrine porteur
+   `local == antenne` porte sur le **chemin d'exécution**, pas sur la fraîcheur seconde des
+   données match) ; un refresh live optionnel du miroir suit le même #A1-mirror-sync. La
+   fraîcheur temps-réel des données match n'est **pas** un invariant de cet ADR.
+3. **Auth opérateur** — **inchangé §3.2(2)** : `localOperatorAuth` loopback + handshake.
+   `pushScene`/`postActiveScene`/`operator/*` sont tous derrière `requireOperator`, qui
+   fonctionne à l'identique sous le shim local (clearance Bastion R2/RC-4 toujours requise).
+
+### A1.4 — Conséquences sur les changements & issues
+
+- **Orion** — (a) `main.go` : en embedded-local, câbler le **`httpFetcher`** sur les
+  base-URLs loopback au lieu du `bundledFetcher` ; (b) `config.go` : **`SCENE_BUNDLE_PATH`
+  cesse d'être requis** en embedded-local (rendu optionnel / mode dégradé) ; le boot exige
+  désormais `ORION_CANVAS_BASE_URL`+`ORION_BLUE_BASE_URL`+`ORION_ZABGATE_URL` loopback ;
+  (c) la **validation gate** `isAirEligible` (ADR 003) doit avoir un chemin local : soit le
+  miroir importe l'enregistrement `validated`, soit embedded-local **valide à la volée** via
+  le harness local au push (à trancher en issue, défaut = importer le `validated` du miroir
+  pour rester iso-antenne).
+- **Prism** — le sidecar data (#225) devient le **sidecar gateway loopback** (ajoute
+  `/canvas/*` + `/blue/*`) ; orion-engine pointe les 3 base-URLs sur lui et **cesse de
+  passer `ORION_SCENE_BUNDLE_PATH`** (ou le passe en fallback) ; le cockpit pousse
+  `push` + `active-scene` quand l'opérateur **sélectionne une scène** (aujourd'hui il
+  exécute la scène bakée) ; +UI de sélection de scène (liste des scènes du miroir).
+- **ZabCanvas / Blue** — fournir/figer un **export d'artefacts publiés** consommable par le
+  seed/sync du miroir (read-only des versions publiées). Pas de nouveau service.
+- **Conduit** — étendre le contrat embedded-local (`docs/contracts/embedded-local-contracts.md`)
+  aux surfaces `/canvas` + `/blue` loopback (iso-réponses ZabCanvas/Blue, comme `_query` est
+  déjà iso-ZabGate).
+- **Bastion** — surface inchangée sur l'auth (R2) ; **nouveau point** : le mécanisme de sync
+  miroir (#A1-mirror-sync) authentifie un pull d'artefacts — vérifier qu'il ne fuit pas de
+  scènes hors périmètre opérateur et reste loopback côté Orion.
+
+### A1.5 — Issues (amendement) — ordre de dépendance
+
+- **#A1-fetcher-loopback [O]** — en embedded-local, câbler `httpFetcher` sur base-URLs
+  loopback ; rendre `SCENE_BUNDLE_PATH` optionnel (fallback dégradé) ; exiger les 3
+  base-URLs loopback au boot. *Dep : profil #O-profile-flag (déjà livré).* **RC-A1**
+- **#A1-gateway-sidecar [P/D]** — étendre le sidecar data Prism aux routes `/canvas/*` +
+  `/blue/*` (miroirs d'artefacts publiés), iso-réponses ZabCanvas/Blue. *Dep :
+  #A1-canvas-blue-contract.* **RC-A2**
+- **#A1-canvas-blue-contract [C]** — Conduit fige les réponses `/canvas` + `/blue` loopback
+  == wire ZabCanvas/Blue (le `httpFetcher` ne doit voir aucune différence). *Sans dep ;
+  bloque #A1-gateway-sidecar.*
+- **#A1-mirror-seed [D/ZabCanvas/Blue]** — export des artefacts publiés (layouts +
+  blueprints + graphes + compute-manifest + enregistrements `validated`) vers le miroir
+  local ; seed au packaging. *Dep : #A1-canvas-blue-contract.* **RC-A3**
+- **#A1-mirror-sync [P/D/B]** — refresh à la demande du miroir (pull authentifié des scènes
+  publiées autorisées), pour le scene-agnostic réel au-delà du seed. *Dep : #A1-mirror-seed.*
+  **Clearance Bastion** (périmètre opérateur, no-leak). **RC-A4**
+- **#A1-validation-local [O]** — chemin de la gate `isAirEligible` en local (import du
+  `validated` du miroir, défaut iso-antenne ; ou validation locale au push — trancher).
+  *Dep : #A1-mirror-seed.* **RC-A5**
+- **#A1-prism-scene-select [P]** — UI de sélection de scène (liste du miroir) → cockpit
+  `push` + `active-scene` sur l'Orion loopback à la sélection. *Dep : #A1-fetcher-loopback,
+  #A1-gateway-sidecar, #A1-mirror-seed.* **RC-A6**
+- **#A1-e2e-any-scene [P]** — preuve : opérateur ouvre Prism, **sélectionne une scène
+  arbitraire**, l'aperçu fait tourner le vrai Solar sur l'Orion loopback, `push`+activate
+  compile la scène via le `httpFetcher` loopback, les blueprints exécutent (triggers
+  cockpit + `_query`), les deltas peignent en temps réel — **zéro infra externe, parité
+  antenne**. *Dep : tous les #A1.* **RC-A7 (critère de « fini » de l'amendement)**
+
+**Séquence :** #A1-canvas-blue-contract → (#A1-fetcher-loopback ∥ #A1-mirror-seed) →
+#A1-gateway-sidecar → (#A1-validation-local ∥ #A1-mirror-sync[B]) → #A1-prism-scene-select
+→ **#A1-e2e-any-scene (RC-A7)**.
+
+### A1.6 — Resolution criteria (amendement, testables)
+
+- **RC-A1** — En embedded-local, le `Fetcher` actif est le `httpFetcher` (pas le
+  `bundledFetcher`) ; le boot **réussit sans** `ORION_SCENE_BUNDLE_PATH` et **échoue** si
+  une des 3 base-URLs loopback manque. Le profil antenne reste byte-for-byte inchangé (RC-1
+  d'origine toujours vert).
+- **RC-A2** — Le sidecar gateway loopback répond aux GET `/canvas/api/v1/layouts/{v}`,
+  `/blue/api/v1/blueprints/{id}/versions/{v}/graph`, `/_compute-manifest` avec des corps
+  byte-identiques aux réponses ZabCanvas/Blue (golden vs capture, validé Conduit).
+- **RC-A3** — Le miroir seedé contient ≥ 2 scènes publiées distinctes ; chacune compile via
+  le chemin `pushScene` local sans erreur.
+- **RC-A4** — Un refresh miroir importe une scène publiée non présente au seed et la rend
+  sélectionnable, sans exposer de scène hors périmètre opérateur (clearance Bastion).
+- **RC-A5** — `postActiveScene` local applique la même gate `isAirEligible` que l'antenne
+  (une scène non-validée est refusée `SCENE_NOT_VALIDATED`).
+- **RC-A6** — Dans le cockpit, sélectionner une scène B alors que A est active déclenche
+  `push`(B)+`active-scene`(B) sur l'Orion loopback et bascule l'aperçu (parité ADR 008
+  active-only : seule B exécute).
+- **RC-A7 (fini)** — Prism ouvert, l'opérateur sélectionne **une scène arbitraire du
+  miroir** (≠ canvas-chat-sponso), l'aperçu = vrai Solar sur Orion loopback, les blueprints
+  s'exécutent en conditions réelles (triggers cockpit `on-call`/`await-value` + `_query`
+  data) et les deltas peignent en temps réel — **zéro infra externe**. Mesuré comme RC-6
+  d'origine, mais sur une scène **choisie**, pas bakée.
+
+### A1.7 — Invariants (rappel après amendement)
+
+- `local == antenne` **renforcé** : même `httpFetcher`, même `pushScene`/`postActiveScene`,
+  même boucle d'exec ; la divergence se réduit au **branchement de bord** (base-URLs
+  loopback + store SQLite + auth shim), aucun chemin moteur forké.
+- **Active-only (ADR 008)** préservé : une seule scène exécute en preview, comme à l'antenne.
+- **Sécurité de bord (D4)** : Orion loopback-only, `localOperatorAuth` + handshake ; le
+  sidecar gateway loopback-only ; le pull de sync (seul flux sortant) authentifié et borné
+  au périmètre opérateur (Bastion).
+- **Bundle figé** : conservé comme **fallback offline/smoke**, plus jamais le chemin nominal.
