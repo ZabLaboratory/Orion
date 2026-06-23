@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
@@ -29,16 +30,48 @@ func getShow(deps PublicDeps) http.HandlerFunc {
 // Body: {"scene_id": "...", "transition": {kind: "...", duration_ms: ...}}
 func postActiveScene(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
+		// Bastion #9 (tranché): operator-only on the seed seam — refuse the
+		// `service` role explicitly (no service calls active-scene-with-seed
+		// in prod) and every non-operator/admin role. operatorGate already
+		// barred all but operator/admin; this re-states the service refusal at
+		// the seam that writes prod state. Anti-spoof via authSource: the role
+		// can only come from ZabGate's injected header, never the client.
+		if snapshotRoleRefused(authSource.FromHeaders(r.Header).Role) {
+			http.Error(w, "operator role required", http.StatusForbidden)
+			return
+		}
+
+		// Bastion #8 (fail-closed size bound): cap the body before decode so
+		// a state_snapshot field can never exhaust memory. MaxBytesReader
+		// makes Decode error past the cap; surfaced as SNAPSHOT_TOO_LARGE.
+		r.Body = http.MaxBytesReader(w, r.Body, snapshotMaxBytes)
 		var body struct {
-			SceneID    string          `json:"scene_id"`
-			Transition json.RawMessage `json:"transition,omitempty"`
+			SceneID       string          `json:"scene_id"`
+			Transition    json.RawMessage `json:"transition,omitempty"`
+			StateSnapshot *stateSnapshot  `json:"state_snapshot,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			var mbe *http.MaxBytesError
+			if errors.As(err, &mbe) {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"code": "SNAPSHOT_TOO_LARGE"})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 			return
 		}
 		if _, ok := parseUUID(body.SceneID); !ok {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid scene_id"})
+			return
+		}
+
+		// Bastion VETO #3 (SCENE_IS_LIVE): a state_snapshot may seed ONLY a
+		// scene not yet on air — never the one the viewers are watching
+		// (ADR Prism 005 §A2.2.e). Checked here, before ANY effect, so the
+		// refusal mutates nothing (RC-A2.3: 0 mutation of the on-screen
+		// scene). Re-preparing a live scene = prepare it in preview then
+		// re-switch (a fresh activation), never an in-place re-seed.
+		if body.StateSnapshot != nil && body.SceneID == deps.Show.ActiveID() {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": sceneIsLiveCode})
 			return
 		}
 
@@ -85,6 +118,54 @@ func postActiveScene(deps PublicDeps) http.HandlerFunc {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
 				return
 			}
+		}
+
+		// Preview→air state hand-off (ADR Prism 005 §A2.2.d, issue #256).
+		// When a state_snapshot is present, seed the DESTINATION scene's
+		// state BEFORE SetActive (which fires SetOnAir+FireOnStart). The
+		// scene is now guaranteed in the roster (load block above).
+		//
+		// Bastion VETO #4 (atomicity): the FULL fail-closed validation
+		// (#1 keyspace, #2 reserved-namespace, #5 version, #6 well-formed,
+		// #8 path-count) runs INTEGRALLY before any Seed — on the first
+		// failure we refuse with 0 mutation and never reach SetActive. The
+		// snapshot is validated against the TARGET's air-eligible version
+		// (its declared keyspace), and Seed runs on a sanitised copy only.
+		if body.StateSnapshot != nil {
+			dest, derr := deps.Show.Get(body.SceneID)
+			if derr != nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+				return
+			}
+			clean, code, ok := validateSnapshotForSeed(
+				body.StateSnapshot,
+				*scene.LatestPushedVersion, // #5/R11: the air-eligible version
+				dest.DeclaredKeyspace(),    // #1: keyspace of the TARGET version
+			)
+			if !ok {
+				status := http.StatusConflict
+				if code == snapshotPathUnknownCode || code == snapshotMalformedCode {
+					status = http.StatusBadRequest
+				}
+				if code == snapshotTooLargeCode {
+					status = http.StatusRequestEntityTooLarge
+				}
+				// Bastion #10: never log the snapshot values — only the
+				// scene id, version and verdict.
+				deps.Logger.Warn("state snapshot seed refused",
+					"scene_id", body.SceneID,
+					"snapshot_version", body.StateSnapshot.Version,
+					"verdict", code)
+				writeJSON(w, status, map[string]string{"code": code})
+				return
+			}
+			// All gates passed: seed before activation (atomic to the screen
+			// — the old scene holds the antenna until SetActive swaps).
+			dest.SeedState(clean)
+			deps.Logger.Info("state snapshot seeded",
+				"scene_id", body.SceneID,
+				"snapshot_version", body.StateSnapshot.Version,
+				"paths", len(clean))
 		}
 
 		if err := deps.Show.SetActive(body.SceneID, body.Transition); err != nil {

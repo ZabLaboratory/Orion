@@ -98,6 +98,10 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/scenes/{id}/lsml-bundle", getLSMLBundle(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/operator-inputs", getOperatorInputs(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/graph", getGraph(deps))
+	// Preview→air state hand-off export seam (ADR Prism 005 Amendment 2
+	// §A2.2.d, issue #256). Operator-gated; servable ONLY on the preview
+	// sidecar (embedded-local) — a prod/antenne Orion 404s it (Bastion #11).
+	mux.HandleFunc("GET /api/v1/scenes/{id}/state-snapshot", getStateSnapshot(deps))
 	mux.HandleFunc("POST /api/v1/scenes/{id}/status", postSceneStatus(deps))
 	// Scene-validation gate (ADR 003 §3.2.2, issue #87).
 	mux.HandleFunc("POST /api/v1/scenes/{id}/validate", postValidate(deps))
