@@ -465,6 +465,50 @@ func (s *Scene) Graph() *compiler.Graph { return s.graph }
 // Bundle exposes the render bundle artefact (served by the API).
 func (s *Scene) Bundle() *compiler.RenderBundle { return s.bundle }
 
+// SnapshotState returns a deep copy of this scene's live state — the
+// preview→air hand-off export seam (ADR Prism 005 Amendment 2 §A2.2.d).
+// It delegates to State.Snapshot (lock-guarded deep-copy already used to
+// seed WS subscribers), so the returned map is the caller's to mutate
+// freely without touching live state. The version travels alongside so
+// the import side can enforce a strict match (R11): it is the compiled
+// graph's own scene_version, the version actually running on the sidecar.
+func (s *Scene) SnapshotState() (version string, seq uint64, state map[string]json.RawMessage) {
+	seq, state = s.state.Snapshot()
+	return s.graph.SceneVersion, seq, state
+}
+
+// SeedState replaces values at the given paths through State.Seed
+// (lock-guarded; safe to call concurrently with the running scene
+// goroutine, which takes the same lock for every state access). It is the
+// import side of the hand-off (ADR Prism 005 Amendment 2 §A2.2.d): the
+// caller MUST have validated `state` fail-closed BEFORE calling this — Seed
+// itself writes whatever it is handed. The Show calls it on the DESTINATION
+// scene strictly before SetOnAir/FireOnStart, so the antenna takes the
+// seeded state, never a virgin one.
+func (s *Scene) SeedState(state map[string]json.RawMessage) {
+	s.state.Seed(state)
+}
+
+// DeclaredKeyspace returns the set of author-declared leaf paths of this
+// scene's compiled graph — the union of every node's declared state path
+// and every seedable default. It is the fail-closed whitelist the import
+// seam checks each snapshot path against (ADR Prism 005 Amendment 2,
+// Bastion VETO #1): a path absent from this set is engine/platform-internal
+// or forged, never author state, and the whole snapshot is rejected. Built
+// from the graph, so it is exactly the keyspace of the TARGET version.
+func (s *Scene) DeclaredKeyspace() map[string]struct{} {
+	ks := make(map[string]struct{}, len(s.graph.Defaults)+len(s.graph.Nodes))
+	for p := range s.graph.Defaults {
+		ks[p] = struct{}{}
+	}
+	for _, n := range s.graph.Nodes {
+		if n.Path != "" {
+			ks[n.Path] = struct{}{}
+		}
+	}
+	return ks
+}
+
 // SetMirror attaches (or clears, with nil) the LSDP/1.1 output tap
 // (ADR 007 §C.3b). It must be called before Run starts, while no
 // subscriber is attached — the Show wires it at Load time. Passing a
