@@ -82,9 +82,11 @@ func TestValidateSnapshot_VETO2_ReservedNamespaceRejected(t *testing.T) {
 }
 
 func TestIsReservedPath_SegmentBoundary(t *testing.T) {
-	if isReservedPath("__eventsmaybe") {
-		// starts with __ so reserved anyway — but NOT via the __events prefix.
-		// (Both reach "reserved"; this just documents the __ catch-all.)
+	// `__eventsmaybe` is NOT caught by the __events prefix (segment-aware),
+	// but IS caught by the `__` engine catch-all — both routes lead to
+	// "reserved", which is the safe outcome.
+	if !isReservedPath("__eventsmaybe") {
+		t.Fatal("__ catch-all must reserve any double-underscore leaf")
 	}
 	if isReservedPath("score.blue") {
 		t.Fatal("author path falsely reserved")
