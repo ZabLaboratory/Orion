@@ -82,7 +82,20 @@ jobs:
           # Pinned Solar versions served at /static/solar/v{N.N.N}/*. Bump in a
           # PR to roll Pulsar CEF / browser hosts forward. Multiple values
           # allow canarying a new version alongside the previous.
-          SOLAR_VERSIONS: "v0.2.8 v0.2.9"
+          #
+          # DURABILITY DEBT (2026-06-24, Keeper): v0.2.10 and v0.2.11 have NO
+          # GitHub Release (Solar lost release.yml). They were hot-pushed to the
+          # box manually from a local dist/host (runbook solar-v0.2.11-capture-
+          # transparent-deploy.md). The install loop below skips any version
+          # already carrying an .installed marker, so listing them here is a
+          # no-op on the live box (no Release fetch attempted) — it documents
+          # intent and keeps them from being treated as removable. BUT a fresh
+          # box (disaster recovery) would FAIL on the curl for v0.2.10/v0.2.11
+          # since the Release asset does not exist. To make these reproducible,
+          # cut real Solar Releases for v0.2.10/v0.2.11 (restore release.yml),
+          # or re-hot-push from a vendored dist. Until then these two are NOT
+          # reproducible via this workflow.
+          SOLAR_VERSIONS: "v0.2.8 v0.2.9 v0.2.10 v0.2.11"
         run: |
           $SSH_CMD "APP_PATH='$APP_PATH' VERSIONS='$SOLAR_VERSIONS' bash -s" << 'INSTALL_SCRIPT'
           set -euo pipefail
