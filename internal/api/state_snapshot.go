@@ -77,6 +77,21 @@ func getStateSnapshot(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid scene_id"})
 			return
 		}
+		// Verrou (per-session LSDP): a ``?session=`` exports the ISOLATED
+		// preview test-session's clone, not the global show. Since the preview
+		// prep now lives in the session (the sidecar show no longer runs the
+		// preview scene), the hand-off export must read it from there — the
+		// show would return blank/stale Defaults. A lapsed session answers
+		// 410 (TEST_SESSION_EXPIRED), distinct from a real read.
+		if sessionID := r.URL.Query().Get("session"); sessionID != "" {
+			version, seq, state, err := deps.Test.SnapshotState(sessionID)
+			if err != nil {
+				writeJSON(w, http.StatusGone, map[string]string{"code": "TEST_SESSION_EXPIRED"})
+				return
+			}
+			writeJSON(w, http.StatusOK, stateSnapshot{Version: version, Seq: seq, State: state})
+			return
+		}
 		scene, err := deps.Show.Get(id)
 		if err != nil {
 			status, code := codeFromError(err)

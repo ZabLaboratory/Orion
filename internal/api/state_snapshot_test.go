@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -306,6 +307,92 @@ func TestExport_Seam_RequiresOperator(t *testing.T) {
 	w := snapReq(t, f.mux, "GET", "/api/v1/scenes/"+snapSceneID+"/state-snapshot", "viewer", nil)
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("viewer export: got %d, want 403", w.Code)
+	}
+}
+
+// --- seam (a) export, per-session (verrou — preview/antenne split) -------
+
+// TestExport_Seam_Session_ReadsIsolatedSession proves the hand-off export
+// reads the ISOLATED preview test-session (“?session=“), not the global
+// show: the session clone holds a value (42) the show's active scene never
+// saw (its default is 0). This is what makes the preview→air hand-off carry
+// the preview prep now that the preview lives in a session, not the show.
+func TestExport_Seam_Session_ReadsIsolatedSession(t *testing.T) {
+	m := obs.NewMetrics()
+	registry := runtime.NewComputeRegistry()
+	logger := testLogger()
+	show := runtime.NewShow(registry, logger)
+	t.Cleanup(show.Stop)
+
+	// Global show: score.blue default 0 (the value the antenne would see).
+	showGraph := &compiler.Graph{
+		SceneID: snapSceneID, SceneVersion: snapVersion,
+		Defaults: map[string]json.RawMessage{"score.blue": json.RawMessage(`0`)},
+	}
+	show.LoadExec(snapSceneID, showGraph, &compiler.RenderBundle{SceneVersion: snapVersion})
+
+	// Isolated preview session on the SAME scene id, with a passthrough so an
+	// input materialises on its clone — never on the show.
+	mgr := runtime.NewTestSessionManager(registry, logger, 5*time.Minute)
+	t.Cleanup(mgr.Close)
+	sessGraph := &compiler.Graph{
+		SceneID: snapSceneID, SceneVersion: snapVersion,
+		Nodes: []compiler.GraphNode{
+			{ID: "in.b", Kind: "input"},
+			{ID: "out.b", Kind: "output", Path: "score.blue", Compute: "core.passthrough", Upstream: []string{"in.b"}},
+		},
+		Defaults: map[string]json.RawMessage{"score.blue": json.RawMessage(`0`)},
+	}
+	sessionID, scene := mgr.Open(context.Background(), snapSceneID, sessGraph, &compiler.RenderBundle{SceneVersion: snapVersion})
+	if !scene.Input(runtime.InputMsg{Path: "score.blue", Value: json.RawMessage(`42`)}) {
+		t.Fatal("session inbox full")
+	}
+	// Let the clone's loop apply the input before exporting.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if v, _, _, _ := mgr.SnapshotState(sessionID); v != "" {
+			if _, _, st, _ := mgr.SnapshotState(sessionID); string(st["score.blue"]) == "42" {
+				break
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+
+	mux := http.NewServeMux()
+	RegisterPublic(mux, PublicDeps{
+		Logger: logger, Metrics: m, Show: show, Test: mgr,
+		Store:        &snapStore{scene: &store.Scene{ID: uuid.MustParse(snapSceneID), Name: "snap", Status: store.SceneActive}},
+		AirValidator: &fakeAirValidator{verdict: true},
+		Config:       config.Config{Profile: config.ProfileEmbeddedLocal},
+	})
+
+	// With ?session= → the session's 42.
+	w := snapReq(t, mux, "GET", "/api/v1/scenes/"+snapSceneID+"/state-snapshot?session="+sessionID, "operator", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("session export: got %d, want 200", w.Code)
+	}
+	var got stateSnapshot
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got.State["score.blue"]) != "42" {
+		t.Fatalf("session export score.blue = %q, want 42 (read the show, not the session?)", got.State["score.blue"])
+	}
+
+	// Without ?session= → the global show's 0 (unchanged path).
+	w2 := snapReq(t, mux, "GET", "/api/v1/scenes/"+snapSceneID+"/state-snapshot", "operator", nil)
+	var showGot stateSnapshot
+	if err := json.Unmarshal(w2.Body.Bytes(), &showGot); err != nil {
+		t.Fatal(err)
+	}
+	if string(showGot.State["score.blue"]) != "0" {
+		t.Fatalf("show export score.blue = %q, want 0", showGot.State["score.blue"])
+	}
+
+	// A lapsed/unknown session → 410.
+	w3 := snapReq(t, mux, "GET", "/api/v1/scenes/"+snapSceneID+"/state-snapshot?session=nope", "operator", nil)
+	if w3.Code != http.StatusGone {
+		t.Fatalf("unknown session export: got %d, want 410", w3.Code)
 	}
 }
 

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -166,6 +167,23 @@ func (m *TestSessionManager) ConnectWire(id string) (http.Handler, error) {
 	sess.wsActive = true
 	sess.closeAt = time.Time{}
 	return sess.wire.Handler(), nil
+}
+
+// SnapshotState exports the live state of a session's clone (the
+// preview/antenne split: the preview prep lives in the isolated session, not
+// the global show, so the hand-off export reads it here). Read-only: it does
+// NOT mark the session WS-active or touch the grace window. Returns
+// ErrTestSessionExpired for an unknown session — the export is a pure read,
+// never a revive.
+func (m *TestSessionManager) SnapshotState(id string) (version string, seq uint64, state map[string]json.RawMessage, err error) {
+	m.mu.Lock()
+	sess, ok := m.sessions[id]
+	m.mu.Unlock()
+	if !ok {
+		return "", 0, nil, ErrTestSessionExpired
+	}
+	version, seq, state = sess.scene.SnapshotState()
+	return version, seq, state, nil
 }
 
 // Connect marks a session WS-active and returns its scene. If the
