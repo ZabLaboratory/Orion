@@ -141,6 +141,7 @@ func run() error {
 	// WS (HeaderAuthSource on antenne, localOperatorAuth on embedded-local);
 	// no JWT, no token.
 	var lsdpHandler http.Handler
+	var sessionWires runtime.SessionWireFactory
 	if cfg.LSDPMode == config.LSDPModeDual || cfg.LSDPMode == config.LSDPModeLSDP {
 		wire, err := lsdp.NewWire(logger, authSource)
 		if err != nil {
@@ -148,10 +149,18 @@ func run() error {
 		}
 		show.SetMirrors(wire)
 		lsdpHandler = wire.Handler()
+		// Per-session preview LSDP wire (preview/antenne split): each test
+		// session gets its OWN isolated kit server so the preview Solar
+		// runtime follows only the session clone, never the antenne's
+		// active scene. Wired onto the TestSessionManager below.
+		sessionWires = lsdp.NewSessionWireFactory(logger, authSource)
 		logger.Info("lsdp wire enabled", "mode", string(cfg.LSDPMode))
 	}
 
 	testMgr := runtime.NewTestSessionManager(registry, logger, 5*time.Minute)
+	if sessionWires != nil {
+		testMgr.SetSessionWires(sessionWires)
+	}
 	defer testMgr.Close()
 
 	// Scene-validation harness (ADR 003 §3.2, issue #87). CPU-bound and

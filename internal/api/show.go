@@ -221,9 +221,41 @@ func postTestSession(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 		sessionID, _ := deps.Test.Open(r.Context(), body.SceneID, scene.Graph(), scene.Bundle(), progs...)
-		writeJSON(w, http.StatusCreated, map[string]string{
+		resp := map[string]string{
 			"session_id": sessionID,
 			"ws_url":     "/orion/api/v1/scenes/" + body.SceneID + "/test?session=" + sessionID,
-		})
+		}
+		// In dual/lsdp mode the session also exposes an isolated LSDP wire
+		// (the preview Solar runtime is LSDP-only). It follows ONLY this
+		// session's clone, never the antenne's active scene.
+		if deps.LSDPHandler != nil {
+			resp["lsdp_ws_url"] = "/orion/api/v1/scenes/" + body.SceneID + "/test.lsdp?session=" + sessionID
+		}
+		writeJSON(w, http.StatusCreated, resp)
+	})
+}
+
+// testSessionLSDP serves the per-session preview LSDP/1.1 wire. Operator/
+// admin only (parity with the bespoke ServeTestSession gate). It marks the
+// session WS-active, delegates the upgrade to the session's OWN kit server
+// (rewriting the path onto the kit's /lsdp.v1, mirroring lsdpRoute), and
+// arms the grace window when the socket closes. The kit re-derives identity
+// from the same trust headers via Config.IdentityFromRequest.
+func testSessionLSDP(deps PublicDeps) http.HandlerFunc {
+	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
+		sessionID := r.URL.Query().Get("session")
+		if sessionID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "session id required"})
+			return
+		}
+		handler, err := deps.Test.ConnectWire(sessionID)
+		if err != nil {
+			writeJSON(w, http.StatusGone, map[string]string{"code": "TEST_SESSION_EXPIRED"})
+			return
+		}
+		defer deps.Test.Disconnect(sessionID)
+		r2 := r.Clone(r.Context())
+		r2.URL.Path = "/lsdp.v1"
+		handler.ServeHTTP(w, r2)
 	})
 }

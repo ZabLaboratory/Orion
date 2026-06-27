@@ -161,6 +161,11 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// request path before delegating.
 	if deps.LSDPHandler != nil {
 		mux.Handle("/api/v1/show/stream.lsdp", lsdpRoute(deps.LSDPHandler))
+		// Per-session preview LSDP wire (preview/antenne split): Solar
+		// subscribes live-mode here and follows ONLY the named session's
+		// clone — never the global show's active scene. Registered only in
+		// dual/lsdp mode, beside the bespoke /test WS which stays valid.
+		mux.HandleFunc("/api/v1/scenes/{id}/test.lsdp", testSessionLSDP(deps))
 	}
 
 	// Static Solar bundle host (long-TTL immutable cache headers).
