@@ -141,6 +141,15 @@ type Config struct {
 	EgressBudgetPerStream int
 	EgressBudgetWindowS   int
 
+	// ViewerCredsRefreshS is the rotation interval for the stream-level Meet
+	// viewer-credentials arming on the LSDP wire (ADR Blue 009 §3.2, issue
+	// #261 — R1). Every ViewerCredsRefreshS seconds Orion re-fetches the
+	// receive-only viewer credentials of the armed rooms and re-emits them on
+	// `__cam.viewer`, so a short-lived/rotated token is replaced before it
+	// expires. ORION_VIEWER_CREDS_REFRESH_S (default 240). 0 disables the
+	// ticker (arming still re-runs on a slot-assignment change).
+	ViewerCredsRefreshS int
+
 	HTTPPollUserAgent string
 	LogLevel          string
 	LogFormat         LogFormat
@@ -339,6 +348,16 @@ func Load() (Config, error) {
 		problems = append(problems, "ORION_EGRESS_BUDGET_WINDOW_S must be > 0")
 	} else {
 		cfg.EgressBudgetWindowS = v
+	}
+
+	// Viewer-credentials rotation interval (ADR Blue 009 §3.2 / R1). 0
+	// disables the refresh ticker; a slot-assignment change still re-arms.
+	if v, err := getInt("ORION_VIEWER_CREDS_REFRESH_S", 240); err != nil {
+		problems = append(problems, err.Error())
+	} else if v < 0 {
+		problems = append(problems, "ORION_VIEWER_CREDS_REFRESH_S must be >= 0")
+	} else {
+		cfg.ViewerCredsRefreshS = v
 	}
 
 	// Scene-validation budgets (issue #87). 0 = use the ADR default
