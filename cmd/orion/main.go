@@ -142,6 +142,8 @@ func run() error {
 	// no JWT, no token.
 	var lsdpHandler http.Handler
 	var sessionWires runtime.SessionWireFactory
+	var previewLSDPHandler http.Handler
+	var previewSlot *runtime.PreviewSlot
 	if cfg.LSDPMode == config.LSDPModeDual || cfg.LSDPMode == config.LSDPModeLSDP {
 		wire, err := lsdp.NewWire(logger, authSource)
 		if err != nil {
@@ -154,6 +156,21 @@ func run() error {
 		// runtime follows only the session clone, never the antenne's
 		// active scene. Wired onto the TestSessionManager below.
 		sessionWires = lsdp.NewSessionWireFactory(logger, authSource)
+
+		// Persistent PREVIEW wire (preview/antenne split, the working model):
+		// a SECOND lsdp.Wire beside the antenne's. The cockpit preview Solar
+		// connects here ONCE (fixed /show/preview.lsdp); switching the previewed
+		// scene swaps this wire's active clone via PreviewSlot.Activate →
+		// previewWire.SetActive (scene_changed + snapshot over the existing
+		// socket, no reload). The antenne wire above is never touched, so a
+		// preview switch can never flip the live antenne.
+		previewWire, err := lsdp.NewWire(logger, authSource)
+		if err != nil {
+			return err
+		}
+		previewLSDPHandler = previewWire.Handler()
+		previewSlot = runtime.NewPreviewSlot(ctx, registry, previewWire, logger)
+		defer previewSlot.Close()
 		logger.Info("lsdp wire enabled", "mode", string(cfg.LSDPMode))
 	}
 
@@ -321,6 +338,8 @@ func run() error {
 		QuasarBaseURL: cfg.QuasarBaseURL,
 		ServiceTokens: serviceTokens,
 		LSDPHandler:   lsdpHandler,
+		Preview:       previewSlot,
+		PreviewLSDP:   previewLSDPHandler,
 		AuthSource:    authSource,
 		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway + live
 		// service token as the db.query client; proxies `_schema` only.
