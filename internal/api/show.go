@@ -310,7 +310,7 @@ func postPreviewActiveScene(deps PublicDeps) http.HandlerFunc {
 // non-fatal absence (the push proceeds from defaults), returned as an empty
 // snapshot rather than an error.
 func getPreviewSnapshot(deps PublicDeps) http.HandlerFunc {
-	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
+	return requireOperator(func(w http.ResponseWriter, _ *http.Request) {
 		if !deps.Config.Profile.IsEmbeddedLocal() {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND"})
 			return
