@@ -471,9 +471,46 @@ type blueManifestEntry struct {
 	Platform           map[string]any   `json:"platform"`
 }
 
+// EgressRoute is one curated service-egress target (ADR Blue 002 §3.2),
+// the shape Orion needs to reject an undeclared `core.service.call@1`
+// node at compile and to bake the resolved route into the compiled node
+// so the runtime builds the path + scopes the token WITHOUT trusting any
+// authored data. Mirrors Blue's EgressRouteEntry wire DTO.
+type EgressRoute struct {
+	Service      string   `json:"service"`
+	RouteID      string   `json:"route_id"`
+	Method       string   `json:"method"`
+	PathTemplate string   `json:"path_template"`
+	Params       []string `json:"params"`
+	TokenPaths   []string `json:"token_paths"`
+}
+
+// EgressRegistry is the curated egress table keyed by (service, route_id).
+// Built from Blue's compute-manifest — the SAME source of truth the
+// validator gates on, never an Orion-side duplicate (ADR 002 §3.2).
+type EgressRegistry map[string]EgressRoute
+
+// EgressRouteKey is the registry key for a (service, route_id) pair. The
+// NUL separator can't appear in either id, so the key is unambiguous.
+func EgressRouteKey(service, routeID string) string {
+	return service + "\x00" + routeID
+}
+
+// blueEgressRoute mirrors Blue's wire DTO EgressRouteDTO
+// (Blue/src/blue/routes/compute_manifest.py).
+type blueEgressRoute struct {
+	Service      string   `json:"service"`
+	RouteID      string   `json:"route_id"`
+	Method       string   `json:"method"`
+	PathTemplate string   `json:"path_template"`
+	Params       []string `json:"params"`
+	TokenPaths   []string `json:"token_paths"`
+}
+
 // blueManifestResponse is Blue's envelope: {"entries":[...],"count":N}
 // (Blue/src/blue/routes/compute_manifest.py:45-47).
 type blueManifestResponse struct {
-	Entries []blueManifestEntry `json:"entries"`
-	Count   int                 `json:"count"`
+	Entries      []blueManifestEntry `json:"entries"`
+	Count        int                 `json:"count"`
+	EgressRoutes []blueEgressRoute   `json:"egress_routes"`
 }

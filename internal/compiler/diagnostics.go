@@ -111,6 +111,16 @@ const (
 	// precise analogue of CYCLIC_COMPONENT for the blueprint-reference graph;
 	// the message cites the offending key chain.
 	ErrCyclicBlueprintReference DiagnosticCode = "CYCLIC_BLUEPRINT_REFERENCE"
+
+	// ErrEgressRouteNotDeclared (ADR Blue 002 §3.2): a `core.service.call@1`
+	// node names a (service, route_id) pair absent from Blue's curated
+	// egress registry. Structural compile reject (push-time, fail-closed —
+	// latest_pushed_version unchanged), never a runtime error port. The
+	// exact pendant of DATASOURCE_NOT_DECLARED / SOURCE_NOT_DECLARED: the
+	// node is always SERVED, it is the egress TARGET that is not curated.
+	// Closes the confused-deputy §3.6.A — an authored graph can never reach
+	// an un-curated internal route.
+	ErrEgressRouteNotDeclared DiagnosticCode = "EGRESS_ROUTE_NOT_DECLARED"
 )
 
 // Diagnostic is a single error or warning produced during compilation.

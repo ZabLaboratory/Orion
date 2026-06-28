@@ -230,10 +230,21 @@ func run() error {
 	for name, svc := range cfg.DataSources {
 		dataSources[name] = effects.DataSource{Name: name, Svc: svc}
 	}
+	// Curated service-egress (ADR Blue 002 §3.3): each route mints a token
+	// scoped to ITS token_paths — never Orion's fixed surface — so the
+	// minter is path-set aware. Fail-closed in static mode (no operator
+	// token ⇒ no egress). Surface flagged for Bastion (mint scope, §5 Q1/Q3).
+	egressTokens := &auth.EgressTokenSource{
+		MintURL:       authBase + "/service-tokens",
+		OperatorToken: cfg.OperatorToken,
+		ServiceName:   "orion",
+		Logger:        logger,
+	}
 	sceneEffects := &runtime.SceneEffects{
 		Runner:      effectRunner,
 		Egress:      effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP),
 		DB:          effects.NewDBQueryClientWithTokenFunc(cfg.ZabGateURL, serviceTokens.Token, nil),
+		ServiceCall: effects.NewServiceCallClient(cfg.ZabGateURL, egressTokens.Token, nil),
 		DataSources: dataSources,
 		Metrics:     metrics,
 	}

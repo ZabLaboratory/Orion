@@ -169,6 +169,7 @@ var served = map[string]ServedNode{
 	"core.http.request@1":         {Kind: KindExecOp, Op: "http.request", Test: "TestEffects_HTTPRequestResumesContinuation"},
 	"core.http-request@1":         {Kind: KindExecOp, Op: "http.request", Test: "TestEffects_HTTPRequestResumesContinuation"},
 	"core.db.query@1":             {Kind: KindExecOp, Op: "db.query", Test: "TestEffects_DBQueryTopologyA"},
+	"core.service.call@1":         {Kind: KindExecOp, Op: "service.call", Test: "TestServiceCall_BuildsPathAndCalls"},
 	"core.show.emit@1":            {Kind: KindExecOp, Op: "show.emit", Test: "TestShowEmit_RuleToActiveNoCascade"},
 	"core.operator.await-value@1": {Kind: KindExecOp, Op: "operator.await", Test: "TestOperator_AwaitSuspendsAndResumes"},
 

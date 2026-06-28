@@ -465,7 +465,7 @@ func (s *Scene) SetEmitEvent(fn func(topic string, payload json.RawMessage)) { s
 var ExecOps = []string{
 	OpBranch, OpSequence, OpGate, OpForLoop, OpForEach, OpWhile,
 	OpVariableSet, OpPrint, OpDelay,
-	OpAnimationPlay, OpHTTPRequest, OpDBQuery, OpShowEmit,
+	OpAnimationPlay, OpHTTPRequest, OpDBQuery, OpServiceCall, OpShowEmit,
 	OpOperatorAwait,
 }
 

@@ -82,6 +82,9 @@ func validationSyntheticResult(op string) (json.RawMessage, bool) {
 	case OpDBQuery:
 		// QueryResult — finishEffect binds <node>.rows/.count/.elapsed_ms.
 		return json.RawMessage(`{"rows":[],"count":0,"elapsed_ms":0}`), true
+	case OpServiceCall:
+		// ServiceCallResult — bindServiceCallResult binds status/ok/body.
+		return json.RawMessage(`{"status":200,"body":null}`), true
 	default:
 		return nil, false
 	}
@@ -177,6 +180,8 @@ func (s *Scene) validationFinish(t *execTask, node *ExecNode) execOpOutcome {
 				env[node.ID+".status"] = json.RawMessage(strconv.Itoa(out.Status))
 				env[node.ID+".response"] = out.Body
 			}
+		case OpServiceCall:
+			bindServiceCallResult(node.ID, env, value)
 		case OpDBQuery:
 			env[node.ID+".rows"] = json.RawMessage(`[]`)
 			env[node.ID+".count"] = json.RawMessage(`0`)
