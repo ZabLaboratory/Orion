@@ -125,6 +125,19 @@ func (p *PreviewSlot) CurrentSceneID() string {
 	return p.current.sceneID
 }
 
+// Current is the live preview clone scene, or nil when none is open. It is the
+// operator-surface target in preview mode: firing an on-call / resolving an
+// await against the preview clone drives the PREVIEW, never the antenne's
+// active scene (the preview/antenne split applied to the operator routes).
+func (p *PreviewSlot) Current() *Scene {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.current == nil {
+		return nil
+	}
+	return p.current.scene
+}
+
 // Close stops the live preview clone — called at process shutdown.
 func (p *PreviewSlot) Close() {
 	p.mu.Lock()

@@ -61,6 +61,25 @@ func resolveBlueprintKey(token string) string {
 	return token
 }
 
+// operatorTarget resolves which scene the operator surface acts on, mode-aware
+// (preview/antenne split): “?target=preview“ drives the PREVIEW slot's live
+// clone (the cockpit preview runs there, not the global show), every other
+// value drives the global show's active scene (the antenne). nil when the
+// requested target has no live scene — the caller answers the usual dormant
+// code (409/410/empty). This is the ONLY place the operator routes branch on
+// target: a preview gesture drives the preview clone, a live gesture the
+// antenne, never crossed (a preview switch / call no longer touches the live
+// antenne, ADR 008 active-only preserved per side).
+func operatorTarget(deps PublicDeps, r *http.Request) *runtime.Scene {
+	if r.URL.Query().Get("target") == "preview" {
+		if deps.Preview == nil {
+			return nil
+		}
+		return deps.Preview.Current()
+	}
+	return deps.Show.Active()
+}
+
 // operatorCallBody is the POST /operator/call body: the payload bound under
 // the on-call node's data-out pin. Absent/empty body = null payload.
 type operatorCallBody struct {
@@ -82,7 +101,7 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 		blueprintID := resolveBlueprintKey(r.PathValue("blueprint_id"))
 		entrypointID := r.PathValue("entrypoint_id")
 
-		active := deps.Show.Active()
+		active := operatorTarget(deps, r)
 		if active == nil || !active.HostsBlueprint(blueprintID) {
 			writeOperatorError(w, http.StatusConflict, "BLUEPRINT_NOT_ACTIVE",
 				"blueprint is not part of the active scene")
@@ -115,7 +134,7 @@ func getRuntimePending(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
 		blueprintID := resolveBlueprintKey(r.PathValue("blueprint_id"))
 		pending := []runtime.PendingAwait{}
-		if active := deps.Show.Active(); active != nil && active.HostsBlueprint(blueprintID) {
+		if active := operatorTarget(deps, r); active != nil && active.HostsBlueprint(blueprintID) {
 			pending = active.PendingAwaits(blueprintID)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"pending": pending})
@@ -143,7 +162,7 @@ func postOperatorResolve(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
-		active := deps.Show.Active()
+		active := operatorTarget(deps, r)
 		if active == nil || !active.HostsBlueprint(blueprintID) {
 			// Dormant / unknown blueprint: the await cannot exist — Gone.
 			writeOperatorError(w, http.StatusGone, "AWAIT_GONE",
