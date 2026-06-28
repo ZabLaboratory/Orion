@@ -87,8 +87,12 @@ func getCockpitContracts(deps PublicDeps) http.HandlerFunc {
 			Awaits:   []cockpitAwait{},
 		}
 
-		// Active scene → scope `scene` (vanishes on a flip).
-		if active := deps.Show.Active(); active != nil {
+		// Scene-scope contract → the operator surface the rail drives. Mode-aware
+		// (preview/antenne split): ``?target=preview`` derives it from the PREVIEW
+		// slot's live clone (so the rail in preview mode reflects the preview
+		// scene), else the global show's active scene (the antenne). Vanishes on a
+		// flip of whichever side it reads.
+		if active := operatorTarget(deps, r); active != nil {
 			appendScene(&out, active, scopeScene)
 		}
 		// Promoted stream-level rules → scope `stream` (permanent).

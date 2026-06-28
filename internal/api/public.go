@@ -61,6 +61,17 @@ type PublicDeps struct {
 	// rewrites the path to it before delegating.
 	LSDPHandler http.Handler
 
+	// Preview is the persistent cockpit-preview slot (preview/antenne split):
+	// it owns the single live preview clone behind the dedicated preview wire.
+	// Nil in bespoke mode ⇒ the preview routes degrade (404 / empty). Switching
+	// the previewed scene flips the PREVIEW wire only — never the antenne.
+	Preview *runtime.PreviewSlot
+
+	// PreviewLSDP is the lumencast-go handler for the persistent PREVIEW wire
+	// (/show/preview.lsdp) — the second wire beside LSDPHandler. Non-nil only
+	// in dual/lsdp mode; nil ⇒ the preview LSDP route is not registered.
+	PreviewLSDP http.Handler
+
 	// AuthSource is the seam through which requireOperator derives the
 	// request Identity (ADR 016 §3.2-2). Nil ⇒ HeaderAuthSource (the
 	// antenne default: read the X-Authenticated-* headers ZabGate
@@ -121,6 +132,13 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/show", getShow(deps))
 	mux.HandleFunc("POST /api/v1/show/active-scene", postActiveScene(deps))
 	mux.HandleFunc("POST /api/v1/show/test-sessions", postTestSession(deps))
+	// Preview/antenne split: the cockpit preview flips the PERSISTENT preview
+	// wire (a clone behind /show/preview.lsdp), never the antenne's active
+	// scene — so a preview switch no longer flips the live antenne. The
+	// hand-off export reads the live preview clone (the show no longer runs
+	// the preview scene). Operator-gated; degrade when Preview is nil.
+	mux.HandleFunc("POST /api/v1/show/preview-active-scene", postPreviewActiveScene(deps))
+	mux.HandleFunc("GET /api/v1/show/preview-snapshot", getPreviewSnapshot(deps))
 	// Stream-level Blue rules (ADR 009 §3.1, issue #154): operator-gated
 	// promotion/demotion of a roster scene into an always-on rule.
 	mux.HandleFunc("POST /api/v1/show/stream-rules", postStreamRule(deps))
@@ -161,6 +179,19 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// request path before delegating.
 	if deps.LSDPHandler != nil {
 		mux.Handle("/api/v1/show/stream.lsdp", lsdpRoute(deps.LSDPHandler))
+		// Per-session preview LSDP wire (preview/antenne split): Solar
+		// subscribes live-mode here and follows ONLY the named session's
+		// clone — never the global show's active scene. Registered only in
+		// dual/lsdp mode, beside the bespoke /test WS which stays valid.
+		mux.HandleFunc("/api/v1/scenes/{id}/test.lsdp", testSessionLSDP(deps))
+		// Persistent PREVIEW wire (preview/antenne split, working model): the
+		// cockpit preview Solar connects here ONCE and follows the preview
+		// slot's active clone. Switching the previewed scene swaps the clone
+		// (scene_changed, no reconnect). A second Server from the antenne wire
+		// above, so a preview switch can never reach /show/stream.lsdp.
+		if deps.PreviewLSDP != nil {
+			mux.Handle("/api/v1/show/preview.lsdp", lsdpRoute(deps.PreviewLSDP))
+		}
 	}
 
 	// Static Solar bundle host (long-TTL immutable cache headers).

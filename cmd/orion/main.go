@@ -141,6 +141,9 @@ func run() error {
 	// WS (HeaderAuthSource on antenne, localOperatorAuth on embedded-local);
 	// no JWT, no token.
 	var lsdpHandler http.Handler
+	var sessionWires runtime.SessionWireFactory
+	var previewLSDPHandler http.Handler
+	var previewSlot *runtime.PreviewSlot
 	if cfg.LSDPMode == config.LSDPModeDual || cfg.LSDPMode == config.LSDPModeLSDP {
 		wire, err := lsdp.NewWire(logger, authSource)
 		if err != nil {
@@ -148,10 +151,33 @@ func run() error {
 		}
 		show.SetMirrors(wire)
 		lsdpHandler = wire.Handler()
+		// Per-session preview LSDP wire (preview/antenne split): each test
+		// session gets its OWN isolated kit server so the preview Solar
+		// runtime follows only the session clone, never the antenne's
+		// active scene. Wired onto the TestSessionManager below.
+		sessionWires = lsdp.NewSessionWireFactory(logger, authSource)
+
+		// Persistent PREVIEW wire (preview/antenne split, the working model):
+		// a SECOND lsdp.Wire beside the antenne's. The cockpit preview Solar
+		// connects here ONCE (fixed /show/preview.lsdp); switching the previewed
+		// scene swaps this wire's active clone via PreviewSlot.Activate →
+		// previewWire.SetActive (scene_changed + snapshot over the existing
+		// socket, no reload). The antenne wire above is never touched, so a
+		// preview switch can never flip the live antenne.
+		previewWire, err := lsdp.NewWire(logger, authSource)
+		if err != nil {
+			return err
+		}
+		previewLSDPHandler = previewWire.Handler()
+		previewSlot = runtime.NewPreviewSlot(ctx, registry, previewWire, logger)
+		defer previewSlot.Close()
 		logger.Info("lsdp wire enabled", "mode", string(cfg.LSDPMode))
 	}
 
 	testMgr := runtime.NewTestSessionManager(registry, logger, 5*time.Minute)
+	if sessionWires != nil {
+		testMgr.SetSessionWires(sessionWires)
+	}
 	defer testMgr.Close()
 
 	// Scene-validation harness (ADR 003 §3.2, issue #87). CPU-bound and
@@ -212,6 +238,12 @@ func run() error {
 		Metrics:     metrics,
 	}
 	show.SetEffects(sceneEffects)
+	// The preview slot shares the SAME effects bundle (read-only): a preview
+	// clone must run db.query / http.request just like the antenne, else its
+	// on-call chain dies on the first world-effect op (unregistered exec op).
+	if previewSlot != nil {
+		previewSlot.SetEffects(sceneEffects)
+	}
 	logger.Info("async effects configured",
 		"workers", cfg.EffectWorkers,
 		"queue", cfg.EffectQueue,
@@ -312,6 +344,8 @@ func run() error {
 		QuasarBaseURL: cfg.QuasarBaseURL,
 		ServiceTokens: serviceTokens,
 		LSDPHandler:   lsdpHandler,
+		Preview:       previewSlot,
+		PreviewLSDP:   previewLSDPHandler,
 		AuthSource:    authSource,
 		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway + live
 		// service token as the db.query client; proxies `_schema` only.
