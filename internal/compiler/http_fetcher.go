@@ -281,6 +281,32 @@ func (f *HTTPFetcher) FetchComputeManifest(ctx context.Context) (ComputeManifest
 	return buildComputeManifest(resp), nil
 }
 
+// FetchEgressRoutes returns Blue's curated service-egress registry (ADR
+// Blue 002 §3.2), read off the SAME `_compute-manifest` envelope. It is a
+// separate call so the Fetcher interface stays unchanged (the compiler
+// type-asserts this optional method); a fetcher that doesn't implement it
+// yields a nil registry, which is fail-closed — every `core.service.call@1`
+// node then rejects with EGRESS_ROUTE_NOT_DECLARED.
+func (f *HTTPFetcher) FetchEgressRoutes(ctx context.Context) (EgressRegistry, error) {
+	var resp blueManifestResponse
+	url := f.BlueBase + "/api/v1/_compute-manifest"
+	if err := f.getJSON(ctx, url, &resp); err != nil {
+		return nil, fmt.Errorf("blue egress routes: %w", err)
+	}
+	return buildEgressRegistry(resp), nil
+}
+
+// buildEgressRegistry adapts Blue's wire egress DTOs into Orion's keyed
+// registry, keyed by (service, route_id) — the same pair an authored node
+// carries in config.
+func buildEgressRegistry(resp blueManifestResponse) EgressRegistry {
+	out := make(EgressRegistry, len(resp.EgressRoutes))
+	for _, r := range resp.EgressRoutes {
+		out[EgressRouteKey(r.Service, r.RouteID)] = EgressRoute(r)
+	}
+	return out
+}
+
 // buildComputeManifest adapts Blue's wire DTO into Orion's map. Keyed
 // by node_id so validateBlueprint's `manifest[n.Compute]` lookup hits
 // when the blueprint node's compute ref is `namespace.name@version`.

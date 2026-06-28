@@ -97,6 +97,19 @@ func Compile(
 		return nil, nil, "", &CompileError{Diagnostics: *d}
 	}
 
+	// Curated service-egress registry (ADR Blue 002 §3.2). Read off the
+	// SAME manifest handshake via the optional FetchEgressRoutes method;
+	// a fetcher that doesn't implement it leaves egress nil — fail-closed,
+	// so any `core.service.call@1` node rejects EGRESS_ROUTE_NOT_DECLARED.
+	var egress EgressRegistry
+	if erf, ok := fetcher.(egressRouteFetcher); ok {
+		egress, err = erf.FetchEgressRoutes(ctx)
+		if err != nil {
+			d.AddError(ErrFetchUpstream, "fetch egress routes: %v", err)
+			return nil, nil, "", &CompileError{Diagnostics: *d}
+		}
+	}
+
 	components := make(map[string]*UserComponent, len(envelope.Components))
 	for _, ref := range envelope.Components {
 		uc, err := fetcher.FetchComponent(ctx, ref)
@@ -176,6 +189,14 @@ func Compile(
 
 		graphNodes, bpDefaults, validateDiags := validateBlueprint(kb.graph, manifest, execSet)
 		d.Items = append(d.Items, validateDiags...)
+
+		// Resolve every `core.service.call@1` exec node against the curated
+		// egress registry (ADR 002 §3.2): an undeclared (service, route_id)
+		// is a structural compile reject (EGRESS_ROUTE_NOT_DECLARED), a
+		// declared one bakes its method/path_template/token_paths into the
+		// node Config so the runtime builds the path + scopes the token from
+		// CURATED data, never from the authored graph (closes §3.6.A).
+		d.Items = append(d.Items, resolveEgressRoutes(prog, egress)...)
 		if d.HasErrors() {
 			return nil, nil, "", &CompileError{Diagnostics: *d}
 		}

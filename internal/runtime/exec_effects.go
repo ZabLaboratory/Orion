@@ -81,6 +81,10 @@ type SceneEffects struct {
 	Egress *effects.EgressPolicy
 	// DB is the topology-A `_query` client (required for db.query).
 	DB *effects.DBQueryClient
+	// ServiceCall is the curated service-egress client (ADR Blue 002;
+	// required for service.call — nil = SERVICE_CALL_UNCONFIGURED on the
+	// node's error port, never an anonymous call).
+	ServiceCall *effects.ServiceCallClient
 	// DataSources is the ORION_DATASOURCES allowlist.
 	DataSources map[string]effects.DataSource
 	// Metrics is the phase-3 metrics sink (nil = disabled).
@@ -102,6 +106,7 @@ var worldEffectRegistrations = []struct {
 }{
 	{OpHTTPRequest, execHTTPRequest},
 	{OpDBQuery, execDBQuery},
+	{OpServiceCall, execServiceCall},
 }
 
 // SetEffects installs the async-effect ops on this scene. Pre-Run only

@@ -165,3 +165,18 @@ func (f *BundledFetcher) FetchComputeManifest(_ context.Context) (ComputeManifes
 	}
 	return buildComputeManifest(resp), nil
 }
+
+// FetchEgressRoutes returns the curated egress registry frozen into the
+// bundle's compute manifest (ADR Blue 002 §3.2). An absent / empty bundle
+// manifest yields a nil registry — fail-closed (every `core.service.call@1`
+// then rejects EGRESS_ROUTE_NOT_DECLARED).
+func (f *BundledFetcher) FetchEgressRoutes(_ context.Context) (EgressRegistry, error) {
+	if len(f.bundle.ComputeManifest) == 0 {
+		return nil, nil
+	}
+	var resp blueManifestResponse
+	if err := json.Unmarshal(f.bundle.ComputeManifest, &resp); err != nil {
+		return nil, fmt.Errorf("blue egress routes: decode: %w", err)
+	}
+	return buildEgressRegistry(resp), nil
+}

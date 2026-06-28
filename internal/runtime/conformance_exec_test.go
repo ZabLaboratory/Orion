@@ -109,7 +109,7 @@ func TestConformance_EveryExecOpExecutes(t *testing.T) {
 
 func isWorldOp(op string) bool {
 	switch op {
-	case OpHTTPRequest, OpDBQuery:
+	case OpHTTPRequest, OpDBQuery, OpServiceCall:
 		return true
 	}
 	return false
@@ -176,6 +176,10 @@ func execOpProbeProgram(op string) *ExecProgram {
 	case OpDBQuery:
 		head = &ExecNode{ID: "op", Op: OpDBQuery,
 			Config: map[string]json.RawMessage{"datasource": raw(`"ds"`)}, Next: mark}
+	case OpServiceCall:
+		// World op: in validation mode the synthetic result walks `then`
+		// without a real call (no `__route` / params needed on the probe).
+		head = &ExecNode{ID: "op", Op: OpServiceCall, Next: mark}
 	case OpOperatorAwait:
 		head = &ExecNode{ID: "op", Op: OpOperatorAwait,
 			Config: map[string]json.RawMessage{
