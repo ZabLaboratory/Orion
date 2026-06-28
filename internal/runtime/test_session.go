@@ -108,6 +108,12 @@ func (m *TestSessionManager) Open(ctx context.Context, sceneID string, graph *co
 	bcopy := *bundle
 	scene := NewScene(sceneID, &gcopy, &bcopy, m.registry, m.logger.With("test_session", id))
 	scene.InstallExec(progs...)
+	// Meter this session's curated egress against its OWN per-stream budget,
+	// keyed by the unique session id (ADR Blue 009 §B / R3): a test session
+	// can fire REAL service.call egress, so it is bounded — but isolated from
+	// the live show and from every other session (one session hammering can
+	// never drain the live budget, nor another session's).
+	scene.SetStreamKey("test:" + id)
 
 	// In dual/lsdp mode, pair the clone with its OWN isolated kit server
 	// (option B): the clone is that server's sole, always-active scene, so

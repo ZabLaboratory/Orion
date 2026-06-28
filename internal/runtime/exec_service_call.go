@@ -52,6 +52,20 @@ func execServiceCall(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 		return serviceCallError(s, node, "EGRESS_ROUTE_NOT_BAKED")
 	}
 
+	// Per-stream egress budget (ADR Blue 009 Amendment 2 §B / R3): charge
+	// one token against THIS stream's bucket before any worker job is
+	// submitted. Over budget ⇒ fail closed to the `error` port — never an
+	// egress request, never a crash, never a blocked tick. Evaluated
+	// synchronously on the scene goroutine, so the limiter's per-stream
+	// state is consistent with the firing order. nil budget = unbounded
+	// (dev / unconfigured); production wires a positive default.
+	if e := s.effects; e != nil && !e.EgressBudget.Allow(s.egressStreamKey()) {
+		if e.Metrics != nil {
+			e.Metrics.EgressBudgetExceeded(s.id)
+		}
+		return serviceCallError(s, node, "EGRESS_BUDGET_EXCEEDED")
+	}
+
 	values := s.pullServiceParams(t, node)
 	payload, _ := s.pullData(t, node, "payload")
 	path, err := effects.BuildPath(route.PathTemplate, route.Params, values)

@@ -61,6 +61,13 @@ type Metrics struct {
 	HTTPEgressBlock *prometheus.CounterVec
 	EffectComplDrop *prometheus.CounterVec
 
+	// EgressBudgetExc (`orion_egress_budget_exceeded_total`) counts
+	// `service.call` effects denied by the per-stream egress budget (ADR
+	// Blue 009 §B / R3) — the node fails closed to its `error` port. A
+	// rising count signals a stream hitting (or being abused into) its
+	// curated-egress rate cap.
+	EgressBudgetExc *prometheus.CounterVec
+
 	// External completion endpoint (B-syswrite, issue #86).
 	// CompletionRejected (`orion_exec_completion_rejected_total`)
 	// counts dropped animation completion reports by reason: "role"
@@ -90,6 +97,11 @@ func (m *Metrics) HTTPEgressBlocked(sceneID string) {
 // EffectCompletionDropped implements the runtime's EffectMetrics seam.
 func (m *Metrics) EffectCompletionDropped(sceneID string) {
 	m.EffectComplDrop.WithLabelValues(sceneID).Inc()
+}
+
+// EgressBudgetExceeded implements the runtime's EffectMetrics seam (R3).
+func (m *Metrics) EgressBudgetExceeded(sceneID string) {
+	m.EgressBudgetExc.WithLabelValues(sceneID).Inc()
 }
 
 // InboxDropped implements the adapters' InboxMetrics seam.
@@ -217,6 +229,10 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "effect", Name: "completion_dropped_total"},
 			[]string{"scene_id"},
 		),
+		EgressBudgetExc: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "egress", Name: "budget_exceeded_total"},
+			[]string{"scene_id"},
+		),
 		ComplRejected: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "exec", Name: "completion_rejected_total"},
 			[]string{"scene_id", "reason"},
@@ -243,6 +259,7 @@ func NewMetrics() *Metrics {
 		m.InboxDrop,
 		m.HTTPEgressBlock,
 		m.EffectComplDrop,
+		m.EgressBudgetExc,
 		m.ComplRejected,
 	)
 	return m
