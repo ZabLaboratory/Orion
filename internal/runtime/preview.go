@@ -39,6 +39,7 @@ type PreviewSlot struct {
 	mu      sync.Mutex
 	ctx     context.Context
 	current *previewClone
+	effects *SceneEffects
 }
 
 type previewClone struct {
@@ -56,6 +57,19 @@ func NewPreviewSlot(ctx context.Context, registry *ComputeRegistry, wire Preview
 		wire:     wire,
 		ctx:      ctx,
 	}
+}
+
+// SetEffects installs the shared async-effect executor bundle on the slot, so
+// every preview clone that carries exec programs can run WORLD-EFFECT ops
+// (db.query, http.request, source.read, animation) — exactly like the antenne
+// show (cmd/orion/main.go: show.SetEffects). Without it a clone's exec hits
+// "unregistered exec op" on the first db.query and the on-call chain dies
+// silently (the LCK/LEC button fires but nothing changes). The bundle is shared
+// read-only across instances. Called once at boot, before any Activate.
+func (p *PreviewSlot) SetEffects(e *SceneEffects) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.effects = e
 }
 
 // Activate swaps the preview to a fresh isolated clone of sceneID and flips the
@@ -77,6 +91,14 @@ func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *co
 	bcopy := *bundle
 	scene := NewScene(sceneID, &gcopy, &bcopy, p.registry, p.logger.With("preview_scene", sceneID))
 	scene.InstallExec(progs...)
+	// Install the world-effect ops (db.query, http.request, …) on the clone
+	// when it carries exec programs — mirrors the show's LoadExec
+	// (show.go: len(progs) > 0 && sh.effects != nil → scene.SetEffects). Without
+	// this the on-call chain dies on the first db.query (unregistered exec op).
+	// Pre-Run, like the show.
+	if len(progs) > 0 && p.effects != nil {
+		scene.SetEffects(p.effects)
+	}
 	// Pair with the PREVIEW wire before Run (SetMirror seeds the kit scene with
 	// the clone's snapshot). MirrorFor registers the kit scene under sceneID on
 	// the preview wire ONLY — never the antenne wire (a different Server).

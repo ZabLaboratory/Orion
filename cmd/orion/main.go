@@ -238,6 +238,12 @@ func run() error {
 		Metrics:     metrics,
 	}
 	show.SetEffects(sceneEffects)
+	// The preview slot shares the SAME effects bundle (read-only): a preview
+	// clone must run db.query / http.request just like the antenne, else its
+	// on-call chain dies on the first world-effect op (unregistered exec op).
+	if previewSlot != nil {
+		previewSlot.SetEffects(sceneEffects)
+	}
 	logger.Info("async effects configured",
 		"workers", cfg.EffectWorkers,
 		"queue", cfg.EffectQueue,
