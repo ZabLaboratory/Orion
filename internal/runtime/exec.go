@@ -452,6 +452,13 @@ func (s *Scene) SetEffector(e Effector) { s.effector = e }
 // to avoid colliding with Scene.emit, the delta fan-out method.
 func (s *Scene) SetEmitEvent(fn func(topic string, payload json.RawMessage)) { s.emitEvent = fn }
 
+// SetSlotAssigner installs the stream-level slot-binding seam (ADR Blue 009
+// §3.3, issue #260). Pre-Run only. The Show passes a closure that records the
+// `slot_ref → peer_label` binding at stream level and emits the LSDP delta;
+// the `assign-slot` op invokes it only after a 2xx ZabCam upsert. A nil
+// closure leaves the op a mirror-less (but still ok-binding) no-op.
+func (s *Scene) SetSlotAssigner(fn func(slotRef, peerLabel string)) { s.assignSlot = fn }
+
 // ExecOps is the canonical set of exec-layer op names the runtime
 // serves — the built-in ops dispatched in exec_interpreter.go plus the
 // extension ops every live scene installs (OpDelay + OpAnimationPlay in
@@ -466,7 +473,7 @@ var ExecOps = []string{
 	OpBranch, OpSequence, OpGate, OpForLoop, OpForEach, OpWhile,
 	OpVariableSet, OpPrint, OpDelay,
 	OpAnimationPlay, OpHTTPRequest, OpDBQuery, OpServiceCall, OpShowEmit,
-	OpOperatorAwait,
+	OpOperatorAwait, OpAssignSlot,
 }
 
 // registerExecOp installs an additional exec op. Pre-Run only. This is

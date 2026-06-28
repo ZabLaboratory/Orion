@@ -85,6 +85,11 @@ func validationSyntheticResult(op string) (json.RawMessage, bool) {
 	case OpServiceCall:
 		// ServiceCallResult — bindServiceCallResult binds status/ok/body.
 		return json.RawMessage(`{"status":200,"body":null}`), true
+	case OpAssignSlot:
+		// ServiceCallResult — bindAssignSlotResult binds ok/error (the
+		// stream-level mirror seam is nil on a validation clone, so no LSDP
+		// delta and no world contact).
+		return json.RawMessage(`{"status":200,"body":null}`), true
 	default:
 		return nil, false
 	}
@@ -182,6 +187,8 @@ func (s *Scene) validationFinish(t *execTask, node *ExecNode) execOpOutcome {
 			}
 		case OpServiceCall:
 			bindServiceCallResult(node.ID, env, value)
+		case OpAssignSlot:
+			bindAssignSlotResult(s, node.ID, env, value)
 		case OpDBQuery:
 			env[node.ID+".rows"] = json.RawMessage(`[]`)
 			env[node.ID+".count"] = json.RawMessage(`0`)

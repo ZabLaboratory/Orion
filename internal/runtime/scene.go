@@ -229,6 +229,15 @@ type Scene struct {
 	// concurrency-safe (it routes through the audited inbox).
 	emitEvent func(topic string, payload json.RawMessage)
 
+	// assignSlot is the stream-level slot-binding seam (ADR Blue 009 §3.3,
+	// issue #260). Set by the Show at Load to a closure that records
+	// `slot_ref → peer_label` at stream level and emits an LSDP delta re-keying
+	// the slot (the derived cache). The `assign-slot` op invokes it ONLY after
+	// a 2xx ZabCam upsert, on the scene goroutine (finishEffect). nil = unwired
+	// (bespoke mode / no mirror): the op still binds ok and fires `then`, the
+	// mirror is simply absent — never an error. Read on the scene goroutine.
+	assignSlot func(slotRef, peerLabel string)
+
 	// --- timer wheel / triggers / cancellation (issue #83) ------------
 	// clock is the injectable time source the wheel runs on
 	// (systemClock in prod, fake clock in tests).

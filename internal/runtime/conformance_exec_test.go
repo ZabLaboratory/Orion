@@ -109,7 +109,7 @@ func TestConformance_EveryExecOpExecutes(t *testing.T) {
 
 func isWorldOp(op string) bool {
 	switch op {
-	case OpHTTPRequest, OpDBQuery, OpServiceCall:
+	case OpHTTPRequest, OpDBQuery, OpServiceCall, OpAssignSlot:
 		return true
 	}
 	return false
@@ -180,6 +180,10 @@ func execOpProbeProgram(op string) *ExecProgram {
 		// World op: in validation mode the synthetic result walks `then`
 		// without a real call (no `__route` / params needed on the probe).
 		head = &ExecNode{ID: "op", Op: OpServiceCall, Next: mark}
+	case OpAssignSlot:
+		// World op: in validation mode the synthetic 2xx walks `then` (ok=true)
+		// without a real ZabCam upsert and with a nil mirror seam (no LSDP).
+		head = &ExecNode{ID: "op", Op: OpAssignSlot, Next: mark}
 	case OpOperatorAwait:
 		head = &ExecNode{ID: "op", Op: OpOperatorAwait,
 			Config: map[string]json.RawMessage{

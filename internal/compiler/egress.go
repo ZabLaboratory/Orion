@@ -12,6 +12,15 @@ import (
 // conformance cross-check keeps the two in sync.
 const opServiceCall = "service.call"
 
+// opAssignSlot is the runtime op `zabcam.assign-slot@1` lowers to
+// (conformance table → Op "assign-slot"). It is a curated-egress instance
+// (ADR Blue 009 §3.3): its (service, route_id) — stamped by Blue's node def,
+// not authored — is resolved against the SAME registry as service.call, so
+// the path template and token_paths (scoped to `zabcam.slots.*`) are baked
+// under `__route` exactly like a service.call. The runtime adds the
+// stream-level mirror + LSDP delta on top of the egress.
+const opAssignSlot = "assign-slot"
+
 // bakedRouteConfigKey is the reserved config slot the compiler stamps the
 // resolved curated route into. The `__` prefix is unauthored by
 // construction (Blue port/config names never use it), so an authored
@@ -58,7 +67,7 @@ func resolveEgressRoutes(prog *execProgram, egress EgressRegistry) []Diagnostic 
 	}
 	ids := make([]string, 0, len(prog.Nodes))
 	for id, n := range prog.Nodes {
-		if n != nil && n.Op == opServiceCall {
+		if n != nil && (n.Op == opServiceCall || n.Op == opAssignSlot) {
 			ids = append(ids, id)
 		}
 	}
@@ -77,7 +86,7 @@ func resolveEgressRoutes(prog *execProgram, egress EgressRegistry) []Diagnostic 
 			diags = append(diags, Diagnostic{
 				Code:     ErrEgressRouteNotDeclared,
 				Severity: "error",
-				Message: "core.service.call node " + id +
+				Message: "curated-egress node " + id +
 					" targets egress route (" + service + ", " + routeID +
 					") which is not declared in the curated egress registry",
 				Path: id,
@@ -89,7 +98,7 @@ func resolveEgressRoutes(prog *execProgram, egress EgressRegistry) []Diagnostic 
 			diags = append(diags, Diagnostic{
 				Code:     ErrEgressRouteNotDeclared,
 				Severity: "error",
-				Message:  "core.service.call node " + id + ": route marshal failed",
+				Message:  "curated-egress node " + id + ": route marshal failed",
 				Path:     id,
 			})
 			continue
