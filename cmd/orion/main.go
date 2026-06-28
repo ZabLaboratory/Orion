@@ -240,13 +240,21 @@ func run() error {
 		ServiceName:   "orion",
 		Logger:        logger,
 	}
+	// Per-stream egress budget (ADR Blue 009 §B / R3): the bound the G0
+	// clearance requires before a WRITE route opens on the antenna path. A
+	// runaway scene / chat feedback loop can spend at most
+	// EgressBudgetPerStream curated egress calls per window per stream;
+	// over budget the node fails closed to its `error` port. Surface
+	// flagged for Bastion (R3).
+	egressBudget := effects.NewStreamEgressLimiter(cfg.EgressBudgetPerStream, cfg.EgressBudgetWindowS)
 	sceneEffects := &runtime.SceneEffects{
-		Runner:      effectRunner,
-		Egress:      effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP),
-		DB:          effects.NewDBQueryClientWithTokenFunc(cfg.ZabGateURL, serviceTokens.Token, nil),
-		ServiceCall: effects.NewServiceCallClient(cfg.ZabGateURL, egressTokens.Token, nil),
-		DataSources: dataSources,
-		Metrics:     metrics,
+		Runner:       effectRunner,
+		Egress:       effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP),
+		DB:           effects.NewDBQueryClientWithTokenFunc(cfg.ZabGateURL, serviceTokens.Token, nil),
+		ServiceCall:  effects.NewServiceCallClient(cfg.ZabGateURL, egressTokens.Token, nil),
+		EgressBudget: egressBudget,
+		DataSources:  dataSources,
+		Metrics:      metrics,
 	}
 	show.SetEffects(sceneEffects)
 	// The preview slot shares the SAME effects bundle (read-only): a preview
@@ -260,7 +268,12 @@ func run() error {
 		"queue", cfg.EffectQueue,
 		"datasources", len(dataSources),
 		"egress_allow_hosts", len(cfg.HTTPEgressAllowHosts),
+		"egress_budget_per_stream", cfg.EgressBudgetPerStream,
+		"egress_budget_window_s", cfg.EgressBudgetWindowS,
 	)
+	if cfg.EgressBudgetPerStream <= 0 {
+		logger.Warn("per-stream egress budget DISABLED (ORION_EGRESS_BUDGET_PER_STREAM<=0) — service.call is unbounded; R3 requires a positive bound before a WRITE route opens on the antenna path")
+	}
 
 	// Cold-start: enumerate every active scene with a non-null
 	// latest_pushed_version and load its compiled artefacts into

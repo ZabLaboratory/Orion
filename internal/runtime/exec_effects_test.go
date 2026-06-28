@@ -24,6 +24,7 @@ type fakeEffectMetrics struct {
 	mu             sync.Mutex
 	egressBlocked  int
 	complDropped   int
+	budgetExceeded int
 }
 
 func (f *fakeEffectMetrics) HTTPEgressBlocked(string) {
@@ -36,6 +37,18 @@ func (f *fakeEffectMetrics) EffectCompletionDropped(string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.complDropped++
+}
+
+func (f *fakeEffectMetrics) EgressBudgetExceeded(string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.budgetExceeded++
+}
+
+func (f *fakeEffectMetrics) budgetExc() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.budgetExceeded
 }
 
 func (f *fakeEffectMetrics) blocked() int {

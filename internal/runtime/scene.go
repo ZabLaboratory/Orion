@@ -113,12 +113,19 @@ func (s *Subscription) Close() {
 // Scene is one live scene instance — a graph + state + a goroutine
 // that drives the drain-then-compute loop.
 type Scene struct {
-	id     string
-	graph  *compiler.Graph
-	bundle *compiler.RenderBundle
-	state  *State
-	cmpReg *ComputeRegistry
-	logger *slog.Logger
+	id string
+	// streamKey is the per-stream egress-budget bucket key (ADR Blue 009
+	// §B / R3). Empty resolves to the singleton live show (defaultStreamKey)
+	// — every live roster scene shares ONE budget. An isolated execution
+	// context (preview slot, test session) sets its own key via SetStreamKey
+	// so its egress is metered independently and can never drain the live
+	// budget (nor be drained by it). Pre-Run only; read on the scene goroutine.
+	streamKey string
+	graph     *compiler.Graph
+	bundle    *compiler.RenderBundle
+	state     *State
+	cmpReg    *ComputeRegistry
+	logger    *slog.Logger
 
 	inbox chan InputMsg
 
@@ -432,6 +439,29 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 
 // ID returns the scene's id.
 func (s *Scene) ID() string { return s.id }
+
+// defaultStreamKey is the egress-budget bucket every live roster scene
+// shares: Orion runs a single live show and "the show IS the stream"
+// (api/cockpit.go). A scene with no explicit key meters its service.call
+// egress against this one live budget (ADR Blue 009 §B / R3).
+const defaultStreamKey = "live"
+
+// SetStreamKey overrides the per-stream egress-budget bucket key for an
+// ISOLATED execution context (preview slot, test session). Pre-Run only,
+// like the other exec mutators. An empty key (the live roster default)
+// resolves to defaultStreamKey at the call site. Giving each preview /
+// test session its own key keeps its egress metered independently of the
+// live show — neither can drain the other's budget (the isolation RC).
+func (s *Scene) SetStreamKey(key string) { s.streamKey = key }
+
+// egressStreamKey resolves the bucket key the per-stream egress budget
+// charges this scene's service.call against.
+func (s *Scene) egressStreamKey() string {
+	if s.streamKey != "" {
+		return s.streamKey
+	}
+	return defaultStreamKey
+}
 
 // GateTriggers marks this instance a LIVE ROSTER member whose
 // on-tick/on-event firing is gated on the on-air flag (ADR 006 §3.4,

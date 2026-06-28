@@ -99,6 +99,13 @@ func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *co
 	if len(progs) > 0 && p.effects != nil {
 		scene.SetEffects(p.effects)
 	}
+	// Meter the preview's curated egress against its OWN per-stream budget,
+	// isolated from the live show (ADR Blue 009 §B / R3): a preview clone
+	// shares the antenne effects bundle and makes REAL service.call egress,
+	// so it must be bounded — but never against (nor drainable by) the live
+	// budget. Keyed by sceneID so two previews of distinct scenes are also
+	// independent.
+	scene.SetStreamKey("preview:" + sceneID)
 	// Pair with the PREVIEW wire before Run (SetMirror seeds the kit scene with
 	// the clone's snapshot). MirrorFor registers the kit scene under sceneID on
 	// the preview wire ONLY — never the antenne wire (a different Server).

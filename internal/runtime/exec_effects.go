@@ -68,6 +68,10 @@ type EffectMetrics interface {
 	// EffectCompletionDropped counts a completion that could not be
 	// delivered to the scene inbox (`orion_effect_completion_dropped_total`).
 	EffectCompletionDropped(sceneID string)
+	// EgressBudgetExceeded counts a `service.call` denied by the per-stream
+	// egress budget (`orion_egress_budget_exceeded_total`) — the node fails
+	// closed to its `error` port, never a crash (ADR Blue 009 §B / R3).
+	EgressBudgetExceeded(sceneID string)
 }
 
 // SceneEffects bundles the executor dependencies of the async-effect
@@ -85,6 +89,11 @@ type SceneEffects struct {
 	// required for service.call — nil = SERVICE_CALL_UNCONFIGURED on the
 	// node's error port, never an anonymous call).
 	ServiceCall *effects.ServiceCallClient
+	// EgressBudget is the per-stream service.call rate-limit (ADR Blue 009
+	// Amendment 2 §B / R3 — the bound the G0 clearance requires before a
+	// WRITE route opens on the antenna path). nil = unbounded (dev /
+	// unconfigured); production wires a positive default.
+	EgressBudget *effects.StreamEgressLimiter
 	// DataSources is the ORION_DATASOURCES allowlist.
 	DataSources map[string]effects.DataSource
 	// Metrics is the phase-3 metrics sink (nil = disabled).
@@ -336,22 +345,22 @@ func (s *Scene) effectTimeoutMillis(t *execTask, node *ExecNode) time.Duration {
 // resolved-IP vetting at dial. This op adds CONTENT filtering on top of
 // that transport policy — the three Bastion §3.7 hardenings:
 //
-//   (a) authored headers are filtered through dropForwardHeader: every
-//       sensitive credential header (Authorization, Cookie,
-//       Proxy-Authorization, any Proxy-*) and every hop-by-hop header
-//       (Host, Content-Length, Connection, Transfer-Encoding, Upgrade,
-//       TE, Trailer) is DROPPED, case-insensitively. Orion never forwards
-//       Authorization — a scene has no caller, and an authored
-//       `headers.Authorization` must not become an exfiltration channel for
-//       a secret read in-graph (asymmetry with Blue approved by Bastion,
-//       ADR 010 §3.7 / §5 D);
-//   (b) cumulative outbound size is capped: query (maxOutboundQuery),
-//       headers (maxOutboundHeaders), body (maxOutboundBody); response read
-//       stays capped at maxEffectResponse; timeout_ms is clamped to
-//       maxEffectTimeout;
-//   (c) logging is host-only — no header value, query value, or full URL
-//       ever reaches a log or metric (egressDenied already logs host-only
-//       via the wrapped error; this op adds no value-bearing log).
+//	(a) authored headers are filtered through dropForwardHeader: every
+//	    sensitive credential header (Authorization, Cookie,
+//	    Proxy-Authorization, any Proxy-*) and every hop-by-hop header
+//	    (Host, Content-Length, Connection, Transfer-Encoding, Upgrade,
+//	    TE, Trailer) is DROPPED, case-insensitively. Orion never forwards
+//	    Authorization — a scene has no caller, and an authored
+//	    `headers.Authorization` must not become an exfiltration channel for
+//	    a secret read in-graph (asymmetry with Blue approved by Bastion,
+//	    ADR 010 §3.7 / §5 D);
+//	(b) cumulative outbound size is capped: query (maxOutboundQuery),
+//	    headers (maxOutboundHeaders), body (maxOutboundBody); response read
+//	    stays capped at maxEffectResponse; timeout_ms is clamped to
+//	    maxEffectTimeout;
+//	(c) logging is host-only — no header value, query value, or full URL
+//	    ever reaches a log or metric (egressDenied already logs host-only
+//	    via the wrapped error; this op adds no value-bearing log).
 //
 // Every failure mode (egress denial, cap exceeded, network, encode) binds
 // `error` and fires the exec `error` pin — never a crash (ADR 003 §1.1).

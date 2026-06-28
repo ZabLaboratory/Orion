@@ -129,6 +129,18 @@ type Config struct {
 	EffectWorkers int
 	EffectQueue   int
 
+	// EgressBudgetPerStream / EgressBudgetWindowS are the per-stream
+	// `core.service.call@1` egress budget (ADR Blue 009 Amendment 2 §B,
+	// item 9 — the R3 condition of the G0 Bastion clearance). At most
+	// EgressBudgetPerStream curated egress calls per EgressBudgetWindowS
+	// seconds, PER STREAM (the live show, or an isolated preview / test
+	// session). Over budget ⇒ the node fails closed to its `error` port
+	// (EGRESS_BUDGET_EXCEEDED), never a request. ORION_EGRESS_BUDGET_PER_STREAM
+	// (default 60) and ORION_EGRESS_BUDGET_WINDOW_S (default 10). Setting
+	// the budget to 0 disables the bound (opt-out, logged at boot).
+	EgressBudgetPerStream int
+	EgressBudgetWindowS   int
+
 	HTTPPollUserAgent string
 	LogLevel          string
 	LogFormat         LogFormat
@@ -310,6 +322,23 @@ func Load() (Config, error) {
 		problems = append(problems, "ORION_EFFECT_QUEUE must be > 0")
 	} else {
 		cfg.EffectQueue = v
+	}
+
+	// Per-stream egress budget (ADR Blue 009 §B / R3). 0 disables the
+	// bound; the window must be > 0 whenever the budget is enabled.
+	if v, err := getInt("ORION_EGRESS_BUDGET_PER_STREAM", 60); err != nil {
+		problems = append(problems, err.Error())
+	} else if v < 0 {
+		problems = append(problems, "ORION_EGRESS_BUDGET_PER_STREAM must be >= 0")
+	} else {
+		cfg.EgressBudgetPerStream = v
+	}
+	if v, err := getInt("ORION_EGRESS_BUDGET_WINDOW_S", 10); err != nil {
+		problems = append(problems, err.Error())
+	} else if v <= 0 {
+		problems = append(problems, "ORION_EGRESS_BUDGET_WINDOW_S must be > 0")
+	} else {
+		cfg.EgressBudgetWindowS = v
 	}
 
 	// Scene-validation budgets (issue #87). 0 = use the ADR default
