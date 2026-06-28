@@ -46,6 +46,36 @@ func (w *Wire) EmitSlotAssignment(slotRef, peerLabel string) {
 	if sc := w.srv.ActiveScene(); sc != nil {
 		_ = sc.Emit(map[string]any{slotLeafPrefix + slotRef: peerLabel})
 	}
+
+	// The armed Meet rooms are the union of the `peer_label`s bound at stream
+	// level (ADR Blue 009 §3.2): feed the viewer armer the distinct set so it
+	// fetches the receive-only viewer credentials and carries them on the wire
+	// (`__cam.viewer`). Non-blocking — the armer re-fetches off the scene
+	// goroutine. issue #261.
+	if w.viewer != nil {
+		w.viewer.setPeers(w.armedPeerLabels())
+	}
+}
+
+// armedPeerLabels returns the distinct `peer_label`s currently bound to any
+// stream-level slot — the set of cameras whose Meet rooms must be armed for
+// the viewer. Order is irrelevant (the armer sorts for a deterministic wire).
+func (w *Wire) armedPeerLabels() []string {
+	w.slotMu.Lock()
+	defer w.slotMu.Unlock()
+	seen := make(map[string]struct{}, len(w.slots))
+	out := make([]string, 0, len(w.slots))
+	for _, label := range w.slots {
+		if label == "" {
+			continue
+		}
+		if _, dup := seen[label]; dup {
+			continue
+		}
+		seen[label] = struct{}{}
+		out = append(out, label)
+	}
+	return out
 }
 
 // replaySlots re-applies every stored stream-level slot binding onto the

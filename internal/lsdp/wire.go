@@ -26,10 +26,12 @@
 package lsdp
 
 import (
+	"context"
 	"errors"
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	lserver "github.com/Lumencast/lumencast-go/server"
 
@@ -59,6 +61,34 @@ type Wire struct {
 	// at SetActive replay). See slot_mirror.go.
 	slotMu sync.Mutex
 	slots  map[string]string
+
+	// viewer carries the stream-level Meet viewer-credentials arming on the
+	// wire (ADR Blue 009 §3.2, issue #261). nil = arming disabled (bespoke
+	// mode, or no CredsFetcher wired). Set once at boot by EnableViewerCreds,
+	// before any scene goroutine runs; read-only thereafter. See viewer_arm.go.
+	viewer *viewerArmer
+}
+
+// EnableViewerCreds turns on stream-level Meet viewer-credentials arming on
+// this wire (ADR Blue 009 §3.2, issue #261). Called once at boot, before any
+// scene is loaded. fetch resolves a `peer_label` to its room viewer creds;
+// refresh is the rotation interval (<= 0 disables the ticker — re-arms only on
+// a peer-set change). The armer goroutine exits on ctx cancel.
+func (w *Wire) EnableViewerCreds(ctx context.Context, fetch CredsFetcher, refresh time.Duration) {
+	if fetch == nil {
+		return
+	}
+	a := &viewerArmer{
+		wire:    w,
+		fetch:   fetch,
+		refresh: refresh,
+		logger:  w.logger,
+		ctx:     ctx,
+		dirty:   make(chan struct{}, 1),
+		peers:   map[string]struct{}{},
+	}
+	w.viewer = a
+	go a.loop()
 }
 
 // NewWire builds the kit server. The kit Server is constructed but its
@@ -144,6 +174,12 @@ func (w *Wire) SetActive(sceneID string) {
 	// across the switch and a late joiner sees them in the destination
 	// snapshot. issue #260.
 	w.replaySlots(sceneID)
+	// Viewer credentials are stream-level too (ADR Blue 009 §3.2): replay the
+	// last-armed `__cam.viewer` payload onto the freshly-activated scene so a
+	// `meet-peer` slot keeps rendering across the switch. issue #261.
+	if w.viewer != nil {
+		w.viewer.replay(sceneID)
+	}
 }
 
 // Drop forgets a scene's pairing on Unload. The kit has no public

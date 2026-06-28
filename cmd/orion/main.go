@@ -144,12 +144,14 @@ func run() error {
 	var sessionWires runtime.SessionWireFactory
 	var previewLSDPHandler http.Handler
 	var previewSlot *runtime.PreviewSlot
+	var antenneWire *lsdp.Wire
 	if cfg.LSDPMode == config.LSDPModeDual || cfg.LSDPMode == config.LSDPModeLSDP {
 		wire, err := lsdp.NewWire(logger, authSource)
 		if err != nil {
 			return err
 		}
 		show.SetMirrors(wire)
+		antenneWire = wire
 		lsdpHandler = wire.Handler()
 		// Per-session preview LSDP wire (preview/antenne split): each test
 		// session gets its OWN isolated kit server so the preview Solar
@@ -239,6 +241,21 @@ func run() error {
 		OperatorToken: cfg.OperatorToken,
 		ServiceName:   "orion",
 		Logger:        logger,
+	}
+	// Stream-level Meet viewer-credentials arming on the antenne LSDP wire
+	// (ADR Blue 009 §3.2, issue #261 — R1, Bastion-gated). Orion resolves the
+	// armed `peer_label`s (the stream-level slot bindings) to their live room
+	// receive-only viewer credentials via ZabCam and carries them on
+	// `__cam.viewer` so Solar #28 can join the Meet room(s) on air. The token
+	// is short-lived: re-fetched + re-emitted every ViewerCredsRefreshS. The
+	// fetch presents a service token scoped to `zabcam.rooms.credentials` only;
+	// the meet_token rides a reserved leaf (off the blueprint/_query surface)
+	// and is never logged. Antenne wire only — preview keeps the Prism global.
+	if antenneWire != nil {
+		credsFetcher := lsdp.NewZabCamCredsFetcher(cfg.ZabGateURL, egressTokens.Token, logger)
+		antenneWire.EnableViewerCreds(ctx,
+			credsFetcher, time.Duration(cfg.ViewerCredsRefreshS)*time.Second)
+		logger.Info("viewer creds arming enabled", "refresh_s", cfg.ViewerCredsRefreshS)
 	}
 	// Per-stream egress budget (ADR Blue 009 §B / R3): the bound the G0
 	// clearance requires before a WRITE route opens on the antenna path. A
