@@ -52,6 +52,13 @@ type Wire struct {
 
 	mu     sync.Mutex
 	scenes map[string]*lserver.Scene
+
+	// slots is the stream-level slot-assignment mirror (ADR Blue 009 §3.3,
+	// issue #260): slot_ref → peer_label, the derived LSDP cache. Guarded by
+	// its own mutex (written by the assign-slot op on a scene goroutine, read
+	// at SetActive replay). See slot_mirror.go.
+	slotMu sync.Mutex
+	slots  map[string]string
 }
 
 // NewWire builds the kit server. The kit Server is constructed but its
@@ -127,9 +134,16 @@ func (w *Wire) MirrorFor(sceneID, sceneVersion string, bundle *compiler.RenderBu
 func (w *Wire) SetActive(sceneID string) {
 	if err := w.srv.SetActive(sceneID); err != nil && !errors.Is(err, lserver.ErrSceneNotFound) {
 		w.logger.Warn("lsdp set active failed", "scene_id", sceneID, "err", err)
+		return
 	} else if errors.Is(err, lserver.ErrSceneNotFound) {
 		w.logger.Warn("lsdp set active: scene not registered", "scene_id", sceneID)
+		return
 	}
+	// Stream-level slot bindings outlive any scene (ADR Blue 009 §3.3): re-key
+	// them onto the freshly-activated scene so a `meet-peer` slot persists
+	// across the switch and a late joiner sees them in the destination
+	// snapshot. issue #260.
+	w.replaySlots(sceneID)
 }
 
 // Drop forgets a scene's pairing on Unload. The kit has no public

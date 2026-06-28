@@ -116,6 +116,7 @@ var worldEffectRegistrations = []struct {
 	{OpHTTPRequest, execHTTPRequest},
 	{OpDBQuery, execDBQuery},
 	{OpServiceCall, execServiceCall},
+	{OpAssignSlot, execAssignSlot},
 }
 
 // SetEffects installs the async-effect ops on this scene. Pre-Run only

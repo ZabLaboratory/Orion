@@ -77,6 +77,49 @@ func TestResolveEgress_DeclaredBakesRoute(t *testing.T) {
 	}
 }
 
+// TestResolveEgress_AssignSlotBakesRoute: a `zabcam.assign-slot@1` node
+// (op assign-slot) resolves against the SAME curated registry as service.call,
+// baking the ZabCam slots-assign route + its tight token_paths under __route
+// (ADR Blue 009 §3.3 — the runtime builds the path, the token stays scoped).
+func TestResolveEgress_AssignSlotBakesRoute(t *testing.T) {
+	reg := EgressRegistry{
+		EgressRouteKey("zabcam", "zabcam.slots.assign"): {
+			Service:      "zabcam",
+			RouteID:      "zabcam.slots.assign",
+			Method:       "PUT",
+			PathTemplate: "/cam/api/v1/streams/{stream_id}/slots/{slot_ref}",
+			Params:       []string{"stream_id", "slot_ref"},
+			TokenPaths:   []string{"zabcam.slots.assign"},
+		},
+	}
+	prog := &execProgram{
+		Nodes: map[string]*execNode{
+			"assign": {ID: "assign", Op: opAssignSlot, Config: map[string]json.RawMessage{
+				"service":  json.RawMessage(`"zabcam"`),
+				"route_id": json.RawMessage(`"zabcam.slots.assign"`),
+			}},
+		},
+	}
+	diags := resolveEgressRoutes(prog, reg)
+	if len(diags) != 0 {
+		t.Fatalf("declared assign-slot route should not diagnose, got %+v", diags)
+	}
+	baked, ok := prog.Nodes["assign"].Config[bakedRouteConfigKey]
+	if !ok {
+		t.Fatal("__route not baked into the assign-slot node config")
+	}
+	var r bakedRoute
+	if err := json.Unmarshal(baked, &r); err != nil {
+		t.Fatal(err)
+	}
+	if r.Method != "PUT" || r.PathTemplate != "/cam/api/v1/streams/{stream_id}/slots/{slot_ref}" {
+		t.Errorf("baked route = %+v", r)
+	}
+	if len(r.TokenPaths) != 1 || r.TokenPaths[0] != "zabcam.slots.assign" {
+		t.Errorf("baked token_paths = %v, want [zabcam.slots.assign] (tight scope)", r.TokenPaths)
+	}
+}
+
 // TestBuildEgressRegistry_ParsesManifestEnvelope: Blue's wire egress DTOs
 // adapt into the keyed registry (RC #4 — shared source of truth).
 func TestBuildEgressRegistry_ParsesManifestEnvelope(t *testing.T) {

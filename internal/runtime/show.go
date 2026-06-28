@@ -107,6 +107,22 @@ func (sh *Show) emitToActive(topic string, payload json.RawMessage) {
 	}
 }
 
+// emitSlotAssignment is the closure each scene's `assign-slot` op invokes on
+// a successful ZabCam upsert (ADR Blue 009 §3.3, issue #260). It forwards the
+// stream-level `slot_ref → peer_label` binding to the LSDP wire (the derived
+// cache), which stores it and emits the re-keying delta. A nil wire (bespoke
+// mode) drops it — the upsert is already durable in ZabCam, the LSDP mirror
+// is best-effort. Read under RLock at CALL time so boot-load order (SetMirrors
+// before scene loads) is irrelevant.
+func (sh *Show) emitSlotAssignment(slotRef, peerLabel string) {
+	sh.mu.RLock()
+	m := sh.mirrors
+	sh.mu.RUnlock()
+	if m != nil {
+		m.EmitSlotAssignment(slotRef, peerLabel)
+	}
+}
+
 // SetExecMetrics installs the exec-layer metrics sink (implemented by
 // *obs.Metrics). Called once at boot, before any scene is loaded.
 func (sh *Show) SetExecMetrics(m ExecMetrics) {
@@ -145,6 +161,14 @@ type MirrorRegistry interface {
 	SetActive(sceneID string)
 	// Drop removes a scene's paired kit scene (on Unload).
 	Drop(sceneID string)
+	// EmitSlotAssignment records a stream-level `slot_ref → peer_label`
+	// binding and emits an LSDP delta re-keying the slot on the active wire
+	// (ADR Blue 009 §3.3, issue #260). The binding is stream-level: it
+	// persists across scene switches and is replayed onto the destination
+	// scene at SetActive, so a `meet-peer` slot of any scene of the stream
+	// resolves to its bound peer. The leaf rides a reserved namespace that
+	// bypasses the per-scene bound-leaf gate (it is not a scene leaf).
+	EmitSlotAssignment(slotRef, peerLabel string)
 }
 
 // SetMirrors installs the LSDP/1.1 wire. Called once at boot in
@@ -228,6 +252,11 @@ func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.Rend
 	// active scene regardless of which instance emits. This is the distinct
 	// active-only path; it never touches RouteTargets (anti-cascade).
 	scene.SetEmitEvent(sh.emitToActive)
+	// Stream-level slot-binding seam (ADR Blue 009 §3.3, issue #260): every
+	// loaded scene gets the same closure — the `assign-slot` op routes the
+	// `slot_ref → peer_label` binding to the LSDP wire after a durable ZabCam
+	// upsert. Stream-level: the binding outlives any single scene.
+	scene.SetSlotAssigner(sh.emitSlotAssignment)
 	// R9 world-effect install (ADR 006 §3.4, load-bearing). The
 	// world-touching ops (http.request / db.query / source.read) are
 	// registered ONLY when this scene loads with a non-empty exec set —
