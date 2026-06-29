@@ -36,12 +36,27 @@ import (
 func postStreamRule(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			SceneID string `json:"scene_id"`
+			SceneID     string `json:"scene_id"`
+			BlueprintID string `json:"blueprint_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid body"})
 			return
 		}
+
+		// Blueprint-direct stream rule (no carrier scene). A blueprint is a
+		// blueprint, not a scene: the pilotage registers it directly. We
+		// compile the bare Blue graph (the simulate machinery: FetchBlueprint →
+		// CompileExecPrograms → ExecProgramsFromGraph) and promote it keyed by
+		// blueprint_id, with an empty bundle — a rule runs exec, it never
+		// renders. In-memory only for now: the show_stream_rules reseed is
+		// scene-based, so blueprint-rule durability across an Orion restart is
+		// a follow-up (a rule_kind column + a blueprint reseed path).
+		if body.BlueprintID != "" {
+			promoteBlueprintStreamRule(w, r, deps, body.BlueprintID)
+			return
+		}
+
 		sid, ok := parseUUID(body.SceneID)
 		if !ok {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid scene_id"})
@@ -148,4 +163,56 @@ func promoteStreamRuleFromStore(ctx context.Context, deps PublicDeps, sceneID uu
 		return fmt.Errorf("promote rule: resolve exec: %w", err)
 	}
 	return deps.Show.PromoteStreamRule(sceneID.String(), &graph, &bundle, progs...)
+}
+
+// promoteBlueprintStreamRule promotes a Blue blueprint DIRECTLY into a
+// stream-level rule, with no carrier scene (a blueprint is a blueprint, not a
+// scene — the pilotage owns it). It fetches the blueprint's current published
+// graph from Blue, compiles its exec layer in-body (the SAME machinery as the
+// simulate endpoint: CompileExecPrograms → ExecProgramsFromGraph), and promotes
+// it keyed by blueprint_id with an empty RenderBundle — a rule runs exec, it
+// never renders. The slot-assignment effects + viewer arming the rule emits are
+// stream-level (survive scene switches), so this is the natural home of the
+// cam-arming rule (ADR Blue 009 §3.3).
+func promoteBlueprintStreamRule(w http.ResponseWriter, r *http.Request, deps PublicDeps, blueprintID string) {
+	if _, ok := parseUUID(blueprintID); !ok {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid blueprint_id"})
+		return
+	}
+	bp, err := deps.Fetcher.FetchBlueprint(r.Context(), blueprintID)
+	if err != nil {
+		deps.Logger.Error("stream rule: fetch blueprint failed", "blueprint_id", blueprintID, "err", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"code": "BLUEPRINT_FETCH_FAILED"})
+		return
+	}
+	compiled, cerr := compiler.CompileExecPrograms(bp, "")
+	if cerr != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"code":        "COMPILE_FAILED",
+			"diagnostics": compileDiagnostics(cerr),
+		})
+		return
+	}
+	graph := &compiler.Graph{
+		SceneID:      bp.ID,
+		ExecPrograms: compiled.Programs,
+		Defaults:     compiled.Defaults,
+	}
+	progs, err := runtime.ExecProgramsFromGraph(graph)
+	if err != nil {
+		deps.Logger.Error("stream rule: exec decode of freshly compiled blueprint failed", "blueprint_id", blueprintID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+		return
+	}
+	if err := deps.Show.PromoteStreamRule(blueprintID, graph, &compiler.RenderBundle{}, progs...); err != nil {
+		if errors.Is(err, runtime.ErrRuleIsActiveScene) {
+			status, code := codeFromError(err)
+			writeJSON(w, status, map[string]string{"code": code})
+			return
+		}
+		deps.Logger.Error("stream rule: promote blueprint failed", "blueprint_id", blueprintID, "err", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"stream_rule_id": blueprintID})
 }
