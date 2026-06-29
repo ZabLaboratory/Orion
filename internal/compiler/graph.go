@@ -107,7 +107,7 @@ type RenderBundle struct {
 	Root             LayoutNode        `json:"root"`
 	OperatorInputs   []OperatorInput   `json:"operator_inputs"`
 	ExternalAdapters []ExternalAdapter `json:"external_adapters"`
-	Assets           []AssetRef        `json:"assets,omitempty"`
+	Assets           []AssetRef        `json:"asset_refs,omitempty"`
 
 	// AuthoringRoot is the pre-lowering tree in the AUTHORING vocab
 	// (`style.fontSize`/`color`, `size.{w,h}`, `geometry`, `cornerRadius`,
@@ -139,5 +139,15 @@ type RenderBundle struct {
 	// is byte-identical with or without it. Opaque json.RawMessage — Orion
 	// neither fabricates nor strips it; nil when the layout authored no
 	// assets.
-	LSMLAssets json.RawMessage `json:"-"`
+	//
+	// FIX 2026-06-29: serialise it as `assets` on the bespoke RenderBundle.
+	// Solar's render-side host gate (`readAllowedHosts` → `gateSrc`, Bastion
+	// T1/T2) reads `bundle.assets.allowedHosts` (OBJECT form) off the SAME
+	// bespoke bundle it fetches in broadcast mode — NOT the LSML bundle. With
+	// `assets` omitted the gate is deny-by-default and EVERY image primitive
+	// returns null (the whole scene renders text/shapes but zero images). The
+	// lumencast TS compiler already emits `assets: {allowedHosts,...}` here
+	// (compile.ts); Orion now matches it. The content-addressed AssetRef list
+	// moved to `asset_refs` (Solar never read it for the host allowlist).
+	LSMLAssets json.RawMessage `json:"assets,omitempty"`
 }
