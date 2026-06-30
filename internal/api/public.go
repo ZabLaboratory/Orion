@@ -141,6 +141,7 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/show/preview-snapshot", getPreviewSnapshot(deps))
 	// Stream-level Blue rules (ADR 009 §3.1, issue #154): operator-gated
 	// promotion/demotion of a roster scene into an always-on rule.
+	mux.HandleFunc("GET /api/v1/show/stream-rules", getStreamRules(deps))
 	mux.HandleFunc("POST /api/v1/show/stream-rules", postStreamRule(deps))
 	mux.HandleFunc("DELETE /api/v1/show/stream-rules/{id}", deleteStreamRule(deps))
 

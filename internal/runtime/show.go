@@ -464,6 +464,21 @@ func (sh *Show) PromoteStreamRule(id string, graph *compiler.Graph, bundle *comp
 	return nil
 }
 
+// StreamRuleIDs returns the ids of every promoted stream-level rule (scene_id
+// or blueprint_id keys), sorted for a deterministic listing. In-memory is the
+// authority here: it includes blueprint-direct rules the store does not persist
+// yet. Read by the cockpit "Blueprints Stream-level" tab (GET /show/stream-rules).
+func (sh *Show) StreamRuleIDs() []string {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	ids := make([]string, 0, len(sh.streamRules))
+	for id := range sh.streamRules {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // DemoteStreamRule removes a scene from the rule set and cancels its live
 // tasks (ADR 009 criterion #5 — dépromotion cancels live work). Internal
 // hook for issue #153; the persisted API is #154. The instance stays in

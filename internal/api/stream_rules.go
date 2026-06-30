@@ -115,6 +115,16 @@ func postStreamRule(deps PublicDeps) http.HandlerFunc {
 	})
 }
 
+// getStreamRules lists the promoted stream-level rules — the backing surface
+// of the cockpit's "Blueprints Stream-level" tab. Returns the in-memory rule
+// id set (scene_id OR blueprint_id keys), the authority that includes the
+// blueprint-direct rules the store does not persist yet.
+func getStreamRules(deps PublicDeps) http.HandlerFunc {
+	return requireOperator(func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"stream_rules": deps.Show.StreamRuleIDs()})
+	})
+}
+
 // deleteStreamRule demotes a scene from the stream-level rule set, cancels
 // its live tasks (DemoteStreamRule), and drops the persisted selection.
 // Demotion is idempotent: demoting a non-rule is a no-op 200.
