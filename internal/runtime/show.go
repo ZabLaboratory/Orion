@@ -27,6 +27,14 @@ type Show struct {
 	active   string
 	liveSubs []*Subscription
 
+	// sceneVersions mirrors each loaded scene's LSML/graph content address
+	// (graph.SceneVersion, the same value handed to MirrorFor). It is the
+	// feed for the scene_roster preload frame (Prism#230): the roster is
+	// IDs × versions. Kept in lock-step with `scenes` — set on LoadExec,
+	// removed on Unload — so a roster snapshot is always consistent with
+	// the live scene set.
+	sceneVersions map[string]string
+
 	// streamRules is the set of scene ids promoted as stream-level Blue
 	// rules (ADR 009 §3.1). A promoted rule is a roster scene that runs
 	// ALWAYS — never gated on the active pointer, never frozen at a scene
@@ -161,6 +169,13 @@ type MirrorRegistry interface {
 	SetActive(sceneID string)
 	// Drop removes a scene's paired kit scene (on Unload).
 	Drop(sceneID string)
+	// EmitRoster publishes the show's full scene roster (id × version) on
+	// the wire so a runtime can preload every scene bundle ahead of a swap
+	// (additive scene_roster frame, Prism#230). The wire caches it and
+	// replays it to each new 1.1 subscriber after its snapshot. entries may
+	// be empty (an idle show). A nil MirrorRegistry (bespoke mode) is a
+	// no-op — there is no wire to preload against.
+	EmitRoster(entries []RosterEntry)
 	// EmitSlotAssignment records a stream-level `slot_ref → peer_label`
 	// binding and emits an LSDP delta re-keying the slot on the active wire
 	// (ADR Blue 009 §3.3, issue #260). The binding is stream-level: it
@@ -169,6 +184,15 @@ type MirrorRegistry interface {
 	// resolves to its bound peer. The leaf rides a reserved namespace that
 	// bypasses the per-scene bound-leaf gate (it is not a scene leaf).
 	EmitSlotAssignment(slotRef, peerLabel string)
+}
+
+// RosterEntry is one scene of the show's preload roster (scene_roster
+// frame): the scene id and the LSML/graph content address the runtime
+// should preload the bundle at. Mirrors protocol.RosterEntry in the
+// kit; the lsdp Wire maps between the two.
+type RosterEntry struct {
+	SceneID      string
+	SceneVersion string
 }
 
 // SetMirrors installs the LSDP/1.1 wire. Called once at boot in
@@ -190,12 +214,13 @@ var ErrSceneNotPushed = errors.New("show: scene not pushed")
 func NewShow(registry *ComputeRegistry, logger *slog.Logger) *Show {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Show{
-		registry:    registry,
-		logger:      logger.With("component", "show"),
-		scenes:      map[string]*Scene{},
-		streamRules: map[string]struct{}{},
-		ctx:         ctx,
-		cancel:      cancel,
+		registry:      registry,
+		logger:        logger.With("component", "show"),
+		scenes:        map[string]*Scene{},
+		sceneVersions: map[string]string{},
+		streamRules:   map[string]struct{}{},
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 }
 
@@ -236,8 +261,13 @@ func (sh *Show) Load(id string, graph *compiler.Graph, bundle *compiler.RenderBu
 // starts from declared defaults (restart-reseed). If the swapped scene
 // is the ACTIVE one, `on-start` fires on the fresh instance.
 func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, progs ...*ExecProgram) {
+	// Registered before the unlock defer, so (LIFO) it runs AFTER sh.mu is
+	// released: emitRoster takes its own RLock. A load/re-push mutates the
+	// roster (new id or changed version), so the wire is refreshed here.
+	defer sh.emitRoster()
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
+	sh.sceneVersions[id] = graph.SceneVersion
 	if existing, ok := sh.scenes[id]; ok {
 		existing.Stop()
 	}
@@ -320,11 +350,15 @@ func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.Rend
 
 // Unload stops a scene and drops it from the roster.
 func (sh *Show) Unload(id string) {
+	// Runs after sh.mu is released (LIFO with the unlock defer below):
+	// dropping a scene shrinks the roster, so refresh the wire.
+	defer sh.emitRoster()
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	if existing, ok := sh.scenes[id]; ok {
 		existing.Stop()
 		delete(sh.scenes, id)
+		delete(sh.sceneVersions, id)
 		if sh.mirrors != nil {
 			sh.mirrors.Drop(id)
 		}
@@ -332,6 +366,32 @@ func (sh *Show) Unload(id string) {
 	if sh.active == id {
 		sh.active = ""
 	}
+}
+
+// emitRoster snapshots the loaded scene set (id × version) and publishes
+// it on the wire as the show's preload roster (scene_roster frame,
+// Prism#230). Called after every roster mutation (Load / re-push /
+// Unload) and after SetActive. A nil MirrorRegistry (bespoke mode) is a
+// no-op. The mirror call is made OUTSIDE sh.mu — callers register it as a
+// defer BEFORE their unlock defer, or invoke it after releasing the lock.
+func (sh *Show) emitRoster() {
+	sh.mu.RLock()
+	m := sh.mirrors
+	if m == nil {
+		sh.mu.RUnlock()
+		return
+	}
+	ids := make([]string, 0, len(sh.scenes))
+	for id := range sh.scenes {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	entries := make([]RosterEntry, 0, len(ids))
+	for _, id := range ids {
+		entries = append(entries, RosterEntry{SceneID: id, SceneVersion: sh.sceneVersions[id]})
+	}
+	sh.mu.RUnlock()
+	m.EmitRoster(entries)
 }
 
 // Get returns the scene by id (or nil + ErrSceneNotFound).
@@ -596,6 +656,11 @@ func (sh *Show) SetActive(id string, transition json.RawMessage) error {
 	// destination.
 	if mirrors != nil {
 		mirrors.SetActive(id)
+		// Re-publish the roster after the switch (contract: emit after
+		// SetActive). The id × version set is unchanged by an activation,
+		// so this is an idempotent refresh — it keeps a wire that armed
+		// mid-switch consistent and costs one cached fan-out.
+		sh.emitRoster()
 	}
 
 	// Step 1: detach migrating subs from the previous scene (if any).

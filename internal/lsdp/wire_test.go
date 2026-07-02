@@ -92,7 +92,9 @@ func dialLSDP(ctx context.Context, t *testing.T, wsURL, role string, since uint6
 	return c
 }
 
-func readServerFrame(ctx context.Context, t *testing.T, c *websocket.Conn) any {
+// readServerFrameRaw returns the very next decoded server frame,
+// including out-of-band scene_roster frames.
+func readServerFrameRaw(ctx context.Context, t *testing.T, c *websocket.Conn) any {
 	t.Helper()
 	_, raw, err := c.Read(ctx)
 	if err != nil {
@@ -103,6 +105,22 @@ func readServerFrame(ctx context.Context, t *testing.T, c *websocket.Conn) any {
 		t.Fatalf("decode server frame %q: %v", raw, err)
 	}
 	return msg
+}
+
+// readServerFrame returns the next state frame (snapshot / delta /
+// scene_changed / error / pong), transparently skipping any out-of-band
+// scene_roster frames. The roster is seq-less show metadata (Prism#230)
+// that can be replayed after a snapshot or fanned mid-stream; state-
+// sequence assertions must look past it, exactly as a runtime does.
+func readServerFrame(ctx context.Context, t *testing.T, c *websocket.Conn) any {
+	t.Helper()
+	for {
+		msg := readServerFrameRaw(ctx, t, c)
+		if _, isRoster := msg.(*lproto.SceneRoster); isRoster {
+			continue
+		}
+		return msg
+	}
 }
 
 // TestLSDP_DualSnapshotDeltaResume is acceptance (4) of issue #25 in
