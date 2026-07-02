@@ -493,6 +493,10 @@ func selectFetcher(cfg config.Config, tokenFunc func() string) (compiler.Fetcher
 	// own image hosts so the SSRF authoring gate doesn't reject previewing a
 	// scene authored against external (e.g. Figma) asset URLs. NEVER on antenne.
 	hf.InjectAllowedHosts = cfg.Profile.IsEmbeddedLocal()
+	// Content-addressed disk cache for the immutable layout + pinned blueprint
+	// fetches: turns the repeat WAN fetch every push does into a local read
+	// (the ~3 s go-live switch cost). Empty dir leaves it disabled.
+	hf.WithCacheDir(cfg.CompilerCacheDir)
 	return hf, fetcherSourceHTTP, nil
 }
 

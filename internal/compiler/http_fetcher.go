@@ -43,6 +43,22 @@ type HTTPFetcher struct {
 	// allow — and NEVER set on the antenne profile. The bytes still fail to
 	// load if the upstream host 404s; this only unblocks the compile.
 	InjectAllowedHosts bool
+
+	// cache is the best-effort, content-addressed disk cache for the
+	// immutable upstream fetches (layout + pinned blueprint graph). Set via
+	// CacheDir at construction; an empty dir disables it (every fetch hits
+	// the network, the historical behaviour). See fetch_cache.go.
+	cache fetchCache
+}
+
+// WithCacheDir enables the content-addressed disk cache for immutable
+// upstream fetches (the Canvas layout and the pinned Blue blueprint graph),
+// rooted at dir. Empty leaves the cache disabled. Returns the fetcher for
+// chaining at construction. Best-effort: a filesystem error never fails a
+// compile (fetch_cache.go), it just falls back to the network.
+func (f *HTTPFetcher) WithCacheDir(dir string) *HTTPFetcher {
+	f.cache = fetchCache{dir: dir}
+	return f
 }
 
 // previewHostRe extracts http(s) hosts from a layout JSON blob for the
@@ -85,40 +101,22 @@ func NewHTTPFetcherWithTokenFunc(canvasBase, blueBase string, tokenFunc func() s
 }
 
 // FetchCanvasLayout calls GET {canvas}/api/v1/layouts/{version}, then
-// back-fills the literal ``defaults`` map from the content-addressed LSML
+// back-fills the literal “defaults“ map from the content-addressed LSML
 // bundle store.
 //
-// The ``/layouts`` adapter serves a CanvasLayout that carries the binding tree
-// (``root``) but DROPS the bundle's ``defaults`` map — the constants every
-// static text/image binds to (``__lit.<kind>.<id>`` → "BROKEN BLADE" /
+// The “/layouts“ adapter serves a CanvasLayout that carries the binding tree
+// (“root“) but DROPS the bundle's “defaults“ map — the constants every
+// static text/image binds to (“__lit.<kind>.<id>“ → "BROKEN BLADE" /
 // "assets/<sha>"). Without them a transcribed scene compiles to leaves nothing
 // produces and paints empty (the gray-canvas symptom). The FULL bundle —
-// including ``defaults`` — lives at ``GET /api/v1/lsml-bundles/{version}``, so
-// we read its ``defaults`` and attach them to the layout. Best-effort: if the
+// including “defaults“ — lives at “GET /api/v1/lsml-bundles/{version}“, so
+// we read its “defaults“ and attach them to the layout. Best-effort: if the
 // bundle store has no entry (e.g. a layout pushed without a stored bundle) the
 // layout proceeds without literal defaults rather than failing the compile.
 func (f *HTTPFetcher) FetchCanvasLayout(ctx context.Context, version string) (*CanvasLayout, error) {
-	var out CanvasLayout
-	url := f.CanvasBase + "/api/v1/layouts/" + version
-	if err := f.getJSON(ctx, url, &out); err != nil {
-		return nil, fmt.Errorf("canvas layout %s: %w", version, err)
-	}
-	if len(out.Defaults) == 0 {
-		// The store wraps the bundle: `{content_hash, bundle:{lsml, layout,
-		// defaults:{…}, …}, archive, …}`. The literal map lives at
-		// `.bundle.defaults`, NOT top-level.
-		var resp struct {
-			Bundle struct {
-				Defaults map[string]json.RawMessage `json:"defaults"`
-			} `json:"bundle"`
-		}
-		burl := f.CanvasBase + "/api/v1/lsml-bundles/" + version
-		if err := f.getJSON(ctx, burl, &resp); err == nil && len(resp.Bundle.Defaults) > 0 {
-			out.Defaults = resp.Bundle.Defaults
-		}
-		// A missing / errored bundle store is non-fatal: the layout still
-		// compiles (just without literal seeds), preserving the prior behaviour
-		// for layouts that never had a stored bundle.
+	out, err := f.canvasLayoutResolved(ctx, version)
+	if err != nil {
+		return nil, err
 	}
 	// PREVIEW-ONLY (embedded-local): synthesise allowedHosts from the scene's
 	// own image hosts when the layout carries no assets block, so the SSRF
@@ -149,6 +147,54 @@ func (f *HTTPFetcher) FetchCanvasLayout(ctx context.Context, version string) (*C
 		if len(hosts) > 0 {
 			out.Assets, _ = json.Marshal(map[string][]string{"allowedHosts": hosts})
 		}
+	}
+	return out, nil
+}
+
+// canvasLayoutResolved returns the layout with its literal `defaults` map
+// back-filled — the network half of FetchCanvasLayout, cached content-
+// addressed by version (the layout hash). A cache HIT decodes the stored
+// resolved layout and issues ZERO HTTP requests; a MISS fetches the layout
+// (and, when the adapter dropped them, the bundle store's defaults) and
+// caches the resolved result. The cached bytes are pre-injection: the
+// PREVIEW-ONLY allowedHosts synthesis is applied by the caller on every
+// call, so an embedded-local preview stays correct whether the layout came
+// from cache or the wire. Returns a fresh *CanvasLayout the caller may
+// mutate freely (a cache hit decodes into its own value — no aliasing).
+func (f *HTTPFetcher) canvasLayoutResolved(ctx context.Context, version string) (*CanvasLayout, error) {
+	cacheKey := "layout:" + version
+	if raw, ok := f.cache.get(cacheKey); ok {
+		var cached CanvasLayout
+		if err := json.Unmarshal(raw, &cached); err == nil {
+			return &cached, nil
+		}
+		// A corrupt cache entry is a miss: fall through and re-fetch.
+	}
+
+	var out CanvasLayout
+	url := f.CanvasBase + "/api/v1/layouts/" + version
+	if err := f.getJSON(ctx, url, &out); err != nil {
+		return nil, fmt.Errorf("canvas layout %s: %w", version, err)
+	}
+	if len(out.Defaults) == 0 {
+		// The store wraps the bundle: `{content_hash, bundle:{lsml, layout,
+		// defaults:{…}, …}, archive, …}`. The literal map lives at
+		// `.bundle.defaults`, NOT top-level.
+		var resp struct {
+			Bundle struct {
+				Defaults map[string]json.RawMessage `json:"defaults"`
+			} `json:"bundle"`
+		}
+		burl := f.CanvasBase + "/api/v1/lsml-bundles/" + version
+		if err := f.getJSON(ctx, burl, &resp); err == nil && len(resp.Bundle.Defaults) > 0 {
+			out.Defaults = resp.Bundle.Defaults
+		}
+		// A missing / errored bundle store is non-fatal: the layout still
+		// compiles (just without literal seeds), preserving the prior behaviour
+		// for layouts that never had a stored bundle.
+	}
+	if raw, err := json.Marshal(&out); err == nil {
+		f.cache.put(cacheKey, raw)
 	}
 	return &out, nil
 }
@@ -227,6 +273,18 @@ var ErrRefUnresolved = errors.New("compiler: blueprint reference unresolved")
 // into ErrBlueprintRefUnresolved so the compiler fails the push closed with
 // BLUEPRINT_REF_UNRESOLVED rather than silently substituting another version.
 func (f *HTTPFetcher) FetchBlueprintGraph(ctx context.Context, id string, version int) (*ResolvedBlueprintGraph, error) {
+	// The pinned (id, version) graph is immutable and published-only, so it
+	// is content-addressed and infinitely cacheable — a cache HIT issues
+	// ZERO HTTP requests. FetchBlueprint (legacy current_version) is NOT
+	// cached: current_version can advance, so its result is not addressed by
+	// a stable key.
+	cacheKey := fmt.Sprintf("bpgraph:%s:%d", id, version)
+	if raw, ok := f.cache.get(cacheKey); ok {
+		var cached ResolvedBlueprintGraph
+		if err := json.Unmarshal(raw, &cached); err == nil {
+			return &cached, nil
+		}
+	}
 	var out ResolvedBlueprintGraph
 	url := fmt.Sprintf("%s/api/v1/blueprints/%s/versions/%d/graph", f.BlueBase, id, version)
 	if err := f.getJSON(ctx, url, &out); err != nil {
@@ -246,6 +304,9 @@ func (f *HTTPFetcher) FetchBlueprintGraph(ctx context.Context, id string, versio
 			}
 		}
 		return nil, fmt.Errorf("blue blueprint %s version %d graph: %w", id, version, err)
+	}
+	if raw, err := json.Marshal(&out); err == nil {
+		f.cache.put(cacheKey, raw)
 	}
 	return &out, nil
 }
