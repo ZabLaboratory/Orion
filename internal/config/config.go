@@ -78,12 +78,18 @@ func (p Profile) IsEmbeddedLocal() bool { return p == ProfileEmbeddedLocal }
 // Config is the typed view of Orion's environment. Every field maps to
 // a single env var; empty defaults are filled in by Load.
 type Config struct {
-	ListenAddr         string
-	InternalAddr       string
-	PublicBaseURL      string
-	DatabaseURL        string
-	AssetRoot          string
-	SolarRoot          string
+	ListenAddr    string
+	InternalAddr  string
+	PublicBaseURL string
+	DatabaseURL   string
+	AssetRoot     string
+	SolarRoot     string
+	// CompilerCacheDir roots the compiler's content-addressed disk cache for
+	// immutable upstream fetches (Canvas layout + pinned Blue blueprint
+	// graph), ORION_COMPILER_CACHE_DIR. Empty disables the cache (every push
+	// re-fetches over the WAN, the pre-cache behaviour). Content-addressed →
+	// no eviction / TTL; a changed artefact carries a new key.
+	CompilerCacheDir   string
 	ZabAuthValidateURL string
 	AuthCacheTTL       time.Duration
 	ServiceToken       string
@@ -201,6 +207,7 @@ func Load() (Config, error) {
 		DatabaseURL:          os.Getenv("ORION_DATABASE_URL"),
 		AssetRoot:            getenv("ORION_ASSET_ROOT", "/var/lib/orion/assets"),
 		SolarRoot:            getenv("ORION_SOLAR_ROOT", "/var/lib/orion/solar"),
+		CompilerCacheDir:     getenv("ORION_COMPILER_CACHE_DIR", "/var/lib/orion/compiler-cache"),
 		ZabAuthValidateURL:   strings.TrimRight(getenv("ORION_ZABAUTH_VALIDATE_URL", ""), "/"),
 		ServiceToken:         os.Getenv("ORION_SERVICE_TOKEN"),
 		OperatorToken:        os.Getenv("ORION_OPERATOR_TOKEN"),
