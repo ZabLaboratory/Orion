@@ -17,6 +17,10 @@ import (
 // new pushed version from a definition envelope, or re-points
 // latest_pushed_version at an existing scene_version (rollback).
 func pushScene(deps PublicDeps) http.HandlerFunc {
+	// Process-local idempotence cache, shared across every request this
+	// handler serves (the closure is built once at route registration). See
+	// push_dedup.go — a go-live's double push skips the second compile.
+	dedup := newPushDedup(256)
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
 		sceneID, ok := parseUUID(r.PathValue("id"))
 		if !ok {
@@ -69,6 +73,26 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 		if _, err := compiler.NormalizeBlueprints(envelope); errors.Is(err, compiler.ErrEnvelopeBlueprintConflict) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "ENVELOPE_BLUEPRINT_CONFLICT"})
 			return
+		}
+
+		// Idempotence (switch fix): a byte-identical re-push — same scene,
+		// same envelope — compiles to the artefact it already persisted. The
+		// go-live flow pushes twice (push → validate → re-push) and every
+		// compile re-fetches the Canvas layout + blueprints over the WAN.
+		// Fingerprint the envelope (a pure hash of the compile INPUTS,
+		// knowable without a compile) and, on a hit, skip Compile + every
+		// upstream fetch, resolving the stored pushed version instead. The
+		// dedup map is a hint only: the store is authoritative, so a dangling
+		// hint (row archived/purged) falls through to a full compile.
+		fingerprint, fpErr := compiler.EnvelopeFingerprint(sceneID.String(), envelope)
+		if fpErr == nil {
+			if cachedVersion, ok := dedup.get(fingerprint); ok {
+				if done := serveIdempotentPush(ctx, w, deps, sceneID, cachedVersion); done {
+					return
+				}
+				// Stored version gone: forget the stale hint and recompile.
+				dedup.drop(fingerprint)
+			}
 		}
 
 		started := time.Now()
@@ -200,60 +224,18 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 		}
 
 		// Surface the new version into the runtime — UNDER the validation
-		// gate (ADR 003 §3.2.2, B3 — critical). Two cases:
-		//
-		//   - the scene is NOT the active one (first push, or a push to an
-		//     off-air scene): load/swap freely. Loading an off-air scene
-		//     touches no antenna; activation is separately gated by
-		//     postActiveScene.
-		//   - the scene IS active on air (mid-broadcast re-push): the swap
-		//     mutates the LIVE graph, so it is gated. If the new version is
-		//     validated, swap normally (criterion 9). If it is NOT, the
-		//     version still PERSISTED above (authoring is never blocked),
-		//     but the antenna KEEPS the last validated version — no Load, no
-		//     scene_changed, no snapshot — and the response surfaces
-		//     SCENE_NOT_VALIDATED so the author knows air did not move.
-		notValidated := false
-		active := deps.Show.Active()
-		isActive := active != nil && active.ID() == sceneID.String()
-		if isActive {
-			// Push-swap of the LIVE scene (B3, criterion #9). The new
-			// version mutates the antenna, so it goes through execForAir:
-			// validated → swap in with its exec installed (R9 lift); not
-			// validated → the antenna keeps the last validated version
-			// (no Load, no scene_changed) though the push still persisted
-			// above. Fail-closed: a DB error refuses the swap.
-			progs, eligible, gerr := execForAir(ctx, deps, sceneID, sceneVersion, graph)
-			if gerr != nil {
-				deps.Metrics.PushTotal.WithLabelValues("persist_error").Inc()
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
-				return
-			}
-			if eligible {
-				deps.Show.LoadExec(sceneID.String(), graph, bundle, progs...)
-				active.EmitSceneChanged(sceneID.String(), sceneID.String(), nil)
-				active.EmitFreshSnapshot()
-			} else {
-				// Antenna unchanged: the live graph keeps serving the last
-				// validated version until the author validates this one.
-				notValidated = true
-			}
-		} else {
-			// Off-air scene: load/swap the roster instance freely. A freshly
-			// pushed version is never validated yet (new hash, no record),
-			// so execForAir returns nil and exec stays uninstalled — the
-			// seam is here for the re-push of an already-validated,
-			// byte-identical version, which arms its exec now so a later
-			// activation airs it live. Loading an off-air scene touches no
-			// antenna; activation is separately gated by postActiveScene,
-			// and the instance is exec-quiescent until it goes on air.
-			progs, _, gerr := execForAir(ctx, deps, sceneID, sceneVersion, graph)
-			if gerr != nil {
-				deps.Metrics.PushTotal.WithLabelValues("persist_error").Inc()
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
-				return
-			}
-			deps.Show.LoadExec(sceneID.String(), graph, bundle, progs...)
+		// gate and the on-air swap guard (see surfacePushedVersion).
+		notValidated, airVersion, serr := surfacePushedVersion(ctx, deps, sceneID, sceneVersion, graph, bundle)
+		if serr != nil {
+			deps.Metrics.PushTotal.WithLabelValues("persist_error").Inc()
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+			return
+		}
+
+		// Record the compile-input → scene_version mapping so an identical
+		// re-push in this process skips the compile entirely (idempotence).
+		if fpErr == nil {
+			dedup.put(fingerprint, sceneVersion)
 		}
 
 		deps.Metrics.PushTotal.WithLabelValues("ok").Inc()
@@ -269,10 +251,138 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 		if notValidated {
 			// Authoring succeeded (200); the antenna did not move.
 			resp["code"] = sceneNotValidatedCode
-			resp["air_version"] = active.Graph().SceneVersion
+			resp["air_version"] = airVersion
 		}
 		writeJSON(w, http.StatusOK, resp)
 	})
+}
+
+// surfacePushedVersion brings a persisted pushed version onto the runtime,
+// shared by the compile path and the idempotent-reuse path. It composes two
+// invariants:
+//
+//   - Validation gate (ADR 003 §3.2.2, B3 — critical). Off-air scenes load
+//     freely (activation is separately gated by postActiveScene); an active
+//     scene swaps only when the new version is validated. A not-validated
+//     re-push of the active scene still persisted upstream (authoring is
+//     never blocked) but the antenna keeps the last validated version —
+//     surfaced as SCENE_NOT_VALIDATED with the held air_version.
+//
+//   - On-air swap guard (switch fix). A re-push of the version ALREADY on
+//     air is a silent no-op: no LoadExec, no scene_changed, no snapshot. A
+//     byte-identical re-push of the live scene therefore never reloads the
+//     antenna — closing the visible-reload / black-screen-recidive class
+//     (runbook canevas-chat-sponso, 2026-06-29), where a redundant re-push
+//     took the antenna immediately. Only a REAL content change (a different
+//     scene_version) moves air.
+//
+// Returns notValidated (the antenna held on an unproven version) and, when
+// it did, the air_version the caller surfaces.
+func surfacePushedVersion(
+	ctx context.Context,
+	deps PublicDeps,
+	sceneID uuid.UUID,
+	sceneVersion string,
+	graph *compiler.Graph,
+	bundle *compiler.RenderBundle,
+) (notValidated bool, airVersion string, err error) {
+	active := deps.Show.Active()
+	isActive := active != nil && active.ID() == sceneID.String()
+	if isActive {
+		// On-air swap guard: the version already aired is byte-identical to
+		// what is running, so a re-push changes nothing — no reload.
+		if g := active.Graph(); g != nil && g.SceneVersion == sceneVersion {
+			return false, "", nil
+		}
+		// Push-swap of the LIVE scene (B3, criterion #9), gated through
+		// execForAir: validated → swap in with its exec installed (R9 lift);
+		// not validated → keep the last validated version. Fail-closed on a
+		// DB error.
+		progs, eligible, gerr := execForAir(ctx, deps, sceneID, sceneVersion, graph)
+		if gerr != nil {
+			return false, "", gerr
+		}
+		if eligible {
+			deps.Show.LoadExec(sceneID.String(), graph, bundle, progs...)
+			active.EmitSceneChanged(sceneID.String(), sceneID.String(), nil)
+			active.EmitFreshSnapshot()
+			return false, "", nil
+		}
+		// Antenna unchanged: the live graph keeps serving the last validated
+		// version until the author validates this one.
+		return true, active.Graph().SceneVersion, nil
+	}
+	// Off-air scene: load/swap the roster instance freely. A freshly pushed
+	// version is never validated yet (new hash, no record) so execForAir
+	// returns nil and exec stays uninstalled; the re-push of an
+	// already-validated byte-identical version arms its exec now so a later
+	// activation airs it live. Loading off-air touches no antenna.
+	progs, _, gerr := execForAir(ctx, deps, sceneID, sceneVersion, graph)
+	if gerr != nil {
+		return false, "", gerr
+	}
+	deps.Show.LoadExec(sceneID.String(), graph, bundle, progs...)
+	return false, "", nil
+}
+
+// serveIdempotentPush handles a fingerprint cache hit: it resolves the
+// already-compiled pushed version from the store, advances the latest
+// pointer, surfaces it (under the same gate + on-air guard as a fresh
+// compile), and writes the 200 response. It returns true when it fully
+// handled the request; false means the stored version is gone (the caller
+// falls through to a normal compile). No Compile, no upstream fetch.
+func serveIdempotentPush(
+	ctx context.Context,
+	w http.ResponseWriter,
+	deps PublicDeps,
+	sceneID uuid.UUID,
+	sceneVersion string,
+) bool {
+	pv, err := deps.Store.GetPushedVersion(ctx, sceneID, sceneVersion)
+	if err != nil {
+		// Missing (purged/archived) → let the caller recompile. Any other
+		// read error also falls through: a real compile will surface it.
+		return false
+	}
+	graph := &compiler.Graph{}
+	bundle := &compiler.RenderBundle{}
+	if json.Unmarshal(pv.GraphJSON, graph) != nil || json.Unmarshal(pv.BundleJSON, bundle) != nil {
+		return false
+	}
+
+	// Advance the latest pointer exactly as a fresh push would (the artefact
+	// already exists, so this is the only persisted mutation).
+	if err := deps.Store.Tx(ctx, func(tx store.Tx) error {
+		return deps.Store.SetLatestPushedVersion(ctx, tx, sceneID, &pv.SceneVersion)
+	}); err != nil {
+		deps.Metrics.PushTotal.WithLabelValues("persist_error").Inc()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+		return true
+	}
+
+	notValidated, airVersion, serr := surfacePushedVersion(ctx, deps, sceneID, pv.SceneVersion, graph, bundle)
+	if serr != nil {
+		deps.Metrics.PushTotal.WithLabelValues("persist_error").Inc()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
+		return true
+	}
+
+	deps.Metrics.PushTotal.WithLabelValues("idempotent").Inc()
+
+	resp := map[string]any{
+		"scene_version": pv.SceneVersion,
+		"idempotent":    true,
+		"diagnostics": map[string]any{
+			"errors":   []string{},
+			"warnings": []string{},
+		},
+	}
+	if notValidated {
+		resp["code"] = sceneNotValidatedCode
+		resp["air_version"] = airVersion
+	}
+	writeJSON(w, http.StatusOK, resp)
+	return true
 }
 
 // persistLSMLAndMaybeAdopt emits the LSML 1.1 bundle for a compiled
