@@ -33,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Lumencast/lumencast-go/protocol"
 	lserver "github.com/Lumencast/lumencast-go/server"
 
 	"github.com/ZabLaboratory/Orion/internal/auth"
@@ -189,6 +190,19 @@ func (w *Wire) Drop(sceneID string) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	delete(w.scenes, sceneID)
+}
+
+// EmitRoster publishes the show's scene roster on the kit (Prism#230).
+// It maps the runtime entries onto protocol.RosterEntry and hands them to
+// server.SetRoster, which caches the roster and fans a scene_roster frame
+// out to every live 1.1 subscriber (and replays it to each new one after
+// its snapshot). An empty roster is valid (idle show → entries: []).
+func (w *Wire) EmitRoster(entries []runtime.RosterEntry) {
+	wire := make([]protocol.RosterEntry, len(entries))
+	for i, e := range entries {
+		wire[i] = protocol.RosterEntry{SceneID: e.SceneID, SceneVersion: e.SceneVersion}
+	}
+	w.srv.SetRoster(wire)
 }
 
 // identityFromRequest builds the kit's identity seam (ADR 007
