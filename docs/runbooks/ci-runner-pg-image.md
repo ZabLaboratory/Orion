@@ -145,6 +145,84 @@ fix for an image problem is to rebuild it, not to revert the pool.
 
 ---
 
+## Playwright / Chromium deps
+
+> Track: discovered on Solar CI (`e2e` job, `chrome-headless-shell` launch).
+> Owner: Keeper. Same pool, same image (`zab-org-runner:pg`) — additive bake,
+> not a separate image.
+
+### Symptom
+
+```
+error while loading shared libraries: libnspr4.so: cannot open shared object file: No such file or directory
+```
+
+`chrome-headless-shell` (Playwright) fails to launch on every job — the base
+image ships no Chromium runtime libs (`libnspr4`, `libnss3`, `libasound2`, …).
+
+### Root cause
+
+- Playwright's `--with-deps` install path is unusable: the JIT job container's
+  rootfs is mounted `nosuid`, and `sudo` — despite the baked NOPASSWD sudoers
+  from the PostgreSQL fix above — **cannot elevate on a `nosuid` mount**. Any
+  runtime `apt-get install` (via `--with-deps` or a workflow step) fails the
+  same way the PG apt-get did, for a different reason (mount flag, not missing
+  binary).
+- Net effect: the Chromium runtime libs must be **pre-baked into the image**,
+  same pattern as PostgreSQL — no apt call can happen at job time regardless
+  of privilege.
+
+### Fix
+
+Baked into the same `/home/ubuntu/zab-org-runners/image/Dockerfile`, additive
+to the PostgreSQL layer:
+
+```dockerfile
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+        libnspr4 libnss3 libasound2 && \
+    rm -rf /var/lib/apt/lists/*
+```
+
+Rebuild + swap, same procedure as the PostgreSQL cutover:
+
+```bash
+ssh vps-ovh
+cd /home/ubuntu/zab-org-runners/image
+cp Dockerfile Dockerfile.bak.pre-playwright     # backup (rollback)
+# edit Dockerfile: add the libnspr4/libnss3/libasound2 layer
+sudo docker build --load -t zab-org-runner:pg -f Dockerfile .
+sudo docker images zab-org-runner:pg            # confirm it's in the daemon
+cd /home/ubuntu/zab-org-runners
+export APP_PRIVATE_KEY="$(cat /home/ubuntu/runner-orchestrator-zab/secrets/app_private_key.pem)"
+sudo -E docker compose up -d                    # recycle the pool empty
+```
+
+### Verify after swap
+
+Push a throwaway tag/PR on a repo with an e2e Playwright job (e.g. Solar) and
+confirm the job that previously failed on `libnspr4.so` now passes through
+browser launch. No dedicated exec probe — the Chromium launch itself is the
+verification (unlike PG, there's no long-lived daemon to `pg_ctlcluster` into).
+
+### Rollback
+
+```bash
+ssh vps-ovh
+cd /home/ubuntu/zab-org-runners/image
+cp Dockerfile.bak.pre-playwright Dockerfile
+sudo docker build --load -t zab-org-runner:pg -f Dockerfile .
+cd /home/ubuntu/zab-org-runners
+export APP_PRIVATE_KEY="$(cat /home/ubuntu/runner-orchestrator-zab/secrets/app_private_key.pem)"
+sudo -E docker compose up -d
+```
+
+Rolling back re-opens the `libnspr4.so` failure for every Chromium-based e2e
+job org-wide (Solar and any future consumer). Only roll back if the new layer
+itself breaks image build or runner registration.
+
+---
+
 ## Maintenance
 
 - The image pins `myoung34/github-runner:latest` as its base. To pick up a
@@ -153,3 +231,5 @@ fix for an image problem is to rebuild it, not to revert the pool.
   image gains more pre-baked tooling; the runner stack itself
   (`/home/ubuntu/zab-org-runners`) is not under git.
 - The complementary ci.yml step is in `.github/workflows/ci.yml` (job `e2e`).
+- Chromium/Playwright libs (`libnspr4`, `libnss3`, `libasound2`) are baked
+  alongside PostgreSQL — one image, two independent additive layers.
