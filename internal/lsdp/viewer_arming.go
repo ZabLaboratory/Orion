@@ -168,11 +168,37 @@ func (a *viewerArmer) rearm() {
 	ctx, cancel := context.WithTimeout(a.ctx, viewerFetchTimeout)
 	defer cancel()
 
+	// Resolve every peer CONCURRENTLY. viewerFetchTimeout bounds total wall-clock
+	// (the shared ctx), but each FetchViewerCreds is a real ZabGate→ZabCam round
+	// trip: a sequential pass spent the 5s budget cumulatively, so peers late in
+	// the batch were starved once the earlier fetches' latency crossed the
+	// deadline — they silently `continue`d and never joined `rooms`, leaving
+	// their `__cam.slots.<ref>` node stuck on the placeholder on air (persistent
+	// because every refresh re-hit the same order/latency). Running the fetches
+	// in parallel gives each peer the full window. Results land in a
+	// position-indexed slice (each goroutine writes a distinct index — no shared
+	// mutation, no mutex) and are reduced in deterministic peer order after Wait.
+	type fetched struct {
+		vr ViewerRoom
+		ok bool
+	}
+	results := make([]fetched, len(peers))
+	var wg sync.WaitGroup
+	for i, p := range peers {
+		wg.Add(1)
+		go func(i int, p string) {
+			defer wg.Done()
+			vr, ok := a.fetch.FetchViewerCreds(ctx, p)
+			results[i] = fetched{vr: vr, ok: ok}
+		}(i, p)
+	}
+	wg.Wait()
+
 	seen := make(map[string]struct{}, len(peers))
 	rooms := make([]ViewerRoom, 0, len(peers))
-	for _, p := range peers {
-		vr, ok := a.fetch.FetchViewerCreds(ctx, p)
-		if !ok || vr.RoomID == "" || vr.SignalingURL == "" || vr.JoinToken == "" {
+	for _, r := range results {
+		vr := r.vr
+		if !r.ok || vr.RoomID == "" || vr.SignalingURL == "" || vr.JoinToken == "" {
 			continue
 		}
 		if _, dup := seen[vr.RoomID]; dup {
