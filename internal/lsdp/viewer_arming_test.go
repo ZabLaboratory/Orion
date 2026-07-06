@@ -23,10 +23,13 @@ import (
 type stubFetcher struct {
 	mu      sync.Mutex
 	byLabel map[string]ViewerRoom
+	delay   map[string]time.Duration
 	asked   []string
 }
 
-func newStubFetcher() *stubFetcher { return &stubFetcher{byLabel: map[string]ViewerRoom{}} }
+func newStubFetcher() *stubFetcher {
+	return &stubFetcher{byLabel: map[string]ViewerRoom{}, delay: map[string]time.Duration{}}
+}
 
 func (s *stubFetcher) set(label string, vr ViewerRoom) {
 	s.mu.Lock()
@@ -34,11 +37,32 @@ func (s *stubFetcher) set(label string, vr ViewerRoom) {
 	s.byLabel[label] = vr
 }
 
-func (s *stubFetcher) FetchViewerCreds(_ context.Context, label string) (ViewerRoom, bool) {
+// setDelay makes FetchViewerCreds block for d before resolving label — an
+// artificial per-peer network latency used to prove the arming pass resolves
+// every peer concurrently within the total window rather than serially.
+func (s *stubFetcher) setDelay(label string, d time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.delay[label] = d
+}
+
+func (s *stubFetcher) FetchViewerCreds(ctx context.Context, label string) (ViewerRoom, bool) {
+	// Read canned state under the lock, then release it BEFORE sleeping so
+	// concurrent fetches are not serialised on the stub's own mutex (that would
+	// mask whether rearm parallelises).
+	s.mu.Lock()
 	s.asked = append(s.asked, label)
 	vr, ok := s.byLabel[label]
+	d := s.delay[label]
+	s.mu.Unlock()
+
+	if d > 0 {
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+			return ViewerRoom{}, false
+		}
+	}
 	return vr, ok
 }
 
@@ -164,6 +188,56 @@ func TestViewer_RotationReEmitsFreshToken(t *testing.T) {
 	fetch.set("alice", ViewerRoom{SignalingURL: "wss://meet/sig", RoomID: "room-1", JoinToken: "vtok-2"})
 	wire.viewer.rearm()
 	waitForViewerToken(t, wire, "scene-a", "room-1", "vtok-2")
+}
+
+// TestViewer_ArmsAllPeersConcurrentlyUnderLatency proves the arming pass
+// resolves EVERY peer within the single 5s wall-clock window even when each
+// per-peer fetch is slow. Run sequentially the cumulative latency
+// (3 + 3.5 + 4 = 10.5s) blows past viewerFetchTimeout and starves the peers
+// late in the batch — they silently drop and their rooms never reach the wire,
+// leaving the on-air `meet-peer` slots stuck on the placeholder. Run
+// concurrently the pass costs only max(delays) < 5s and all three rooms arm.
+func TestViewer_ArmsAllPeersConcurrentlyUnderLatency(t *testing.T) {
+	wire, fetch, _ := armedWire(t)
+
+	peers := []struct {
+		label, room, tok string
+		delay            time.Duration
+	}{
+		{"alice", "room-1", "vtok-1", 3 * time.Second},
+		{"bob", "room-2", "vtok-2", 3500 * time.Millisecond},
+		{"carol", "room-3", "vtok-3", 4 * time.Second},
+	}
+	labels := make([]string, 0, len(peers))
+	for _, p := range peers {
+		fetch.set(p.label, ViewerRoom{SignalingURL: "wss://meet/sig", RoomID: p.room, JoinToken: p.tok})
+		fetch.setDelay(p.label, p.delay)
+		labels = append(labels, p.label)
+	}
+
+	start := time.Now()
+	wire.viewer.setPeers(labels) // drives one rearm on the armer goroutine
+
+	// All three rooms must arm. Poll with slack past the total window; a
+	// sequential rearm could never satisfy this (its later peers time out).
+	deadline := time.Now().Add(viewerFetchTimeout + 3*time.Second)
+	for {
+		rooms := decodeViewerState(t, wire, "scene-a")
+		if len(rooms) == 3 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d/3 rooms armed under latency (concurrent pass regressed to sequential?): %+v",
+				len(rooms), rooms)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// The pass completed in ~max(delays), not the sequential sum — proof the
+	// fetches actually overlapped.
+	if elapsed := time.Since(start); elapsed > viewerFetchTimeout {
+		t.Fatalf("arming took %v — expected concurrent resolution under %v", elapsed, viewerFetchTimeout)
+	}
 }
 
 // TestViewer_PersistsAcrossSceneSwitch: viewer creds are stream-level — a
