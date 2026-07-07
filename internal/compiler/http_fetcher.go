@@ -161,8 +161,26 @@ func (f *HTTPFetcher) FetchCanvasLayout(ctx context.Context, version string) (*C
 // call, so an embedded-local preview stays correct whether the layout came
 // from cache or the wire. Returns a fresh *CanvasLayout the caller may
 // mutate freely (a cache hit decodes into its own value — no aliasing).
+// layoutContractVersion namespaces the on-disk layout cache by the SHAPE of
+// the adapted `/api/v1/layouts/{version}` response, NOT just by the layout
+// hash. The cache is content-addressed by `version` = the SHA-256 of the RAW
+// bundle stored server-side (pre-adaptation). But ZabCanvas
+// (`services/layout_adapter.py::adapt_bundle_to_layout`) can change how it
+// SERIALISES / ADAPTS that raw bundle without the raw hash moving — e.g. #150
+// rewrote relative asset refs to absolute URLs. A server deploy then silently
+// invalidates every client cache entry whose raw bundle is unchanged, and the
+// old content-only key would serve the stale adapted response FOREVER.
+//
+// DISCIPLINE: bump this constant every time ZabCanvas changes the response it
+// serves for a SAME `version` in a way that is incompatible with an existing
+// cached entry. A bump changes every cacheKey, so old entries become a MISS
+// (harmless re-fetch) instead of a silent stale HIT. Keep it in lock-step with
+// `adapt_bundle_to_layout`; forgetting to bump reintroduces the staleness bug.
+// (v2: invalidates all field caches after ZabCanvas #150's absolute-URL rewrite.)
+const layoutContractVersion = "v2"
+
 func (f *HTTPFetcher) canvasLayoutResolved(ctx context.Context, version string) (*CanvasLayout, error) {
-	cacheKey := "layout:" + version
+	cacheKey := "layout:" + layoutContractVersion + ":" + version
 	if raw, ok := f.cache.get(cacheKey); ok {
 		var cached CanvasLayout
 		if err := json.Unmarshal(raw, &cached); err == nil {
