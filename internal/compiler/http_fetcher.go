@@ -176,8 +176,12 @@ func (f *HTTPFetcher) FetchCanvasLayout(ctx context.Context, version string) (*C
 // cached entry. A bump changes every cacheKey, so old entries become a MISS
 // (harmless re-fetch) instead of a silent stale HIT. Keep it in lock-step with
 // `adapt_bundle_to_layout`; forgetting to bump reintroduces the staleness bug.
-// (v2: invalidates all field caches after ZabCanvas #150's absolute-URL rewrite.)
-const layoutContractVersion = "v2"
+// (v2: invalidates all field caches after ZabCanvas #150's absolute-URL rewrite.
+//  v3: ZabCanvas #152 started forwarding + rewriting `bundle.defaults` — a
+//  binding-backed image src (`bindings.src` resolved via `defaults`, not a
+//  literal `src`) now gets its asset ref rewritten and its host allowlisted,
+//  where it previously carried no `defaults` at all.)
+const layoutContractVersion = "v3"
 
 func (f *HTTPFetcher) canvasLayoutResolved(ctx context.Context, version string) (*CanvasLayout, error) {
 	cacheKey := "layout:" + layoutContractVersion + ":" + version
