@@ -8,11 +8,18 @@ import (
 )
 
 // fetchCache is a best-effort, content-addressed on-disk cache for the
-// compiler's immutable upstream fetches (the Canvas layout at
-// GET /layouts/{hash} and the pinned Blue blueprint graph at
-// /blueprints/{id}/versions/{n}/graph). Both are addressed by an immutable
-// content hash, so an entry never needs eviction or a TTL: a given key maps
-// to the same bytes forever, and a changed artefact carries a new key.
+// compiler's upstream fetches (the Canvas layout at GET /layouts/{hash} and
+// the pinned Blue blueprint graph at /blueprints/{id}/versions/{n}/graph).
+// A key maps to the same bytes forever, so an entry never needs eviction or a
+// TTL: a changed artefact carries a new key.
+//
+// CAVEAT: the layout hash addresses the RAW server-side bundle, not the adapted
+// response ZabCanvas actually serves — a server-side serialisation change
+// (`adapt_bundle_to_layout`) can alter the bytes for a same hash. The layout
+// key therefore embeds `layoutContractVersion` (see http_fetcher.go), bumped in
+// lock-step with that adapter, so a shape change carries a NEW key rather than a
+// silent stale hit. The blueprint-graph key stays purely content-addressed
+// (the pinned version is immutable end-to-end).
 //
 // Motivation (switch fix): every scene push recompiles, and each compile
 // re-fetches the layout + blueprints over the WAN against the prod gateway
