@@ -172,6 +172,7 @@ var served = map[string]ServedNode{
 	"core.service.call@1":         {Kind: KindExecOp, Op: "service.call", Test: "TestServiceCall_BuildsPathAndCalls"},
 	"zabcam.assign-slot@1":        {Kind: KindExecOp, Op: "assign-slot", Test: "TestAssignSlot_UpsertsThenMirrors"},
 	"core.show.emit@1":            {Kind: KindExecOp, Op: "show.emit", Test: "TestShowEmit_RuleToActiveNoCascade"},
+	"core.overlay-app.set@1":      {Kind: KindExecOp, Op: "overlay-app.set", Test: "TestOverlayAppSet_EmitsMirrorState"},
 	"core.operator.await-value@1": {Kind: KindExecOp, Op: "operator.await", Test: "TestOperator_AwaitSuspendsAndResumes"},
 
 	// --- Compute registry (pure data layer) ---------------------------

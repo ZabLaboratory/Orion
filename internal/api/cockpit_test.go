@@ -193,3 +193,59 @@ func TestCockpit_PendingAwaitPresentAndScoped(t *testing.T) {
 	}
 	t.Fatal("pending await never surfaced in cockpit contract")
 }
+
+// TestCockpit_OverlayAppTriggerStreamScoped (ADR 016 Prism §3.2, issue #283,
+// RC3): an overlay-app is driven from a STREAM-LEVEL rule whose on-call spine
+// runs `core.overlay-app.set@1`. The cockpit contract must surface that on-call
+// trigger with scope `stream` — the operator button the reveal/hide rides. The
+// overlay node itself carries no operator surface; the trigger is the generic
+// on-call, exposed by the existing #209 aggregation (no overlay-specific code).
+func TestCockpit_OverlayAppTriggerStreamScoped(t *testing.T) {
+	m := obs.NewMetrics()
+	show := runtime.NewShow(runtime.NewComputeRegistry(), testLogger())
+	show.SetExecMetrics(m)
+	t.Cleanup(show.Stop)
+
+	// A stream-level rule: on-call `overlay-toggle` → overlay-app.set (reveal).
+	ruleGraph := &compiler.Graph{SceneID: "overlay-rule", SceneVersion: "sha256:ov"}
+	ruleProg := &runtime.ExecProgram{
+		BlueprintKey: "overlay",
+		Nodes: map[string]*runtime.ExecNode{
+			"set": {
+				ID: "set", Op: runtime.OpOverlayAppSet,
+				Config: map[string]json.RawMessage{
+					"app_id": json.RawMessage(`"app-1"`),
+					"on_air": json.RawMessage(`true`),
+				},
+			},
+		},
+		Entrypoints: map[string]runtime.ExecEntry{
+			"overlay-toggle": {Kind: runtime.EntryOnCall, Node: "overlay-toggle", Target: runtime.ExecTarget{Node: "set"}},
+		},
+	}
+	if err := show.PromoteStreamRule("overlay-rule", ruleGraph, &compiler.RenderBundle{SceneVersion: "sha256:ov"}, ruleProg); err != nil {
+		t.Fatalf("PromoteStreamRule: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	RegisterPublic(mux, PublicDeps{Logger: testLogger(), Metrics: m, Show: show})
+	f := &cockpitFixture{mux: mux, show: show}
+
+	w, body := getContracts(t, f, "operator", "?stream_id=s1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var scope string
+	found := false
+	for _, tr := range body.Triggers {
+		if tr.BlueprintKey == "overlay" && tr.EntrypointID == "overlay-toggle" {
+			scope, found = tr.Scope, true
+		}
+	}
+	if !found {
+		t.Fatalf("overlay/overlay-toggle trigger absent (triggers=%+v)", body.Triggers)
+	}
+	if scope != scopeStream {
+		t.Fatalf("overlay-toggle scope = %q, want stream", scope)
+	}
+}

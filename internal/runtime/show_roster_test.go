@@ -26,6 +26,8 @@ func (m *recordingMirror) SetActive(id string) {
 }
 func (m *recordingMirror) Drop(string)                       {}
 func (m *recordingMirror) EmitSlotAssignment(string, string) {}
+
+func (m *recordingMirror) EmitOverlayApp(string, *bool, *bool) {}
 func (m *recordingMirror) EmitRoster(entries []RosterEntry) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

@@ -238,6 +238,14 @@ type Scene struct {
 	// mirror is simply absent — never an error. Read on the scene goroutine.
 	assignSlot func(slotRef, peerLabel string)
 
+	// overlayAppSet is the stream-level overlay-app control seam (ADR 016 Prism
+	// §3.2, issue #283). Set by the Show at Load to a closure that forwards the
+	// desired `{running, on_air}` state (either may be nil = unchanged) to the
+	// LSDP overlay mirror. The `overlay-app.set` op invokes it on the scene
+	// goroutine. nil = unwired (bespoke mode / no mirror): the op still fires
+	// `then`, the mirror is simply absent — never an error.
+	overlayAppSet func(appID string, running, onAir *bool)
+
 	// --- timer wheel / triggers / cancellation (issue #83) ------------
 	// clock is the injectable time source the wheel runs on
 	// (systemClock in prod, fake clock in tests).
@@ -383,6 +391,12 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 	// (#87); without a program the op can never fire. The active-only
 	// injection seam (s.emitEvent) is wired by the Show at Load.
 	s.registerExecOp(OpShowEmit, execShowEmit)
+	// `overlay-app.set` (ADR 016 Prism §3.2, issue #283): the stream-level
+	// overlay-app control primitive. Pure scene machinery (read app_id +
+	// running/on_air, forward through the Show's overlay-mirror seam), no
+	// external dependency — like show.emit. R9 holds (no ExecProgram before
+	// the phase-4 gate). The mirror seam (s.overlayAppSet) is wired at Load.
+	s.registerExecOp(OpOverlayAppSet, execOverlayAppSet)
 	s.state.Seed(graph.Defaults)
 	// O(1) node-id → state-path index (issue #80): one pass, then
 	// every upstreamPath call is a map hit instead of an O(N) scan.
