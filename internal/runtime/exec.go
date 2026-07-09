@@ -459,6 +459,16 @@ func (s *Scene) SetEmitEvent(fn func(topic string, payload json.RawMessage)) { s
 // closure leaves the op a mirror-less (but still ok-binding) no-op.
 func (s *Scene) SetSlotAssigner(fn func(slotRef, peerLabel string)) { s.assignSlot = fn }
 
+// SetOverlayAppSetter installs the stream-level overlay-app control seam (ADR
+// 016 Prism §3.2, issue #283). Pre-Run only. The Show passes a closure that
+// forwards the desired `{running, on_air}` state (either may be nil = unchanged)
+// to the LSDP overlay mirror; the `overlay-app.set` op invokes it on the scene
+// goroutine. A nil closure leaves the op a mirror-less no-op that still fires
+// `then`.
+func (s *Scene) SetOverlayAppSetter(fn func(appID string, running, onAir *bool)) {
+	s.overlayAppSet = fn
+}
+
 // ExecOps is the canonical set of exec-layer op names the runtime
 // serves — the built-in ops dispatched in exec_interpreter.go plus the
 // extension ops every live scene installs (OpDelay + OpAnimationPlay in
@@ -473,7 +483,7 @@ var ExecOps = []string{
 	OpBranch, OpSequence, OpGate, OpForLoop, OpForEach, OpWhile,
 	OpVariableSet, OpPrint, OpDelay,
 	OpAnimationPlay, OpHTTPRequest, OpDBQuery, OpServiceCall, OpShowEmit,
-	OpOperatorAwait, OpAssignSlot,
+	OpOperatorAwait, OpAssignSlot, OpOverlayAppSet,
 }
 
 // registerExecOp installs an additional exec op. Pre-Run only. This is

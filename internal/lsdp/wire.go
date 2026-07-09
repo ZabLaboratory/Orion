@@ -63,6 +63,14 @@ type Wire struct {
 	slotMu sync.Mutex
 	slots  map[string]string
 
+	// overlay is the stream-level overlay-app control mirror (ADR 016 Prism
+	// §3.2, issue #283): app_id → {running, on_air}, the derived LSDP cache
+	// (memory only — RC #11). Guarded by its own mutex (written by the
+	// overlay-app.set op on a scene goroutine, read at SetActive replay). See
+	// overlay_mirror.go.
+	overlayMu sync.Mutex
+	overlay   map[string]*overlayState
+
 	// viewer carries the stream-level Meet viewer-credentials arming on the
 	// wire (ADR Blue 009 §3.2, issue #261). nil = arming disabled (bespoke
 	// mode, or no CredsFetcher wired). Set once at boot by EnableViewerCreds,
@@ -175,6 +183,12 @@ func (w *Wire) SetActive(sceneID string) {
 	// across the switch and a late joiner sees them in the destination
 	// snapshot. issue #260.
 	w.replaySlots(sceneID)
+	// Overlay-app control is stream-level too (ADR 016 Prism §3.2, issue #283):
+	// replay the accumulated `__overlay.<app_id>.*` control leaves onto the
+	// freshly-activated scene so a declared overlay app keeps its desired
+	// running/on_air state across the switch and a late joiner sees it in the
+	// destination snapshot.
+	w.replayOverlay(sceneID)
 	// Viewer credentials are stream-level too (ADR Blue 009 §3.2): replay the
 	// last-armed `__cam.viewer` payload onto the freshly-activated scene so a
 	// `meet-peer` slot keeps rendering across the switch. issue #261.

@@ -131,6 +131,22 @@ func (sh *Show) emitSlotAssignment(slotRef, peerLabel string) {
 	}
 }
 
+// emitOverlayApp is the closure each scene's `overlay-app.set` op invokes to
+// forward the stream-level overlay control state to the LSDP wire (ADR 016
+// Prism §3.2, issue #283). running / on_air may be nil (dimension unchanged).
+// A nil wire (bespoke mode) drops it — the app's durable state belongs to the
+// app itself (RC #11), the LSDP mirror is the derived cache. Read under RLock
+// at CALL time so boot-load order (SetMirrors before scene loads) is
+// irrelevant.
+func (sh *Show) emitOverlayApp(appID string, running, onAir *bool) {
+	sh.mu.RLock()
+	m := sh.mirrors
+	sh.mu.RUnlock()
+	if m != nil {
+		m.EmitOverlayApp(appID, running, onAir)
+	}
+}
+
 // SetExecMetrics installs the exec-layer metrics sink (implemented by
 // *obs.Metrics). Called once at boot, before any scene is loaded.
 func (sh *Show) SetExecMetrics(m ExecMetrics) {
@@ -184,6 +200,15 @@ type MirrorRegistry interface {
 	// resolves to its bound peer. The leaf rides a reserved namespace that
 	// bypasses the per-scene bound-leaf gate (it is not a scene leaf).
 	EmitSlotAssignment(slotRef, peerLabel string)
+	// EmitOverlayApp records the stream-level desired `{running, on_air}`
+	// control state of an operator-declared overlay app and emits the reserved
+	// `__overlay.<app_id>.running` / `.on_air` boolean leaves on the active wire
+	// (ADR 016 Prism §3.2, issue #283). running / on_air may be nil (that
+	// dimension unchanged). Stream-level: the state persists across scene
+	// switches and is replayed onto the destination scene at SetActive. The
+	// leaves ride a reserved namespace that bypasses the per-scene bound-leaf
+	// gate. Memory only — no durable store (RC #11).
+	EmitOverlayApp(appID string, running, onAir *bool)
 }
 
 // RosterEntry is one scene of the show's preload roster (scene_roster
@@ -287,6 +312,11 @@ func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.Rend
 	// `slot_ref → peer_label` binding to the LSDP wire after a durable ZabCam
 	// upsert. Stream-level: the binding outlives any single scene.
 	scene.SetSlotAssigner(sh.emitSlotAssignment)
+	// Stream-level overlay-app control seam (ADR 016 Prism §3.2, issue #283):
+	// every loaded scene gets the same closure — the `overlay-app.set` op routes
+	// the desired `{running, on_air}` state to the LSDP overlay mirror.
+	// Stream-level: the state outlives any single scene.
+	scene.SetOverlayAppSetter(sh.emitOverlayApp)
 	// R9 world-effect install (ADR 006 §3.4, load-bearing). The
 	// world-touching ops (http.request / db.query / source.read) are
 	// registered ONLY when this scene loads with a non-empty exec set —
