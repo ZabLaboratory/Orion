@@ -60,20 +60,20 @@ func overlaySetProg(cfg map[string]json.RawMessage) *ExecProgram {
 }
 
 func TestOverlayAppSet_EmitsMirrorState(t *testing.T) {
-	cap := &overlayCapture{}
+	rec := &overlayCapture{}
 	sc := execScene(t, "overlay-emit", overlaySetProg(map[string]json.RawMessage{
 		"app_id":  raw(`"app-1"`),
 		"running": raw(`true`),
 		"on_air":  raw(`false`),
 	}))
-	sc.SetOverlayAppSetter(cap.set)
+	sc.SetOverlayAppSetter(rec.set)
 	startScene(t, sc)
 	mustFire(t, sc, "start")
 
 	// The op ran and fell through to `then`.
 	waitForState(t, sc, "__vars.bp.done", "1", 2*time.Second)
 
-	calls, appID, running, onAir := cap.snapshot()
+	calls, appID, running, onAir := rec.snapshot()
 	if calls != 1 {
 		t.Fatalf("seam calls = %d, want 1", calls)
 	}
@@ -91,17 +91,17 @@ func TestOverlayAppSet_EmitsMirrorState(t *testing.T) {
 // A set carrying only `on_air` leaves `running` unchanged — the seam receives
 // nil for the untouched dimension (partial update, ADR 016 §3.2).
 func TestOverlayAppSet_OptionalDimensionsPassNil(t *testing.T) {
-	cap := &overlayCapture{}
+	rec := &overlayCapture{}
 	sc := execScene(t, "overlay-partial", overlaySetProg(map[string]json.RawMessage{
 		"app_id": raw(`"app-2"`),
 		"on_air": raw(`true`),
 	}))
-	sc.SetOverlayAppSetter(cap.set)
+	sc.SetOverlayAppSetter(rec.set)
 	startScene(t, sc)
 	mustFire(t, sc, "start")
 	waitForState(t, sc, "__vars.bp.done", "1", 2*time.Second)
 
-	_, appID, running, onAir := cap.snapshot()
+	_, appID, running, onAir := rec.snapshot()
 	if appID != "app-2" {
 		t.Fatalf("app_id = %q, want app-2", appID)
 	}
@@ -129,16 +129,16 @@ func TestOverlayAppSet_NilSeamConstructionSafe(t *testing.T) {
 // A missing `app_id` skips the emission but STILL fires `then` (authoring gap
 // surfaced at validation, never a runtime crash).
 func TestOverlayAppSet_MissingAppIDSkipsButFiresThen(t *testing.T) {
-	cap := &overlayCapture{}
+	rec := &overlayCapture{}
 	sc := execScene(t, "overlay-noappid", overlaySetProg(map[string]json.RawMessage{
 		"running": raw(`true`),
 	}))
-	sc.SetOverlayAppSetter(cap.set)
+	sc.SetOverlayAppSetter(rec.set)
 	startScene(t, sc)
 	mustFire(t, sc, "start")
 	waitForState(t, sc, "__vars.bp.done", "1", 2*time.Second)
 
-	if calls, _, _, _ := cap.snapshot(); calls != 0 {
+	if calls, _, _, _ := rec.snapshot(); calls != 0 {
 		t.Fatalf("seam calls = %d, want 0 (skipped on empty app_id)", calls)
 	}
 }
