@@ -167,6 +167,113 @@ func TestCockpit_AggregatesParamsAndTriggers(t *testing.T) {
 	}
 }
 
+// TestCockpit_StreamItemsCarryRuleID (ADR 009 Amendment 1, #285): every
+// stream-scope facet item is stamped with rule_id = the promoted rule's stable
+// id (the streamRules key). Scene-scope items carry no rule_id.
+func TestCockpit_StreamItemsCarryRuleID(t *testing.T) {
+	f := newCockpitFixture(t)
+	w, body := getContracts(t, f, "operator", "?stream_id=s1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var found bool
+	for _, tr := range body.Triggers {
+		switch tr.Scope {
+		case scopeStream:
+			if tr.RuleID != cockpitRuleID {
+				t.Fatalf("stream trigger %s rule_id = %q, want %q", tr.EntrypointID, tr.RuleID, cockpitRuleID)
+			}
+			found = true
+		case scopeScene:
+			if tr.RuleID != "" {
+				t.Fatalf("scene trigger %s leaked rule_id %q", tr.EntrypointID, tr.RuleID)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("no stream-scope trigger found (triggers=%+v)", body.Triggers)
+	}
+	for _, p := range body.Params {
+		if p.Scope == scopeScene && p.RuleID != "" {
+			t.Fatalf("scene param %s leaked rule_id %q", p.Path, p.RuleID)
+		}
+	}
+}
+
+// TestCockpit_MultiRuleDistinctRuleIDs (#285): with TWO promoted stream rules,
+// each item routes uniquely by its own rule_id — the exact ambiguity #286
+// resolves (both may compile with blueprint_id "_").
+func TestCockpit_MultiRuleDistinctRuleIDs(t *testing.T) {
+	f := newCockpitFixture(t)
+	const secondRuleID = "55555555-5555-5555-5555-555555555555"
+	secondGraph := &compiler.Graph{SceneID: secondRuleID, SceneVersion: "sha256:r2"}
+	secondProg := &runtime.ExecProgram{
+		BlueprintKey: "rule2",
+		Nodes:        map[string]*runtime.ExecNode{"sink": {ID: "sink", Op: runtime.OpVariableSet, Config: map[string]json.RawMessage{"variable": json.RawMessage(`"w"`)}}},
+		Entrypoints: map[string]runtime.ExecEntry{
+			"toggle": {Kind: runtime.EntryOnCall, Node: "toggle", Target: runtime.ExecTarget{Node: "sink"}},
+		},
+	}
+	if err := f.show.PromoteStreamRule(secondRuleID, secondGraph, &compiler.RenderBundle{SceneVersion: "sha256:r2"}, secondProg); err != nil {
+		t.Fatalf("PromoteStreamRule(second): %v", err)
+	}
+
+	w, body := getContracts(t, f, "operator", "?stream_id=s1")
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	byRule := map[string]string{} // rule_id -> blueprint_key/entry
+	for _, tr := range body.Triggers {
+		if tr.Scope != scopeStream {
+			continue
+		}
+		if tr.RuleID == "" {
+			t.Fatalf("stream trigger %s has empty rule_id", tr.EntrypointID)
+		}
+		byRule[tr.RuleID] = tr.BlueprintKey + "/" + tr.EntrypointID
+	}
+	if byRule[cockpitRuleID] != "rule/toggle" {
+		t.Fatalf("rule %s -> %q, want rule/toggle (byRule=%+v)", cockpitRuleID, byRule[cockpitRuleID], byRule)
+	}
+	if byRule[secondRuleID] != "rule2/toggle" {
+		t.Fatalf("rule %s -> %q, want rule2/toggle (byRule=%+v)", secondRuleID, byRule[secondRuleID], byRule)
+	}
+}
+
+// TestCockpit_SceneItemShapeByteStable (RC1, #285): the raw JSON of every
+// scene-scope facet item has NO `rule_id` key — the additive field must not
+// perturb the frozen Conduit contract (#213). Stream items DO carry the key.
+func TestCockpit_SceneItemShapeByteStable(t *testing.T) {
+	f := newCockpitFixture(t)
+	w := opRequest(t, f.mux, "GET", "/api/v1/cockpit/contracts?stream_id=s1", "operator", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var raw struct {
+		Params   []map[string]json.RawMessage `json:"params"`
+		Triggers []map[string]json.RawMessage `json:"triggers"`
+		Awaits   []map[string]json.RawMessage `json:"awaits"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw: %v", err)
+	}
+	check := func(kind string, items []map[string]json.RawMessage) {
+		for _, it := range items {
+			_, hasRuleID := it["rule_id"]
+			isStream := string(it["scope"]) == `"`+scopeStream+`"`
+			if isStream && !hasRuleID {
+				t.Fatalf("%s stream item missing rule_id: %v", kind, it)
+			}
+			if !isStream && hasRuleID {
+				t.Fatalf("%s scene item carries rule_id (RC1 violated): %v", kind, it)
+			}
+		}
+	}
+	check("param", raw.Params)
+	check("trigger", raw.Triggers)
+	check("await", raw.Awaits)
+}
+
 func TestCockpit_PendingAwaitPresentAndScoped(t *testing.T) {
 	f := newCockpitFixture(t)
 	// The active scene's on-start arms the await; poll until it surfaces.
