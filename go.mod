@@ -3,7 +3,7 @@ module github.com/ZabLaboratory/Orion
 go 1.26.2
 
 require (
-	github.com/Lumencast/lumencast-go v0.1.0
+	github.com/Lumencast/lumencast-go v0.2.0
 	github.com/coder/websocket v1.8.14
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2

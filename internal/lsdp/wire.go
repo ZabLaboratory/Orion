@@ -183,12 +183,10 @@ func (w *Wire) SetActive(sceneID string) {
 	// across the switch and a late joiner sees them in the destination
 	// snapshot. issue #260.
 	w.replaySlots(sceneID)
-	// Overlay-app control is stream-level too (ADR 016 Prism §3.2, issue #283):
-	// replay the accumulated `__overlay.<app_id>.*` control leaves onto the
-	// freshly-activated scene so a declared overlay app keeps its desired
-	// running/on_air state across the switch and a late joiner sees it in the
-	// destination snapshot.
-	w.replayOverlay(sceneID)
+	// Overlay-app control is stream-level too (ADR 016 Prism §3.2, issue #283)
+	// but is now carried on the show-level `overlay_apps` frame (lumencast-go
+	// v0.2.0, #292), which the kit caches + replays on join independently of any
+	// scene — so there is NO per-SetActive overlay replay here anymore.
 	// Viewer credentials are stream-level too (ADR Blue 009 §3.2): replay the
 	// last-armed `__cam.viewer` payload onto the freshly-activated scene so a
 	// `meet-peer` slot keeps rendering across the switch. issue #261.

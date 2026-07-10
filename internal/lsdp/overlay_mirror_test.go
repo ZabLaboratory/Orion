@@ -15,45 +15,24 @@ import (
 
 func boolPtr(b bool) *bool { return &b }
 
-// readUntilLeaves reads server frames until every requested leaf has been
-// observed (in a Snapshot's State or any Delta's Patches), then returns their
-// values. Unlike readUntilSlot it accumulates across a SINGLE multi-patch delta
-// — the overlay mirror emits running + on_air together, so a per-leaf read would
-// consume the whole delta on the first lookup and starve the second.
-func readUntilLeaves(ctx context.Context, t *testing.T, c *websocket.Conn, leaves ...string) map[string]string {
+// readUntilOverlayApps reads server frames until an overlay_apps frame arrives
+// (skipping the join snapshot / roster / deltas), then returns it.
+func readUntilOverlayApps(ctx context.Context, t *testing.T, c *websocket.Conn) *lproto.OverlayApps {
 	t.Helper()
-	want := make(map[string]struct{}, len(leaves))
-	for _, l := range leaves {
-		want[l] = struct{}{}
-	}
-	got := make(map[string]string, len(leaves))
-	for i := 0; i < 8 && len(got) < len(want); i++ {
-		switch m := readServerFrame(ctx, t, c).(type) {
-		case *lproto.Snapshot:
-			for l := range want {
-				if v, ok := m.State[l]; ok {
-					got[l] = string(v)
-				}
-			}
-		case *lproto.Delta:
-			for _, p := range m.Patches {
-				if _, ok := want[p.Path]; ok {
-					got[p.Path] = string(p.Value)
-				}
-			}
+	for i := 0; i < 8; i++ {
+		if m, ok := readServerFrameRaw(ctx, t, c).(*lproto.OverlayApps); ok {
+			return m
 		}
 	}
-	if len(got) < len(want) {
-		t.Fatalf("leaves %v never all reached the wire (got %v)", leaves, got)
-	}
-	return got
+	t.Fatal("overlay_apps frame never arrived")
+	return nil
 }
 
-// TestLSDP_OverlayAppEmitsDelta (issue #283): a stream-level overlay-app.set
-// emits the reserved `__overlay.<app_id>.running` / `.on_air` boolean leaves on
-// the active wire — the control state Prism (#360) reconciles the app + its
-// window_capture item from, without a scene switch or re-push.
-func TestLSDP_OverlayAppEmitsDelta(t *testing.T) {
+// TestLSDP_OverlayAppEmitsFrame (issue #283, channel #292): a stream-level
+// overlay-app.set publishes the show-level `overlay_apps` frame carrying the
+// desired {running, on_air} — the control state Prism (#360) reconciles the
+// app + its window_capture item from, without a scene switch or re-push.
+func TestLSDP_OverlayAppEmitsFrame(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -78,21 +57,23 @@ func TestLSDP_OverlayAppEmitsDelta(t *testing.T) {
 		t.Fatal("first frame must be the join snapshot")
 	}
 
-	// The op (post-fire) sets running=true, on_air=false — both leaves ride a
-	// single delta.
 	wire.EmitOverlayApp("app-1", boolPtr(true), boolPtr(false))
 
-	got := readUntilLeaves(ctx, t, c, "__overlay.app-1.running", "__overlay.app-1.on_air")
-	if got["__overlay.app-1.running"] != `true` {
-		t.Fatalf("running leaf = %s, want true", got["__overlay.app-1.running"])
+	frame := readUntilOverlayApps(ctx, t, c)
+	app, ok := frame.Apps["app-1"]
+	if !ok {
+		t.Fatalf("overlay_apps missing app-1: %+v", frame.Apps)
 	}
-	if got["__overlay.app-1.on_air"] != `false` {
-		t.Fatalf("on_air leaf = %s, want false", got["__overlay.app-1.on_air"])
+	if app.Running == nil || !*app.Running {
+		t.Fatalf("running = %v, want true", app.Running)
+	}
+	if app.OnAir == nil || *app.OnAir {
+		t.Fatalf("on_air = %v, want false", app.OnAir)
 	}
 }
 
-// TestLSDP_OverlayAppPartialUpdate: a set carrying only `on_air` emits ONLY the
-// on_air leaf — the untouched dimension is not written (partial update).
+// TestLSDP_OverlayAppPartialUpdate: a set carrying only `on_air` yields a frame
+// whose app has OnAir set and Running absent (nil) — partial update preserved.
 func TestLSDP_OverlayAppPartialUpdate(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -118,19 +99,56 @@ func TestLSDP_OverlayAppPartialUpdate(t *testing.T) {
 		t.Fatal("first frame must be the join snapshot")
 	}
 
-	// running left nil → only the on_air leaf is emitted.
 	wire.EmitOverlayApp("app-1", nil, boolPtr(true))
-	if got := readUntilSlot(ctx, t, c, "__overlay.app-1.on_air"); got != `true` {
-		t.Fatalf("on_air leaf = %s, want true", got)
+
+	frame := readUntilOverlayApps(ctx, t, c)
+	app := frame.Apps["app-1"]
+	if app.OnAir == nil || !*app.OnAir {
+		t.Fatalf("on_air = %v, want true", app.OnAir)
+	}
+	if app.Running != nil {
+		t.Fatalf("running must stay absent (nil), got %v", *app.Running)
 	}
 }
 
-// TestLSDP_OverlayAppPersistsAcrossSceneSwitch: the overlay control state is
-// stream-level — it survives a switch of active scene. A viewer joining the NEW
-// active scene after the switch gets the leaves in its keyframe, even though no
-// scene binds `__overlay.*` (it rides the wire above the per-scene bound-leaf
-// gate).
-func TestLSDP_OverlayAppPersistsAcrossSceneSwitch(t *testing.T) {
+// TestLSDP_OverlayAppDeliveredWithoutActiveScene (issue #292): the show-level
+// channel makes the overlay control state deliverable even with NO active scene
+// (the Marker case). The mirror emits before any scene is loaded; a viewer that
+// joins the scene-less show still receives the overlay_apps frame (kit cache +
+// holding-scene replay). This is what the old scene-riding leaves could NOT do.
+func TestLSDP_OverlayAppDeliveredWithoutActiveScene(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	logger := quietLogger(t)
+	wire, err := NewWire(logger, nil)
+	if err != nil {
+		t.Fatalf("NewWire: %v", err)
+	}
+	show := runtime.NewShow(runtime.NewComputeRegistry(), logger)
+	show.SetMirrors(wire)
+	t.Cleanup(show.Stop)
+
+	// NO Load, NO SetActive — an empty show. The overlay set still publishes.
+	wire.EmitOverlayApp("app-1", boolPtr(true), boolPtr(true))
+
+	c := dialLSDP(ctx, t, mountWire(t, wire), "viewer", 0)
+	defer c.Close(websocket.StatusNormalClosure, "")
+
+	frame := readUntilOverlayApps(ctx, t, c)
+	app, ok := frame.Apps["app-1"]
+	if !ok {
+		t.Fatalf("scene-less join did not receive app-1 overlay state: %+v", frame.Apps)
+	}
+	if app.Running == nil || !*app.Running || app.OnAir == nil || !*app.OnAir {
+		t.Fatalf("app-1 state wrong: running=%v on_air=%v", app.Running, app.OnAir)
+	}
+}
+
+// TestLSDP_OverlayAppSurvivesSceneSwitch: the state is show-level, so a viewer
+// joining AFTER a scene switch still receives it — now from the kit cache, no
+// per-SetActive replay needed.
+func TestLSDP_OverlayAppSurvivesSceneSwitch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -150,18 +168,16 @@ func TestLSDP_OverlayAppPersistsAcrossSceneSwitch(t *testing.T) {
 	if err := show.SetActive("scene-a", nil); err != nil {
 		t.Fatalf("SetActive A: %v", err)
 	}
-
-	// Set the control state on scene-a, then switch to scene-b.
 	wire.EmitOverlayApp("app-1", boolPtr(true), boolPtr(true))
 	if err := show.SetActive("scene-b", nil); err != nil {
 		t.Fatalf("SetActive B: %v", err)
 	}
 
-	// A viewer joining AFTER the switch (now on scene-b) must see the overlay
-	// leaves in its keyframe snapshot — replayed at SetActive.
 	c := dialLSDP(ctx, t, mountWire(t, wire), "viewer", 0)
 	defer c.Close(websocket.StatusNormalClosure, "")
-	if got := readUntilSlot(ctx, t, c, "__overlay.app-1.running"); got != `true` {
-		t.Fatalf("running leaf after switch = %s, want true (stream-level persist)", got)
+
+	frame := readUntilOverlayApps(ctx, t, c)
+	if app, ok := frame.Apps["app-1"]; !ok || app.Running == nil || !*app.Running {
+		t.Fatalf("overlay state lost across switch: %+v", frame.Apps)
 	}
 }
