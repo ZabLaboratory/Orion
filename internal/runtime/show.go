@@ -600,6 +600,22 @@ func (sh *Show) IsStreamRule(id string) bool {
 	return ok
 }
 
+// StreamRuleScene returns the loaded scene of the promoted stream-level rule
+// with this id (scene_id or blueprint_id), or nil when the id is not a
+// currently promoted rule (never promoted, or demoted since — its scene may
+// linger in the roster, so membership in streamRules is the authority). The
+// operator routes use it to resolve ?rule={rule_id}: nil → RULE_NOT_ACTIVE.
+// Atomic read — set membership and roster load are checked under one lock so a
+// racing demote is reflected consistently.
+func (sh *Show) StreamRuleScene(id string) *Scene {
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	if _, ok := sh.streamRules[id]; !ok {
+		return nil
+	}
+	return sh.scenes[id]
+}
+
 // StreamRuleScenes returns the promoted stream-level rule scenes, sorted by
 // id for a deterministic order (ADR 009 §3.3). Distinct from RouteTargets:
 // this excludes the active scene — it is purely the always-on rule set, the

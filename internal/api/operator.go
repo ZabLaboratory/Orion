@@ -80,6 +80,41 @@ func operatorTarget(deps PublicDeps, r *http.Request) *runtime.Scene {
 	return deps.Show.Active()
 }
 
+// resolveOperatorScene picks the scene the operator routes act on. Without a
+// selector it is the active/preview scene (operatorTarget). With ?rule={rule_id}
+// (ADR 009 Amendment 1, #286) it is the promoted stream-level rule with that id
+// — addressable now that #285 stamps the id on the cockpit contract.
+//
+// ?rule and ?target=preview are MUTUALLY EXCLUSIVE (400 SELECTOR_CONFLICT):
+// "preview-firing a stream rule" is meaningless today, so a silent precedence
+// is refused (Vigil, Amendment review). An unknown/demoted rule is 409
+// RULE_NOT_ACTIVE (mirror of BLUEPRINT_NOT_ACTIVE) — the id named no currently
+// promoted rule.
+//
+// Returns (scene, ok). ok=false means it has already written the error and the
+// handler must return. ok=true with a nil scene is the non-rule path's normal
+// "no live target" (no active scene / no preview) — the caller answers its own
+// per-route dormant code (409/410/empty), behaviour unchanged.
+func resolveOperatorScene(w http.ResponseWriter, deps PublicDeps, r *http.Request) (*runtime.Scene, bool) {
+	q := r.URL.Query()
+	ruleID := q.Get("rule")
+	if ruleID == "" {
+		return operatorTarget(deps, r), true
+	}
+	if q.Get("target") == "preview" {
+		writeOperatorError(w, http.StatusBadRequest, "SELECTOR_CONFLICT",
+			"?rule and ?target=preview are mutually exclusive")
+		return nil, false
+	}
+	scene := deps.Show.StreamRuleScene(ruleID)
+	if scene == nil {
+		writeOperatorError(w, http.StatusConflict, "RULE_NOT_ACTIVE",
+			"no promoted stream-level rule by that id")
+		return nil, false
+	}
+	return scene, true
+}
+
 // operatorCallBody is the POST /operator/call body: the payload bound under
 // the on-call node's data-out pin. Absent/empty body = null payload.
 type operatorCallBody struct {
@@ -101,7 +136,10 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 		blueprintID := resolveBlueprintKey(r.PathValue("blueprint_id"))
 		entrypointID := r.PathValue("entrypoint_id")
 
-		active := operatorTarget(deps, r)
+		active, ok := resolveOperatorScene(w, deps, r)
+		if !ok {
+			return
+		}
 		if active == nil || !active.HostsBlueprint(blueprintID) {
 			writeOperatorError(w, http.StatusConflict, "BLUEPRINT_NOT_ACTIVE",
 				"blueprint is not part of the active scene")
@@ -133,8 +171,12 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 func getRuntimePending(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
 		blueprintID := resolveBlueprintKey(r.PathValue("blueprint_id"))
+		active, ok := resolveOperatorScene(w, deps, r)
+		if !ok {
+			return
+		}
 		pending := []runtime.PendingAwait{}
-		if active := operatorTarget(deps, r); active != nil && active.HostsBlueprint(blueprintID) {
+		if active != nil && active.HostsBlueprint(blueprintID) {
 			pending = active.PendingAwaits(blueprintID)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"pending": pending})
@@ -162,7 +204,10 @@ func postOperatorResolve(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
-		active := operatorTarget(deps, r)
+		active, ok := resolveOperatorScene(w, deps, r)
+		if !ok {
+			return
+		}
 		if active == nil || !active.HostsBlueprint(blueprintID) {
 			// Dormant / unknown blueprint: the await cannot exist — Gone.
 			writeOperatorError(w, http.StatusGone, "AWAIT_GONE",

@@ -211,6 +211,142 @@ func TestOperator_LateResolveAfterSwitchAwayIs410(t *testing.T) {
 	}
 }
 
+// --- ?rule={rule_id} selector (ADR 009 Amendment 1, #286) -----------------
+
+const opRuleID = "99999999-9999-9999-9999-999999999999"
+
+// promoteOpRule adds a stream-level rule (blueprint "rule") to the fixture's
+// show, hosting an on-call entrypoint "toggle" that writes its payload to
+// __vars.rule.hit. Returns the rule id (its addressing token for ?rule=).
+func promoteOpRule(t *testing.T, f *operatorFixture) string {
+	t.Helper()
+	ruleGraph := &compiler.Graph{
+		SceneID: opRuleID, SceneVersion: "sha256:rule",
+		Defaults: map[string]json.RawMessage{"__vars.rule.hit": json.RawMessage(`null`)},
+	}
+	ruleProg := &runtime.ExecProgram{
+		BlueprintKey: "rule",
+		Nodes: map[string]*runtime.ExecNode{
+			"set.hit": {ID: "set.hit", Op: runtime.OpVariableSet,
+				Config: map[string]json.RawMessage{"variable": json.RawMessage(`"hit"`)},
+				Data:   []runtime.ExecDataInput{{Port: "value", From: "toggle", FromPort: "payload"}}},
+		},
+		Entrypoints: map[string]runtime.ExecEntry{
+			"toggle": {Kind: runtime.EntryOnCall, Node: "toggle", Target: runtime.ExecTarget{Node: "set.hit"}},
+		},
+	}
+	if err := f.show.PromoteStreamRule(opRuleID, ruleGraph, &compiler.RenderBundle{SceneVersion: "sha256:rule"}, ruleProg); err != nil {
+		t.Fatalf("PromoteStreamRule: %v", err)
+	}
+	return opRuleID
+}
+
+// TestOperator_CallRuleSelectorFires (#286): ?rule={rule_id} routes a call to a
+// promoted stream-level rule (NOT the active scene). The rule's blueprint "rule"
+// is dormant on the active-scene path — only the selector reaches it.
+func TestOperator_CallRuleSelectorFires(t *testing.T) {
+	f := newOperatorFixture(t)
+	ruleID := promoteOpRule(t, f)
+
+	// Without the selector, "rule" is not part of the active scene → 409.
+	wDormant := opRequest(t, f.mux, "POST", "/api/v1/operator/call/rule/toggle", "operator",
+		map[string]any{"payload": 1})
+	if wDormant.Code != http.StatusConflict {
+		t.Fatalf("rule call without selector: got %d, want 409", wDormant.Code)
+	}
+
+	// With ?rule=, it routes to the promoted rule and fires.
+	w := opRequest(t, f.mux, "POST", "/api/v1/operator/call/rule/toggle?rule="+ruleID, "operator",
+		map[string]any{"payload": map[string]any{"n": 5}})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("rule call: got %d, want 202 (body=%s)", w.Code, w.Body.String())
+	}
+	// The effect landed on the RULE scene's state, not the active scene.
+	rc, err := f.show.Get(ruleID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sub, snap := rc.Subscribe(16)
+		v, ok := snap.State["__vars.rule.hit"]
+		sub.Close()
+		if ok && string(v) == `{"n":5}` {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatal("rule on-call effect never landed on the rule scene")
+}
+
+// TestOperator_RuleAndPreviewSelectorsConflictIs400 (#286, RC3): ?rule and
+// ?target=preview are mutually exclusive — no silent precedence.
+func TestOperator_RuleAndPreviewSelectorsConflictIs400(t *testing.T) {
+	f := newOperatorFixture(t)
+	ruleID := promoteOpRule(t, f)
+	q := "?rule=" + ruleID + "&target=preview"
+	cases := []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodPost, "/api/v1/operator/call/rule/toggle" + q, map[string]any{"payload": 1}},
+		{http.MethodPost, "/api/v1/operator/resolve/rule/pick" + q, map[string]any{"value": 1}},
+		{http.MethodGet, "/api/v1/runtime/rule/pending" + q, nil},
+	}
+	for _, c := range cases {
+		w := opRequest(t, f.mux, c.method, c.path, "operator", c.body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s %s: got %d, want 400 (body=%s)", c.method, c.path, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp.Error != "SELECTOR_CONFLICT" {
+			t.Fatalf("%s: error = %q, want SELECTOR_CONFLICT", c.path, resp.Error)
+		}
+	}
+}
+
+// TestOperator_DemotedRuleSelectorIs409RuleNotActive (#286, RC4 — Vigil
+// explicitly required this test): ?rule={id} for an id that is not a currently
+// promoted rule (here: demoted after promotion) is 409 RULE_NOT_ACTIVE, on all
+// three routes.
+func TestOperator_DemotedRuleSelectorIs409RuleNotActive(t *testing.T) {
+	f := newOperatorFixture(t)
+	ruleID := promoteOpRule(t, f)
+	f.show.DemoteStreamRule(ruleID)
+
+	cases := []struct {
+		method, path string
+		body         any
+	}{
+		{http.MethodPost, "/api/v1/operator/call/rule/toggle?rule=" + ruleID, map[string]any{"payload": 1}},
+		{http.MethodPost, "/api/v1/operator/resolve/rule/pick?rule=" + ruleID, map[string]any{"value": 1}},
+		{http.MethodGet, "/api/v1/runtime/rule/pending?rule=" + ruleID, nil},
+	}
+	for _, c := range cases {
+		w := opRequest(t, f.mux, c.method, c.path, "operator", c.body)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("%s %s: got %d, want 409 (body=%s)", c.method, c.path, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Error string `json:"error"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if resp.Error != "RULE_NOT_ACTIVE" {
+			t.Fatalf("%s %s: error = %q, want RULE_NOT_ACTIVE", c.method, c.path, resp.Error)
+		}
+	}
+
+	// An id that was never a rule is likewise RULE_NOT_ACTIVE.
+	w := opRequest(t, f.mux, http.MethodGet,
+		"/api/v1/runtime/rule/pending?rule=deadbeef-0000-0000-0000-000000000000", "operator", nil)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("never-promoted rule: got %d, want 409", w.Code)
+	}
+}
+
 // waitAwaitArmed polls until the await is registered (on-start armed it).
 func waitAwaitArmed(t *testing.T, f *operatorFixture) {
 	t.Helper()
