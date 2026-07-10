@@ -201,13 +201,12 @@ type MirrorRegistry interface {
 	// bypasses the per-scene bound-leaf gate (it is not a scene leaf).
 	EmitSlotAssignment(slotRef, peerLabel string)
 	// EmitOverlayApp records the stream-level desired `{running, on_air}`
-	// control state of an operator-declared overlay app and emits the reserved
-	// `__overlay.<app_id>.running` / `.on_air` boolean leaves on the active wire
-	// (ADR 016 Prism §3.2, issue #283). running / on_air may be nil (that
-	// dimension unchanged). Stream-level: the state persists across scene
-	// switches and is replayed onto the destination scene at SetActive. The
-	// leaves ride a reserved namespace that bypasses the per-scene bound-leaf
-	// gate. Memory only — no durable store (RC #11).
+	// control state of an operator-declared overlay app and publishes the
+	// complete show-level `overlay_apps` frame on the wire (ADR 016 Prism §3.2,
+	// issue #283; channel changed in #292). running / on_air may be nil (that
+	// dimension unchanged). Stream-level: the frame is show metadata (not scene
+	// leaves), so the kit caches + replays it on join and it is deliverable even
+	// with no active scene — no per-SetActive replay. Memory only (RC #11).
 	EmitOverlayApp(appID string, running, onAir *bool)
 }
 

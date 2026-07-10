@@ -11,10 +11,10 @@ import (
 // OPTIONAL `running` / `on_air` booleans, then forwards the desired control
 // state to the stream-level overlay mirror (the LSDP wire) via the Show seam
 // wired at Load. The mirror accumulates the state at STREAM level (above any
-// scene) and emits the reserved `__overlay.<app_id>.running` / `.on_air`
-// boolean leaves, which the Prism consumer (lot 5, #360) reconciles into the
-// app process + its composited window_capture item. The leaf carries CONTROL
-// only — two booleans, never any app data (ADR 016 §3.2).
+// scene) and publishes the show-level `overlay_apps` frame (#292), which the
+// Prism consumer (#360) reconciles into the app process + its composited
+// window_capture item. The frame carries CONTROL only — {running, on_air}
+// per app, never any app data (ADR 016 §3.2).
 //
 // running / on_air are OPTIONAL: a set may touch one dimension without
 // clobbering the other (e.g. reveal on air while the process is already up).
