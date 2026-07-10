@@ -42,19 +42,29 @@ const (
 // cockpitParam / cockpitTrigger / cockpitAwait are the scope-stamped facet
 // items the route emits. They embed the runtime's role-agnostic facet shape
 // and add `scope`.
+//
+// `rule_id` (ADR 009 Amendment 1, #285) is the stable id of the promoted
+// stream-level rule an item belongs to — the key `streamRules` holds
+// (scene_id or blueprint_id), which #286 targets via `?rule={rule_id}`.
+// It is additive and `omitempty`: only stream-scope items carry it, so
+// scene-scope items are byte-for-byte unchanged (frozen Conduit contract
+// #213 preserved).
 type cockpitParam struct {
 	runtime.ContractParam
-	Scope string `json:"scope"`
+	Scope  string `json:"scope"`
+	RuleID string `json:"rule_id,omitempty"`
 }
 
 type cockpitTrigger struct {
 	runtime.ContractTrigger
-	Scope string `json:"scope"`
+	Scope  string `json:"scope"`
+	RuleID string `json:"rule_id,omitempty"`
 }
 
 type cockpitAwait struct {
 	runtime.ContractAwait
-	Scope string `json:"scope"`
+	Scope  string `json:"scope"`
+	RuleID string `json:"rule_id,omitempty"`
 }
 
 // cockpitContracts is the GET /cockpit/contracts response body. The three
@@ -93,11 +103,13 @@ func getCockpitContracts(deps PublicDeps) http.HandlerFunc {
 		// scene), else the global show's active scene (the antenne). Vanishes on a
 		// flip of whichever side it reads.
 		if active := operatorTarget(deps, r); active != nil {
-			appendScene(&out, active, scopeScene)
+			appendScene(&out, active, scopeScene, "")
 		}
-		// Promoted stream-level rules → scope `stream` (permanent).
+		// Promoted stream-level rules → scope `stream` (permanent). Each item is
+		// stamped with rule_id = the scene's id, which IS the stable rule key in
+		// `streamRules` (scene_id or blueprint_id) — the token #286 routes on.
 		for _, rule := range deps.Show.StreamRuleScenes() {
-			appendScene(&out, rule, scopeStream)
+			appendScene(&out, rule, scopeStream, rule.ID())
 		}
 
 		writeJSON(w, http.StatusOK, out)
@@ -105,8 +117,10 @@ func getCockpitContracts(deps PublicDeps) http.HandlerFunc {
 }
 
 // appendScene derives one scene's contract and appends its facet items to the
-// aggregate, stamped with scope. A scene whose loop is gone (nil contracts)
-// contributes nothing.
+// aggregate, stamped with scope and (for stream-scope) ruleID. A scene whose
+// loop is gone (nil contracts) contributes nothing. ruleID is "" for the
+// scene-scope active scene — `omitempty` then drops the field, keeping the
+// scene item shape byte-for-byte stable (frozen contract #213).
 //
 // The runtime carries the DEFAULT (legacy single / blueprint-free) blueprint
 // under the empty scene-local key "". An empty `blueprint_id` cannot be
@@ -116,21 +130,21 @@ func getCockpitContracts(deps PublicDeps) http.HandlerFunc {
 // addressing token `_` (defaultBlueprintToken); the operator routes decode it
 // back to "" (resolveBlueprintKey). This is an API-boundary alias only — the
 // runtime keying is untouched, the round-trip is exact.
-func appendScene(out *cockpitContracts, scene *runtime.Scene, scope string) {
+func appendScene(out *cockpitContracts, scene *runtime.Scene, scope, ruleID string) {
 	sc := scene.OperatorContracts()
 	if sc == nil {
 		return
 	}
 	for _, p := range sc.Params {
-		out.Params = append(out.Params, cockpitParam{ContractParam: p, Scope: scope})
+		out.Params = append(out.Params, cockpitParam{ContractParam: p, Scope: scope, RuleID: ruleID})
 	}
 	for _, t := range sc.Triggers {
 		t.BlueprintKey = addressBlueprintKey(t.BlueprintKey)
-		out.Triggers = append(out.Triggers, cockpitTrigger{ContractTrigger: t, Scope: scope})
+		out.Triggers = append(out.Triggers, cockpitTrigger{ContractTrigger: t, Scope: scope, RuleID: ruleID})
 	}
 	for _, a := range sc.Awaits {
 		a.BlueprintKey = addressBlueprintKey(a.BlueprintKey)
-		out.Awaits = append(out.Awaits, cockpitAwait{ContractAwait: a, Scope: scope})
+		out.Awaits = append(out.Awaits, cockpitAwait{ContractAwait: a, Scope: scope, RuleID: ruleID})
 	}
 }
 
