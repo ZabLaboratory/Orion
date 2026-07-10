@@ -287,3 +287,99 @@ ce minting-là passera par Bastion (vigilance ADR 008 § 5 réaffirmée).
    existante restent **stables** : le mécanisme stream-rule n'introduit
    aucun changement compilateur, et une signature ajoutée mais non utilisée
    par une scène ne modifie pas son hash.
+
+## Amendment 1 — Surface opérateur des stream-rules (adressage + contrat cockpit)
+
+- **Status**: accepted
+- **Date**: 2026-07-10
+- **Decided**: 2026-07-10
+- **Deciders**: @ClodoCapeo
+- **Author**: Atlas
+
+### A1.1 Context
+
+Le contrat cockpit agrégé (`GET /cockpit/contracts`, Blue ADR 008 §3.5) stampe
+déjà correctement `scope: "stream"` sur les facettes des règles promues
+(`api/cockpit.go:99` — itération `StreamRuleScenes()`). Mais la surface est
+incomplète sur trois points constatés au premier test réel (2026-07-09) :
+
+1. **Prism n'appelle plus l'agrégat.** `cockpit-api.ts::contracts()` a été
+   repointé sur l'autorité déclarative ZabCanvas
+   (`GET /canvas/api/v1/scenes/{id}/operator-contract`) lors du pivot
+   preview full-prod — une dérivation **scene-scoped par construction**
+   (`operator_contract_service.py`, scope `scene` en dur, correct pour ce
+   qu'elle possède). La facette `stream` n'atteint donc jamais le pilotage ;
+   `CockpitScope = "scene" | "stream"` est resté aspirational côté client.
+2. **Les routes opérateur ne résolvent que la scène active.**
+   `postOperatorCall` / `postOperatorResolve` / `getRuntimePending` passent
+   par `operatorTarget()` (scène active ou clone preview) et ne cherchent
+   jamais dans `StreamRuleScenes()`. Un trigger `scope: stream` annoncé par
+   le contrat est infireable : 409 `BLUEPRINT_NOT_ACTIVE` — ou pire,
+   collision silencieuse avec le blueprint default (`_`) de la scène active.
+3. **Adressage ambigu.** Une règle blueprint-direct est compilée avec la clé
+   blueprint vide (`CompileExecPrograms(bp, "")`) → son contrat émet
+   `blueprint_id: "_"`. Deux règles promues + la scène active peuvent toutes
+   émettre `_` : le tuple `{blueprint_id, entrypoint_id}` ne suffit plus à
+   router un call.
+
+### A1.2 Decision
+
+1. **Orion reste l'unique autorité du scope `stream`.** ZabCanvas n'est PAS
+   modifié : sa dérivation possède les scènes et rien d'autre — un registre
+   de blueprints stream-level côté ZabCanvas dupliquerait le rule-set d'Orion
+   (seul à savoir ce qui est promu MAINTENANT) et créerait un drift. Rejeté.
+2. **Identifiant de règle dans le contrat (additif).** `appendScene` stampe
+   `rule_id` (la clé Show du rule-set : `scene_id` ou `blueprint_id`) sur
+   chaque facet item de scope `stream`. Champ additif — la forme gelée
+   Conduit (PR #213) n'est pas cassée, les items `scene` sont inchangés,
+   Prism (types ouverts) le lit sans migration.
+3. **Sélecteur de cible `?rule={rule_id}` sur les trois routes opérateur**
+   (même couture que `?target=preview`, `operatorTarget` reste l'unique
+   point de branchement). `rule` présent → résolution dans
+   `StreamRuleScenes()` par id, puis résolution blueprint-key/entrypoint
+   inchangée dans l'instance règle. `rule` + `target=preview` simultanés =
+   400 (cibles disjointes). Pas de nouveau tree de routes ; pas de
+   changement de keying compilateur (re-keyer les règles blueprint-direct
+   par UUID toucherait le namespacing des leaves — risque compilateur
+   disproportionné, rejeté).
+4. **Prism fusionne deux lectures** dans le pilotage : ZabCanvas
+   (déclaratif, scope `scene`, inchangé — vaut avant push) + Orion
+   `GET /cockpit/contracts` filtré `scope == "stream"` (runtime local, seul
+   moteur qui exécute). Les gestes stream portent `?rule=`. Le panneau
+   Dashboard « Blueprints · stream-level » (activation ADR 009 §3.1,
+   `POST/DELETE /show/stream-rules`) reste la surface de *lifecycle* — même
+   sujet, moitié déjà construite ; il n'est pas étendu en surface de
+   pilotage.
+
+### A1.3 Consequences
+
+- Chaîne opérateur complète : publier (Blue, tag `nature:stream-level`) →
+  promouvoir (Dashboard / `POST /show/stream-rules`) → boutons `stream`
+  au pilotage → fire `?rule=`. Publier sans promouvoir n'affiche rien —
+  comportement voulu (un contrat n'annonce que ce qui est armé).
+- Dette existante rendue visible : les règles blueprint-direct sont
+  in-memory only (pas de reseed au boot — `rule_kind` + reseed = follow-up
+  déjà noté dans `stream_rules.go`). À traiter en issue séparée.
+
+### A1.4 Risks
+
+- Collision d'entrypoints entre règle et scène active : levée par le
+  sélecteur explicite `?rule=` (jamais de recherche-union implicite).
+- Un `rule_id` périmé (règle dépromue entre le render du cockpit et le
+  clic) → 409 `RULE_NOT_ACTIVE` (nouveau code, miroir de
+  `BLUEPRINT_NOT_ACTIVE`).
+
+### A1.5 Resolution criteria (testables)
+
+1. `GET /cockpit/contracts` : chaque facet item `scope: stream` porte
+   `rule_id` ; les items `scene` n'en portent pas ; forme `scene` inchangée
+   byte-for-byte (fixtures).
+2. `POST /operator/call/{bp}/{entry}?rule={id}` fire l'entrypoint d'une
+   règle promue (202) sans toucher la scène active ; sans `?rule=`,
+   comportement actuel intact (tests existants verts).
+3. `rule` + `target=preview` → 400 ; `rule` inconnu/dépromu → 409
+   `RULE_NOT_ACTIVE`.
+4. Pilotage Prism : un blueprint stream-level promu affiche ses boutons
+   groupés « stream » ; le clic aboutit (202) ; un flip de scène active ne
+   les fait pas disparaître.
+5. La dérivation ZabCanvas est inchangée (aucun commit ZabCanvas).
