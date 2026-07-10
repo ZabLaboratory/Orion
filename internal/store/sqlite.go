@@ -517,6 +517,48 @@ func (s *SQLiteStore) ListStreamRules(ctx context.Context) ([]uuid.UUID, error) 
 	return out, nil
 }
 
+func (s *SQLiteStore) AddBlueprintStreamRule(ctx context.Context, blueprintID uuid.UUID) error {
+	if _, err := s.db.ExecContext(ctx,
+		`INSERT INTO show_blueprint_stream_rules (blueprint_id) VALUES (?)
+		   ON CONFLICT (blueprint_id) DO NOTHING`, blueprintID.String()); err != nil {
+		return fmt.Errorf("add blueprint stream rule: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) RemoveBlueprintStreamRule(ctx context.Context, blueprintID uuid.UUID) error {
+	if _, err := s.db.ExecContext(ctx,
+		`DELETE FROM show_blueprint_stream_rules WHERE blueprint_id = ?`, blueprintID.String()); err != nil {
+		return fmt.Errorf("remove blueprint stream rule: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) ListBlueprintStreamRules(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT blueprint_id FROM show_blueprint_stream_rules ORDER BY promoted_at, blueprint_id`)
+	if err != nil {
+		return nil, fmt.Errorf("list blueprint stream rules: %w", err)
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var idStr string
+		if err := rows.Scan(&idStr); err != nil {
+			return nil, fmt.Errorf("list blueprint stream rules scan: %w", err)
+		}
+		id, perr := uuid.Parse(idStr)
+		if perr != nil {
+			return nil, fmt.Errorf("list blueprint stream rules parse: %w", perr)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list blueprint stream rules rows: %w", err)
+	}
+	return out, nil
+}
+
 // ---- validations ---------------------------------------------------------
 
 func (s *SQLiteStore) UpsertValidation(ctx context.Context, v SceneValidation) error {

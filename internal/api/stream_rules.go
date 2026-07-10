@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 
 	"github.com/google/uuid"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
+	"github.com/ZabLaboratory/Orion/internal/store"
 )
 
 // Stream-level Blue rule promotion/demotion (ADR 009 §3.1, issue #154).
@@ -135,12 +137,32 @@ func deleteStreamRule(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid scene id"})
 			return
 		}
+		// Read the kind BEFORE demote (the map entry is gone after) so we clean
+		// the matching persistence table (#287). scene → show_stream_rules,
+		// blueprint-direct → show_blueprint_stream_rules.
+		kind, wasRule := deps.Show.StreamRuleKind(sid.String())
 		// In-memory demote first (cancels live tasks, clears the on-air flag
 		// unless it is the active scene). Safe even if the id is not a rule.
 		deps.Show.DemoteStreamRule(sid.String())
-		// Drop the persisted selection (idempotent — zero rows if absent).
-		if err := deps.Store.RemoveStreamRule(r.Context(), sid); err != nil {
-			deps.Logger.Error("remove stream rule failed", "scene_id", sid.String(), "err", err)
+		// Drop the persisted selection (idempotent — zero rows if absent). When
+		// the id is not a live rule (already demoted / never promoted) the kind
+		// is unknown, so clean BOTH tables to keep re-demote idempotent.
+		var rmErr error
+		switch {
+		case wasRule && kind == runtime.RuleKindBlueprint:
+			rmErr = deps.Store.RemoveBlueprintStreamRule(r.Context(), sid)
+		case wasRule:
+			rmErr = deps.Store.RemoveStreamRule(r.Context(), sid)
+		default:
+			if err := deps.Store.RemoveStreamRule(r.Context(), sid); err != nil {
+				rmErr = err
+			}
+			if err := deps.Store.RemoveBlueprintStreamRule(r.Context(), sid); err != nil {
+				rmErr = err
+			}
+		}
+		if rmErr != nil {
+			deps.Logger.Error("remove stream rule failed", "rule_id", sid.String(), "err", rmErr)
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"demoted_scene_id": sid.String()})
 	})
@@ -214,7 +236,7 @@ func promoteBlueprintStreamRule(w http.ResponseWriter, r *http.Request, deps Pub
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
 		return
 	}
-	if err := deps.Show.PromoteStreamRule(blueprintID, graph, &compiler.RenderBundle{}, progs...); err != nil {
+	if err := deps.Show.PromoteBlueprintStreamRule(blueprintID, graph, &compiler.RenderBundle{}, progs...); err != nil {
 		if errors.Is(err, runtime.ErrRuleIsActiveScene) {
 			status, code := codeFromError(err)
 			writeJSON(w, status, map[string]string{"code": code})
@@ -224,5 +246,59 @@ func promoteBlueprintStreamRule(w http.ResponseWriter, r *http.Request, deps Pub
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
 		return
 	}
+	// Persist the blueprint-direct selection so it survives a restart (#287).
+	// Best-effort after the in-memory promotion, mirroring the scene path: the
+	// rule already runs; a DB write failure must not fail a live promotion, but
+	// it is logged so a persistence outage is visible. bpID parsed above.
+	if bpUUID, ok := parseUUID(blueprintID); ok {
+		if err := deps.Store.AddBlueprintStreamRule(r.Context(), bpUUID); err != nil {
+			deps.Logger.Error("persist blueprint stream rule failed", "blueprint_id", blueprintID, "err", err)
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]string{"stream_rule_id": blueprintID})
+}
+
+// ReloadBlueprintStreamRules reseeds the persisted blueprint-direct stream
+// rules into the roster after a restart (#287). Distinct from reloadStreamRules
+// (scene-based, which reseeds from stored pushed versions): a blueprint-direct
+// rule has no carrier scene / pushed version, so it reseeds by re-fetching +
+// recompiling from Blue — the SAME machinery as promoteBlueprintStreamRule
+// (FetchBlueprint → CompileExecPrograms(bp, "") → ExecProgramsFromGraph). Only
+// IDENTITY is durable: the rule reseeds from declared defaults and fires
+// on-start once (criterion #11, ADR 009 §3.4) — no live leaf state is restored.
+// Fail-soft per rule: an unreachable/deleted blueprint is skipped, never aborts
+// boot. Must run AFTER the compiler fetcher is wired (unlike the scene reseed,
+// which needs no fetcher), so cmd/orion calls it post-selectFetcher.
+func ReloadBlueprintStreamRules(ctx context.Context, st store.Store, fetcher compiler.Fetcher, show *runtime.Show, logger *slog.Logger) {
+	ids, err := st.ListBlueprintStreamRules(ctx)
+	if err != nil {
+		logger.Error("cold start: read blueprint stream rule set failed; rules stay dormant", "err", err)
+		return
+	}
+	for _, id := range ids {
+		bpID := id.String()
+		bp, err := fetcher.FetchBlueprint(ctx, bpID)
+		if err != nil {
+			logger.Warn("cold start: blueprint stream rule fetch failed; skipped", "blueprint_id", bpID, "err", err)
+			continue
+		}
+		compiled, cerr := compiler.CompileExecPrograms(bp, "")
+		if cerr != nil {
+			logger.Warn("cold start: blueprint stream rule compile failed; skipped", "blueprint_id", bpID, "err", cerr)
+			continue
+		}
+		graph := &compiler.Graph{
+			SceneID:      bp.ID,
+			ExecPrograms: compiled.Programs,
+			Defaults:     compiled.Defaults,
+		}
+		progs, err := runtime.ExecProgramsFromGraph(graph)
+		if err != nil {
+			logger.Warn("cold start: blueprint stream rule exec decode failed; skipped", "blueprint_id", bpID, "err", err)
+			continue
+		}
+		if err := show.PromoteBlueprintStreamRule(bpID, graph, &compiler.RenderBundle{}, progs...); err != nil {
+			logger.Warn("cold start: blueprint stream rule promotion refused; skipped", "blueprint_id", bpID, "err", err)
+		}
+	}
 }

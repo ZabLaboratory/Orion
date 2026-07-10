@@ -80,3 +80,54 @@ func (s *PGStore) ListStreamRules(ctx context.Context) ([]uuid.UUID, error) {
 	}
 	return out, nil
 }
+
+// AddBlueprintStreamRule persists a blueprint id as a promoted blueprint-direct
+// stream rule (#287). Idempotent — re-promoting keeps the original promoted_at.
+func (s *PGStore) AddBlueprintStreamRule(ctx context.Context, blueprintID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`INSERT INTO show_blueprint_stream_rules (blueprint_id) VALUES ($1)
+		   ON CONFLICT (blueprint_id) DO NOTHING`,
+		blueprintID,
+	)
+	if err != nil {
+		return fmt.Errorf("add blueprint stream rule: %w", err)
+	}
+	return nil
+}
+
+// RemoveBlueprintStreamRule drops a blueprint id from the promoted set. A no-op
+// (zero rows) if it was not promoted — demotion is idempotent.
+func (s *PGStore) RemoveBlueprintStreamRule(ctx context.Context, blueprintID uuid.UUID) error {
+	_, err := s.pool.Exec(ctx,
+		`DELETE FROM show_blueprint_stream_rules WHERE blueprint_id = $1`,
+		blueprintID,
+	)
+	if err != nil {
+		return fmt.Errorf("remove blueprint stream rule: %w", err)
+	}
+	return nil
+}
+
+// ListBlueprintStreamRules returns every promoted blueprint-direct rule id,
+// sorted by promotion time then id for a deterministic boot-reload order.
+func (s *PGStore) ListBlueprintStreamRules(ctx context.Context) ([]uuid.UUID, error) {
+	rows, err := s.pool.Query(ctx,
+		`SELECT blueprint_id FROM show_blueprint_stream_rules ORDER BY promoted_at, blueprint_id`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list blueprint stream rules: %w", err)
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("list blueprint stream rules scan: %w", err)
+		}
+		out = append(out, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list blueprint stream rules rows: %w", err)
+	}
+	return out, nil
+}

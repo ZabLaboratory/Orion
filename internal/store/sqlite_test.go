@@ -141,6 +141,29 @@ func TestSQLiteStore_BootExecRoundTrip(t *testing.T) {
 		t.Fatalf("ListStreamRules = %+v %v", rules, err)
 	}
 
+	// Blueprint-direct stream rules (#287): a distinct table, no scene FK.
+	bpID := uuid.New()
+	if err := st.AddBlueprintStreamRule(ctx, bpID); err != nil {
+		t.Fatalf("AddBlueprintStreamRule: %v", err)
+	}
+	if err := st.AddBlueprintStreamRule(ctx, bpID); err != nil {
+		t.Fatalf("AddBlueprintStreamRule (idempotent): %v", err)
+	}
+	bpRules, err := st.ListBlueprintStreamRules(ctx)
+	if err != nil || len(bpRules) != 1 || bpRules[0] != bpID {
+		t.Fatalf("ListBlueprintStreamRules = %+v %v", bpRules, err)
+	}
+	// The two sets are independent — the scene rule did not leak here.
+	if err := st.RemoveBlueprintStreamRule(ctx, bpID); err != nil {
+		t.Fatalf("RemoveBlueprintStreamRule: %v", err)
+	}
+	if bpRules, err := st.ListBlueprintStreamRules(ctx); err != nil || len(bpRules) != 0 {
+		t.Fatalf("ListBlueprintStreamRules after remove = %+v %v", bpRules, err)
+	}
+	if rules, err := st.ListStreamRules(ctx); err != nil || len(rules) != 1 {
+		t.Fatalf("scene rule set disturbed by blueprint ops = %+v %v", rules, err)
+	}
+
 	// Validation gate: no record ⇒ not eligible; validated record ⇒ eligible.
 	if ok, err := st.IsVersionValidated(ctx, sceneID, ver, "h1"); err != nil || ok {
 		t.Fatalf("unvalidated must be false: %v %v", ok, err)
