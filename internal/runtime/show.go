@@ -35,15 +35,15 @@ type Show struct {
 	// the live scene set.
 	sceneVersions map[string]string
 
-	// streamRules is the set of scene ids promoted as stream-level Blue
-	// rules (ADR 009 §3.1). A promoted rule is a roster scene that runs
-	// ALWAYS — never gated on the active pointer, never frozen at a scene
-	// switch. The set is the second leg of RouteTargets' union (the
-	// active scene being the first). In-memory only here: the public
-	// promote/demote API and its persistence are issue #154 — this map +
-	// PromoteStreamRule/DemoteStreamRule are the minimal internal hook the
-	// routing and lifecycle need to be testable now.
-	streamRules map[string]struct{}
+	// streamRules maps each promoted stream-level rule id to its KIND
+	// (ADR 009 §3.1). A promoted rule is a roster scene that runs ALWAYS —
+	// never gated on the active pointer, never frozen at a scene switch. The
+	// set is the second leg of RouteTargets' union (the active scene being the
+	// first). The kind (scene-based vs blueprint-direct, #287) drives the
+	// DURABILITY path only — the boot reseed strategy and which persistence
+	// table the API cleans on demote — never the routing, which is identical
+	// for both. Membership (``_, ok := streamRules[id]``) is unchanged.
+	streamRules map[string]RuleKind
 
 	// mirrors is the optional LSDP/1.1 wire (ADR 007 §C.3b). nil in
 	// bespoke mode — the entire kit path is then dead weight that never
@@ -243,7 +243,7 @@ func NewShow(registry *ComputeRegistry, logger *slog.Logger) *Show {
 		logger:        logger.With("component", "show"),
 		scenes:        map[string]*Scene{},
 		sceneVersions: map[string]string{},
-		streamRules:   map[string]struct{}{},
+		streamRules:   map[string]RuleKind{},
 		ctx:           ctx,
 		cancel:        cancel,
 	}
@@ -522,6 +522,22 @@ func (sh *Show) RouteTargets() []*Scene {
 // on.
 var ErrRuleIsActiveScene = errors.New("show: scene is/would be the active scene")
 
+// RuleKind distinguishes how a promoted stream-level rule is made durable
+// across a restart (#287). Both kinds route identically; only the boot-reseed
+// strategy and the persistence table differ.
+type RuleKind uint8
+
+const (
+	// RuleKindScene is a rule promoted from a pushed, R9-validated scene. It
+	// reseeds from its stored pushed version (show_stream_rules), the path that
+	// already existed. The zero value, so an un-tagged promotion is scene-kind.
+	RuleKindScene RuleKind = iota
+	// RuleKindBlueprint is a rule promoted directly from a Blue blueprint with
+	// no carrier scene. It has no stored pushed version, so it reseeds by
+	// re-fetching + recompiling from Blue (show_blueprint_stream_rules).
+	RuleKindBlueprint
+)
+
 // PromoteStreamRule loads (or reloads) a scene as a stream-level rule
 // (ADR 009 §3.1/§3.4). Internal hook for issue #153 — the public,
 // persisted promote API (validation gate, SCENE_NOT_VALIDATED, etc.) is
@@ -541,17 +557,42 @@ var ErrRuleIsActiveScene = errors.New("show: scene is/would be the active scene"
 // for a scene already in the roster they are its current graph/bundle/
 // progs (#154 supplies them — it owns the compiled set already).
 func (sh *Show) PromoteStreamRule(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, progs ...*ExecProgram) error {
+	return sh.promoteRule(id, RuleKindScene, graph, bundle, progs...)
+}
+
+// PromoteBlueprintStreamRule is PromoteStreamRule for a BLUEPRINT-DIRECT rule
+// (#287): a rule promoted from a Blue blueprint with no carrier scene, keyed
+// by blueprint_id. The only difference is the recorded RuleKind, which the
+// durability layer reads to pick the boot-reseed strategy (a blueprint rule
+// reseeds by re-fetching + recompiling from Blue, a scene rule from its stored
+// pushed version) and the persistence table to clean on demote. Routing and
+// lifecycle are identical to a scene rule.
+func (sh *Show) PromoteBlueprintStreamRule(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, progs ...*ExecProgram) error {
+	return sh.promoteRule(id, RuleKindBlueprint, graph, bundle, progs...)
+}
+
+func (sh *Show) promoteRule(id string, kind RuleKind, graph *compiler.Graph, bundle *compiler.RenderBundle, progs ...*ExecProgram) error {
 	sh.mu.Lock()
 	if sh.active == id {
 		sh.mu.Unlock()
 		return ErrRuleIsActiveScene
 	}
-	sh.streamRules[id] = struct{}{}
+	sh.streamRules[id] = kind
 	sh.mu.Unlock()
 	// LoadExec sees the id in streamRules and takes the ungated + on-air
 	// branch, then fires on-start once.
 	sh.LoadExec(id, graph, bundle, progs...)
 	return nil
+}
+
+// StreamRuleKind returns the kind of a promoted rule (scene-based vs
+// blueprint-direct, #287) and whether the id is currently a promoted rule.
+// The API's demote path reads it to clean the matching persistence table.
+func (sh *Show) StreamRuleKind(id string) (RuleKind, bool) {
+	sh.mu.RLock()
+	defer sh.mu.RUnlock()
+	kind, ok := sh.streamRules[id]
+	return kind, ok
 }
 
 // StreamRuleIDs returns the ids of every promoted stream-level rule (scene_id

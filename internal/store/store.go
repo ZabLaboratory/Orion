@@ -70,11 +70,15 @@ type Store interface {
 	GetActiveSceneID(ctx context.Context) (*uuid.UUID, error)
 	SetActiveSceneID(ctx context.Context, id *uuid.UUID) error
 
-	// stream rules
+	// stream rules — scene-based (FK to scenes) and blueprint-direct (#287,
+	// no FK; the blueprint lives in Blue). Both persist IDENTITY only.
 	AddStreamRule(ctx context.Context, sceneID uuid.UUID) error
 	RemoveStreamRule(ctx context.Context, sceneID uuid.UUID) error
 	IsStreamRule(ctx context.Context, sceneID uuid.UUID) (bool, error)
 	ListStreamRules(ctx context.Context) ([]uuid.UUID, error)
+	AddBlueprintStreamRule(ctx context.Context, blueprintID uuid.UUID) error
+	RemoveBlueprintStreamRule(ctx context.Context, blueprintID uuid.UUID) error
+	ListBlueprintStreamRules(ctx context.Context) ([]uuid.UUID, error)
 
 	// validations
 	UpsertValidation(ctx context.Context, v SceneValidation) error

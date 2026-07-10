@@ -354,6 +354,14 @@ func run() error {
 			"canvas_base", cfg.CanvasBaseURL, "blue_base", cfg.BlueBaseURL)
 	}
 
+	// Reseed persisted BLUEPRINT-DIRECT stream rules (#287). Unlike the
+	// scene-based reseed (in loadActiveScenes above, which resolves stored
+	// pushed versions and needs no fetcher), a blueprint-direct rule reseeds by
+	// re-fetching + recompiling from Blue, so it must run HERE — after the
+	// compiler fetcher is wired. Identity only; a rule's live leaf state always
+	// reseeds from declared defaults (criterion #11).
+	api.ReloadBlueprintStreamRules(ctx, st, fetcher, show, logger)
+
 	wsServer := &ws.Server{
 		Show:    show,
 		Inbox:   inbox,
