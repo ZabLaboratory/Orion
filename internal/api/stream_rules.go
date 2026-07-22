@@ -48,10 +48,10 @@ func postStreamRule(deps PublicDeps) http.HandlerFunc {
 
 		// Blueprint-direct stream rule (no carrier scene). A blueprint is a
 		// blueprint, not a scene: the pilotage registers it directly. We
-		// compile the bare Blue graph (the simulate machinery: FetchBlueprint →
-		// CompileExecPrograms → ExecProgramsFromGraph) and promote it keyed by
-		// blueprint_id, with an empty bundle — a rule runs exec, it never
-		// renders. In-memory only for now: the show_stream_rules reseed is
+		// compile the full Blue graph (FetchBlueprint → CompileBlueprintRule →
+		// ExecProgramsFromGraph, ADR 017) and promote it keyed by blueprint_id,
+		// with an empty bundle — a rule runs exec, it never renders. In-memory
+		// only for now: the show_stream_rules reseed is
 		// scene-based, so blueprint-rule durability across an Orion restart is
 		// a follow-up (a rule_kind column + a blueprint reseed path).
 		if body.BlueprintID != "" {
@@ -200,9 +200,9 @@ func promoteStreamRuleFromStore(ctx context.Context, deps PublicDeps, sceneID uu
 // promoteBlueprintStreamRule promotes a Blue blueprint DIRECTLY into a
 // stream-level rule, with no carrier scene (a blueprint is a blueprint, not a
 // scene — the pilotage owns it). It fetches the blueprint's current published
-// graph from Blue, compiles its exec layer in-body (the SAME machinery as the
-// simulate endpoint: CompileExecPrograms → ExecProgramsFromGraph), and promotes
-// it keyed by blueprint_id with an empty RenderBundle — a rule runs exec, it
+// graph from Blue, compiles the FULL graph — data tranche included — via
+// CompileBlueprintRule (ADR 017: Nodes/Bindings/Defaults/ExecPrograms), and
+// promotes it keyed by blueprint_id with an empty RenderBundle — a rule runs exec, it
 // never renders. The slot-assignment effects + viewer arming the rule emits are
 // stream-level (survive scene switches), so this is the natural home of the
 // cam-arming rule (ADR Blue 009 §3.3).
@@ -217,22 +217,20 @@ func promoteBlueprintStreamRule(w http.ResponseWriter, r *http.Request, deps Pub
 		writeJSON(w, http.StatusBadGateway, map[string]string{"code": "BLUEPRINT_FETCH_FAILED"})
 		return
 	}
-	// Compile keyed by the blueprint_id so the program's BlueprintKey — the
+	// Compile the FULL graph (Nodes/Bindings/Defaults/ExecPrograms) via the
+	// blueprint-direct entrypoint (ADR 017), NOT the exec-only simulate seam:
+	// the promoted rule must carry its data tranche so an exec input fed by a
+	// data-plane edge (e.g. app_id on core.overlay-app.set@1) resolves at
+	// runtime. Keyed by the blueprint_id so the program's BlueprintKey — the
 	// operator-call address exposed in the cockpit contract — is the real id,
 	// not the empty key (which the contract renders as the reserved `_`).
-	// Two blueprint-direct rules promoted at once must not both address `_`.
-	compiled, cerr := compiler.CompileExecPrograms(bp, blueprintID)
+	graph, cerr := compiler.CompileBlueprintRule(r.Context(), bp, blueprintID, deps.Fetcher)
 	if cerr != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"code":        "COMPILE_FAILED",
 			"diagnostics": compileDiagnostics(cerr),
 		})
 		return
-	}
-	graph := &compiler.Graph{
-		SceneID:      bp.ID,
-		ExecPrograms: compiled.Programs,
-		Defaults:     compiled.Defaults,
 	}
 	progs, err := runtime.ExecProgramsFromGraph(graph)
 	if err != nil {
@@ -267,7 +265,8 @@ func promoteBlueprintStreamRule(w http.ResponseWriter, r *http.Request, deps Pub
 // (scene-based, which reseeds from stored pushed versions): a blueprint-direct
 // rule has no carrier scene / pushed version, so it reseeds by re-fetching +
 // recompiling from Blue — the SAME machinery as promoteBlueprintStreamRule
-// (FetchBlueprint → CompileExecPrograms(bp, bpID) → ExecProgramsFromGraph). Only
+// (FetchBlueprint → CompileBlueprintRule(ctx, bp, bpID, fetcher) →
+// ExecProgramsFromGraph, ADR 017). Only
 // IDENTITY is durable: the rule reseeds from declared defaults and fires
 // on-start once (criterion #11, ADR 009 §3.4) — no live leaf state is restored.
 // Fail-soft per rule: an unreachable/deleted blueprint is skipped, never aborts
@@ -286,15 +285,10 @@ func ReloadBlueprintStreamRules(ctx context.Context, st store.Store, fetcher com
 			logger.Warn("cold start: blueprint stream rule fetch failed; skipped", "blueprint_id", bpID, "err", err)
 			continue
 		}
-		compiled, cerr := compiler.CompileExecPrograms(bp, bpID)
+		graph, cerr := compiler.CompileBlueprintRule(ctx, bp, bpID, fetcher)
 		if cerr != nil {
 			logger.Warn("cold start: blueprint stream rule compile failed; skipped", "blueprint_id", bpID, "err", cerr)
 			continue
-		}
-		graph := &compiler.Graph{
-			SceneID:      bp.ID,
-			ExecPrograms: compiled.Programs,
-			Defaults:     compiled.Defaults,
 		}
 		progs, err := runtime.ExecProgramsFromGraph(graph)
 		if err != nil {

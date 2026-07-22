@@ -16,9 +16,13 @@ import (
 )
 
 // bpRuleFetcher serves a blueprint whose exec layer actually compiles (an
-// on-start spine → variable.set), so promoteBlueprintStreamRule and the boot
-// reseed both produce a real exec program. FetchBlueprint echoes the requested
-// id, so any blueprint_id resolves.
+// on-start spine → variable.set) AND carries a DATA node (`appid`) feeding the
+// exec node's data input by a normal edge — the ADR 017 shape the blueprint-
+// direct compile must materialise (before the fix the promoted graph had no
+// Nodes, so this data edge resolved to nothing at runtime). promoteBlueprint-
+// StreamRule and the boot reseed both go through CompileBlueprintRule, so a
+// green promote/reload here proves the full data tranche compiles end-to-end
+// through the endpoint. FetchBlueprint echoes the requested id.
 type bpRuleFetcher struct{}
 
 func (bpRuleFetcher) FetchCanvasLayout(_ context.Context, v string) (*compiler.CanvasLayout, error) {
@@ -31,12 +35,20 @@ func (bpRuleFetcher) FetchBlueprint(_ context.Context, id string) (*compiler.Blu
 		Nodes: []compiler.BlueprintNode{
 			{ID: "start", Compute: "core.event.on-start@1",
 				Outputs: []compiler.BlueprintPort{{Name: "then", Type: "exec", Kind: "exec"}}},
+			{ID: "appid", Compute: "core.input@1",
+				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"app_id"`)},
+				Outputs: []compiler.BlueprintPort{{Name: "out", Type: "any", Kind: "data"}}},
 			{ID: "set", Compute: "core.variable.set@1",
-				Config:  map[string]json.RawMessage{"variable": json.RawMessage(`"x"`)},
-				Inputs:  []compiler.BlueprintPort{{Name: "exec_in", Type: "exec", Kind: "exec"}},
+				Config: map[string]json.RawMessage{"variable": json.RawMessage(`"x"`)},
+				Inputs: []compiler.BlueprintPort{
+					{Name: "exec_in", Type: "exec", Kind: "exec"},
+					{Name: "value", Type: "any", Kind: "data"}},
 				Outputs: []compiler.BlueprintPort{{Name: "then", Type: "exec", Kind: "exec"}}},
 		},
-		Edges: []compiler.BlueprintEdge{{FromNode: "start", FromPort: "then", ToNode: "set", ToPort: "exec_in"}},
+		Edges: []compiler.BlueprintEdge{
+			{FromNode: "start", FromPort: "then", ToNode: "set", ToPort: "exec_in"},
+			{FromNode: "appid", FromPort: "out", ToNode: "set", ToPort: "value"},
+		},
 	}, nil
 }
 
@@ -52,6 +64,7 @@ func (bpRuleFetcher) FetchComputeManifest(_ context.Context) (compiler.ComputeMa
 	return compiler.ComputeManifest{
 		"core.event.on-start@1": {Version: "1"},
 		"core.variable.set@1":   {Version: "1"},
+		"core.input@1":          {IsPure: true, Version: "1"},
 	}, nil
 }
 
