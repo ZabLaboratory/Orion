@@ -278,7 +278,7 @@ func (s *Scene) HostsBlueprint(blueprintKey string) bool {
 // after InstallExec). The route uses it to answer 409 for an unknown
 // entrypoint before firing.
 func (s *Scene) HasOnCallEntry(entrypointID string) bool {
-	ref, ok := s.resolveEntry(entrypointID)
+	ref, _, ok := s.resolveEntry(entrypointID)
 	return ok && ref.entry.Kind == EntryOnCall
 }
 
@@ -288,7 +288,7 @@ func (s *Scene) HasOnCallEntry(entrypointID string) bool {
 // 503). The entrypoint must be on-call (checked by the route via
 // HasOnCallEntry first). Safe from any goroutine — travels the inbox.
 func (s *Scene) FireOnCall(entrypointID string, payload json.RawMessage) bool {
-	ref, ok := s.resolveEntry(entrypointID)
+	ref, fireKey, ok := s.resolveEntry(entrypointID)
 	if !ok || ref.entry.Kind != EntryOnCall {
 		return false
 	}
@@ -296,10 +296,12 @@ func (s *Scene) FireOnCall(entrypointID string, payload json.RawMessage) bool {
 	if node := ref.entry.Node; node != "" && payload != nil {
 		env = map[string]json.RawMessage{node + ".payload": payload}
 	}
-	// Fire under the canonical namespaced key so the task is born bound to
-	// the right program (resolveEntry accepts both, FireExec re-resolves).
+	// Fire under the canonical namespaced key resolveEntry matched — the
+	// entry's INDEX key, which is `config.entrypoint` for a named on-call
+	// and no longer equals the graph node id. The payload still binds under
+	// the node id (its data-out namespace), kept separately above.
 	return s.Input(InputMsg{
-		FireExec: entryKey(ref.prog.BlueprintKey, ref.entry.Node),
+		FireExec: fireKey,
 		FireEnv:  env,
 		Source:   "operator:on-call",
 	})

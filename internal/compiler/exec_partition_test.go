@@ -168,6 +168,60 @@ func TestPartition_OnEvent_DataEdgeIsNotExecTarget(t *testing.T) {
 	}
 }
 
+// TestPartition_OnCall_KeyedByConfigEntrypoint proves the operator-call
+// contract fix: a `core.operator.on-call@1` entry is keyed in the program's
+// Entrypoints map (the {entrypoint_id} the cockpit addresses) by its
+// `config.entrypoint`, decoupled from the graph node id — with a fallback to
+// the node id when the config is absent (retro-compat).
+func TestPartition_OnCall_KeyedByConfigEntrypoint(t *testing.T) {
+	m := execManifest()
+	m["core.operator.on-call@1"] = ComputeManifestEntry{IsPure: true, IsBounded: true, Version: "1"}
+
+	compile := func(bpID, entrypoint string) execProgram {
+		arm := BlueprintNode{
+			ID: "on_call_arm", Compute: "core.operator.on-call@1",
+			Outputs: []BlueprintPort{execOut("then"), dataOut("payload")},
+		}
+		if entrypoint != "" {
+			arm.Config = map[string]json.RawMessage{"entrypoint": json.RawMessage(`"` + entrypoint + `"`)}
+		}
+		bp := &BlueprintGraph{ID: bpID, Nodes: []BlueprintNode{arm}}
+		f := &fakeFetcher{
+			layouts:    map[string]*CanvasLayout{"v1": minimalLayout("v1")},
+			blueprints: map[string]*BlueprintGraph{bpID: bp},
+			manifest:   m,
+		}
+		g, _, _, err := Compile(context.Background(), "scene-oncall",
+			PushEnvelope{CanvasVersion: "v1", BlueBlueprintID: bpID}, f)
+		if err != nil {
+			t.Fatalf("on-call scene rejected: %v", err)
+		}
+		if len(g.ExecPrograms) != 1 {
+			t.Fatalf("want 1 exec program, got %d", len(g.ExecPrograms))
+		}
+		return decodeProgram(t, g.ExecPrograms[0])
+	}
+
+	// Named: keyed by config.entrypoint, NOT the node id.
+	named := compile("bp-named", "marker_overlay_on")
+	e, ok := named.Entrypoints["marker_overlay_on"]
+	if !ok {
+		t.Fatalf("on-call not keyed by config.entrypoint; entries = %+v", named.Entrypoints)
+	}
+	if _, wrong := named.Entrypoints["on_call_arm"]; wrong {
+		t.Fatal("on-call wrongly keyed by node id when config.entrypoint present")
+	}
+	if e.Kind != "on-call" || e.Node != "on_call_arm" {
+		t.Fatalf("entry = %+v, want kind on-call node on_call_arm (payload binds under the node id)", e)
+	}
+
+	// Fallback: no config.entrypoint → keyed by node id (retro-compat).
+	fb := compile("bp-fallback", "")
+	if _, ok := fb.Entrypoints["on_call_arm"]; !ok {
+		t.Fatalf("on-call fallback not keyed by node id; entries = %+v", fb.Entrypoints)
+	}
+}
+
 func TestPartition_MixedScene_Structure(t *testing.T) {
 	g := compileMixed(t)
 

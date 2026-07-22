@@ -455,20 +455,23 @@ func TestE2E_EmbeddedLocal_OnCallLCKLEC(t *testing.T) {
 	// real cockpit button POSTs.
 	triggers := readCockpitTriggers(t, srv.URL)
 	if len(triggers) != 2 {
-		t.Fatalf("expected 2 armed on-call triggers (on_lck, on_lec), got %d: %+v", len(triggers), triggers)
+		t.Fatalf("expected 2 armed on-call triggers (LCK, LEC), got %d: %+v", len(triggers), triggers)
 	}
-	assertTrigger(t, triggers, defaultBlueprintToken, "on_lck")
-	assertTrigger(t, triggers, defaultBlueprintToken, "on_lec")
+	// The addressable entrypoint id is the on-call node's `config.entrypoint`
+	// (LCK/LEC), NOT its graph node id (on_lck/on_lec) — the operator-call
+	// contract addresses the stable authored name (Blue ADR 008 §3.2).
+	assertTrigger(t, triggers, defaultBlueprintToken, "LCK")
+	assertTrigger(t, triggers, defaultBlueprintToken, "LEC")
 
 	// ---- Button LCK: HLE vs Gen.G — fired through the REAL HTTP route ----
-	// POST /api/v1/operator/call/_/on_lck with the handshake header: the exact
+	// POST /api/v1/operator/call/_/LCK with the handshake header: the exact
 	// cockpit path (auth gate → "_"→empty-key routing → FireOnCall → exec).
-	fireOnCallRoute(t, srv.URL, "on_lck")
+	fireOnCallRoute(t, srv.URL, "LCK")
 	lckLeaves := waitAllLeaves(t, show, lckExpect.names[0])
 	assertLeagueData(t, "LCK", lckLeaves, lckExpect)
 
 	// ---- Button LEC: Movistar KOI vs G2 — through the REAL HTTP route ----
-	fireOnCallRoute(t, srv.URL, "on_lec")
+	fireOnCallRoute(t, srv.URL, "LEC")
 	lecLeaves := waitAllLeaves(t, show, lecExpect.names[0])
 	assertLeagueData(t, "LEC", lecLeaves, lecExpect)
 }

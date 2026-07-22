@@ -217,7 +217,11 @@ func promoteBlueprintStreamRule(w http.ResponseWriter, r *http.Request, deps Pub
 		writeJSON(w, http.StatusBadGateway, map[string]string{"code": "BLUEPRINT_FETCH_FAILED"})
 		return
 	}
-	compiled, cerr := compiler.CompileExecPrograms(bp, "")
+	// Compile keyed by the blueprint_id so the program's BlueprintKey — the
+	// operator-call address exposed in the cockpit contract — is the real id,
+	// not the empty key (which the contract renders as the reserved `_`).
+	// Two blueprint-direct rules promoted at once must not both address `_`.
+	compiled, cerr := compiler.CompileExecPrograms(bp, blueprintID)
 	if cerr != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"code":        "COMPILE_FAILED",
@@ -263,7 +267,7 @@ func promoteBlueprintStreamRule(w http.ResponseWriter, r *http.Request, deps Pub
 // (scene-based, which reseeds from stored pushed versions): a blueprint-direct
 // rule has no carrier scene / pushed version, so it reseeds by re-fetching +
 // recompiling from Blue — the SAME machinery as promoteBlueprintStreamRule
-// (FetchBlueprint → CompileExecPrograms(bp, "") → ExecProgramsFromGraph). Only
+// (FetchBlueprint → CompileExecPrograms(bp, bpID) → ExecProgramsFromGraph). Only
 // IDENTITY is durable: the rule reseeds from declared defaults and fires
 // on-start once (criterion #11, ADR 009 §3.4) — no live leaf state is restored.
 // Fail-soft per rule: an unreachable/deleted blueprint is skipped, never aborts
@@ -282,7 +286,7 @@ func ReloadBlueprintStreamRules(ctx context.Context, st store.Store, fetcher com
 			logger.Warn("cold start: blueprint stream rule fetch failed; skipped", "blueprint_id", bpID, "err", err)
 			continue
 		}
-		compiled, cerr := compiler.CompileExecPrograms(bp, "")
+		compiled, cerr := compiler.CompileExecPrograms(bp, bpID)
 		if cerr != nil {
 			logger.Warn("cold start: blueprint stream rule compile failed; skipped", "blueprint_id", bpID, "err", cerr)
 			continue
