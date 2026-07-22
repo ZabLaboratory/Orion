@@ -1,8 +1,8 @@
 # ADR 017 — Compile plein-graphe des stream-rules blueprint-direct
 
-- **Status**: proposed
+- **Status**: accepted
 - **Date**: 2026-07-22
-- **Decided**: —
+- **Decided**: 2026-07-22
 - **Deciders**: @ClodoCapeo
 - **Author**: Atlas
 - **Supersedes**: —
