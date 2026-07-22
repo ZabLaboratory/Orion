@@ -372,22 +372,29 @@ func (s *Scene) InstallExec(progs ...*ExecProgram) {
 // across the installed program set: a collision (two blueprints both
 // declaring `start`) refuses the bare id (caller must namespace), so a
 // fire never silently lands in the wrong blueprint.
-func (s *Scene) resolveEntry(key string) (execEntryRef, bool) {
+// It returns the matched CANONICAL namespaced key alongside the ref, so a
+// caller re-firing across the inbox (FireOnCall) fires under the exact
+// index key — never a reconstruction from the entry's node id, which no
+// longer equals the map key once an on-call entry is keyed by its
+// `config.entrypoint`.
+func (s *Scene) resolveEntry(key string) (execEntryRef, string, bool) {
 	if ref, ok := s.execEntries[key]; ok {
-		return ref, true
+		return ref, key, true
 	}
 	var found execEntryRef
+	var foundKey string
 	n := 0
 	for nk, ref := range s.execEntries {
 		if local, ok := strings.CutPrefix(nk, ref.prog.BlueprintKey+"/"); ok && local == key {
 			found = ref
+			foundKey = nk
 			n++
 		}
 	}
 	if n == 1 {
-		return found, true
+		return found, foundKey, true
 	}
-	return execEntryRef{}, false
+	return execEntryRef{}, "", false
 }
 
 // FireOnStart fires every `on-start` entrypoint (ADR 003 §3.1.3: the
@@ -514,7 +521,7 @@ func (s *Scene) enqueueFireEnv(entry string, env map[string]json.RawMessage) {
 		s.logger.Warn("exec fire on scene without exec program", "entry", entry)
 		return
 	}
-	ref, ok := s.resolveEntry(entry)
+	ref, _, ok := s.resolveEntry(entry)
 	if !ok {
 		s.logger.Warn("exec fire for unknown entrypoint", "entry", entry)
 		return

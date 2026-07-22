@@ -362,7 +362,7 @@ func (s *Scene) RunValidationEntrypoint(entry string, env map[string]json.RawMes
 		res.WallMS = floatToJSON(0)
 		return res
 	}
-	ref, ok := s.resolveEntry(entry)
+	ref, _, ok := s.resolveEntry(entry)
 	if !ok {
 		res.FailReason = "unknown entrypoint"
 		res.WallMS = floatToJSON(0)

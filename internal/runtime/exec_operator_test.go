@@ -155,3 +155,34 @@ func TestOperator_OnCallFiresThenWithPayload(t *testing.T) {
 	}
 	waitForState(t, sc, "__vars.bp.got", `{"x":1}`, 2*time.Second)
 }
+
+// TestOperator_OnCallKeyedByEntrypointName proves the operator-call round trip
+// when the entry's INDEX key (its config.entrypoint, e.g. `marker_overlay_on`)
+// differs from the graph node id (`on_call_arm`): the entry is addressable only
+// by the entrypoint name, and FireOnCall must re-fire across the inbox under
+// THAT index key — not a reconstruction from the node id (the prior bug, which
+// left the fire unresolvable). The payload still binds under the node id.
+func TestOperator_OnCallKeyedByEntrypointName(t *testing.T) {
+	got := varSet("got", "got",
+		[]ExecDataInput{{Port: "value", From: "on_call_arm", FromPort: "payload"}}, nil)
+	onCall := ExecEntry{Kind: EntryOnCall, Node: "on_call_arm", Target: ExecTarget{Node: "got"}}
+	prog := &ExecProgram{
+		BlueprintKey: "bp",
+		Nodes:        map[string]*ExecNode{"got": got},
+		Entrypoints:  map[string]ExecEntry{"marker_overlay_on": onCall},
+	}
+	sc := execScene(t, "op-oncall-named", prog)
+	startScene(t, sc)
+
+	// Addressable by the entrypoint name, not by the node id.
+	if !sc.HasOnCallEntry("marker_overlay_on") {
+		t.Fatal("on-call entry not armed under its entrypoint name")
+	}
+	if sc.HasOnCallEntry("on_call_arm") {
+		t.Fatal("on-call entry wrongly addressable by its node id")
+	}
+	if !sc.FireOnCall("marker_overlay_on", raw(`{"m":2}`)) {
+		t.Fatal("FireOnCall inbox full")
+	}
+	waitForState(t, sc, "__vars.bp.got", `{"m":2}`, 2*time.Second)
+}

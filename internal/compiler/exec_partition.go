@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/ZabLaboratory/Orion/internal/conformance"
 )
@@ -92,6 +93,22 @@ var execEntryKind = map[string]string{
 // Prism-authored on-event node ever names this differently, this one
 // constant changes, not the partition shape.
 const execEntryEventConfigKey = "event_name"
+
+// execEntryCallConfigKey is the config key a `core.operator.on-call@1`
+// node carries its stable operator-addressable entrypoint name under
+// (Blue ADR 008 §3.2 — schema field `entrypoint`, required). It becomes
+// the entry's map key, i.e. the `{entrypoint_id}` path segment the
+// operator addresses in POST /operator/call — decoupled from the graph
+// node id. Absent → the node id is the key (retro-compat with on-call
+// nodes authored before the config was required).
+const execEntryCallConfigKey = "entrypoint"
+
+// ErrExecDuplicateEntrypoint fires when two on-call nodes resolve to the
+// same operator-addressable entry id within one blueprint (their
+// `config.entrypoint`, or a node id colliding with one). The address
+// would be ambiguous, so the compile fails loudly instead of letting map
+// insertion order silently pick a winner.
+const ErrExecDuplicateEntrypoint DiagnosticCode = "EXEC_DUPLICATE_ENTRYPOINT"
 
 // execMirror structs mirror the runtime exec program wire shape
 // (runtime.ExecProgram/ExecEntry/ExecNode/ExecTarget/ExecDataInput)
@@ -429,7 +446,11 @@ func foldInputDefaults(n BlueprintNode) map[string]json.RawMessage {
 // but the partition tolerates zero or one). The entry is keyed by the
 // event node's id so InstallExec's trigger index is deterministic; on
 // activation the runtime fires it. on-event reads its `__events.<event>`
-// topic from config.
+// topic from config. An `on-call` entry is instead keyed by its
+// `config.entrypoint` (the stable operator-addressable name, Blue ADR
+// 008 §3.2) when present — the entry's Node field still carries the graph
+// node id (the namespace its `payload` data-out binds under), so the
+// addressable key and the data-binding id are cleanly decoupled.
 func buildExecEntry(n BlueprintNode, kind string, edges []BlueprintEdge, entries map[string]execEntry) (diags []Diagnostic) {
 	entry := execEntry{Kind: kind, Node: n.ID}
 	if kind == "on-event" {
@@ -490,7 +511,28 @@ func buildExecEntry(n BlueprintNode, kind string, edges []BlueprintEdge, entries
 		entry.Target = execTarget{Node: e.ToNode, Port: e.ToPort}
 		break
 	}
-	entries[n.ID] = entry
+	entryID := n.ID
+	if kind == "on-call" {
+		if raw, ok := n.Config[execEntryCallConfigKey]; ok {
+			var name string
+			if err := json.Unmarshal(raw, &name); err == nil {
+				if name = strings.TrimSpace(name); name != "" {
+					entryID = name
+				}
+			}
+		}
+	}
+	if _, dup := entries[entryID]; dup {
+		diags = append(diags, Diagnostic{
+			Code:     ErrExecDuplicateEntrypoint,
+			Severity: "error",
+			Message: fmt.Sprintf("on-call entrypoint id %q is declared by more than one node — the operator address would be ambiguous",
+				entryID),
+			Path: n.ID,
+		})
+		return diags
+	}
+	entries[entryID] = entry
 	return diags
 }
 
