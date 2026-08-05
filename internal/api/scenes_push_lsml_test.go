@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -79,7 +80,10 @@ func TestPersistLSML_ByteMatchAdoptsCanvasHash(t *testing.T) {
 	canvasHash := orionHashOf(t, sceneID.String(), bundle)
 
 	pv := store.ScenePushedVersion{SceneID: sceneID, SceneVersion: legacyVersion}
-	got := persistLSMLAndMaybeAdopt(deps, sceneID, legacyVersion, canvasHash, bundle, &pv)
+	got, warnings := persistLSMLAndMaybeAdopt(deps, sceneID, legacyVersion, canvasHash, bundle, &pv)
+	if len(warnings) != 0 {
+		t.Fatalf("adoption must emit no warning, got %v", warnings)
+	}
 
 	if got != canvasHash {
 		t.Fatalf("adopted scene_version = %q, want the Canvas hash %q", got, canvasHash)
@@ -112,7 +116,7 @@ func TestPersistLSML_MismatchKeepsLegacyMint(t *testing.T) {
 	}
 
 	pv := store.ScenePushedVersion{SceneID: sceneID, SceneVersion: legacyVersion}
-	got := persistLSMLAndMaybeAdopt(deps, sceneID, legacyVersion, canvasHash, bundle, &pv)
+	got, warnings := persistLSMLAndMaybeAdopt(deps, sceneID, legacyVersion, canvasHash, bundle, &pv)
 
 	if got != legacyVersion {
 		t.Fatalf("scene_version = %q, want legacy mint %q on mismatch", got, legacyVersion)
@@ -124,6 +128,24 @@ func TestPersistLSML_MismatchKeepsLegacyMint(t *testing.T) {
 	// C2 LSML serve works even when identity did not collapse.
 	if pv.LSMLBundleHash == nil || *pv.LSMLBundleHash != orionHash {
 		t.Fatalf("pv.LSMLBundleHash = %v, want Orion's own hash %q", pv.LSMLBundleHash, orionHash)
+	}
+
+	// The drift must leave the function, not just the log: a producer that
+	// only sees "not adopted" cannot tell drift from a bespoke-mode Orion.
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly one LSML_HASH_MISMATCH", warnings)
+	}
+	w := warnings[0]
+	if w.Code != compiler.WarnLSMLHashMismatch {
+		t.Fatalf("warning code = %q, want %q", w.Code, compiler.WarnLSMLHashMismatch)
+	}
+	if w.Severity != "warning" {
+		t.Fatalf("severity = %q, want \"warning\" — a mismatch never fails the push", w.Severity)
+	}
+	// Both hashes: what was supplied and what Orion computed. Either alone
+	// tells the producer that something differs but not from what.
+	if !strings.Contains(w.Message, canvasHash) || !strings.Contains(w.Message, orionHash) {
+		t.Fatalf("message %q must name both the supplied and the recomputed hash", w.Message)
 	}
 }
 
@@ -137,7 +159,7 @@ func TestPersistLSML_AbsentHashKeepsLegacyMint(t *testing.T) {
 	legacyVersion := "sha256:legacy-graph-bundle-mint"
 
 	pv := store.ScenePushedVersion{SceneID: sceneID, SceneVersion: legacyVersion}
-	got := persistLSMLAndMaybeAdopt(deps, sceneID, legacyVersion, "", bundle, &pv)
+	got, warnings := persistLSMLAndMaybeAdopt(deps, sceneID, legacyVersion, "", bundle, &pv)
 
 	if got != legacyVersion {
 		t.Fatalf("scene_version = %q, want legacy mint %q when no Canvas hash supplied", got, legacyVersion)
@@ -147,6 +169,11 @@ func TestPersistLSML_AbsentHashKeepsLegacyMint(t *testing.T) {
 	}
 	if pv.LSMLBundleHash == nil {
 		t.Fatal("LSML bundle must still be persisted for the C2 serve")
+	}
+	// Absence is not drift: nothing was supplied to contradict, so warning
+	// here would cry wolf on every legacy producer.
+	if len(warnings) != 0 {
+		t.Fatalf("absent Canvas hash must emit no warning, got %v", warnings)
 	}
 }
 
@@ -161,7 +188,7 @@ func TestPersistLSML_AdoptedAddressesAreIdentical(t *testing.T) {
 
 	canvasHash := orionHashOf(t, sceneID.String(), bundle)
 	pv := store.ScenePushedVersion{SceneID: sceneID, SceneVersion: "sha256:legacy"}
-	_ = persistLSMLAndMaybeAdopt(deps, sceneID, "sha256:legacy", canvasHash, bundle, &pv)
+	_, _ = persistLSMLAndMaybeAdopt(deps, sceneID, "sha256:legacy", canvasHash, bundle, &pv)
 
 	if pv.LSMLBundleHash == nil || pv.SceneVersion != *pv.LSMLBundleHash {
 		t.Fatalf("post-adopt scene_version %q must equal LSML hash %v (collapsed address)",

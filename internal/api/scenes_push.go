@@ -181,8 +181,10 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 		// On mismatch (drift) or absence (old Canvas), scene_version stays
 		// the legacy mint and a mismatch emits an LSML_HASH_MISMATCH
 		// warning — Orion never blindly trusts a hash it did not verify.
+		var lsmlWarnings []compiler.Diagnostic
 		if deps.Config.LSDPMode.PersistsLSML() {
-			sceneVersion = persistLSMLAndMaybeAdopt(deps, sceneID, sceneVersion, envelope.LSMLBundleHash, bundle, &pv)
+			sceneVersion, lsmlWarnings = persistLSMLAndMaybeAdopt(
+				deps, sceneID, sceneVersion, envelope.LSMLBundleHash, bundle, &pv)
 		}
 
 		// Persist definition + pushed version + advance pointer in ONE
@@ -241,11 +243,23 @@ func pushScene(deps PublicDeps) http.HandlerFunc {
 		deps.Metrics.PushTotal.WithLabelValues("ok").Inc()
 		deps.Metrics.PushDuration.WithLabelValues("ok").Observe(time.Since(started).Seconds())
 
+		// Warnings reach the wire. A hash mismatch used to exist only in
+		// Orion's own log, which made it invisible to the producer: from
+		// Canvas's side a non-adopted identity looks exactly like a bespoke-mode
+		// push or an older Orion, so it could not tell "your bundle drifted"
+		// from "this deployment does not collapse identities" and had to mirror
+		// the legacy mint either way. Surfacing the diagnostic is what lets the
+		// caller refuse instead of guess — the field already existed and Canvas
+		// already relays it verbatim, so this is purely additive.
+		warnings := lsmlWarnings
+		if warnings == nil {
+			warnings = []compiler.Diagnostic{}
+		}
 		resp := map[string]any{
 			"scene_version": sceneVersion,
 			"diagnostics": map[string]any{
 				"errors":   []string{},
-				"warnings": []string{},
+				"warnings": warnings,
 			},
 		}
 		if notValidated {
@@ -388,7 +402,8 @@ func serveIdempotentPush(
 // persistLSMLAndMaybeAdopt emits the LSML 1.1 bundle for a compiled
 // scene, persists it on the pushed-version row, and resolves the C4
 // identity question. It returns the scene_version the caller must use
-// as the pushed-version PK + latest pointer.
+// as the pushed-version PK + latest pointer, plus the warnings the
+// caller must put on the wire (empty on every path but the mismatch).
 //
 // Behaviour (ADR 007 §C.4):
 //   - emit fails        → log a warning, persist nothing LSML-side, keep
@@ -402,7 +417,8 @@ func serveIdempotentPush(
 //     at ?v={scene_version} resolves on the unified identity.
 //   - canvasHash differs → drift. Keep the legacy mint, still persist the
 //     LSML bundle under its own (Orion-computed) hash, and emit an
-//     LSML_HASH_MISMATCH warning. Never fails, never silently adopts.
+//     LSML_HASH_MISMATCH warning — in the log AND on the wire. Never
+//     fails, never silently adopts.
 func persistLSMLAndMaybeAdopt(
 	deps PublicDeps,
 	sceneID uuid.UUID,
@@ -410,7 +426,7 @@ func persistLSMLAndMaybeAdopt(
 	canvasHash string,
 	bundle *compiler.RenderBundle,
 	pv *store.ScenePushedVersion,
-) string {
+) (string, []compiler.Diagnostic) {
 	// EmitLSML MUST read the AUTHORING tree, not the lowered render Root.
 	// The LSML 1.1 bundle is authoring-vocab (ADR 007 §9.6), and C4
 	// adopt-on-verify compares this hash against Prism's, which is computed
@@ -432,7 +448,7 @@ func persistLSMLAndMaybeAdopt(
 	if emitErr != nil {
 		deps.Logger.Warn("lsml emit failed; persisting bespoke only",
 			"scene_id", sceneID.String(), "scene_version", sceneVersion, "error", emitErr)
-		return sceneVersion
+		return sceneVersion, nil
 	}
 
 	pv.LSMLBundleJSON = mustJSON(lsmlBundle)
@@ -440,8 +456,9 @@ func persistLSMLAndMaybeAdopt(
 
 	if canvasHash == "" {
 		// No Canvas-supplied identity to reconcile: persist for the C2
-		// serve only, identity stays the legacy mint.
-		return sceneVersion
+		// serve only, identity stays the legacy mint. NOT a mismatch, so no
+		// warning: the caller supplied nothing to contradict.
+		return sceneVersion, nil
 	}
 
 	if canvasHash == lsmlHash {
@@ -452,7 +469,7 @@ func persistLSMLAndMaybeAdopt(
 		pv.SceneVersion = lsmlHash
 		deps.Logger.Info("lsml identity adopted (byte-match)",
 			"scene_id", sceneID.String(), "scene_version", lsmlHash)
-		return lsmlHash
+		return lsmlHash, nil
 	}
 
 	// Mismatch: drift between Canvas's hash and Orion's recomputed hash.
@@ -462,7 +479,18 @@ func persistLSMLAndMaybeAdopt(
 		"canvas_hash", canvasHash,
 		"orion_hash", lsmlHash,
 		"scene_version", sceneVersion)
-	return sceneVersion
+
+	// Both hashes go on the wire. Without them the producer learns only that
+	// its identity was not adopted, which is also what a bespoke-mode Orion
+	// reports — the two values are what make the drift diagnosable rather
+	// than merely signalled. Neither is a secret: the supplied one is the
+	// caller's own, the recomputed one addresses content the caller may fetch.
+	var diags compiler.Diagnostics
+	diags.AddWarning(compiler.WarnLSMLHashMismatch,
+		"supplied lsml_bundle_hash %s does not match the bundle Orion emitted (%s); "+
+			"identity not collapsed, scene_version stays %s",
+		canvasHash, lsmlHash, sceneVersion)
+	return sceneVersion, diags.Warnings()
 }
 
 // writePushError translates a *compiler.CompileError into the
