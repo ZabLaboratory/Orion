@@ -6,11 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/Lumencast/lumencast-go/lsml"
 )
 
 // HTTPFetcher hits Canvas / Blue / components endpoints over HTTP.
@@ -180,8 +183,50 @@ func (f *HTTPFetcher) FetchCanvasLayout(ctx context.Context, version string) (*C
 //  v3: ZabCanvas #152 started forwarding + rewriting `bundle.defaults` — a
 //  binding-backed image src (`bindings.src` resolved via `defaults`, not a
 //  literal `src`) now gets its asset ref rewritten and its host allowlisted,
-//  where it previously carried no `defaults` at all.)
-const layoutContractVersion = "v3"
+//  where it previously carried no `defaults` at all.
+//  v4: defaults are now back-filled only from a bundle that re-hashes to the
+//  address they were fetched at (bundleMatchesAddress). Entries cached before
+//  that check may hold defaults no verification ever saw — including planted
+//  ones, which is the entire point — so they must MISS rather than be served
+//  from disk forever.)
+const layoutContractVersion = "v4"
+
+// bundleMatchesAddress re-derives the content address of a bundle fetched
+// from the store and reports whether it is the address we asked for.
+//
+// The store is content-addressed, but nothing in it recomputes the address:
+// the writer supplies the bytes AND names where they go (ZabCanvas
+// `lsml_bundle_service.bundle_hash` reads `scene_version` out of the body it
+// was handed). "Content-addressed" is therefore a claim about the store's
+// callers, not a property the bytes carry — until a consumer checks. This is
+// that check, and it is the one that holds for doors nobody has found yet:
+// whatever route plants content at an address, it cannot make it hash to that
+// address. See ZabCanvas `docs/contracts/lsml-bundle-store-admission.md` §4.
+//
+// Hashing goes through lsml.HashRaw, on the bytes AS RECEIVED. Never
+// lsml.HashBundle: that takes a typed *lsml.Bundle, which drops any member
+// the struct does not declare (`animations`, vendor extensions), so it would
+// hash something the store never served and report a mismatch on every
+// bundle carrying one — a false positive on legitimate content, which is
+// worse than no check at all because it would have to be disabled.
+//
+// A false answer is NOT an error: the caller drops the `defaults` back-fill
+// and compiles on, exactly as it already does for a scene with no stored
+// bundle. The push never fails. That asymmetry is deliberate — this guard
+// removes injected content from the antenna, it must not remove the antenna.
+func (f *HTTPFetcher) bundleMatchesAddress(version string, bundle json.RawMessage) bool {
+	want := strings.TrimPrefix(version, "sha256:")
+	got, _, err := lsml.HashRaw(bundle)
+	if err != nil {
+		return false
+	}
+	if got == want {
+		return true
+	}
+	slog.Warn("lsml bundle address mismatch; dropping literal defaults",
+		"requested", version, "recomputed", got, "url", f.CanvasBase+"/api/v1/lsml-bundles/"+version)
+	return false
+}
 
 func (f *HTTPFetcher) canvasLayoutResolved(ctx context.Context, version string) (*CanvasLayout, error) {
 	cacheKey := "layout:" + layoutContractVersion + ":" + version
@@ -203,13 +248,18 @@ func (f *HTTPFetcher) canvasLayoutResolved(ctx context.Context, version string) 
 		// defaults:{…}, …}, archive, …}`. The literal map lives at
 		// `.bundle.defaults`, NOT top-level.
 		var resp struct {
-			Bundle struct {
-				Defaults map[string]json.RawMessage `json:"defaults"`
-			} `json:"bundle"`
+			Bundle json.RawMessage `json:"bundle"`
 		}
 		burl := f.CanvasBase + "/api/v1/lsml-bundles/" + version
-		if err := f.getJSON(ctx, burl, &resp); err == nil && len(resp.Bundle.Defaults) > 0 {
-			out.Defaults = resp.Bundle.Defaults
+		if err := f.getJSON(ctx, burl, &resp); err == nil && len(resp.Bundle) > 0 {
+			if f.bundleMatchesAddress(version, resp.Bundle) {
+				var inner struct {
+					Defaults map[string]json.RawMessage `json:"defaults"`
+				}
+				if json.Unmarshal(resp.Bundle, &inner) == nil && len(inner.Defaults) > 0 {
+					out.Defaults = inner.Defaults
+				}
+			}
 		}
 		// A missing / errored bundle store is non-fatal: the layout still
 		// compiles (just without literal seeds), preserving the prior behaviour

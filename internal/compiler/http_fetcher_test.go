@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Lumencast/lumencast-go/lsml"
 )
 
 // TestFetchComputeManifest_BlueContract decodes Blue's REAL
@@ -411,17 +413,20 @@ func TestBlueprintNode_DecodesDefinitionWireField(t *testing.T) {
 // Without this, every static text/image binds to a `__lit.*` leaf nothing
 // seeds and the scene paints empty.
 func TestFetchCanvasLayout_BackfillsDefaultsFromBundle(t *testing.T) {
+	const bundle = `{"defaults":{"__lit.text.text_7":"BROKEN BLADE","__lit.image.image_6":"assets/abc.png"}}`
+	addr := addressOf(t, bundle)
+
 	var hits []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hits = append(hits, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.URL.Path == "/api/v1/layouts/v1":
+		case r.URL.Path == "/api/v1/layouts/"+addr:
 			// The adapter drops defaults — only version + root.
-			_, _ = w.Write([]byte(`{"version":"v1","root":{"kind":"stack"}}`))
-		case r.URL.Path == "/api/v1/lsml-bundles/v1":
+			_, _ = w.Write([]byte(`{"version":"` + addr + `","root":{"kind":"stack"}}`))
+		case r.URL.Path == "/api/v1/lsml-bundles/"+addr:
 			// The store wraps the bundle; defaults live at .bundle.defaults.
-			_, _ = w.Write([]byte(`{"content_hash":"v1","bundle":{"defaults":{"__lit.text.text_7":"BROKEN BLADE","__lit.image.image_6":"assets/abc.png"}}}`))
+			_, _ = w.Write([]byte(`{"content_hash":"` + addr + `","bundle":` + bundle + `}`))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -429,7 +434,7 @@ func TestFetchCanvasLayout_BackfillsDefaultsFromBundle(t *testing.T) {
 	defer srv.Close()
 
 	f := NewHTTPFetcher(srv.URL, srv.URL, "tok")
-	layout, err := f.FetchCanvasLayout(context.Background(), "v1")
+	layout, err := f.FetchCanvasLayout(context.Background(), addr)
 	if err != nil {
 		t.Fatalf("FetchCanvasLayout: %v", err)
 	}
@@ -440,8 +445,111 @@ func TestFetchCanvasLayout_BackfillsDefaultsFromBundle(t *testing.T) {
 		t.Fatalf("__lit.text.text_7 = %s, want \"BROKEN BLADE\"", got)
 	}
 	// It must have consulted the bundle store after the bare /layouts read.
-	if len(hits) != 2 || hits[0] != "/api/v1/layouts/v1" || hits[1] != "/api/v1/lsml-bundles/v1" {
+	if len(hits) != 2 || hits[0] != "/api/v1/layouts/"+addr || hits[1] != "/api/v1/lsml-bundles/"+addr {
 		t.Fatalf("request sequence = %v, want [layouts, lsml-bundles]", hits)
+	}
+}
+
+// addressOf is the content address a bundle legitimately lives at: the same
+// canonical hash ZabCanvas's store keys by and Prism's producer stamps.
+func addressOf(t *testing.T, bundle string) string {
+	t.Helper()
+	h, _, err := lsml.HashRaw([]byte(bundle))
+	if err != nil {
+		t.Fatalf("HashRaw: %v", err)
+	}
+	return h
+}
+
+// serveLayoutAndBundle stands up a Canvas stub that serves a defaults-less
+// layout at `version` and `body` as the stored bundle at the same address.
+func serveLayoutAndBundle(t *testing.T, version, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/layouts/" + version:
+			_, _ = w.Write([]byte(`{"version":"` + version + `","root":{"kind":"stack"}}`))
+		case "/api/v1/lsml-bundles/" + version:
+			_, _ = w.Write([]byte(`{"content_hash":"` + version + `","bundle":` + body + `}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// The guard. A bundle whose content does not re-hash to the address it was
+// served at is content nobody addressed — the store cannot tell, because it
+// never computes the address itself (ZabCanvas
+// docs/contracts/lsml-bundle-store-admission.md §1). Its defaults are dropped
+// rather than injected into the compiled layout.
+//
+// Dropped, NOT fatal: the compile continues exactly as for a scene with no
+// stored bundle. This guard exists to keep planted content off the antenna;
+// turning it into a hard failure would take the antenna down instead.
+func TestFetchCanvasLayout_SubstitutedBundleDoesNotReachTheLayout(t *testing.T) {
+	honest := `{"defaults":{"__lit.text.t":"REAL"}}`
+	addr := addressOf(t, honest)
+	// Same address, different bytes: the squat.
+	substituted := `{"defaults":{"__lit.text.t":"SUBSTITUTED"}}`
+
+	srv := serveLayoutAndBundle(t, addr, substituted)
+	f := NewHTTPFetcher(srv.URL, srv.URL, "tok")
+
+	layout, err := f.FetchCanvasLayout(context.Background(), addr)
+	if err != nil {
+		t.Fatalf("a mismatch must never fail the compile: %v", err)
+	}
+	if len(layout.Defaults) != 0 {
+		t.Fatalf("substituted defaults reached the layout: %v", layout.Defaults)
+	}
+	if layout.Root.Kind != "stack" {
+		t.Fatalf("layout itself must still be served, got root kind %q", layout.Root.Kind)
+	}
+}
+
+// The regression the whole design turns on. A real bundle carries members the
+// Go lsml.Bundle struct does not declare — `animations` is one ZabCanvas
+// explicitly stores (ADR 011 §3.1). Verifying through the typed struct would
+// drop them before hashing and report a mismatch on perfectly legitimate
+// content: every animated scene would silently lose its defaults and paint
+// empty. lsml.HashRaw hashes the bytes as received, so it does not.
+func TestFetchCanvasLayout_AcceptsBundleWithUndeclaredMembers(t *testing.T) {
+	bundle := `{"animations":{"pop":{"target":"score","keyframes":[]}},` +
+		`"defaults":{"__lit.text.t":"REAL"}}`
+	addr := addressOf(t, bundle)
+
+	srv := serveLayoutAndBundle(t, addr, bundle)
+	f := NewHTTPFetcher(srv.URL, srv.URL, "tok")
+
+	layout, err := f.FetchCanvasLayout(context.Background(), addr)
+	if err != nil {
+		t.Fatalf("FetchCanvasLayout: %v", err)
+	}
+	if len(layout.Defaults) != 1 {
+		t.Fatalf("defaults dropped on a bundle carrying an undeclared member: %v", layout.Defaults)
+	}
+}
+
+// An `sha256:`-prefixed version addresses the same bytes as the bare hex —
+// both spellings circulate (scene_version is prefixed, the store address is
+// not), and a verifier that accepted only one would silently drop defaults on
+// half the call sites.
+func TestFetchCanvasLayout_AcceptsPrefixedAddress(t *testing.T) {
+	bundle := `{"defaults":{"__lit.text.t":"REAL"}}`
+	version := "sha256:" + addressOf(t, bundle)
+
+	srv := serveLayoutAndBundle(t, version, bundle)
+	f := NewHTTPFetcher(srv.URL, srv.URL, "tok")
+
+	layout, err := f.FetchCanvasLayout(context.Background(), version)
+	if err != nil {
+		t.Fatalf("FetchCanvasLayout: %v", err)
+	}
+	if len(layout.Defaults) != 1 {
+		t.Fatalf("prefixed address rejected its own bundle: %v", layout.Defaults)
 	}
 }
 
