@@ -121,6 +121,15 @@ const (
 	// Closes the confused-deputy §3.6.A — an authored graph can never reach
 	// an un-curated internal route.
 	ErrEgressRouteNotDeclared DiagnosticCode = "EGRESS_ROUTE_NOT_DECLARED"
+
+	// WarnLSMLHashMismatch (ADR 007 §C.4) is the ONLY warning-severity code
+	// here, and it is not a compile diagnostic at all: it is emitted after the
+	// compile, by the LSML persist step, when the `lsml_bundle_hash` the
+	// producer supplied does not match the one Orion recomputed. Identity does
+	// not collapse; scene_version stays the legacy mint. It rides the same
+	// Diagnostics bag because that bag is the only structured channel the push
+	// response has — see scenes_push.go for why it must reach the wire.
+	WarnLSMLHashMismatch DiagnosticCode = "LSML_HASH_MISMATCH"
 )
 
 // Diagnostic is a single error or warning produced during compilation.
