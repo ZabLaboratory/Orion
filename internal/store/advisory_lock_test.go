@@ -18,7 +18,7 @@ func TestServiceTokenLockKey_IsPinned(t *testing.T) {
 
 // Release is deferred unconditionally at the call site, including on the paths
 // where no lock was taken.
-func TestProcessLock_ReleaseIsSafeOnNil(t *testing.T) {
+func TestProcessLock_ReleaseIsSafeOnNil(_ *testing.T) {
 	var l *ProcessLock
 	l.Release()
 	(&ProcessLock{}).Release()
