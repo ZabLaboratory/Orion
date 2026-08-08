@@ -20,6 +20,14 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/ws"
 )
 
+// ServiceTokenSource is the slice of the service-token manager the public
+// surface uses: the Bearer to present outbound, and the operator-visible state
+// word (ADR ZabAuth 003 Am.3 § A3.6 R21 / RC 51).
+type ServiceTokenSource interface {
+	Token() string
+	State() auth.ServiceTokenState
+}
+
 // PublicDeps groups every dependency the public router needs.
 type PublicDeps struct {
 	Logger   *slog.Logger
@@ -47,7 +55,13 @@ type PublicDeps struct {
 	ValidationRunner *validationRunner
 	StaticDir        http.FileSystem // /static/solar/...
 	QuasarBaseURL    string          // e.g. http://zabgate:4000/quasar
-	ServiceTokens    *auth.ServiceTokenManager
+
+	// ServiceTokens is the outbound service-token source: the Bearer for the
+	// credentials proxy, and the state word `/ready` publishes (RC 51).
+	// *auth.ServiceTokenManager in production; an interface so the readiness
+	// surface can be asserted in each of its three states without standing up
+	// a ZabAuth and a Postgres.
+	ServiceTokens ServiceTokenSource
 
 	// SchemaClient fetches a datasource's read-only catalog (`_schema`)
 	// for the DB-catalog surface (ADR Blue 008 §3.4). Nil ⇒ the catalog
@@ -220,12 +234,26 @@ func health(w http.ResponseWriter, _ *http.Request) {
 
 // ready reports DB ping + show roster status. Returns 503 if either
 // fails so a load balancer can pull traffic during a degraded boot.
+//
+// It also publishes `service_token` (armed | degraded | unpersisted), the
+// operator-visible state of the durable service-token manager — ADR ZabAuth
+// 003 Amendment 3 § A3.6 R21 / RC 51. That field NEVER changes the status
+// code: a token problem degrades egress, it is not a liveness verdict, exactly
+// as ZabAuth's own `unadopted_families_24h` stays 200. It is a state word and
+// nothing else — no token material, no family id, no expiry.
 func ready(deps PublicDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body := map[string]any{
 			"status":  "ok",
 			"service": "orion",
 		}
+		// No manager wired (unit fixtures) reads as "no token", which is what
+		// degraded means.
+		serviceToken := auth.ServiceTokenDegraded
+		if deps.ServiceTokens != nil {
+			serviceToken = deps.ServiceTokens.State()
+		}
+		body["service_token"] = string(serviceToken)
 		if deps.Store != nil {
 			if err := deps.Store.Ping(r.Context()); err != nil {
 				body["status"] = "degraded"

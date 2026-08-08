@@ -27,6 +27,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/lsdp"
 	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
+	"github.com/ZabLaboratory/Orion/internal/secretbox"
 	"github.com/ZabLaboratory/Orion/internal/store"
 	"github.com/ZabLaboratory/Orion/internal/ws"
 )
@@ -195,26 +196,50 @@ func run() error {
 
 	_ = auth.NewValidator(cfg.ZabAuthValidateURL, cfg.ServiceToken, cfg.AuthCacheTTL)
 
-	// Service-token manager — mints + rotates the Bearer token Orion
-	// presents on outbound calls through ZabGate (the stream-key proxy,
-	// the compiler fetcher, and the `db.query` `_query` delegation).
-	// Static mode (no operator token) keeps backward-compat with the
-	// existing `ORION_SERVICE_TOKEN` env-only pattern. Built BEFORE
-	// cold-start because the effect bundle the show installs on validated
-	// scenes reads its `_query` bearer live from it.
+	// Service-token manager — holds, by POSSESSION of a durable refresh token,
+	// the Bearer Orion presents on outbound calls through ZabGate (the
+	// stream-key proxy, the compiler fetcher, the `db.query` `_query`
+	// delegation). It never mints: the boot gesture is a rotation of the
+	// persisted refresh token, or of the étage-1 seed on the very first boot
+	// (ADR ZabAuth 003 Am.3 § A3.3 parts 1 and 5). Built BEFORE cold-start
+	// because the effect bundle the show installs on validated scenes reads
+	// its `_query` bearer live from it.
+	//
+	// The durable model is antenne-only (§ A3.3 part 3): an embedded-local
+	// sidecar on an operator laptop that resolved the prod seed would rotate
+	// the antenne's family into `reuse` and revoke it — the show would go down
+	// from a laptop. So under embedded-local the store and the box are left
+	// nil and the manager stays on the dev/test static posture. (The advisory
+	// lock and the loud seed refusal of part 4 land with #305.)
 	authBase := strings.TrimSuffix(cfg.ZabAuthValidateURL, "/tokens")
 	serviceTokens := &auth.ServiceTokenManager{
-		MintURL:       authBase + "/service-tokens",
-		RefreshURL:    authBase + "/service-tokens/refresh",
-		OperatorToken: cfg.OperatorToken,
-		StaticToken:   cfg.ServiceToken,
-		ServiceName:   "orion",
-		Paths:         cfg.ServicePaths,
-		Logger:        logger,
+		RefreshURL: authBase + "/service-tokens/refresh",
+		Logger:     logger,
+	}
+	if cfg.Profile.IsEmbeddedLocal() {
+		serviceTokens.StaticToken = cfg.ServiceToken
+	} else {
+		// § A3.3 part 5 / RC 47: ORION_SERVICE_TOKEN is the standing
+		// credential this ADR retires. On antenne it is refused, not honoured —
+		// leaving it wired would make the boot silently fall back onto it.
+		if cfg.ServiceToken != "" {
+			logger.Error("ORION_SERVICE_TOKEN is set but REFUSED on the antenne profile (ADR ZabAuth 003 Am.3 § A3.3 part 5): the durable refresh model is the only credential path. Remove it from the environment.")
+		}
+		serviceTokens.Seed = cfg.ServiceRefreshToken
+		box, boxErr := secretbox.New(cfg.EncryptionKey)
+		if boxErr != nil {
+			// No plaintext fallback, and no failed boot either: Orion airs
+			// without a service token and says so on /ready.
+			logger.Error("ORION_ENCRYPTION_KEY unusable — the durable service token cannot arm; Orion airs with no service token and token-bearing outbound calls fail closed", "err", boxErr)
+		} else {
+			serviceTokens.Store = st
+			serviceTokens.Box = box
+		}
 	}
 	if err := serviceTokens.Start(ctx); err != nil {
-		logger.Warn("service token manager start failed; falling back to static mode", "err", err)
+		logger.Error("service token manager start failed; Orion airs with no service token", "err", err)
 	}
+	logger.Info("service token manager", "profile", string(cfg.Profile), "state", string(serviceTokens.State()))
 	defer serviceTokens.Stop()
 
 	// Async-effect bundle (ADR 003 §3.1.3 / R9 lift ADR 006 §3.4).

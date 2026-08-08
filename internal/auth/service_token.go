@@ -12,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ZabLaboratory/Orion/internal/secretbox"
+	"github.com/ZabLaboratory/Orion/internal/store"
 )
 
 // ServiceTokenBundle mirrors ZabAuth's /service-tokens response shape.
@@ -23,133 +26,381 @@ type ServiceTokenBundle struct {
 	RefreshExpiresAt time.Time `json:"refresh_expires_at"`
 }
 
-// ServiceTokenManager mints and rotates Orion's outbound service token
-// against ZabAuth via ZabGate. Mirror of Quasar's Python implementation
-// in quasar/core/orion_client.py — same ZabAuth contract, same refresh
-// strategy: wake N seconds before expiry, rotate, swap in place under
-// a write lock.
+// ServiceTokenState is the operator-visible state word published on
+// `GET /api/v1/ready` and declared in `.health.json`
+// (ADR ZabAuth 003 Amendment 3 § A3.3 part 5, § A3.6 R21, RC 51).
+//
+// It is a state word and nothing else: it never carries token material, a
+// family id, or an expiry. A deliberate degradation nobody can see is not a
+// fail-soft, it is a silent outage — hence the surface.
+type ServiceTokenState string
+
+const (
+	// ServiceTokenArmed — a token is held and the durable credential behind it
+	// is persisted. Nominal.
+	ServiceTokenArmed ServiceTokenState = "armed"
+	// ServiceTokenDegraded — no token: nothing was resolvable at boot, the
+	// refresh was rejected terminally, or (once #305 lands) the advisory lock
+	// was not taken. Outbound token-bearing calls fail closed.
+	ServiceTokenDegraded ServiceTokenState = "degraded"
+	// ServiceTokenUnpersisted — a rotation succeeded server-side but its
+	// successor could not be written to Postgres. The process keeps serving on
+	// the in-memory value and retries the persist on its own bounded backoff.
+	ServiceTokenUnpersisted ServiceTokenState = "unpersisted"
+)
+
+// ServiceTokenStore is the slice of store.Store the durable manager needs:
+// the encrypted refresh token, opaque bytes on both sides
+// (ADR ZabAuth 003 Amendment 3 § A3.3 part 2, delivered by #303).
+type ServiceTokenStore interface {
+	GetServiceRefreshToken(ctx context.Context) ([]byte, error)
+	PutServiceRefreshToken(ctx context.Context, enc []byte) error
+}
+
+// durableRecord is what the encrypted column actually holds. The store sees
+// opaque ciphertext; this layer owns the format.
+//
+// Rotating is the fail-closed marker of § A3.3 part 5. It is written BEFORE a
+// refresh call goes out and cleared only by the successful persist of the
+// successor. A boot that finds it set knows the stored value may already have
+// been consumed server-side, and refuses to replay it — replaying a consumed
+// generation trips `reuse` and revokes the whole family (§ 5 R8). The marker
+// lives inside the sealed blob rather than in a column so the store surface
+// #303 delivered stays exactly as specified: bytes in, bytes out.
+type durableRecord struct {
+	RefreshToken string `json:"rt"`
+	Rotating     bool   `json:"rotating,omitempty"`
+}
+
+// ServiceTokenManager holds Orion's outbound service token by POSSESSION of a
+// durable refresh token (ADR ZabAuth 003 Amendment 3 § A3.3 parts 1 and 5).
+//
+// It does not mint. Orion holds no operator credential and no access token at
+// rest: the persisted value is a *refresh* token, so the first act of Start()
+// is a rotation, and adoption (generation 0 → 1) happens on the first boot by
+// construction.
 //
 // Two operating modes:
 //
-//   - **Live mode** — OperatorToken is set. Manager mints a service
-//     token at Start(), then runs a background goroutine that refreshes
-//     it RefreshLead before expiry. Token() returns the live access
-//     token.
-//   - **Static mode** — OperatorToken is empty. Manager falls back to
-//     the static StaticToken (ORION_SERVICE_TOKEN env var). No mint, no
-//     refresh loop. This is the pre-Quasar wiring posture and lets
-//     dev / tests skip the ZabAuth round-trip.
+//   - **Durable mode** — Store and Box are set (antenne profile). Boot resolves
+//     the persisted refresh token, else the ORION_SERVICE_REFRESH_TOKEN seed,
+//     rotates once, and then rotates RefreshLead before every expiry. Every
+//     rotation is persist-before-swap.
+//   - **Static mode** — Store or Box is nil. Token() returns StaticToken
+//     (ORION_SERVICE_TOKEN). Dev/test only: the antenne profile refuses to use
+//     it (§ A3.3 part 5, RC 47), because falling back on a standing credential
+//     is the exact shape this ADR retires.
+//
+// A token problem NEVER fails the boot and never takes the show off the air
+// (§ A3.3 part 4, § A3.4 (f)): the process boots, the scene stays on air, and
+// only token-bearing outbound calls fail — closed.
 type ServiceTokenManager struct {
-	// MintURL is ZabAuth's /service-tokens endpoint via ZabGate.
-	// e.g., http://zabgate:4000/auth/api/v1/service-tokens
-	MintURL string
-	// RefreshURL is ZabAuth's /service-tokens/refresh endpoint via
-	// ZabGate. Trailing /refresh appended at construction.
+	// RefreshURL is ZabAuth's /service-tokens/refresh endpoint via ZabGate.
 	RefreshURL string
-	// OperatorToken is an admin JWT used once at boot to mint the
-	// service token. Empty → static mode.
-	OperatorToken string
-	// StaticToken is the fallback used when OperatorToken is empty.
-	// Mirrors today's `cfg.ServiceToken` direct usage.
+	// Seed is the étage-1 bootstrap refresh token
+	// (ORION_SERVICE_REFRESH_TOKEN). It is an amorce: resolved only when the
+	// database holds nothing, consumed by the first rotation, and never
+	// rewritten by the service.
+	Seed string
+	// StaticToken is the dev/test-only fallback (ORION_SERVICE_TOKEN). Used
+	// only in static mode; the antenne wiring leaves it empty.
 	StaticToken string
-	// ServiceName sent in the mint request body. ZabAuth audits it.
-	ServiceName string
-	// Paths claim — restricts the token's WS write scope. For HTTP
-	// outbound calls (the credentials proxy) the paths claim is
-	// documentation; ZabGate enforces only role+validity at the
-	// upgrade. Per chantier brief, scope it to the Quasar surface.
-	Paths []string
-	// RefreshLead is how long before expiry the manager rotates.
-	// Default 5 min — same as Quasar.
+	// Store persists the encrypted refresh token. Nil ⇒ static mode.
+	Store ServiceTokenStore
+	// Box encrypts at rest (AES-256-GCM under ORION_ENCRYPTION_KEY). Nil ⇒
+	// static mode. There is no plaintext fallback: a malformed key means the
+	// durable manager does not arm, never that it writes plaintext.
+	Box *secretbox.Box
+	// RefreshLead is how long before expiry the manager rotates. Default 5 min.
 	RefreshLead time.Duration
-	// MintTTL is the TTL requested when minting. ZabAuth caps at 1 h.
-	MintTTL time.Duration
-	// HTTPClient is reused for mint + refresh. Defaults to a 10 s
-	// timeout when nil.
+	// TransportRetry bounds the retry after a *transport* failure. Default 30 s.
+	// It applies to transport alone: a refresh ZabAuth REJECTS is terminal.
+	TransportRetry time.Duration
+	// PersistRetryMin / PersistRetryMax bound the unpersisted-state backoff
+	// (§ A3.3 part 5, R20 / RC 50). Defaults 1 s → 30 s. The retry re-writes
+	// the same ciphertext (idempotent single-row write) and issues NO refresh
+	// call; it does not wait for the next hourly rotation.
+	PersistRetryMin time.Duration
+	PersistRetryMax time.Duration
+	// HTTPClient is reused for every refresh. Defaults to a 10 s timeout.
 	HTTPClient *http.Client
-	// Logger — required in live mode.
+	// Logger — required in durable mode.
 	Logger *slog.Logger
 
-	mu     sync.RWMutex
-	bundle ServiceTokenBundle
+	mu        sync.RWMutex
+	access    string
+	refresh   string
+	expiresAt time.Time
+	state     ServiceTokenState
+	// pending is the ciphertext a failed persist still owes the database.
+	pending []byte
 
+	wake    chan struct{}
 	stop    chan struct{}
-	stopped chan struct{}
-	live    bool
+	wg      sync.WaitGroup
+	started bool
 }
 
-// Token returns the current access token.
-//
-// In static mode it returns StaticToken unchanged.
-// In live mode it returns the latest minted access token (concurrency-
-// safe ; readers see a fully-rotated value, never a half-set struct).
+// durable reports whether the manager runs the durable model. Both fields are
+// set at construction and never mutated, so this needs no lock.
+func (m *ServiceTokenManager) durable() bool { return m.Store != nil && m.Box != nil }
+
+// Token returns the current access token, or "" when the manager holds none —
+// callers present it as a Bearer and the call fails closed at ZabGate. There is
+// no fallback to any standing credential.
 func (m *ServiceTokenManager) Token() string {
-	if !m.live {
+	if !m.durable() {
 		return m.StaticToken
 	}
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.bundle.AccessToken
+	return m.access
 }
 
-// Start mints the initial token (live mode only) and launches the
-// refresh loop. Idempotent: calling Start a second time is a no-op.
+// State returns the operator-visible state word (RC 51). Safe on a nil
+// receiver so the readiness handler can report it unconditionally.
+func (m *ServiceTokenManager) State() ServiceTokenState {
+	if m == nil {
+		return ServiceTokenDegraded
+	}
+	if !m.durable() {
+		if m.StaticToken != "" {
+			return ServiceTokenArmed
+		}
+		return ServiceTokenDegraded
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if m.state == "" {
+		return ServiceTokenDegraded
+	}
+	return m.state
+}
+
+// Start resolves the durable credential and performs the boot rotation, then
+// launches the refresh and persist-retry loops. Idempotent.
 //
-// In static mode, Start is a no-op — Token() returns StaticToken.
+// It returns an error only for a programming-level misconfiguration. A missing
+// credential, an unreachable ZabAuth, a refused refresh or an unreadable
+// database all leave the manager degraded and return nil: Orion boots and airs
+// regardless (§ A3.3 part 4, RC 48).
 func (m *ServiceTokenManager) Start(ctx context.Context) error {
-	if m.OperatorToken == "" {
+	if m.started {
 		return nil
 	}
-	if m.stop != nil {
+	m.applyDefaults()
+	if !m.durable() {
 		return nil
 	}
+	if m.RefreshURL == "" {
+		return errors.New("service token: durable mode requires RefreshURL")
+	}
+	m.started = true
+	m.stop = make(chan struct{})
+	m.wake = make(chan struct{}, 1)
+
+	rt, ok := m.resolve(ctx)
+	if !ok {
+		return nil // degraded; no credential to rotate, so no loops
+	}
+	m.mu.Lock()
+	m.refresh = rt
+	m.mu.Unlock()
+
+	// The boot gesture is a REFRESH, never a mint.
+	if m.rotate(ctx) == rotateTerminal {
+		return nil
+	}
+	m.wg.Add(2)
+	go m.refreshLoop()
+	go m.persistLoop()
+	return nil
+}
+
+// Stop signals the background loops and waits for them to exit. Safe when
+// Start was never called or when in static mode.
+func (m *ServiceTokenManager) Stop() {
+	if !m.started {
+		return
+	}
+	close(m.stop)
+	m.wg.Wait()
+	m.started = false
+	m.stop = nil
+}
+
+func (m *ServiceTokenManager) applyDefaults() {
 	if m.RefreshLead <= 0 {
 		m.RefreshLead = 5 * time.Minute
 	}
-	if m.MintTTL <= 0 {
-		m.MintTTL = 60 * time.Minute
+	if m.TransportRetry <= 0 {
+		m.TransportRetry = 30 * time.Second
+	}
+	if m.PersistRetryMin <= 0 {
+		m.PersistRetryMin = time.Second
+	}
+	if m.PersistRetryMax < m.PersistRetryMin {
+		m.PersistRetryMax = 30 * time.Second
 	}
 	if m.HTTPClient == nil {
 		m.HTTPClient = &http.Client{Timeout: 10 * time.Second}
 	}
+}
 
-	bundle, err := m.mint(ctx)
+// resolve applies the boot resolution order of § A3.3 part 1: the persisted
+// value if present, else the seed. It returns ok=false — degraded, no rotation
+// attempted — whenever replaying what it found could revoke the family.
+func (m *ServiceTokenManager) resolve(ctx context.Context) (string, bool) {
+	enc, err := m.Store.GetServiceRefreshToken(ctx)
+	switch {
+	case err == nil:
+		plain, oerr := m.Box.Open(enc)
+		if oerr != nil {
+			m.logger().Error("durable service token: the persisted credential does not decrypt; refusing to arm (no plaintext fallback)", "err", oerr)
+			return "", false
+		}
+		var rec durableRecord
+		if jerr := json.Unmarshal(plain, &rec); jerr != nil || rec.RefreshToken == "" {
+			m.logger().Error("durable service token: the persisted credential is malformed; refusing to arm")
+			return "", false
+		}
+		if rec.Rotating {
+			// Fail closed (§ A3.3 part 5, § 5 R8). "Fails closed" means no
+			// token — NOT a refused boot: the process runs, the show airs.
+			m.logger().Error("durable service token: the persisted credential is marked rotating — a previous rotation advanced the family server-side without recording its successor. Refusing to replay it (that would trip reuse and revoke the family). Orion airs with NO service token; an operator must re-mint and re-seed (runbook service-token-lifecycle.md)")
+			return "", false
+		}
+		return rec.RefreshToken, true
+	case errors.Is(err, store.ErrNotFound):
+		if m.Seed == "" {
+			m.logger().Error("durable service token: nothing persisted and no ORION_SERVICE_REFRESH_TOKEN seed; token-bearing outbound calls fail closed")
+			return "", false
+		}
+		m.logger().Info("durable service token: nothing persisted; resolving the boot seed (consumed by the first rotation)")
+		return m.Seed, true
+	default:
+		m.logger().Error("durable service token: reading the persisted credential failed; refusing to arm rather than replay a seed", "err", err)
+		return "", false
+	}
+}
+
+type rotateOutcome int
+
+const (
+	rotateOK rotateOutcome = iota
+	// rotateTransport — the chain may not have advanced, or advanced without
+	// a usable answer. Retry the same value on TransportRetry.
+	rotateTransport
+	// rotateTerminal — ZabAuth rejected this value (reuse / revoked / expired).
+	// No retry, no re-mint (Orion holds no minting credential): the manager
+	// goes token-less until an operator re-seeds.
+	rotateTerminal
+)
+
+// rotate is the persist-before-swap rotation of § A3.3 part 5:
+//
+//	mark rotating → refresh → persist the successor → swap in memory
+//
+// The marker goes first because the two writes bracket the only window where
+// the family can be lost: between ZabAuth advancing the chain and Orion
+// recording the successor. Marking before the call means a crash inside that
+// window is recoverable-by-refusal (a boot that finds the marker fails closed)
+// instead of silently replaying a consumed generation.
+//
+// A crash between the marker and a refresh that never reached ZabAuth costs a
+// re-seed for a credential that was in fact still good. That asymmetry is
+// accepted deliberately: in the other ordering the same crash replays a
+// consumed generation, which revokes the live family AND writes a record that
+// is indistinguishable from a theft in ZabAuth's audit trail (§ 5 R8). Either
+// way the operator re-mints; only one of the two also cries wolf.
+func (m *ServiceTokenManager) rotate(ctx context.Context) rotateOutcome {
+	m.mu.RLock()
+	rt := m.refresh
+	m.mu.RUnlock()
+	if rt == "" {
+		return rotateTerminal
+	}
+
+	marker, err := m.seal(durableRecord{RefreshToken: rt, Rotating: true})
 	if err != nil {
-		return fmt.Errorf("service token: initial mint: %w", err)
+		m.logger().Error("durable service token: sealing the rotation marker failed; skipping this rotation", "err", err)
+		return rotateTransport
 	}
+	if err := m.Store.PutServiceRefreshToken(ctx, marker); err != nil {
+		// The chain has NOT advanced. Skipping is strictly safer than
+		// advancing a chain we would be unable to record.
+		m.logger().Error("durable service token: could not record the rotation marker; skipping this rotation rather than advancing a chain we cannot persist", "err", err)
+		return rotateTransport
+	}
+
+	bundle, err := m.refreshOnce(ctx, rt)
+	if err != nil {
+		var terminal terminalRejection
+		if errors.As(err, &terminal) {
+			m.mu.Lock()
+			m.access = ""
+			m.refresh = ""
+			m.state = ServiceTokenDegraded
+			m.mu.Unlock()
+			m.logger().Error("durable service token: ZabAuth rejected the refresh — terminal. No retry on this value and no re-mint (Orion holds no minting credential); an operator must re-seed", "err", err)
+			return rotateTerminal
+		}
+		m.logger().Warn("durable service token: refresh failed on transport; will retry the same value", "err", err)
+		return rotateTransport
+	}
+
+	successor, serr := m.seal(durableRecord{RefreshToken: bundle.RefreshToken})
+	if serr != nil {
+		// Cannot even produce ciphertext. Serve on the in-memory value and let
+		// the persist loop retry once a successor can be sealed — which it
+		// cannot, so this degrades to unpersisted and says so.
+		m.logger().Error("durable service token: sealing the rotated credential failed", "err", serr)
+	}
+	perr := errors.New("service token: successor not sealed")
+	if serr == nil {
+		perr = m.Store.PutServiceRefreshToken(ctx, successor)
+	}
+
 	m.mu.Lock()
-	m.bundle = bundle
-	m.mu.Unlock()
-	m.live = true
-	m.stop = make(chan struct{})
-	m.stopped = make(chan struct{})
-	go m.refreshLoop()
-	return nil
-}
-
-// Stop signals the refresh goroutine and waits for it to exit. Safe to
-// call from multiple goroutines ; safe to call when Start was never
-// called or when in static mode.
-func (m *ServiceTokenManager) Stop() {
-	if m.stop == nil {
-		return
+	m.access = bundle.AccessToken
+	m.refresh = bundle.RefreshToken
+	m.expiresAt = bundle.ExpiresAt
+	if perr == nil {
+		m.state = ServiceTokenArmed
+		m.pending = nil
+	} else {
+		m.state = ServiceTokenUnpersisted
+		m.pending = successor
 	}
-	close(m.stop)
-	<-m.stopped
-	m.stop = nil
-	m.stopped = nil
-	m.live = false
+	m.mu.Unlock()
+
+	if perr != nil {
+		m.logger().Error("durable service token: rotation persisted NOTHING — the chain advanced server-side and the in-memory value is the only copy. Still serving; state unpersisted; retrying the persist on its own backoff", "err", perr)
+		m.kickPersist()
+		return rotateOK
+	}
+	m.logger().Info("durable service token rotated", "expires_at", bundle.ExpiresAt)
+	return rotateOK
 }
 
+// refreshLoop rotates RefreshLead before expiry, and bounds the retry after a
+// transport failure. A terminal rejection ends the loop: there is nothing left
+// to retry with.
 func (m *ServiceTokenManager) refreshLoop() {
-	defer close(m.stopped)
+	defer m.wg.Done()
 	for {
 		m.mu.RLock()
-		expiresAt := m.bundle.ExpiresAt
+		expiresAt := m.expiresAt
 		m.mu.RUnlock()
-		wait := time.Until(expiresAt) - m.RefreshLead
-		if wait < time.Second {
-			wait = time.Second
+		// A zero expiry means the boot rotation never landed a bundle. Do not
+		// compute a lead against it: time.Until(time.Time{}) overflows the
+		// int64 duration and wraps to a positive ~292-year sleep, which would
+		// silently retire the retry the transport branch depends on.
+		wait := time.Second
+		if !expiresAt.IsZero() {
+			if d := time.Until(expiresAt) - m.RefreshLead; d > time.Second {
+				wait = d
+			}
 		}
 		select {
 		case <-m.stop:
@@ -157,97 +408,154 @@ func (m *ServiceTokenManager) refreshLoop() {
 		case <-time.After(wait):
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		bundle, err := m.refresh(ctx)
+		outcome := m.rotate(ctx)
 		cancel()
-		if err != nil {
-			if m.Logger != nil {
-				m.Logger.Warn("service token refresh failed; will retry", "err", err)
-			}
-			// Bound retry after a refresh failure ; we don't want a
-			// hot loop if ZabAuth is down. 30 s is short enough that
-			// a recovery is picked up promptly without saturating
-			// either side.
+		switch outcome {
+		case rotateTerminal:
+			return
+		case rotateTransport:
 			select {
 			case <-m.stop:
 				return
-			case <-time.After(30 * time.Second):
+			case <-time.After(m.TransportRetry):
 			}
-			continue
-		}
-		m.mu.Lock()
-		m.bundle = bundle
-		m.mu.Unlock()
-		if m.Logger != nil {
-			m.Logger.Info("service token rotated", "expires_at", bundle.ExpiresAt)
+		case rotateOK:
 		}
 	}
 }
 
-func (m *ServiceTokenManager) mint(ctx context.Context) (ServiceTokenBundle, error) {
-	body, _ := json.Marshal(map[string]any{
-		"service": m.ServiceName,
-		"paths":   m.Paths,
-		"ttl_s":   int(m.MintTTL.Seconds()),
-	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.MintURL, bytes.NewReader(body))
+// persistLoop is the R20 / RC 50 condition: the unpersisted state retries the
+// persist on its OWN bounded backoff and clears the flag the moment the
+// database answers. It never issues a refresh call — re-writing the same
+// ciphertext is a single-row write, not a rotation, so it carries no reuse
+// risk. Waiting for the next hourly rotation instead would leave a full hour
+// during which a crash costs the family for a database blip of seconds.
+func (m *ServiceTokenManager) persistLoop() {
+	defer m.wg.Done()
+	for {
+		select {
+		case <-m.stop:
+			return
+		case <-m.wake:
+		}
+		backoff := m.PersistRetryMin
+		for {
+			m.mu.RLock()
+			enc := m.pending
+			m.mu.RUnlock()
+			if enc == nil {
+				break
+			}
+			select {
+			case <-m.stop:
+				return
+			case <-time.After(backoff):
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			err := m.Store.PutServiceRefreshToken(ctx, enc)
+			cancel()
+			if err == nil {
+				m.mu.Lock()
+				if bytes.Equal(m.pending, enc) {
+					m.pending = nil
+					m.state = ServiceTokenArmed
+				}
+				m.mu.Unlock()
+				m.logger().Info("durable service token: re-persisted after an earlier failure; state armed")
+				break
+			}
+			m.logger().Warn("durable service token: persist retry failed; backing off", "err", err)
+			backoff *= 2
+			if backoff > m.PersistRetryMax {
+				backoff = m.PersistRetryMax
+			}
+		}
+	}
+}
+
+func (m *ServiceTokenManager) kickPersist() {
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (m *ServiceTokenManager) seal(rec durableRecord) ([]byte, error) {
+	plain, err := json.Marshal(rec)
+	if err != nil {
+		return nil, err
+	}
+	return m.Box.Seal(plain)
+}
+
+// terminalRejection marks a refresh ZabAuth decided against: reuse, revoked,
+// expired, malformed. Retrying the same value cannot change the answer.
+type terminalRejection struct{ err error }
+
+func (t terminalRejection) Error() string { return t.err.Error() }
+func (t terminalRejection) Unwrap() error { return t.err }
+
+// refreshOnce rotates one generation. Per ADR 003 § 3.1 the presented
+// refresh_token IS the credential: the route carries no operator gate and
+// ZabAuth ignores any bearer, so no Authorization header is set — under the
+// durable model Orion holds no operator credential to set one with.
+func (m *ServiceTokenManager) refreshOnce(ctx context.Context, rt string) (ServiceTokenBundle, error) {
+	body, err := json.Marshal(map[string]string{"refresh_token": rt})
 	if err != nil {
 		return ServiceTokenBundle{}, err
 	}
-	req.Header.Set("Authorization", "Bearer "+m.OperatorToken)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	return m.do(req, http.StatusCreated, http.StatusOK)
-}
-
-func (m *ServiceTokenManager) refresh(ctx context.Context) (ServiceTokenBundle, error) {
-	m.mu.RLock()
-	rt := m.bundle.RefreshToken
-	m.mu.RUnlock()
-	if rt == "" {
-		return ServiceTokenBundle{}, errors.New("service token: refresh: no refresh token in bundle")
-	}
-	body, _ := json.Marshal(map[string]string{"refresh_token": rt})
-	url := strings.TrimRight(m.RefreshURL, "/")
-	if !strings.HasSuffix(url, "/refresh") {
-		url = m.MintURL + "/refresh"
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.refreshEndpoint(), bytes.NewReader(body))
 	if err != nil {
 		return ServiceTokenBundle{}, err
 	}
-	// Bastion C3: ZabAuth authenticates the refresh caller by the same
-	// operator Bearer mint() presents (mirror of mint, l.196) — the
-	// refresh_token is the rotation credential and travels in the body,
-	// it is NOT an Authorization bearer. Before this, refresh() set no
-	// Authorization header at all, so ZabAuth 401'd every rotation and
-	// the token silently went stale. The operator token (never the
-	// refresh/access token) is the bearer; neither is ever logged (C4).
-	req.Header.Set("Authorization", "Bearer "+m.OperatorToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	return m.do(req, http.StatusOK)
-}
 
-func (m *ServiceTokenManager) do(req *http.Request, accept ...int) (ServiceTokenBundle, error) {
 	resp, err := m.HTTPClient.Do(req)
 	if err != nil {
 		return ServiceTokenBundle{}, err
 	}
 	defer resp.Body.Close()
-	ok := false
-	for _, code := range accept {
-		if resp.StatusCode == code {
-			ok = true
-			break
-		}
-	}
-	if !ok {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		preview, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return ServiceTokenBundle{}, fmt.Errorf("zabauth status %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
+		status := fmt.Errorf("zabauth status %d: %s", resp.StatusCode, strings.TrimSpace(string(preview)))
+		if isTerminalStatus(resp.StatusCode) {
+			return ServiceTokenBundle{}, terminalRejection{status}
+		}
+		return ServiceTokenBundle{}, status
 	}
 	var out ServiceTokenBundle
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return ServiceTokenBundle{}, fmt.Errorf("decode: %w", err)
 	}
+	if out.AccessToken == "" || out.RefreshToken == "" {
+		return ServiceTokenBundle{}, errors.New("zabauth returned an incomplete token bundle")
+	}
 	return out, nil
+}
+
+// isTerminalStatus classifies a rejection. Every 4xx is ZabAuth's decision
+// about THIS value — reuse detection answers 401 — except the two that mean
+// "ask again later" (408 timeout, 429 the per-IP failure budget of § 3.7).
+// 5xx is the far side being unwell, i.e. transport.
+func isTerminalStatus(code int) bool {
+	if code < 400 || code >= 500 {
+		return false
+	}
+	return code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
+}
+
+func (m *ServiceTokenManager) refreshEndpoint() string {
+	url := strings.TrimRight(m.RefreshURL, "/")
+	if !strings.HasSuffix(url, "/refresh") {
+		url += "/refresh"
+	}
+	return url
+}
+
+func (m *ServiceTokenManager) logger() *slog.Logger {
+	if m.Logger != nil {
+		return m.Logger
+	}
+	return slog.Default()
 }

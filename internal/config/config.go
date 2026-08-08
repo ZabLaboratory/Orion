@@ -101,6 +101,19 @@ type Config struct {
 	TickHz             int
 	PushTimeout        time.Duration
 
+	// --- durable service token (ADR ZabAuth 003 Am.3 § A3.3 parts 1/2/5) ---
+	//
+	// ServiceRefreshToken is the étage-1 bootstrap refresh token
+	// (ORION_SERVICE_REFRESH_TOKEN, ADR ZabAuth 003 Am.3 § A3.3 part 1). It is
+	// an amorce: resolved only when the database holds nothing, consumed by the
+	// first rotation, then purged at étage 1 — never rewritten by the service.
+	ServiceRefreshToken string
+	// EncryptionKey is base64 of the 32 random bytes that encrypt the durable
+	// refresh token at rest (ORION_ENCRYPTION_KEY, § A3.3 part 2). Absent or
+	// malformed ⇒ the durable manager refuses to arm; it never degrades to a
+	// plaintext write, and it never fails the boot either.
+	EncryptionKey string
+
 	// --- scene-validation gate (ADR 003 §3.2, issue #87) ---
 	// ValidationMaxSteps / ValidationMaxWall bound one entrypoint's proof
 	// (env-tunable, ADR §3.2.1 defaults 1 M steps / 5 s). The budget
@@ -212,6 +225,8 @@ func Load() (Config, error) {
 		ServiceToken:         os.Getenv("ORION_SERVICE_TOKEN"),
 		OperatorToken:        os.Getenv("ORION_OPERATOR_TOKEN"),
 		ServicePaths:         splitCSV(getenv("ORION_SERVICE_PATHS", "quasar.credentials.read")),
+		ServiceRefreshToken:  os.Getenv("ORION_SERVICE_REFRESH_TOKEN"),
+		EncryptionKey:        os.Getenv("ORION_ENCRYPTION_KEY"),
 		QuasarBaseURL:        strings.TrimRight(getenv("ORION_QUASAR_BASE_URL", ""), "/"),
 		CanvasBaseURL:        strings.TrimRight(getenv("ORION_CANVAS_BASE_URL", ""), "/"),
 		BlueBaseURL:          strings.TrimRight(getenv("ORION_BLUE_BASE_URL", ""), "/"),
