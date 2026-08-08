@@ -86,6 +86,36 @@ durable service token: the persisted credential is marked rotating …
    génération dépensée dès la première rotation. `ORION_ENCRYPTION_KEY` ne se
    purge **jamais** : elle déchiffre la chaîne à chaque boot.
 
+## 5 bis. Déroulé réel de la reprise (2026-08-08)
+
+| Heure (UTC) | Geste | Résultat |
+|---|---|---|
+| 15:51:10 | ligne singleton empoisonnée supprimée (`service_token_state`, 1 ligne, 133 o de ciphertext — snapshot `service_token_state_before.txt`) puis re-mint famille **da3ee7ad-7253-410d-9d88-77dcae4d1f5c** | gen 0 |
+| 15:53 | merge PR #313 (un seul boot par deploy) → deploy | vert |
+| 15:54:11 | boot : graine résolue, rotation | **gen 1** (`1a173a8e-…`), successeur persisté (117 o) |
+| 15:54:12 | `/ready` | `service_token: armed` |
+| 15:55 | chemin vivant exercé : `GET /api/v1/credentials/{id}/stream-key` → `404 {"detail":"stream key unset"}` — corps de Quasar, donc l'auth gateway est passée avec le scope `quasar.credentials.read` | OK |
+| 15:55 | révocation de la famille orpheline `f1dfd0ae-…` (HTTP 204) | 0 tête vivante / 2 lignes |
+| 15:56 | purge : secrets GitHub `ORION_SERVICE_REFRESH_TOKEN` (graine dépensée), `ORION_SERVICE_TOKEN` et `ORION_OPERATOR_TOKEN` (retirés, RC 47) supprimés ; copies locales et VPS détruites | — |
+| 15:56:58 | deploy de contrôle **sans graine** (`workflow_dispatch`) | chaîne résolue depuis la base, **gen 2**, `armed` |
+
+Le dernier deploy est la preuve du régime permanent : plus aucune graine dans le
+chemin de deploy, Orion se ré-arme depuis sa propre base à chaque boot.
+
+## 5 ter. Résiduel — l'ancien JWT admin forgé
+
+L'ancien credential partagé (empreinte `a80498f34e`) n'est **plus câblé nulle
+part** : retiré du `.env` d'antenne d'Orion par #311, absent du `.env` de Quasar
+(passé lui aussi au modèle durable, `QUASAR_SERVICE_REFRESH_TOKEN`), et ses deux
+secrets GitHub porteurs supprimés. Aucun chemin de distribution ne subsiste.
+
+Mais ce n'est **pas** une révocation cryptographique : un JWT forgé à la main
+avec `JWT_SECRET` n'a ni famille ni ligne dans `service_tokens`, donc ni
+`/service-tokens/{family_id}/revoke` ni `DELETE /tokens/{jti}` ne s'y
+appliquent. Il reste valide pour ZabGate jusqu'à son `exp`, et la seule
+révocation réelle serait une **rotation de `JWT_SECRET`** — geste coordonné
+ZabGate + ZabAuth, hors périmètre de ce ticket. À arbitrer par Bastion.
+
 ## 6. Preuves à consigner (RC 46)
 
 - les deux `family_id` (ancienne, nouvelle) ;
@@ -94,6 +124,11 @@ durable service token: the persisted credential is marked rotating …
 - l'ancienne famille sans tête vivante après révocation
   (`select count(*) from service_tokens where family_id=… and not revoked` → 0).
 
-Répertoire de travail VPS (`chmod 700`, contient la réponse de mint) :
-`/home/ubuntu/keeper-orion-cutover-20260808/`. À supprimer une fois la famille
-adoptée et les preuves consignées.
+Consignées ici — ancienne famille `f1dfd0ae-c270-49b8-991e-f45186942714`
+(révoquée, 0 tête vivante), nouvelle `da3ee7ad-7253-410d-9d88-77dcae4d1f5c`
+(`family_expires_at` 2027-08-08, gen 2 au moment de l'écriture),
+`generation = 1` observée **avant** toute révocation, `/ready` en `armed`.
+
+Répertoire de travail VPS : `/home/ubuntu/keeper-orion-cutover-20260808/` — ne
+contient plus que `T0.txt` et le snapshot de la ligne purgée ; toute matière
+secrète (réponses de mint, refresh tokens) y a été détruite.
