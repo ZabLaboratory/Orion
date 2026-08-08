@@ -26,19 +26,25 @@ jobs:
     runs-on: [self-hosted, vps-ovh]
     timeout-minutes: 2
     steps:
-      # ORION_SERVICE_TOKEN stopped being required here (ADR ZabAuth 003 Am.3
-      # § A3.3 part 5): it is the standing credential the ADR retires, and the
-      # antenne profile now refuses to use it. Its successors —
-      # ORION_SERVICE_REFRESH_TOKEN and ORION_ENCRYPTION_KEY — are seeded by
-      # Keeper at the cutover (§ A3.7 step 2, issue #307), NOT before: this
-      # branch is deliberately mergeable ahead of it (§ A3.7 step 1 — the code
-      # tolerates their absence and runs degraded). The cutover flips them into
-      # this required list; requiring them today would only break the deploy
-      # that has to ship the code which consumes them.
+      # The cutover of issue #307 happened: ORION_ENCRYPTION_KEY is now
+      # required (ADR ZabAuth 003 Am.3 § A3.3 part 2). It is permanent — it
+      # decrypts the durable refresh token every boot, so a deploy without it
+      # puts Orion on the air with no service token.
+      #
+      # ORION_SERVICE_REFRESH_TOKEN is deliberately NOT required. It is an
+      # amorce consumed by the first rotation and purged from the deploy path
+      # afterwards (§ A3.7 step 2.6, § 5 R8): requiring it would either block
+      # every deploy after the purge, or push an operator to keep a spent
+      # generation wired — which trips `reuse` and revokes the live family the
+      # first time the database resolution comes back empty.
+      #
+      # ORION_SERVICE_TOKEN / ORION_OPERATOR_TOKEN are retired outright
+      # (§ A3.3 parts 5/6, RC 47): the antenne profile refuses the former and
+      # the latter lost its last consumer with EgressTokenSource.
       - name: Verify secrets
         run: |
-          if [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_USERNAME }}" ] || [ -z "${{ secrets.VPS_SSH_KEY }}" ] || [ -z "${{ secrets.VPS_APP_PATH }}" ] || [ -z "${{ secrets.ORION_PG_PASSWORD }}" ]; then
-            echo "::error::Missing required secrets (VPS_HOST, VPS_USERNAME, VPS_SSH_KEY, VPS_APP_PATH, ORION_PG_PASSWORD)"
+          if [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_USERNAME }}" ] || [ -z "${{ secrets.VPS_SSH_KEY }}" ] || [ -z "${{ secrets.VPS_APP_PATH }}" ] || [ -z "${{ secrets.ORION_PG_PASSWORD }}" ] || [ -z "${{ secrets.ORION_ENCRYPTION_KEY }}" ]; then
+            echo "::error::Missing required secrets (VPS_HOST, VPS_USERNAME, VPS_SSH_KEY, VPS_APP_PATH, ORION_PG_PASSWORD, ORION_ENCRYPTION_KEY)"
             exit 1
           fi
 
