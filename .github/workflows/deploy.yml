@@ -245,8 +245,18 @@ jobs:
             -dir /migrations postgres \
             "$(grep '^ORION_DATABASE_URL=' .env | cut -d= -f2-)" up < /dev/null
 
-          echo "=== Up all services ==="
-          docker compose -f docker-compose.prod.yml up -d
+          # ONE boot per deploy. `up -d` followed by `up -d --force-recreate
+          # orion` started Orion twice: the first instance took the rotation
+          # advisory lock, rotated the durable service-token family (ZabAuth
+          # advanced to generation N+1) and was destroyed ~1 s later by the
+          # recreate — inside the exact window the persist-before-swap marker
+          # brackets. The successor only ever existed in the dead container's
+          # memory, so the next boot found the marker, refused to replay a
+          # consumed generation (correctly) and aired with NO service token.
+          # Observed 2026-08-08 on the #307 cutover; runbook
+          # docs/runbooks/service-token-cutover-2026-08-08.md.
+          echo "=== Up services (single boot) ==="
+          docker compose -f docker-compose.prod.yml up -d orion-db
           docker compose -f docker-compose.prod.yml up -d --force-recreate orion
 
           echo "=== Health (internal) ==="
