@@ -1,0 +1,34 @@
+{
+  "service": "orion",
+  "port": 4007,
+  "gateway_prefix": "/orion",
+  "liveness": "GET /api/v1/health",
+  "readiness": "GET /api/v1/ready",
+  "checks": [
+    {
+      "name": "http_health",
+      "endpoint": "GET /api/v1/health",
+      "expect_status": 200,
+      "severity": "critical"
+    },
+    {
+      "name": "gateway_smoke",
+      "endpoint": "GET /orion/api/v1/health",
+      "via": "zabgate",
+      "expect_status": 200,
+      "severity": "high"
+    },
+    {
+      "name": "service_token",
+      "endpoint": "GET /api/v1/ready",
+      "field": "service_token",
+      "expect_status": 200,
+      "expect_value": "armed",
+      "states": ["armed", "degraded", "unpersisted"],
+      "severity": "high",
+      "notes": "ADR ZabAuth 003 Am.3 § A3.6 R21 / RC 51. State word only — no token material, no family_id, no expiry. Never changes the status code: `degraded` (no token: nothing resolvable at boot, or a refresh ZabAuth rejected terminally) and `unpersisted` (a rotation advanced server-side but its successor is not yet in Postgres; the manager retries the persist on its own bounded backoff) are operator signals, not liveness verdicts. The show stays on air in all three; only token-bearing outbound calls fail, and they fail closed."
+    }
+  ],
+  "status": "production",
+  "notes": "Orion v2 (Go) in production. Readiness returns 503 only on a database ping failure; the service_token field is informational."
+}
