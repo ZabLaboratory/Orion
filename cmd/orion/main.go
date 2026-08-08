@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -213,7 +212,6 @@ func run() error {
 	// antenna: it stays on air without a service token rather than refusing to
 	// start. The lock rides its own connection, held for the life of the
 	// process, so a crash releases it with the session.
-	authBase := strings.TrimSuffix(cfg.ZabAuthValidateURL, "/tokens")
 	lockHeld := false
 	if cfg.Profile.IsAntenne() {
 		lock, held, lockErr := store.TryAcquireProcessLock(ctx, cfg.DatabaseURL, store.ServiceTokenLockKey())
@@ -249,27 +247,27 @@ func run() error {
 	for name, svc := range cfg.DataSources {
 		dataSources[name] = effects.DataSource{Name: name, Svc: svc}
 	}
-	// Curated service-egress (ADR Blue 002 §3.3): each route mints a token
-	// scoped to ITS token_paths — never Orion's fixed surface — so the
-	// minter is path-set aware. Fail-closed in static mode (no operator
-	// token ⇒ no egress). Surface flagged for Bastion (mint scope, §5 Q1/Q3).
-	egressTokens := &auth.EgressTokenSource{
-		MintURL:       authBase + "/service-tokens",
-		OperatorToken: cfg.OperatorToken,
-		ServiceName:   "orion",
-		Logger:        logger,
-	}
+	// Curated service-egress (ADR Blue 002 §3.3) is EXTINGUISHED: its minter
+	// was the last consumer of the standing operator credential, retired with
+	// ORION_OPERATOR_TOKEN (ADR ZabAuth 003 Am.3 § A3.3 part 6, RC 40 measured
+	// zero exercise over 98 days). Both consumers below are wired on their
+	// documented "no token" mode (mint nil ⇒ "" ⇒ fail-closed to the `error`
+	// port), until #301 decides how a per-route least-privilege token exists
+	// under the durable model.
+	//
 	// Stream-level Meet viewer-credentials arming on the antenne LSDP wire
 	// (ADR Blue 009 §3.2, issue #261 — R1, Bastion-gated). Orion resolves the
 	// armed `peer_label`s (the stream-level slot bindings) to their live room
 	// receive-only viewer credentials via ZabCam and carries them on
 	// `__cam.viewer` so Solar #28 can join the Meet room(s) on air. The token
 	// is short-lived: re-fetched + re-emitted every ViewerCredsRefreshS. The
-	// fetch presents a service token scoped to `zabcam.rooms.credentials` only;
-	// the meet_token rides a reserved leaf (off the blueprint/_query surface)
-	// and is never logged. Antenne wire only — preview keeps the Prism global.
+	// fetch now carries NO service token (nil minter): the arming was never put
+	// in service and is explicitly off until #301 (ADR Blue 009 §3.2 records
+	// the retrait). The meet_token rides a reserved leaf (off the
+	// blueprint/_query surface) and is never logged. Antenne wire only —
+	// preview keeps the Prism global.
 	if antenneWire != nil {
-		credsFetcher := lsdp.NewZabCamCredsFetcher(cfg.ZabGateURL, egressTokens.Token, logger)
+		credsFetcher := lsdp.NewZabCamCredsFetcher(cfg.ZabGateURL, nil, logger)
 		antenneWire.EnableViewerCreds(ctx,
 			credsFetcher, time.Duration(cfg.ViewerCredsRefreshS)*time.Second)
 		logger.Info("viewer creds arming enabled", "refresh_s", cfg.ViewerCredsRefreshS)
@@ -285,7 +283,7 @@ func run() error {
 		Runner:       effectRunner,
 		Egress:       effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP),
 		DB:           effects.NewDBQueryClientWithTokenFunc(cfg.ZabGateURL, serviceTokens.Token, nil),
-		ServiceCall:  effects.NewServiceCallClient(cfg.ZabGateURL, egressTokens.Token, nil),
+		ServiceCall:  effects.NewServiceCallClient(cfg.ZabGateURL, nil, nil),
 		EgressBudget: egressBudget,
 		DataSources:  dataSources,
 		Metrics:      metrics,

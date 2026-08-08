@@ -139,8 +139,6 @@ jobs:
           SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
           APP_PATH: ${{ secrets.VPS_APP_PATH }}
           ORION_PG_PASSWORD: ${{ secrets.ORION_PG_PASSWORD }}
-          ORION_SERVICE_TOKEN: ${{ secrets.ORION_SERVICE_TOKEN }}
-          ORION_OPERATOR_TOKEN: ${{ secrets.ORION_OPERATOR_TOKEN }}
           ORION_SERVICE_REFRESH_TOKEN: ${{ secrets.ORION_SERVICE_REFRESH_TOKEN }}
           ORION_ENCRYPTION_KEY: ${{ secrets.ORION_ENCRYPTION_KEY }}
           ORION_LSDP_MODE: ${{ vars.ORION_LSDP_MODE }}
@@ -167,10 +165,12 @@ jobs:
           # Auth — Orion validates show-tokens against ZabAuth via the gateway.
           ORION_ZABAUTH_VALIDATE_URL=http://zabgate:4000/auth/api/v1/tokens
           ORION_AUTH_CACHE_TTL_S=60
-          ORION_SERVICE_TOKEN=$ORION_SERVICE_TOKEN
 
-          # Live service-token mint + refresh.
-          ORION_OPERATOR_TOKEN=$ORION_OPERATOR_TOKEN
+          # No standing credential on the antenne .env (ADR ZabAuth 003 Am.3
+          # § A3.3 parts 5/6, RC 47): ORION_SERVICE_TOKEN is dev/test-only and
+          # refused by the antenne profile, ORION_OPERATOR_TOKEN is retired with
+          # its last consumer (EgressTokenSource). The durable refresh family
+          # below is the only credential path.
           ORION_SERVICE_PATHS=${ORION_SERVICE_PATHS:-quasar.credentials.read}
 
           # Durable service token (ADR ZabAuth 003 Am.3 § A3.3 parts 1/2/5).
