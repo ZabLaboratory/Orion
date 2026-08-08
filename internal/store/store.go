@@ -80,6 +80,13 @@ type Store interface {
 	RemoveBlueprintStreamRule(ctx context.Context, blueprintID uuid.UUID) error
 	ListBlueprintStreamRules(ctx context.Context) ([]uuid.UUID, error)
 
+	// durable service token (ADR ZabAuth 003 Am.3 § A3.3 part 2) — the
+	// encrypted refresh token, opaque bytes to the store. Postgres persists it;
+	// the SQLite backend returns ErrDurableServiceTokenUnsupported, because the
+	// durable model is antenne-only (part 3).
+	GetServiceRefreshToken(ctx context.Context) ([]byte, error)
+	PutServiceRefreshToken(ctx context.Context, enc []byte) error
+
 	// validations
 	UpsertValidation(ctx context.Context, v SceneValidation) error
 	GetValidation(ctx context.Context, sceneID uuid.UUID, sceneVersion, harnessVersion string) (*SceneValidation, error)
