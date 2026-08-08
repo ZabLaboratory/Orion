@@ -66,6 +66,8 @@ func applyMigration(ctx context.Context, pool *pgxpool.Pool) error {
 		"../../migrations/0003_scene_validations.sql",
 		"../../migrations/0004_show_state.sql",
 		"../../migrations/0005_show_stream_rules.sql",
+		"../../migrations/0006_show_blueprint_stream_rules.sql",
+		"../../migrations/0007_service_token_state.sql",
 	} {
 		migration, err := os.ReadFile(path)
 		if err != nil {
