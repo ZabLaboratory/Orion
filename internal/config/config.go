@@ -101,7 +101,6 @@ type Config struct {
 	ZabAuthValidateURL string
 	AuthCacheTTL       time.Duration
 	ServiceToken       string
-	OperatorToken      string
 	ServicePaths       []string
 	QuasarBaseURL      string
 	CanvasBaseURL      string
@@ -231,7 +230,6 @@ func Load() (Config, error) {
 		CompilerCacheDir:     getenv("ORION_COMPILER_CACHE_DIR", "/var/lib/orion/compiler-cache"),
 		ZabAuthValidateURL:   strings.TrimRight(getenv("ORION_ZABAUTH_VALIDATE_URL", ""), "/"),
 		ServiceToken:         os.Getenv("ORION_SERVICE_TOKEN"),
-		OperatorToken:        os.Getenv("ORION_OPERATOR_TOKEN"),
 		ServicePaths:         splitCSV(getenv("ORION_SERVICE_PATHS", "quasar.credentials.read")),
 		ServiceRefreshToken:  os.Getenv("ORION_SERVICE_REFRESH_TOKEN"),
 		EncryptionKey:        os.Getenv("ORION_ENCRYPTION_KEY"),
