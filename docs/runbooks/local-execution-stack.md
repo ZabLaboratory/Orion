@@ -47,9 +47,17 @@ are complete (verified 2026-06-21): `.env.zabgate`, `.env.zabauth`,
 
 - `JWT_SECRET` is **identical** in `.env.zabgate` and `.env.zabauth` (HS256
   shared secret) — do not desync them.
-- `.env.orion` ships a valid admin `ORION_OPERATOR_TOKEN` (signed with that
-  same secret) and `ORION_DATASOURCES=truth=truth,ranking=ranking`, so Orion's
+- `.env.orion` ships `ORION_DATASOURCES=truth=truth,ranking=ranking`, so Orion's
   `db.query` resolves through the gateway out of the box.
+- **No production credential goes into a local `.env.orion`.** The durable
+  service-token model is antenne-only (ADR ZabAuth 003 Am.3 § A3.3 part 3):
+  `ORION_SERVICE_REFRESH_TOKEN` and `ORION_ENCRYPTION_KEY` are **never**
+  delivered to a local stack or to a Prism sidecar. A local Orion that rotated
+  the production refresh family would push the antenna's next rotation into
+  `reuse` and revoke it — the show would go down from a laptop. Under
+  `ORION_PROFILE=embedded-local` Orion refuses that material with a loud log
+  and emits zero refresh calls, but the runbook does not rely on that: do not
+  put it there. The local stack authenticates against its own ZabAuth.
 - The étage-1 `.env.*` hostnames (`zabgate:4000`, `zabauth-postgres:5432`, …)
   match the Docker aliases in the localstack compose — no rewrite needed.
 

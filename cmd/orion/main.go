@@ -27,7 +27,6 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/lsdp"
 	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
-	"github.com/ZabLaboratory/Orion/internal/secretbox"
 	"github.com/ZabLaboratory/Orion/internal/store"
 	"github.com/ZabLaboratory/Orion/internal/ws"
 )
@@ -205,37 +204,30 @@ func run() error {
 	// because the effect bundle the show installs on validated scenes reads
 	// its `_query` bearer live from it.
 	//
-	// The durable model is antenne-only (§ A3.3 part 3): an embedded-local
-	// sidecar on an operator laptop that resolved the prod seed would rotate
-	// the antenne's family into `reuse` and revoke it — the show would go down
-	// from a laptop. So under embedded-local the store and the box are left
-	// nil and the manager stays on the dev/test static posture. (The advisory
-	// lock and the loud seed refusal of part 4 land with #305.)
+	// Which of the two guards of § A3.3 parts 3 and 4 let the durable model
+	// arm is decided by wireServiceTokens — profile, then advisory lock.
+	//
+	// The lock is taken here, on antenne only: it is a Postgres session lock
+	// and embedded-local has no Postgres. Not getting it is NOT a boot failure
+	// (§ A3.4 (f)) — divergence assumed with the Quasar shape. Orion is the
+	// antenna: it stays on air without a service token rather than refusing to
+	// start. The lock rides its own connection, held for the life of the
+	// process, so a crash releases it with the session.
 	authBase := strings.TrimSuffix(cfg.ZabAuthValidateURL, "/tokens")
-	serviceTokens := &auth.ServiceTokenManager{
-		RefreshURL: authBase + "/service-tokens/refresh",
-		Logger:     logger,
-	}
-	if cfg.Profile.IsEmbeddedLocal() {
-		serviceTokens.StaticToken = cfg.ServiceToken
-	} else {
-		// § A3.3 part 5 / RC 47: ORION_SERVICE_TOKEN is the standing
-		// credential this ADR retires. On antenne it is refused, not honoured —
-		// leaving it wired would make the boot silently fall back onto it.
-		if cfg.ServiceToken != "" {
-			logger.Error("ORION_SERVICE_TOKEN is set but REFUSED on the antenne profile (ADR ZabAuth 003 Am.3 § A3.3 part 5): the durable refresh model is the only credential path. Remove it from the environment.")
-		}
-		serviceTokens.Seed = cfg.ServiceRefreshToken
-		box, boxErr := secretbox.New(cfg.EncryptionKey)
-		if boxErr != nil {
-			// No plaintext fallback, and no failed boot either: Orion airs
-			// without a service token and says so on /ready.
-			logger.Error("ORION_ENCRYPTION_KEY unusable — the durable service token cannot arm; Orion airs with no service token and token-bearing outbound calls fail closed", "err", boxErr)
-		} else {
-			serviceTokens.Store = st
-			serviceTokens.Box = box
+	lockHeld := false
+	if cfg.Profile.IsAntenne() {
+		lock, held, lockErr := store.TryAcquireProcessLock(ctx, cfg.DatabaseURL, store.ServiceTokenLockKey())
+		switch {
+		case lockErr != nil:
+			logger.Error("service-token rotation lock could not be evaluated; treating it as NOT held (a rotation we cannot prove is exclusive is one we do not run)", "err", lockErr)
+		case !held:
+			logger.Warn("service-token rotation lock is held by another Orion process on this database", "lock", store.ServiceTokenLockName)
+		default:
+			lockHeld = true
+			defer lock.Release()
 		}
 	}
+	serviceTokens := wireServiceTokens(cfg, st, lockHeld, logger)
 	if err := serviceTokens.Start(ctx); err != nil {
 		logger.Error("service token manager start failed; Orion airs with no service token", "err", err)
 	}

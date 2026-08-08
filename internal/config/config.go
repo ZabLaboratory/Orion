@@ -75,6 +75,14 @@ const (
 // selected. The hot path never consults this — only boot wiring does.
 func (p Profile) IsEmbeddedLocal() bool { return p == ProfileEmbeddedLocal }
 
+// IsAntenne reports whether this is the on-air profile. It is the POSITIVE
+// form deliberately: the durable service-token model is armed only for antenne
+// (ADR ZabAuth 003 Am.3 § A3.3 part 3), and a guard written as "not
+// embedded-local" would silently arm any third profile added later. Load
+// rejects anything outside the two known values, so today the two forms agree;
+// the positive one keeps agreeing tomorrow.
+func (p Profile) IsAntenne() bool { return p == ProfileAntenne }
+
 // Config is the typed view of Orion's environment. Every field maps to
 // a single env var; empty defaults are filled in by Load.
 type Config struct {

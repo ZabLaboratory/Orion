@@ -40,8 +40,9 @@ const (
 	// is persisted. Nominal.
 	ServiceTokenArmed ServiceTokenState = "armed"
 	// ServiceTokenDegraded — no token: nothing was resolvable at boot, the
-	// refresh was rejected terminally, or (once #305 lands) the advisory lock
-	// was not taken. Outbound token-bearing calls fail closed.
+	// refresh was rejected terminally, the profile is not antenne, or the
+	// rotation advisory lock was not taken (#305). Outbound token-bearing calls
+	// fail closed.
 	ServiceTokenDegraded ServiceTokenState = "degraded"
 	// ServiceTokenUnpersisted — a rotation succeeded server-side but its
 	// successor could not be written to Postgres. The process keeps serving on
