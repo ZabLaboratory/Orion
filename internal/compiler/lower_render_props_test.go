@@ -334,6 +334,55 @@ func TestLowerText_ContentKeyTextToValue(t *testing.T) {
 	}
 }
 
+// TestLowerRenderProps_LayoutKindSizeSplit is the regression for the
+// collapsed `sizing:fixed` auto-layout (canevas-chat-sponso right column /
+// camera rail vanished at the antenne): the default lowering branch passed
+// stack/grid/media/repeat/instance through verbatim, so a nested
+// `size:{w,h}` never became the flat width/height Solar reads — a fixed
+// stack reached the runtime with no box and rendered at 0.
+func TestLowerRenderProps_LayoutKindSizeSplit(t *testing.T) {
+	raw := func(s string) json.RawMessage { return json.RawMessage(s) }
+
+	for _, kind := range []string{"stack", "grid", "media", "repeat", "instance", "my.component@1"} {
+		t.Run(kind, func(t *testing.T) {
+			props := map[string]json.RawMessage{
+				"size":      raw(`{"w":420,"h":1080}`),
+				"sizing":    raw(`"fixed"`),
+				"direction": raw(`"vertical"`),
+			}
+			outP, outB := lowerRenderProps(kind, props, map[string]string{
+				"size.w":  "ui.railWidth",
+				"visible": "ui.railVisible",
+			})
+
+			node := &LayoutNode{ID: kind, Props: outP}
+			jsonEq(t, node, "width", 420)
+			jsonEq(t, node, "height", 1080)
+			if _, stale := outP["size"]; stale {
+				t.Fatalf("nested size must be gone after lowering (outP=%v)", keysOf(outP))
+			}
+			if string(outP["sizing"]) != `"fixed"` || string(outP["direction"]) != `"vertical"` {
+				t.Fatalf("flat layout props must pass through verbatim (outP=%v)", outP)
+			}
+			if got := outB["width"]; got != "ui.railWidth" {
+				t.Fatalf("bound size.w must re-key to width, got %q (outB=%v)", got, outB)
+			}
+			if got := outB["visible"]; got != "ui.railVisible" {
+				t.Fatalf("unrelated binding must pass through, got %q (outB=%v)", got, outB)
+			}
+		})
+	}
+
+	// A layout kind without a `size` is untouched (no phantom width/height).
+	outP, _ := lowerRenderProps("stack", map[string]json.RawMessage{"gap": raw(`8`)}, nil)
+	if _, ok := outP["width"]; ok {
+		t.Fatalf("no size authored → no width key (outP=%v)", keysOf(outP))
+	}
+	if string(outP["gap"]) != `8` {
+		t.Fatalf("gap must survive, got %s", outP["gap"])
+	}
+}
+
 // TestLowerRenderProps_BoundFontSize proves a binding keyed on an
 // authoring prop is re-keyed to the render key so a BOUND font-size
 // still lands on resolved.size (ADR 007 §9.5 bindings clause).

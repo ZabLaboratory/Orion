@@ -23,7 +23,8 @@ import "encoding/json"
 //
 // `stack` and the universal props (visible/rotation/sizing/opacity, read
 // flat by tree.tsx's UniversalWrapper) already match the runtime, so
-// they pass through unchanged.
+// they pass through unchanged — except a nested `size:{w,h}`, which is
+// split into flat width/height for EVERY kind (see the default branch).
 //
 // Bindings re-key (ADR 007 §9.5): `resolveProps` overlays each binding
 // by its KEY onto `resolved` (`resolved[propKey] = store.get(path)`,
@@ -48,12 +49,21 @@ func lowerRenderProps(
 	case "image":
 		return lowerImage(props, bindings)
 	default:
-		// stack, grid, media, repeat, instance, user components:
-		// no authoring→render rename is defined; pass through verbatim
-		// (fresh copies so the caller never aliases our input). stack is
-		// already aligned (direction/gap/align/justify/wrap/crossGap),
-		// and the universal props are flat already.
-		return copyProps(props), copyBindings(bindings)
+		// stack, grid, media, repeat, instance, user components: no per-key
+		// rename is defined, BUT a nested `size:{w,h}` must split into flat
+		// width/height like every other primitive. Solar reads
+		// `resolved.width`/`height`; a `sizing:fixed` auto-layout frame
+		// (serialised to a `stack`) that reached the runtime with only a
+		// nested `size` object had NO box and collapsed to 0 (the
+		// canevas-chat-sponso right column / camera rail). Every other key
+		// (direction/gap/align/justify/wrap/crossGap + the universal props)
+		// is already flat and passes through verbatim.
+		out := copyProps(props)
+		if v, ok := out["size"]; ok {
+			delete(out, "size")
+			splitSize(v, out)
+		}
+		return out, rekeyBindings(bindings, sizeBindingRenames())
 	}
 }
 
@@ -307,18 +317,6 @@ func copyProps(props map[string]json.RawMessage) map[string]json.RawMessage {
 	}
 	out := make(map[string]json.RawMessage, len(props))
 	for k, v := range props {
-		out[k] = v
-	}
-	return out
-}
-
-// copyBindings returns a shallow copy of a bindings map. nil → nil.
-func copyBindings(bindings map[string]string) map[string]string {
-	if len(bindings) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(bindings))
-	for k, v := range bindings {
 		out[k] = v
 	}
 	return out
