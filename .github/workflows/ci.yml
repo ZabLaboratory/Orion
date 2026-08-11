@@ -106,6 +106,14 @@ jobs:
           fi
 
           PGVER=$(pg_lsclusters -h | awk 'NR==1{print $1}')
+          # Canary (ADR 018 §3.2, R-7): the runner pool is pinned to PostgreSQL
+          # 16 (Orion#317). Fail explicitly, not silently, if the provisioned
+          # cluster ever drifts off that major — a green e2e run against the
+          # wrong PG major is a weaker oracle than a red one.
+          if [ "$PGVER" != "16" ]; then
+            echo "::error::PostgreSQL major version mismatch: expected 16, got $PGVER (ADR 018 §3.2)." >&2
+            exit 1
+          fi
           # Cluster start needs the postgres-cluster privilege; run via the
           # same shim. Idempotent: start, else restart an already-running one.
           $SUDO pg_ctlcluster "$PGVER" main start || $SUDO pg_ctlcluster "$PGVER" main restart
