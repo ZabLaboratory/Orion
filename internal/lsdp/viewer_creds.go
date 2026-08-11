@@ -17,13 +17,12 @@ package lsdp
 // pair is always live.
 //
 // Auth posture (R1, Bastion): the credentials read is a GET, so it is NOT a
-// curated-egress WRITE route (ADR 002 §3.1 — reads are not egress). When an
-// operator token is configured the fetch presents a service token scoped to
-// EXACTLY `zabcam.rooms.credentials` (defence-in-depth, tightest scope); in
-// static/dev mode it falls back to an unauthenticated read (the `/cam` prefix
-// is gateway-public for publisher onboarding — the pre-existing posture the §7
-// item-10 narrowing leaves untouched for reads). The returned `meet_token` is
-// NEVER logged.
+// curated-egress WRITE route (ADR 002 §3.1 — reads are not egress). The fetch
+// presents a service token scoped to EXACTLY `zabcam.rooms.credentials`
+// (defence-in-depth, tightest scope). If no scoped token is available, the
+// fetch is skipped: this client never emits an unauthenticated request, even
+// though the `/cam` prefix is gateway-public for publisher onboarding. The
+// returned `meet_token` is NEVER logged.
 
 import (
 	"context"
@@ -54,14 +53,15 @@ type camPeerCreds struct {
 // zabcamCredsFetcher is the production CredsFetcher.
 type zabcamCredsFetcher struct {
 	base   string                      // ZabGate base URL (operator config)
-	mint   func(paths []string) string // scoped service-token minter; "" ⇒ unauth read
+	mint   func(paths []string) string // scoped service-token minter; "" ⇒ skip fetch
 	client *http.Client
 	logger *slog.Logger
 }
 
 // NewZabCamCredsFetcher builds the production viewer-credentials fetcher.
 // gatewayURL is the ZabGate base; mint mints a service token scoped to the
-// given paths ("" when unavailable). A nil client uses a 10 s-timeout default.
+// given paths ("" when unavailable, in which case no request is sent). A nil
+// client uses a 10 s-timeout default.
 func NewZabCamCredsFetcher(gatewayURL string, mint func(paths []string) string, logger *slog.Logger) CredsFetcher {
 	if mint == nil {
 		mint = func([]string) string { return "" }
@@ -78,6 +78,13 @@ func NewZabCamCredsFetcher(gatewayURL string, mint func(paths []string) string, 
 // Best-effort: any failure returns ok=false (the peer is skipped). The token
 // is never logged — status + room id only.
 func (f *zabcamCredsFetcher) FetchViewerCreds(ctx context.Context, peerLabel string) (ViewerRoom, bool) {
+	// Never send this read anonymously. A missing scoped token is a local
+	// capability failure, not permission to rely on a gateway-public route.
+	tok := f.mint([]string{credsTokenScope})
+	if tok == "" {
+		return ViewerRoom{}, false
+	}
+
 	// peerLabel is path-escaped so it can never add a segment or traverse.
 	u := f.base + "/cam/api/v1/cam/cameras/" + url.PathEscape(peerLabel) + "/credentials"
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
@@ -85,9 +92,7 @@ func (f *zabcamCredsFetcher) FetchViewerCreds(ctx context.Context, peerLabel str
 		return ViewerRoom{}, false
 	}
 	req.Header.Set("Accept", "application/json")
-	if tok := f.mint([]string{credsTokenScope}); tok != "" {
-		req.Header.Set("Authorization", "Bearer "+tok)
-	}
+	req.Header.Set("Authorization", "Bearer "+tok)
 
 	resp, err := f.client.Do(req)
 	if err != nil {
