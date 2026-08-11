@@ -223,6 +223,164 @@ itself breaks image build or runner registration.
 
 ---
 
+## PostgreSQL 16 migration (2026-08-11, ADR 018 §3.2, Orion #317)
+
+> Track: `ZabLaboratory/Orion:docs/adr/018-ci-postgres-substrat-runner-zab.md`
+> (merge `af78d5d9`). Owner: Keeper.
+
+### Root cause
+
+`postgresql` on the base image's OS defaults to whatever the distro's own
+package repo ships — Ubuntu 20.04 focal ships **PostgreSQL 12**. A
+migration-parity job asserting against cluster `16 main` failed outright
+(`specified cluster '16 main' does not exist`): the CI runner's PG major
+never matched prod. Bump the version, not the bake.
+
+**Focal has no PG16 path.** PGDG dropped `focal-pgdg` entirely (no `Release`
+file, no archive fallback) — `postgresql-16` is not installable on Ubuntu
+20.04 at all, from any repo. The base image had to move to
+`myoung34/github-runner:ubuntu-jammy` (22.04), the nearest base PGDG still
+publishes for. Every package this image already depended on kept its name
+across the bump except `libasound2` (renamed `libasound2t64` on 24.04, not
+22.04 — no change needed).
+
+### Fix
+
+`image/Dockerfile` now: adds the PGDG apt repo (key + `$(lsb_release
+-cs)-pgdg` source) on top of `ubuntu-jammy`, installs
+`postgresql-16 postgresql-client-16`, and carries
+`LABEL org.opencontainers.image.revision="<ADR-018-merge-sha>"`. Because the
+base image changed wholesale (fresh jammy rootfs), there is no PG12
+cohabitation to strip — `pg_lsclusters` reports a single `16 main` line by
+construction (ADR §3.2 R-6 guard).
+
+### Procedure followed
+
+```bash
+ssh vps-ovh
+cd /home/ubuntu/zab-org-runners/image
+cp Dockerfile Dockerfile.bak.<date>                  # backup (rollback)
+cp Dockerfile.pg16 Dockerfile                        # promote the PG16 draft
+docker build --load -t zab-org-runner:pg16 -f Dockerfile .
+docker run --rm --entrypoint pg_lsclusters zab-org-runner:pg16   # 1 line, ver 16
+docker image inspect zab-org-runner:pg16 \
+  --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+
+cd /home/ubuntu/zab-org-runners
+cp docker-compose.yml docker-compose.yml.bak.<date>  # backup (rollback)
+# docker-compose.yml: image: zab-org-runner:pg → zab-org-runner:pg16
+./up.sh                                              # NOT `docker compose up -d`
+                                                      # directly — up.sh exports
+                                                      # APP_PRIVATE_KEY, a bare
+                                                      # `docker compose up -d`
+                                                      # crash-loops the runners.
+```
+
+The JIT layer (`/home/ubuntu/runner-orchestrator-zab/.env`,
+`RUNNER_IMAGE=zab-org-runner:pg16`) and the image build itself
+(`zab-org-runner:pg16`, single-cluster PG16, labelled) were already in place
+from an earlier partial cutover (2026-08-05, `.env.bak-keeper-pg16-20260805-105309`);
+this pass closed the remaining gap — the **static** 3-replica layer
+(`docker-compose.yml`) was still serving `zab-org-runner:pg` (PG12) until
+switched here.
+
+### Verify after swap
+
+```bash
+docker ps --format '{{.Names}}\t{{.Image}}\t{{.Status}}' | grep zab-org-runner
+# all 3 zab-org-runners-zab-org-runner-{1,2,3}-1 on zab-org-runner:pg16, Up
+```
+
+A non-DB job (any `pull_request`-triggered `ci.yml` run against the static
+pool) going green post-switch is the acceptance proof (ADR RC 9); a
+sustained 2 h no-`queued`-over-10-min window is a longer-horizon check, not
+verifiable inside a single operator session — monitor via `gh run list`
+after cutover if a regression is suspected.
+
+### Regression found during rollout: `e2e (Postgres)` — sudo broke ("no new privileges")
+
+First real CI run on the switched pool (`ZabLaboratory/Orion#323`) showed
+PG16 correctly served (`PostgreSQL already provisioned (16 main) —
+skipping apt`) but the privilege-aware `pg_ctlcluster` step then failed:
+
+```
+sudo: The "no new privileges" flag is set, which prevents sudo from running as root.
+```
+
+**Not** a `security_opt`/`no-new-privileges` Docker flag — confirmed absent
+from `docker-compose.yml`, and `NoNewPrivs: 0` on the idle container's own
+PID 1 (`docker exec … cat /proc/1/status`). The flag only appears on the
+process the Actions runner spawns **for the job step itself**.
+
+Root cause: the base bump to `myoung34/github-runner:ubuntu-jammy` (forced
+by PGDG dropping focal, see above) pulled a newer Actions runner binary
+(`Runner.Listener --version` → `2.336.0`) than whatever was baked into the
+long-cached `:latest`/focal image. Newer runner releases harden job
+execution when the runner process itself starts **as root**
+(`RUN_AS_ROOT=true`, the image's default — see `/entrypoint.sh`): before
+executing a job step they internally drop to the unprivileged `runner`
+user via a syscall path that also sets `PR_SET_NO_NEW_PRIVS` on that
+process tree, as a defense against a job step using a setuid/NOPASSWD-sudo
+binary to climb back to root. That drop-and-harden path is new behaviour
+in the newer runner binary, not something the image or compose file
+configures directly.
+
+**Fix — `RUN_AS_ROOT: "false"`** in `docker-compose.yml`'s runner
+environment block. With this set, `/entrypoint.sh` execs
+`gosu runner ./bin/Runner.Listener …` directly (see its `else` branch) —
+the Listener (and everything it forks, including job steps) runs as
+`runner` (uid 1001) **from process start**, so there is no root→job
+internal transition for the runner's hardening logic to intercept, and
+`sudo` (NOPASSWD, baked into the image) works exactly as it did on the old
+focal/PG12 image. Verified live: `ps -ef` inside a recreated container
+shows `Runner.Listener` owned by `runner`, not `root`; `e2e (Postgres)`
+went green on rerun (`ZabLaboratory/Orion#323`, run `31448903768`, job
+`93652608776`, 1m41s).
+
+This is a **durable** config, not a workaround: `RUN_AS_ROOT=false` is a
+documented, supported mode of the `myoung34/github-runner` image (least
+privilege — the container never needs root once PG/sudo/Chromium libs are
+pre-baked at build time), and it is strictly a security improvement over
+the previous root-by-default posture. Scope: this env var lives on the
+shared anchor (`&r`) in `docker-compose.yml`, so it applies fleet-wide to
+all 3 static replicas — every ZabLab repo's CI on this pool now runs job
+steps as non-root. Only Orion's own checks were exercised as proof
+(8/8 green including `e2e (Postgres)`); no other repo's workflow was
+audited for an implicit root assumption — flag a regression here if one
+surfaces on a different repo's CI post-cutover.
+
+```bash
+# applied together with the pg16 image switch, same session:
+cp docker-compose.yml docker-compose.yml.bak.norunasroot.<date>
+# add under the `&r` anchor's `environment:` block:
+#   RUN_AS_ROOT: "false"
+./up.sh
+```
+
+Rollback: drop the `RUN_AS_ROOT: "false"` line (or restore
+`docker-compose.yml.bak.norunasroot.<date>`) and `./up.sh` — reverts to
+root-by-default, which re-opens this exact regression on any job that
+needs sudo. Only roll back if `RUN_AS_ROOT=false` itself breaks runner
+registration; it does not affect PG16 or the OCI label.
+
+### Rollback
+
+```bash
+ssh vps-ovh
+cd /home/ubuntu/zab-org-runners/image
+cp Dockerfile.bak.<date> Dockerfile      # back to focal + PG12
+docker build --load -t zab-org-runner:pg -f Dockerfile .
+cd /home/ubuntu/zab-org-runners
+cp docker-compose.yml.bak.<date> docker-compose.yml   # image: zab-org-runner:pg
+./up.sh
+```
+
+The previous `zab-org-runner:pg` (PG12) image stays present locally — no
+pull needed. Only roll back if the pg16 image itself breaks runner
+registration; an ADR-scope regression is a new issue, not a revert target.
+
+---
+
 ## Maintenance
 
 - The image pins `myoung34/github-runner:latest` as its base. To pick up a
@@ -233,3 +391,6 @@ itself breaks image build or runner registration.
 - The complementary ci.yml step is in `.github/workflows/ci.yml` (job `e2e`).
 - Chromium/Playwright libs (`libnspr4`, `libnss3`, `libasound2`) are baked
   alongside PostgreSQL — one image, two independent additive layers.
+- **Post-2026-08-11**: the pinned major is PostgreSQL 16 (`ubuntu-jammy`
+  base); see the migration section above for the focal→jammy rationale and
+  the PGDG repo wiring.
