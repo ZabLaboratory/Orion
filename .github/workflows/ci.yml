@@ -15,11 +15,12 @@ concurrency:
 # Self-hosted runners on vps-ovh (org GitHub Actions billing frozen).
 # All jobs run on the shared org-scoped ephemeral pool (label `vps-ovh`).
 # No Docker daemon in the runner:
-#   - the `e2e` job uses PostgreSQL natively (no `services: postgres`
-#     container is possible without a Docker socket). It is idempotent +
-#     privilege-aware: it skips apt entirely when PG is already provisioned
-#     on the runner image, and only installs (with a lock-retry) on a fresh
-#     runner — so it stays green whatever the ephemeral runner's state,
+#   - the `e2e` job uses PostgreSQL 16 natively (no `services: postgres`
+#     container is possible without a Docker socket): initdb/pg_ctl under
+#     the `runner` user, a fresh PGDATA per job — no sudo, no
+#     pg_ctlcluster. Works identically on the static and JIT pools (JIT
+#     keeps no-new-privileges; initdb never needed root to begin with —
+#     Bastion ZAB-CI-JIT-POSTGRES-TENSION-20260811),
 #   - the old `docker-build` smoke job is dropped (the deploy's
 #     `docker compose build` on the host covers Dockerfile validity),
 #   - trufflehog runs as the native binary (the docker action exits 125).
@@ -70,79 +71,33 @@ jobs:
       ORION_E2E_DATABASE_URL: postgres://orion:orion_e2e_ci@localhost:5432/orion_e2e?sslmode=disable
     steps:
       - uses: actions/checkout@v5
-      - name: Start PostgreSQL natively (no Docker on the runner)
+      - name: Start PostgreSQL 16 natively (unprivileged — no sudo, no pg_ctlcluster)
+        env:
+          PGBIN: /usr/lib/postgresql/16/bin
+          PGDATA: ${{ runner.temp }}/pgdata
+          PGSOCK: ${{ runner.temp }}/pgsock
         run: |
-          export DEBIAN_FRONTEND=noninteractive
-          # Privilege-aware sudo shim: the org-scoped ephemeral runner image
-          # (myoung34/github-runner) usually runs jobs as root, but the
-          # effective user has varied across runs — a non-root, no-sudo
-          # runner made the unconditional `apt-get` fail with
-          # "Permission denied" on /var/lib/apt/lists/lock (the flake this
-          # step fixes). Resolve a privilege-escalation prefix once, or empty
-          # when already root.
-          if [ "$(id -u)" = "0" ]; then SUDO=; elif command -v sudo >/dev/null 2>&1; then SUDO="sudo -n"; else SUDO=; fi
-
-          # Install PostgreSQL ONLY if it is not already provisioned. On a
-          # pre-provisioned runner image this is a no-op (no apt, no lock, no
-          # privilege needed) — durable regardless of runner state. A fresh
-          # runner installs it once, guarding the apt lock with a short retry
-          # so a transient lock contention does not hard-fail the job.
-          if ! command -v pg_ctlcluster >/dev/null 2>&1; then
-            echo "PostgreSQL not present — installing via apt."
-            for attempt in 1 2 3 4 5; do
-              if $SUDO apt-get update -qq && \
-                 $SUDO apt-get install -y -qq postgresql postgresql-client; then
-                break
-              fi
-              if [ "$attempt" = "5" ]; then
-                echo "::error::apt-get failed after 5 attempts (lock/permission). Pre-provision PostgreSQL on the runner image." >&2
-                exit 1
-              fi
-              echo "apt-get attempt $attempt failed (lock/permission?) — retrying in 5s." >&2
-              sleep 5
-            done
-          else
-            echo "PostgreSQL already provisioned ($(pg_lsclusters -h | awk 'NR==1{print $1, $2}')) — skipping apt."
-          fi
-
-          PGVER=$(pg_lsclusters -h | awk 'NR==1{print $1}')
-          # Canary (ADR 018 §3.2, R-7): the runner pool is pinned to PostgreSQL
-          # 16 (Orion#317). Fail explicitly, not silently, if the provisioned
-          # cluster ever drifts off that major — a green e2e run against the
-          # wrong PG major is a weaker oracle than a red one.
-          if [ "$PGVER" != "16" ]; then
-            echo "::error::PostgreSQL major version mismatch: expected 16, got $PGVER (ADR 018 §3.2)." >&2
-            exit 1
-          fi
-          # Cluster start needs the postgres-cluster privilege; run via the
-          # same shim. Idempotent: start, else restart an already-running one.
-          $SUDO pg_ctlcluster "$PGVER" main start || $SUDO pg_ctlcluster "$PGVER" main restart
-          for i in $(seq 1 30); do pg_isready -h localhost -p 5432 && break; sleep 1; done
-          # Idempotent bootstrap. The org runner pool is EPHEMERAL, so the PG
-          # cluster does NOT persist across runs — but a pre-provisioned image
-          # may carry residual `orion` role / `orion_e2e` DB. Either way we
-          # start each run from a clean, known state: drop the DB (terminating
-          # live backends first), recreate the role guarded by an existence
-          # check, then recreate a fresh DB — so ON_ERROR_STOP=1 never aborts
-          # on a residual object. SQL is staged to a file then run as the
-          # postgres OS user — avoids nesting a heredoc inside `su -c "..."`
-          # (which would not expand).
-          cat > /tmp/orion_e2e_bootstrap.sql <<'SQL'
-          SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'orion_e2e' AND pid <> pg_backend_pid();
-          DROP DATABASE IF EXISTS orion_e2e;
-          DO $$
-          BEGIN
-            IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'orion') THEN
-              CREATE ROLE orion LOGIN PASSWORD 'orion_e2e_ci' SUPERUSER;
-            ELSE
-              ALTER ROLE orion LOGIN PASSWORD 'orion_e2e_ci' SUPERUSER;
-            END IF;
-          END
-          $$;
-          CREATE DATABASE orion_e2e OWNER orion;
-          SQL
-          chmod 644 /tmp/orion_e2e_bootstrap.sql
-          $SUDO su - postgres -c "psql -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql"
+          set -euo pipefail
+          # initdb refuses to run as root — this is PostgreSQL's nominal
+          # mode, not a workaround. Nothing below crosses a privilege
+          # boundary, so it runs identically on the static pool (root-drop
+          # assoupli par B1) and the JIT pool (no-new-privileges intact,
+          # Bastion veto ZAB-CI-JIT-POSTGRES-TENSION-20260811). Version gate
+          # replaces the old pg_lsclusters probe — same intent (ADR 018
+          # §3.2, R-7): fail loudly on a major-version drift.
+          "$PGBIN/initdb" --version | grep -qE '(^| )16\.' \
+            || { echo "::error::PostgreSQL major version mismatch: expected 16 at $PGBIN (ADR 018 §3.2)." >&2; exit 1; }
+          mkdir -p "$PGDATA" "$PGSOCK" && chmod 700 "$PGDATA"
+          # PGDATA is fresh per job (under $RUNNER_TEMP) — no residual
+          # cluster state to reconcile, so the old idempotent bootstrap
+          # gymnastics (terminate backends, DROP DATABASE IF EXISTS,
+          # existence-checked role) is unnecessary.
+          "$PGBIN/initdb" -D "$PGDATA" -U postgres --auth=trust --locale=C.UTF-8 -E UTF8
+          "$PGBIN/pg_ctl" -D "$PGDATA" -w -o "-p 5432 -k $PGSOCK -h 127.0.0.1" start
+          "$PGBIN/pg_isready" -h 127.0.0.1 -p 5432
+          "$PGBIN/psql" -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE orion LOGIN PASSWORD 'orion_e2e_ci' SUPERUSER;" \
+            -c "CREATE DATABASE orion_e2e OWNER orion;"
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.x"
