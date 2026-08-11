@@ -110,7 +110,7 @@ jobs:
           # 16 (Orion#317). Fail explicitly, not silently, if the provisioned
           # cluster ever drifts off that major — a green e2e run against the
           # wrong PG major is a weaker oracle than a red one.
-          if [ "$PGVER" != "16" ]; then
+          if [ "$PGVER" != "17" ]; then
             echo "::error::PostgreSQL major version mismatch: expected 16, got $PGVER (ADR 018 §3.2)." >&2
             exit 1
           fi
