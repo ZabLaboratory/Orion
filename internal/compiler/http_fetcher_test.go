@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Lumencast/lumencast-go/lsml"
@@ -100,6 +101,104 @@ func TestFetchComputeManifest_BlueContract(t *testing.T) {
 	}
 	if got := manifest["core.input@1"].DeclaredOutputType; got != "" {
 		t.Errorf("core.input@1 output type = %q, want empty (null)", got)
+	}
+}
+
+// TestFetchComponent_ZabCanvasPushedVersionContract puts the actual
+// ZabCanvas pushed-version wrapper through HTTPFetcher rather than using a
+// Go-native UserComponent fake. It protects the producer route and envelope
+// from drifting independently of Orion's inlining model.
+func TestFetchComponent_ZabCanvasPushedVersionContract(t *testing.T) {
+	fixture, err := os.ReadFile(filepath.Join("testdata", "zabcanvas_user_component_pushed_version.json"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	const id = "score-card"
+	const version = "v7"
+	var gotMethod, gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.EscapedPath()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(fixture)
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher(srv.URL, "http://blue.invalid", "")
+	component, err := f.FetchComponent(context.Background(), ComponentRef{ID: id, Version: version})
+	if err != nil {
+		t.Fatalf("FetchComponent: %v", err)
+	}
+	if gotMethod != http.MethodGet {
+		t.Fatalf("method = %q, want GET", gotMethod)
+	}
+	if want := "/api/v1/user-components/score-card/pushed-versions/v7"; gotPath != want {
+		t.Fatalf("path = %q, want %q", gotPath, want)
+	}
+	if component.ID != id || component.Version != version {
+		t.Fatalf("identity = %s@%s, want %s@%s", component.ID, component.Version, id, version)
+	}
+	if len(component.Parameters) != 1 || component.Parameters[0].Name != "title" ||
+		string(component.Parameters[0].Default) != `"Match of the day"` {
+		t.Fatalf("parameters = %+v, want title with its default", component.Parameters)
+	}
+	if component.Body.Kind != "stack" || len(component.Body.Children) != 1 ||
+		component.Body.Children[0].Kind != "text" {
+		t.Fatalf("body = %+v, want stack containing text", component.Body)
+	}
+	if len(component.Inputs) != 1 || component.Inputs[0].Path != "title" ||
+		component.Inputs[0].Label != "Title" {
+		t.Fatalf("operator_inputs = %+v, want the producer value", component.Inputs)
+	}
+}
+
+func TestFetchComponent_RejectsInvalidZabCanvasEnvelope(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "identity mismatch",
+			body: `{"component_id":"other","component_version":"v7","body":{"parameters":[],"body":{"kind":"stack"}}}`,
+		},
+		{
+			name: "missing nested layout",
+			body: `{"component_id":"score-card","component_version":"v7","body":{"parameters":[]}}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer srv.Close()
+
+			f := NewHTTPFetcher(srv.URL, "http://blue.invalid", "")
+			_, err := f.FetchComponent(context.Background(), ComponentRef{ID: "score-card", Version: "v7"})
+			if !errors.Is(err, ErrInvalidComponentEnvelope) {
+				t.Fatalf("error = %v, want ErrInvalidComponentEnvelope", err)
+			}
+		})
+	}
+}
+
+func TestFetchComponent_PreservesZabCanvasHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got, want := r.URL.EscapedPath(), "/api/v1/user-components/missing/pushed-versions/v1"; got != want {
+			t.Fatalf("path = %q, want %q", got, want)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"detail":"pushed component version not found"}`))
+	}))
+	defer srv.Close()
+
+	f := NewHTTPFetcher(srv.URL, "http://blue.invalid", "")
+	_, err := f.FetchComponent(context.Background(), ComponentRef{ID: "missing", Version: "v1"})
+	if err == nil || !strings.Contains(err.Error(), "status 404") {
+		t.Fatalf("error = %v, want wrapped 404", err)
 	}
 }
 

@@ -1,0 +1,19 @@
+{
+  "component_id": "score-card",
+  "component_version": "v7",
+  "body": {
+    "parameters": [
+      {"name": "title", "default": "Match of the day"}
+    ],
+    "body": {
+      "kind": "stack",
+      "id": "score-card-root",
+      "children": [
+        {"kind": "text", "props": {"text": "Score"}}
+      ]
+    },
+    "operator_inputs": [
+      {"path": "title", "label": "Title", "type": "string"}
+    ]
+  }
+}
