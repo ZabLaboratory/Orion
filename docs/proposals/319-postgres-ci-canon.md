@@ -51,19 +51,21 @@ Les tests sont **exécutés, pas seulement affirmés** :
   exécution manuelle avec les vraies credentials Twitch.
 
 **Postgres en CI (canon, ADR 018)** — le substrat runner self-hosted Zab
-(`vps-ovh`, pool partagé `zab-org-runner:pg`) n'expose aucun démon Docker aux
-conteneurs runner. Toute CI ayant besoin d'une base de données suit ce canon :
+(`vps-ovh`, pool partagé de conteneurs runner éphémères bâtis sur l'image
+`zab-org-runner:pg`) n'expose aucun démon Docker aux jobs. Toute CI ayant
+besoin d'une base de données suit ce canon :
 
 - **PostgreSQL natif dans le conteneur runner** (`pg_ctlcluster`, idempotent :
-  skip-apt si déjà provisionné, démarrage/bootstrap rejouables). Pas d'ORM
-  requis pour ce choix — c'est un choix de substrat CI, indépendant du client
-  DB applicatif.
+  skip-apt si déjà provisionné, démarrage et bootstrap rejouables).
+- **PostgreSQL 16**, aligné sur la prod de tous les services Zab : le job dérive
+  la version majeure de `pg_lsclusters` et **échoue explicitement** si elle n'est
+  pas 16 — un drift silencieux de version fait mentir la gate.
 - **Interdit** : le bloc `services:` de GitHub Actions (exige un démon Docker
-  pour l'init container — absent sur ce substrat, cause racine de l'échec
+  pour l'init container — absent sur ce substrat ; cause racine de l'échec
   Blue PR #222).
 - **Interdit** : tout accès au démon Docker de l'hôte depuis un conteneur
-  runner, direct ou proxifié (pas de montage `/var/run/docker.sock`,
-  pas de socket-proxy).
+  runner, direct ou proxifié (pas de montage `/var/run/docker.sock`, pas de
+  socket-proxy).
 - **Garde fork obligatoire** sur tout job tournant sur ce substrat (pas
   seulement les jobs DB) :
   `if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository`
@@ -72,20 +74,20 @@ conteneurs runner. Toute CI ayant besoin d'une base de données suit ce canon :
 - Credentials de la base CI en `env:` du job, jamais en GitHub Secret (locaux
   au conteneur, éphémères, sans valeur hors du job).
 
-  Référence normative : `ADR 018 — Postgres en CI sur le substrat runner
-  self-hosted Zab` (`ZabLaboratory/Orion`, `docs/adr/018-ci-postgres-substrat-runner-zab.md`,
-  §3, §3.1). Implémentation de référence :
-  `ZabLaboratory/Orion/.github/workflows/ci.yml:64-137`.
-
-- Tests marqués `@pytest.mark.live` (Quasar) skippés en CI par défaut ;
-  exécution manuelle avec les vraies credentials Twitch.
+Référence normative : `ADR 018 — Postgres en CI sur le substrat runner
+self-hosted Zab` (`ZabLaboratory/Orion`,
+`docs/adr/018-ci-postgres-substrat-runner-zab.md`, §3 et §3.1). Implémentation
+de référence : `ZabLaboratory/Orion/.github/workflows/ci.yml:64-137`.
 
 ### Lockfile
 ```
 
-> Note : le dernier item (`@pytest.mark.live`) est répété tel quel en fin de
-> bloc pour préserver l'ordre existant du fichier — le nouveau paragraphe
-> Postgres s'insère avant lui, pas après.
+> Correction Vigil (CHANGES_REQUIRED, ZabLaboratory/Orion#319, checkpoint
+> 2026-08-11) appliquée verbatim : la puce `@pytest.mark.live` de la liste
+> existante ne figure plus qu'une fois (plus de duplication), ajout de la
+> puce PostgreSQL 16 avec assertion d'échec de version, retrait de la phrase
+> répondant à une objection non formulée, et correction « pool partagé
+> `zab-org-runner:pg` » (image, pas pool).
 
 ## Hors scope (rappel §5 de l'issue)
 
