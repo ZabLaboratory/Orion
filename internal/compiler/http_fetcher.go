@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -180,15 +181,16 @@ func (f *HTTPFetcher) FetchCanvasLayout(ctx context.Context, version string) (*C
 // (harmless re-fetch) instead of a silent stale HIT. Keep it in lock-step with
 // `adapt_bundle_to_layout`; forgetting to bump reintroduces the staleness bug.
 // (v2: invalidates all field caches after ZabCanvas #150's absolute-URL rewrite.
-//  v3: ZabCanvas #152 started forwarding + rewriting `bundle.defaults` — a
-//  binding-backed image src (`bindings.src` resolved via `defaults`, not a
-//  literal `src`) now gets its asset ref rewritten and its host allowlisted,
-//  where it previously carried no `defaults` at all.
-//  v4: defaults are now back-filled only from a bundle that re-hashes to the
-//  address they were fetched at (bundleMatchesAddress). Entries cached before
-//  that check may hold defaults no verification ever saw — including planted
-//  ones, which is the entire point — so they must MISS rather than be served
-//  from disk forever.)
+//
+//	v3: ZabCanvas #152 started forwarding + rewriting `bundle.defaults` — a
+//	binding-backed image src (`bindings.src` resolved via `defaults`, not a
+//	literal `src`) now gets its asset ref rewritten and its host allowlisted,
+//	where it previously carried no `defaults` at all.
+//	v4: defaults are now back-filled only from a bundle that re-hashes to the
+//	address they were fetched at (bundleMatchesAddress). Entries cached before
+//	that check may hold defaults no verification ever saw — including planted
+//	ones, which is the entire point — so they must MISS rather than be served
+//	from disk forever.)
 const layoutContractVersion = "v4"
 
 // bundleMatchesAddress re-derives the content address of a bundle fetched
@@ -383,14 +385,75 @@ func (f *HTTPFetcher) FetchBlueprintGraph(ctx context.Context, id string, versio
 	return &out, nil
 }
 
-// FetchComponent calls GET {canvas}/api/v1/components/{id}/{version}.
+// ErrInvalidComponentEnvelope means ZabCanvas returned a 200 response that is
+// not a valid pushed-version component wrapper. It is deliberately distinct
+// from a transport/status error so a malformed producer response cannot be
+// mistaken for a missing component or retried as a transient fetch failure.
+var ErrInvalidComponentEnvelope = errors.New("compiler: invalid component response envelope")
+
+// FetchComponent calls ZabCanvas's canonical pushed-version route and adapts
+// its response wrapper into the compiler's UserComponent. ZabCanvas serves:
+//
+//	{component_id, component_version, body:{parameters, body, operator_inputs}}
+//
+// The wrapper is producer metadata, not part of the inlined component model.
+// Validate it before adapting so a route or schema drift fails explicitly
+// instead of silently constructing a zero-value UserComponent.
 func (f *HTTPFetcher) FetchComponent(ctx context.Context, ref ComponentRef) (*UserComponent, error) {
-	var out UserComponent
-	url := fmt.Sprintf("%s/api/v1/components/%s/%s", f.CanvasBase, ref.ID, ref.Version)
-	if err := f.getJSON(ctx, url, &out); err != nil {
+	var response struct {
+		ComponentID      string          `json:"component_id"`
+		ComponentVersion string          `json:"component_version"`
+		Body             json.RawMessage `json:"body"`
+	}
+	endpoint := fmt.Sprintf("%s/api/v1/user-components/%s/pushed-versions/%s",
+		f.CanvasBase, url.PathEscape(ref.ID), url.PathEscape(ref.Version))
+	if err := f.getJSON(ctx, endpoint, &response); err != nil {
 		return nil, fmt.Errorf("canvas component %s@%s: %w", ref.ID, ref.Version, err)
 	}
-	return &out, nil
+	if response.ComponentID == "" || response.ComponentVersion == "" {
+		return nil, fmt.Errorf("canvas component %s@%s: %w: missing component_id or component_version",
+			ref.ID, ref.Version, ErrInvalidComponentEnvelope)
+	}
+	if response.ComponentID != ref.ID || response.ComponentVersion != ref.Version {
+		return nil, fmt.Errorf("canvas component %s@%s: %w: received %s@%s",
+			ref.ID, ref.Version, ErrInvalidComponentEnvelope,
+			response.ComponentID, response.ComponentVersion)
+	}
+	if len(response.Body) == 0 || string(response.Body) == "null" {
+		return nil, fmt.Errorf("canvas component %s@%s: %w: missing body wrapper",
+			ref.ID, ref.Version, ErrInvalidComponentEnvelope)
+	}
+
+	var body struct {
+		Parameters []ComponentParam `json:"parameters"`
+		Body       json.RawMessage  `json:"body"`
+		Inputs     []OperatorInput  `json:"operator_inputs"`
+	}
+	if err := json.Unmarshal(response.Body, &body); err != nil {
+		return nil, fmt.Errorf("canvas component %s@%s: %w: decode body: %v",
+			ref.ID, ref.Version, ErrInvalidComponentEnvelope, err)
+	}
+	if len(body.Body) == 0 || string(body.Body) == "null" {
+		return nil, fmt.Errorf("canvas component %s@%s: %w: missing body.body",
+			ref.ID, ref.Version, ErrInvalidComponentEnvelope)
+	}
+	var layout LayoutNode
+	if err := json.Unmarshal(body.Body, &layout); err != nil {
+		return nil, fmt.Errorf("canvas component %s@%s: %w: decode body.body: %v",
+			ref.ID, ref.Version, ErrInvalidComponentEnvelope, err)
+	}
+	if layout.Kind == "" {
+		return nil, fmt.Errorf("canvas component %s@%s: %w: body.body.kind is required",
+			ref.ID, ref.Version, ErrInvalidComponentEnvelope)
+	}
+
+	return &UserComponent{
+		ID:         response.ComponentID,
+		Version:    response.ComponentVersion,
+		Parameters: body.Parameters,
+		Body:       layout,
+		Inputs:     body.Inputs,
+	}, nil
 }
 
 // FetchComputeManifest calls GET {blue}/api/v1/_compute-manifest and

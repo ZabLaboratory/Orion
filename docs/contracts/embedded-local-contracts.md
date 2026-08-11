@@ -306,12 +306,15 @@ version (Blue `docs/contracts/graph-resolution.md`).
 
 ### B.4 `FetchComponent` / `FetchComputeManifest`
 
-- `FetchComponent(ctx, ref)` → `GET {canvas}/api/v1/components/{id}/{version}` →
-  `UserComponent` (`types.go:206-212`: `id`,`version`,`parameters`,`body`,
-  `operator_inputs?`). Frozen: keyed by `(id,version)`. The canvas-chat-sponso
-  scene uses no user components ⇒ **#224 may serve none** (any `FetchComponent`
-  call is then a bundle-miss = a hard fetch error, which is correct: the frozen
-  scene declares no components).
+- `FetchComponent(ctx, ref)` →
+  `GET {canvas}/api/v1/user-components/{id}/pushed-versions/{version}` →
+  `{component_id, component_version, body:{parameters, body, operator_inputs}}`,
+  adapted by Orion to `UserComponent` (`types.go:206-212`). The echoed id/version
+  and nested `body.body.kind` are mandatory; an invalid 200 wrapper is
+  `ErrInvalidComponentEnvelope`. Frozen: keyed by `(id,version)`. The
+  canvas-chat-sponso scene uses no user components ⇒ **#224 may serve none** (any
+  `FetchComponent` call is then a bundle-miss = a hard fetch error, which is
+  correct: the frozen scene declares no components).
 - `FetchComputeManifest(ctx)` → `GET {blue}/api/v1/_compute-manifest` →
   envelope `{"entries":[...],"count":N}` adapted into `ComputeManifest`
   (`http_fetcher.go:168-204`). Each `entry` (`blueManifestEntry`, `types.go:448-459`):
@@ -513,36 +516,44 @@ Consumer `FetchComputeManifest` (`http_fetcher.go:168-204`). Producer Blue
 scene's blueprints reference or the compiler rejects the node
 (`UNKNOWN_COMPUTE_NODE`). Deploy-constant ⇒ a verbatim snapshot is sufficient.
 
-### C.5 — `R6` `GET {canvas}/api/v1/components/{id}/{version}` → `UserComponent` (OPTIONAL — deferred)
+### C.5 — `R6` `GET {canvas}/api/v1/user-components/{id}/pushed-versions/{version}` → `UserComponent`
 
-Consumer `FetchComponent` (`http_fetcher.go:158-166`) calls
-`/api/v1/components/{id}/{version}` → `UserComponent` (`types.go:206-212`):
-`id`, `version`, `parameters[]`, `body{LayoutNode}`, `operator_inputs?`.
+Consumer `FetchComponent` (`http_fetcher.go`) calls the canonical ZabCanvas
+pushed-version route, not the historical nonexistent `/components` route. Producer
+ZabCanvas mounts `APIRouter(prefix="/user-components")` and serves the version at
+`/{id}/pushed-versions/{version}`. The response is a producer wrapper:
 
-**R6 is OPTIONAL for the MVP and DEFERRED (Eleven decision A).** Two facts:
-1. **Path mismatch (pre-existing antenna bug, see écart A):** Orion calls
-   `/api/v1/components/{id}/{version}`, but ZabCanvas mounts NO `/components`
-   router — components live at `/api/v1/user-components/{id}` and pushed versions
-   at `/api/v1/user-components/{id}/pushed-versions/{version}`
-   (`user_components.py:44,240`). This mismatch already exists at the antenna; it
-   has never fired because no pushed scene carries a user component.
-2. The MVP is **component-free** (canvas-chat-sponso uses none). A `FetchComponent`
-   call is therefore a correct hard fetch error in the MVP.
+```jsonc
+{
+  "component_id": "<id>",
+  "component_version": "<version>",
+  "body": {
+    "parameters": [ /* ComponentParam */ ],
+    "body": { /* LayoutNode */ },
+    "operator_inputs": [ /* OperatorInput */ ] // optional
+  }
+}
+```
 
-**Decision:** R6 is a **known blind spot**, not wired for the MVP. Aligning the
-antenna path (`/components` vs `/user-components`) is an authoring follow-up
-(ZabCanvas issue, route through Eleven → Forge) **before** any component-bearing
-scene is made selectable in local. Until then the mirror MAY omit components and
-the sidecar returns 404 on R6 (a correct bundle-miss). If/when enabled, the mirror
-stores under the path the **fetcher** emits (`canvas/components/<id>/<version>.json`,
-§C.7), and the sidecar route→file mapping resolves the antenna mismatch locally.
+Orion adapts this wrapper to `UserComponent{id, version, parameters, body,
+operator_inputs}`. `component_id` and `component_version` MUST be present and equal
+the requested path tokens; `body.body` MUST decode to a `LayoutNode` with a `kind`.
+A 200 response violating those rules fails with
+`ErrInvalidComponentEnvelope` rather than silently inlining a zero-value component.
+Non-200 statuses keep the existing explicit fetch error path (including the producer
+body). The light Orion golden
+`internal/compiler/testdata/zabcanvas_user_component_pushed_version.json`, served by
+an `httptest` contract test, proves the route and mapping reproducibly; it is a
+shape fixture, not a live artefact capture.
 
 ### C.6 — Écarts de shape (loopback risks)
 
-- **A — `FetchComponent` path mismatch (deferred).** Orion `/components/{id}/{v}`
-  vs ZabCanvas `/user-components/{id}/pushed-versions/{v}`. Pre-existing, unexercised
-  (component-free MVP). Known blind spot; R6 optional; antenna alignment is a
-  separate ZabCanvas follow-up. See §C.5.
+- **A — `FetchComponent` wrapper adaptation (resolved by #245).** ZabCanvas's
+  pushed-version response is an envelope, while Orion's compiler inlines a flat
+  `UserComponent`. Orion now calls the canonical `/user-components/{id}/pushed-versions/{v}`
+  route and validates/adapts the envelope (§C.5). A future producer schema change
+  fails closed as `ErrInvalidComponentEnvelope`; it is not interpreted as a valid
+  empty component.
 - **B — Blue graph ports + exec/data `kind` (resolved by Eleven decision B).** A
   graph `Port` (`graph.py:59`) has **no `kind`**; the `data|exec` discriminant
   `exec_partition.go::isExecNode` reads lives ONLY on `InterfacePort`
@@ -588,8 +599,8 @@ Mirror root = `<sidecar-data-dir>` (Prism `userData`, loopback-only). Tree:
 │   └── layouts/
 │       └── <version>.json                          # R1  body of GET /canvas/api/v1/layouts/<version>
 │                                                    #     <version> = bare sha256 64-hex (^[0-9a-f]{64}$)
-│   └── components/                                  # R6 — OPTIONAL/deferred (§C.5), omitted in MVP
-│       └── <id>/<version>.json                      #     body of GET /canvas/api/v1/components/<id>/<version>
+│   └── user-components/
+│       └── <id>/pushed-versions/<version>.json      # R6 body of GET /canvas/api/v1/user-components/<id>/pushed-versions/<version>
 ├── blue/
 │   ├── blueprints/
 │   │   ├── <id>.json                                # R2  body of GET /blue/api/v1/blueprints/<id>
@@ -614,7 +625,9 @@ Mirror root = `<sidecar-data-dir>` (Prism `userData`, loopback-only). Tree:
    → `<root>/blue/blueprints/<id>/versions/<v>/graph.json`. The collection-vs-item
    collision on `blueprints/<id>` (R2 is `<id>.json`, R3/R4 nest under `<id>/`) is
    resolved by the `.json` suffix on the item and the bare dir for the subtree —
-   both coexist (`<id>.json` file alongside `<id>/` dir).
+   both coexist (`<id>.json` file alongside `<id>/` dir). R6 follows the same rule:
+   `GET /canvas/api/v1/user-components/<id>/pushed-versions/<version>` →
+   `<root>/canvas/user-components/<id>/pushed-versions/<version>.json`.
 2. **Verbatim bytes.** Each `*.json` = the **exact 200 response body** the live
    service emitted (`Content-Type: application/json`). No re-indent, no key
    reorder, no field drop. The export captures the live body; the sidecar serves
@@ -681,21 +694,24 @@ Mirror root = `<sidecar-data-dir>` (Prism `userData`, loopback-only). Tree:
 
 ### C.8 — Verdict
 
-**Aligned.** Contract C is derived from the live producer **and** consumer on
-`origin/main`, not from memory. The five hot-path routes (R1–R5; R6 deferred) and
-their shapes are unambiguous; the R4 typed-error envelope is reproduced fail-closed;
-the mirror tree is a mechanical route→file map serving verbatim bytes.
+**Aligned (R6 resolved by #245).** Contract C is derived from the producer route
+and response envelope versus the Orion consumer. The six hot-path routes (R1–R6)
+have an explicit request path and decode shape; R4 and R6 fail closed on their
+respective typed/error envelopes; the mirror tree is a mechanical route→file map
+serving verbatim bytes.
 
-- **#163 (gateway sidecar)** — UNBLOCKED. Serve R1–R5 by route→file (§C.7),
-  verbatim bytes, R4 typed misses fail-closed. R6 omitted (MVP component-free).
-  Bastion touch-point on loopback auth stance (écart C) before merge.
+- **#163 (gateway sidecar)** — UNBLOCKED for R1–R6. Serve the canonical R6
+  user-components path by route→file (§C.7), with the producer wrapper bytes
+  unchanged; Orion performs the wrapper adaptation. R4 typed misses remain
+  fail-closed. Bastion touch-point on loopback auth stance (écart C) before merge.
 - **#144 (ZabCanvas export) / #174 (Blue export)** — UNBLOCKED. Write the §C.7
   tree: capture each published 200 body verbatim at its route→file path. Blue
   export MUST emit **published, port-hydrated** version bodies (decision B) so R3
   graphs carry node ports; node-definitions written as a non-hot-path safety net.
-- **Known blind spot (écart A / decision A):** R6 component path mismatch
-  (`/components` vs `/user-components`) is unfixed; aligning the antenna is a
-  ZabCanvas follow-up before any component-bearing scene is selectable in local.
+- **Residual limit:** this unit proves Orion's adapter against a reproducible
+  producer-shaped fixture. ZabCanvas producer tests and any sidecar route-to-file
+  implementation remain owned by their respective work units; no live or deployment
+  proof is claimed here.
 
 No breaking change to any live antenna contract: additive, a loopback transport
 behind the existing `httpFetcher` shapes. Eleven decides the merge per the merge
