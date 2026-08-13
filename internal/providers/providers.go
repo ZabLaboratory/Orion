@@ -4,7 +4,7 @@
 // `requires` can be admitted by checkProviders. Blue defines the abstract
 // capability shape; this package is the Zab adaptation for the three
 // capabilities Orion currently serves: HTTP egress, stream-level output
-// emission, and overlay-app invocation (no store).
+// emission, and overlay-app configuration (no store).
 package providers
 
 import (
@@ -51,12 +51,12 @@ func httpRequestProvider() map[string]any {
 	}
 }
 
-// showEmitProvider is the `show.emit` capability — the stateless-path
+// showEmitProvider is the `core.show.emit` capability — the stateless-path
 // successor of ADR 009's `core.show.emit@1` stream-level output primitive.
 func showEmitProvider() map[string]any {
 	return map[string]any{
 		"schema_version": "blue.capability-provider.v1",
-		"capability":     "show.emit",
+		"capability":     "core.show.emit",
 		"version":        "1",
 		"health":         "healthy",
 		"operations": []any{
@@ -81,18 +81,21 @@ func showEmitProvider() map[string]any {
 	}
 }
 
-// overlayAppProvider is the `overlay-app` capability — invoking an
+// overlayAppProvider is the `core.overlay-app` capability — invoking an
 // overlay-hosted app surface. Explicitly stateless: no store backs an
 // overlay-app instance, this provider is a pure invocation contract.
+// operation "set" mirrors the existing Blue node core.overlay-app.set@1
+// (verb-mirrors-action pattern) — NOT "invoke", so a future `requires`
+// emitted for that node matches this descriptor exactly.
 func overlayAppProvider() map[string]any {
 	return map[string]any{
 		"schema_version": "blue.capability-provider.v1",
-		"capability":     "overlay-app",
+		"capability":     "core.overlay-app",
 		"version":        "1",
 		"health":         "healthy",
 		"operations": []any{
 			map[string]any{
-				"name":          "invoke",
+				"name":          "set",
 				"request_type":  "core.json",
 				"response_type": "core.json",
 				"preview":       "emulated",
