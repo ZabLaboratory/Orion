@@ -283,9 +283,12 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 type resolvedSceneEnvelope struct {
 	BlueProgram       string `json:"blue_program"`
 	BlueProgramDigest string `json:"blue_program_digest"`
-	// LSMLBundle/LSMLBundleDigest are OPTIONAL — an envelope with no
-	// bundle (e.g. an operator-only rule with nothing to render) is
-	// valid; decodeAndVerifyBundle returns (nil, nil) for it.
+	// LSMLBundle is OPTIONAL — an envelope with no bundle (e.g. an
+	// operator-only rule with nothing to render) is valid;
+	// decodeAndVerifyBundle returns (nil, nil) for it. LSMLBundleDigest is
+	// MANDATORY the moment LSMLBundle is present (Bastion C4, PR #346,
+	// fail-closed) — decodeAndVerifyBundle refuses an envelope that
+	// carries a bundle with no digest, rather than skip verification.
 	LSMLBundle       string `json:"lsml_bundle,omitempty"`
 	LSMLBundleDigest string `json:"lsml_bundle_digest,omitempty"`
 }
@@ -322,6 +325,12 @@ func decodeAndVerifyProgram(body json.RawMessage, expectedDigest string) ([]byte
 // lsml_bundle_digest) — only the envelope's own self-consistency
 // (declared digest == sha256 of the decoded bytes) is verified. Returns
 // (nil, nil) when the envelope carries no bundle at all.
+//
+// Fail-closed (Bastion C4, PR #346): lsml_bundle_digest is MANDATORY once
+// lsml_bundle is present. An envelope with a bundle but no digest is
+// refused outright rather than served unverified — the prior fail-open
+// (`if digest != ""`) let an unverified bundle ride all the way to
+// GET /host/render-bundle.
 func decodeAndVerifyBundle(body json.RawMessage) ([]byte, error) {
 	var envelope resolvedSceneEnvelope
 	if err := json.Unmarshal(body, &envelope); err != nil {
@@ -330,15 +339,16 @@ func decodeAndVerifyBundle(body json.RawMessage) ([]byte, error) {
 	if envelope.LSMLBundle == "" {
 		return nil, nil
 	}
+	if envelope.LSMLBundleDigest == "" {
+		return nil, errors.New("scene-intent: lsml_bundle present without lsml_bundle_digest")
+	}
 	bundle, err := base64.StdEncoding.DecodeString(envelope.LSMLBundle)
 	if err != nil {
 		return nil, err
 	}
-	if envelope.LSMLBundleDigest != "" {
-		sum := sha256.Sum256(bundle)
-		if "sha256:"+hex.EncodeToString(sum[:]) != envelope.LSMLBundleDigest {
-			return nil, errors.New("scene-intent: lsml_bundle does not match its own declared digest")
-		}
+	sum := sha256.Sum256(bundle)
+	if "sha256:"+hex.EncodeToString(sum[:]) != envelope.LSMLBundleDigest {
+		return nil, errors.New("scene-intent: lsml_bundle does not match its own declared digest")
 	}
 	return bundle, nil
 }

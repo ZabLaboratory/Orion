@@ -535,6 +535,18 @@ func TestDecodeAndVerifyBundle_DigestMismatchRejected(t *testing.T) {
 	}
 }
 
+// TestDecodeAndVerifyBundle_MissingDigestRejected — Bastion C4 (PR #346):
+// a bundle present without its digest must fail closed, never ride
+// unverified through to GET /host/render-bundle.
+func TestDecodeAndVerifyBundle_MissingDigestRejected(t *testing.T) {
+	body, _ := json.Marshal(resolvedSceneEnvelope{
+		LSMLBundle: base64.StdEncoding.EncodeToString([]byte(`{"root":{}}`)),
+	})
+	if _, err := decodeAndVerifyBundle(body); err == nil {
+		t.Fatal("expected missing lsml_bundle_digest to be rejected (fail-closed)")
+	}
+}
+
 func TestGetHostRenderBundle_ServesPreparedBundle(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
