@@ -30,7 +30,7 @@ import (
 // DB) — the same shape probeHarnessDeps builds.
 func simulateDeps() PublicDeps {
 	reg := runtime.NewComputeRegistry()
-	logger := probeLogger()
+	logger := testLogger()
 	return PublicDeps{
 		Logger:  logger,
 		Harness: runtime.NewHarness(reg, logger, runtime.ValidationBudget{MaxSteps: 50_000, MaxWall: 0}),

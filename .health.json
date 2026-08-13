@@ -17,18 +17,8 @@
       "via": "zabgate",
       "expect_status": 200,
       "severity": "high"
-    },
-    {
-      "name": "service_token",
-      "endpoint": "GET /api/v1/ready",
-      "field": "service_token",
-      "expect_status": 200,
-      "expect_value": "armed",
-      "states": ["armed", "degraded", "unpersisted"],
-      "severity": "high",
-      "notes": "ADR ZabAuth 003 Am.3 § A3.6 R21 / RC 51. State word only — no token material, no family_id, no expiry. Never changes the status code: `degraded` (no token: nothing resolvable at boot, or a refresh ZabAuth rejected terminally) and `unpersisted` (a rotation advanced server-side but its successor is not yet in Postgres; the manager retries the persist on its own bounded backoff) are operator signals, not liveness verdicts. The show stays on air in all three; only token-bearing outbound calls fail, and they fail closed."
     }
   ],
   "status": "production",
-  "notes": "Orion v2 (Go) in production. Readiness returns 503 only on a database ping failure; the service_token field is informational."
+  "notes": "Orion v2 (Go) in production. Stateless since #15/#331 (ADR-BLUE-012 §4.3): no store, no ServiceTokenManager — /ready always answers 200 with the in-memory show roster count. The prior `service_token` check (ADR ZabAuth 003 Am.3 § A3.6 R21 / RC 51) is retired with it."
 }
