@@ -1,0 +1,102 @@
+{
+  "budgets": {
+    "max_effects_per_dispatch": 0,
+    "max_execution_ms": 1000,
+    "max_pending_effects": 0,
+    "max_queue_depth": 16,
+    "max_steps_per_dispatch": 16,
+    "max_timers": 0
+  },
+  "compiler_version": "0.1.0",
+  "data_edges": [],
+  "data_literals": [],
+  "determinism": {
+    "clock": "injected",
+    "entropy": "injected",
+    "map_iteration": "canonical",
+    "scheduler": "injected"
+  },
+  "effects": [],
+  "entrypoints": [
+    {
+      "id": "start",
+      "kind": "start",
+      "node_id": "entry",
+      "port": "then"
+    }
+  ],
+  "errors": {
+    "profile": "blue.runtime.error.v1",
+    "unhandled": "halt"
+  },
+  "exec_edges": [],
+  "nodes": [
+    {
+      "config": {},
+      "id": "entry",
+      "opcode": "core.event.on-start@1"
+    }
+  ],
+  "opcodes": [
+    {
+      "config": [],
+      "id": "core.event.on-start@1",
+      "inputs": [],
+      "kind": "entrypoint",
+      "outputs": [
+        {
+          "kind": "exec",
+          "name": "then",
+          "required": true,
+          "type": "core.exec"
+        }
+      ]
+    }
+  ],
+  "ordering": {
+    "duplicate_event": "idempotent_same_digest",
+    "effect_completion": "explicit_fifo_event",
+    "event_inbox": "fifo_by_runtime_sequence",
+    "event_sequence_scope": "instance_per_origin",
+    "exec_fanout": "ascending_edge_sequence",
+    "sequence_gap": "reject",
+    "timer_tie_break": "due_at_then_timer_id"
+  },
+  "program_digest": "sha256:0ea4a3677108a79a55147a551eaadd1d23f71ff2a88f2300cb9ea1e0905dd042",
+  "program_id": "fixture-minimal",
+  "requires": [],
+  "runtime_abi": "blue-runtime-abi.v1",
+  "runtime_module": {
+    "name": "blue-runtime-go",
+    "version": "0.1.0"
+  },
+  "schema_version": "blue.program.v1",
+  "source_revision": {
+    "digest": "sha256:3aa201ed0203ce41437936bc3d4de2f6b7f3689117eec787ad0a4b5a7eb64158",
+    "id": "fixture-minimal",
+    "kind": "blueprint-version",
+    "revision": 1
+  },
+  "state": {
+    "outputs": [],
+    "variables": []
+  },
+  "timers": [],
+  "topics": [],
+  "types": [
+    {
+      "id": "core.json",
+      "kind": "primitive",
+      "spec": {
+        "base": "json"
+      }
+    },
+    {
+      "id": "core.string",
+      "kind": "primitive",
+      "spec": {
+        "base": "string"
+      }
+    }
+  ]
+}

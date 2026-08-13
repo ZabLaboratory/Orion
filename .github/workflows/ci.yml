@@ -48,10 +48,36 @@ jobs:
           # zero benefit. With cache off, `go` re-fetches from the module
           # proxy in seconds. Re-enable only behind a fast local cache backend.
           cache: false
-      - name: go mod tidy check
+      # go.mod pulls github.com/ZabLaboratory/Blue/runtime/go, a private
+      # cross-repo module (issue #331). `go mod download` needs a scoped
+      # token to clone it — the ORION_BLUE_READ_APP_ID/PRIVATE_KEY secrets are
+      # a dedicated App (orion-blue-read), read-only on Blue only, separate
+      # from ZabCanvas's own blue-read App (private keys are not shared
+      # across Apps). Bastion veto on #342 (F1/F2/F3): the credential must
+      # never be live while a step runs PR-submitted code (`go test`/
+      # `golangci-lint`/`go install` can read
+      # `~/.gitconfig` and exfiltrate it), and `insteadOf` must not rewrite
+      # every `https://github.com/` clone, only `ZabLaboratory/`. Fixed here:
+      # mint → write the scoped rewrite → download/tidy → unset, all inside
+      # one step's process, before any later step touches PR code.
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: fetch private Go module (scoped credential, cleared immediately)
+        env:
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
         run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
+          export GOPRIVATE=github.com/ZabLaboratory/*
+          go mod download
           go mod tidy
           git diff --exit-code -- go.mod go.sum
+          git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: vet
         run: go vet ./...
       - name: build
@@ -147,6 +173,22 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: fetch private Go module (scoped credential, cleared immediately)
+        env:
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
+          export GOPRIVATE=github.com/ZabLaboratory/*
+          go mod download
+          git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       # Whole tests/e2e tree: the Probe-authored API contract tests
       # (tests/e2e/contract/, ADR-002 §6) AND the Forge e2e tests.
       - name: run e2e tests (ADR-002 §6 contract + Forge e2e)
@@ -164,6 +206,22 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: fetch private Go module (scoped credential, cleared immediately)
+        env:
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
+          export GOPRIVATE=github.com/ZabLaboratory/*
+          go mod download
+          git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: run 20k benchmark gate
         run: go test -v -count=1 -run 'TestPerf20k' ./internal/runtime/
 
@@ -181,6 +239,22 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: fetch private Go module (scoped credential, cleared immediately)
+        env:
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
+          export GOPRIVATE=github.com/ZabLaboratory/*
+          go mod download
+          git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: structural matrix + ratchet + registry cross-check
         run: go test -v -count=1 ./internal/conformance/
       - name: every served executor runs through the real engine
@@ -199,6 +273,22 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: fetch private Go module (scoped credential, cleared immediately)
+        env:
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
+          export GOPRIVATE=github.com/ZabLaboratory/*
+          go mod download
+          git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: seed-vs-runtime port/config parity
         run: go test -v -count=1 -run 'TestExecPortParity' ./internal/conformance/
       - name: cross-repo QueryDescriptor golden parity (Orion arm)
@@ -214,6 +304,22 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: fetch private Go module (scoped credential, cleared immediately)
+        env:
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
+          export GOPRIVATE=github.com/ZabLaboratory/*
+          go mod download
+          git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
       - name: run
@@ -229,6 +335,22 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: fetch private Go module (scoped credential, cleared immediately)
+        env:
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
+          export GOPRIVATE=github.com/ZabLaboratory/*
+          go mod download
+          git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: run
@@ -244,6 +366,22 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: fetch private Go module (scoped credential, cleared immediately)
+        env:
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
+          export GOPRIVATE=github.com/ZabLaboratory/*
+          go mod download
+          git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       # Install from source so it uses our Go toolchain (pre-built binaries
       # refuse modules declaring `go 1.26`).
       - name: install golangci-lint from source
