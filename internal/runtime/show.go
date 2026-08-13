@@ -777,21 +777,18 @@ func (sh *Show) SetActive(id string, transition json.RawMessage) error {
 		wasDetached := sub.scene == nil
 		snap := dest.AttachExisting(sub)
 		if from != id && !wasDetached {
-			select {
-			case sub.Out <- &protocol.SceneChanged{
+			// trySend (not a raw send): a subscriber can Close concurrently
+			// with this migration (WS disconnect racing a scene switch) —
+			// same close-vs-send race scene.go's fanout closes.
+			sub.trySend(&protocol.SceneChanged{
 				FromSceneID: from,
 				ToSceneID:   id,
 				Transition:  transition,
-			}:
-			default:
-			}
+			})
 		}
 		// Reset the destination scene's sequence so the snapshot
 		// reseeds it (ADR 002 § 7).
-		select {
-		case sub.Out <- snap:
-		default:
-		}
+		sub.trySend(snap)
 	}
 	dest.state.ResetSequence()
 	return nil

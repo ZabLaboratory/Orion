@@ -20,6 +20,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/adapters"
 	"github.com/ZabLaboratory/Orion/internal/api"
 	"github.com/ZabLaboratory/Orion/internal/auth"
+	"github.com/ZabLaboratory/Orion/internal/bluewire"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/config"
 	"github.com/ZabLaboratory/Orion/internal/effects"
@@ -390,6 +391,33 @@ func run() error {
 		AuthSource: authSource,
 	}
 
+	// Additive stateless-cutover surface (#331, ADR-BLUE-012). Dark by
+	// default (nil) unless every ORION_WORKLOAD_*/ORION_CANVAS_TRUST_PATH
+	// var is set — see cmd/orion/scene_intent_wiring.go. A config error
+	// here is NOT a boot failure: the legacy path stays fully live either
+	// way (Phase A of the #331 cutover plan).
+	sceneIntent, sierr := wireSceneIntent(cfg)
+	if sierr != nil {
+		logger.Error("scene-intent surface not wired; legacy path unaffected", "err", sierr)
+	} else if sceneIntent != nil {
+		logger.Info("scene-intent surface wired", "workload_zabgate_url", cfg.WorkloadZabGateURL)
+		// Pair the bluehost instance with the SAME lsdp.Wire scene the
+		// legacy Show-backed path already drives (B3-R6-12-ORION-PROJECTION,
+		// Conduit's verdict on #331: internal/lsdp is the sole Solar
+		// consumer and stays the wire, unmodified — only what feeds it
+		// gains a second producer). Only wired when the antenne LSDP wire
+		// actually exists (dual/lsdp mode); a bespoke-mode boot leaves
+		// MirrorFor nil, so startBridge stays a no-op — Prepare/Take still
+		// run and answer, nothing reaches Solar over this path yet.
+		if antenneWire != nil {
+			sceneIntent.MirrorFor = func(sceneID string) runtime.SceneMirror {
+				return antenneWire.MirrorFor(sceneID, "", nil)
+			}
+			sceneIntent.Bridges = bluewire.NewRegistry()
+			sceneIntent.Logger = logger
+		}
+	}
+
 	// Public mux: HTTP + WS surface routed through ZabGate.
 	publicMux := http.NewServeMux()
 	api.RegisterPublic(publicMux, api.PublicDeps{
@@ -414,6 +442,7 @@ func run() error {
 		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway + live
 		// service token as the db.query client; proxies `_schema` only.
 		SchemaClient: effects.NewSchemaClientWithTokenFunc(cfg.ZabGateURL, serviceTokens.Token, nil),
+		SceneIntent:  sceneIntent,
 	})
 
 	// Internal-only HTTP surface for prom scrape + dev probes.
