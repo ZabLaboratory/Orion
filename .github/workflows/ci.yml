@@ -50,19 +50,22 @@ jobs:
           cache: false
       # go.mod pulls github.com/ZabLaboratory/Blue/runtime/go, a private
       # cross-repo module (issue #331). `go mod download`/`go build` need a
-      # scoped token to clone it — the forge GitHub App installation token,
-      # requested fresh per job (short-lived, never a long-lived PAT).
-      - name: mint forge App token for private Go module fetch
-        id: forge-app-token
+      # scoped token to clone it. Reuses the BLUE_READ_APP_ID/PRIVATE_KEY
+      # secrets already provisioned org-wide for exactly this purpose (same
+      # App as ZabCanvas/.github/workflows/integration.yml:59-66) — no new
+      # secret minted for this spike, requested fresh per job (short-lived,
+      # never a long-lived PAT).
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.FORGE_GH_APP_ID }}
-          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: configure private module auth
         env:
-          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
@@ -165,17 +168,17 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
-      - name: mint forge App token for private Go module fetch
-        id: forge-app-token
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.FORGE_GH_APP_ID }}
-          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: configure private module auth
         env:
-          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
@@ -196,17 +199,17 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
-      - name: mint forge App token for private Go module fetch
-        id: forge-app-token
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.FORGE_GH_APP_ID }}
-          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: configure private module auth
         env:
-          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
@@ -227,17 +230,17 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
-      - name: mint forge App token for private Go module fetch
-        id: forge-app-token
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.FORGE_GH_APP_ID }}
-          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: configure private module auth
         env:
-          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
@@ -259,17 +262,17 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
-      - name: mint forge App token for private Go module fetch
-        id: forge-app-token
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.FORGE_GH_APP_ID }}
-          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: configure private module auth
         env:
-          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
@@ -288,17 +291,17 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
-      - name: mint forge App token for private Go module fetch
-        id: forge-app-token
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.FORGE_GH_APP_ID }}
-          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: configure private module auth
         env:
-          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
@@ -317,17 +320,17 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
-      - name: mint forge App token for private Go module fetch
-        id: forge-app-token
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.FORGE_GH_APP_ID }}
-          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: configure private module auth
         env:
-          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
@@ -346,17 +349,17 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
-      - name: mint forge App token for private Go module fetch
-        id: forge-app-token
+      - name: mint Blue-read App token for private Go module fetch
+        id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.FORGE_GH_APP_ID }}
-          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: configure private module auth
         env:
-          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
           echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
