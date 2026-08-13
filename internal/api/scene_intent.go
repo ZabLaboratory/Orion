@@ -216,14 +216,22 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 
-		// artifact.Body is `zabcanvas.resolved-scene.v1` (§6.3). This slice
-		// consumes only the pinned blue_program bytes it carries; the LSML
-		// render-bundle / projection resources are the Phase-B WS-wiring
-		// scope Conduit is scoping separately. Every byte is verified
-		// against claims.BlueProgramDigest BEFORE Load — §6.2: "Orion
-		// revérifie tous les digests sur les bytes reçus avant Load."
+		// artifact.Body is `zabcanvas.resolved-scene.v1` (§6.3). The
+		// blue_program bytes are verified against the SIGNED
+		// claims.BlueProgramDigest before Load — §6.2: "Orion revérifie
+		// tous les digests sur les bytes reçus avant Load." The LSML
+		// render-bundle has NO equivalent signed claim in §6.2's claim
+		// set (only blue_program_digest is covered) — its integrity here
+		// rests on envelope self-consistency plus the mTLS/delegation
+		// chain that fetched it, not a second signed digest. Documented
+		// gap, not silently assumed equal to the program's guarantee.
 		program, err := decodeAndVerifyProgram(artifact.Body, claims.BlueProgramDigest)
 		if err != nil {
+			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
+			return
+		}
+		bundle, bundleErr := decodeAndVerifyBundle(artifact.Body)
+		if bundleErr != nil {
 			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 			return
 		}
@@ -244,6 +252,9 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		if opErr != nil {
 			writeJSON(w, http.StatusInternalServerError, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "HOST_PREPARE_FAILED"})
 			return
+		}
+		if bundle != nil {
+			deps.Host.SetBundle(slot, bundle)
 		}
 
 		startBridge(deps, slot, action, claims, req.IntentID)
@@ -272,6 +283,14 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 type resolvedSceneEnvelope struct {
 	BlueProgram       string `json:"blue_program"`
 	BlueProgramDigest string `json:"blue_program_digest"`
+	// LSMLBundle is OPTIONAL — an envelope with no bundle (e.g. an
+	// operator-only rule with nothing to render) is valid;
+	// decodeAndVerifyBundle returns (nil, nil) for it. LSMLBundleDigest is
+	// MANDATORY the moment LSMLBundle is present (Bastion C4, PR #346,
+	// fail-closed) — decodeAndVerifyBundle refuses an envelope that
+	// carries a bundle with no digest, rather than skip verification.
+	LSMLBundle       string `json:"lsml_bundle,omitempty"`
+	LSMLBundleDigest string `json:"lsml_bundle_digest,omitempty"`
 }
 
 // decodeAndVerifyProgram parses the Canvas artifact envelope, decodes
@@ -298,6 +317,63 @@ func decodeAndVerifyProgram(body json.RawMessage, expectedDigest string) ([]byte
 		return nil, errors.New("scene-intent: computed program digest does not match the attested claim")
 	}
 	return program, nil
+}
+
+// decodeAndVerifyBundle extracts the OPTIONAL LSML render-bundle from
+// the Canvas artifact envelope. Unlike decodeAndVerifyProgram, there is
+// no SIGNED claim to cross-check against (§6.2's claim set has no
+// lsml_bundle_digest) — only the envelope's own self-consistency
+// (declared digest == sha256 of the decoded bytes) is verified. Returns
+// (nil, nil) when the envelope carries no bundle at all.
+//
+// Fail-closed (Bastion C4, PR #346): lsml_bundle_digest is MANDATORY once
+// lsml_bundle is present. An envelope with a bundle but no digest is
+// refused outright rather than served unverified — the prior fail-open
+// (`if digest != ""`) let an unverified bundle ride all the way to
+// GET /host/render-bundle.
+func decodeAndVerifyBundle(body json.RawMessage) ([]byte, error) {
+	var envelope resolvedSceneEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.LSMLBundle == "" {
+		return nil, nil
+	}
+	if envelope.LSMLBundleDigest == "" {
+		return nil, errors.New("scene-intent: lsml_bundle present without lsml_bundle_digest")
+	}
+	bundle, err := base64.StdEncoding.DecodeString(envelope.LSMLBundle)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(bundle)
+	if "sha256:"+hex.EncodeToString(sum[:]) != envelope.LSMLBundleDigest {
+		return nil, errors.New("scene-intent: lsml_bundle does not match its own declared digest")
+	}
+	return bundle, nil
+}
+
+// getHostRenderBundle serves the LSML render-bundle bytes attached to a
+// slot by the most recent Prepare/Take (§15 read-route migration: the
+// new-path equivalent of legacy's GET /scenes/{id}/render-bundle,
+// content-addressed and immutably cacheable the same way — but keyed by
+// slot, not scene_id, since the new model has no persisted roster to
+// address by id). ?slot=preview|on-air, default preview.
+func getHostRenderBundle(deps SceneIntentDeps) http.HandlerFunc {
+	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
+		slot := bluehost.SlotPreview
+		if r.URL.Query().Get("slot") == "on-air" {
+			slot = bluehost.SlotOnAir
+		}
+		digest := deps.Host.Digest(slot)
+		bundle := deps.Host.Bundle(slot)
+		if digest == "" || bundle == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "RENDER_BUNDLE_NOT_FOUND"})
+			return
+		}
+		writeImmutable(w, digest, http.StatusOK)
+		_, _ = w.Write(bundle)
+	})
 }
 
 const defaultProjectionInterval = 100 * time.Millisecond
@@ -347,6 +423,32 @@ func releaseSlot(deps SceneIntentDeps, slot bluehost.Slot, reason string) error 
 		deps.Bridges.Stop(slot)
 	}
 	return deps.Host.Release(slot, reason)
+}
+
+// hostStatusResponse is the new path's read equivalent of legacy's
+// `GET /api/v1/show` (show summary): which scene_digest, if any, each
+// bluehost.Host slot currently carries. First read-route migration of
+// #15's route-by-route plan (Refs #331) — additive, registered beside
+// GET /api/v1/show, not replacing it yet.
+type hostStatusResponse struct {
+	Preview hostSlotStatus `json:"preview"`
+	OnAir   hostSlotStatus `json:"on_air"`
+}
+
+type hostSlotStatus struct {
+	SceneDigest string `json:"scene_digest,omitempty"`
+	Loaded      bool   `json:"loaded"`
+}
+
+func getHostStatus(deps SceneIntentDeps) http.HandlerFunc {
+	return requireOperator(func(w http.ResponseWriter, _ *http.Request) {
+		previewDigest := deps.Host.Digest(bluehost.SlotPreview)
+		onAirDigest := deps.Host.Digest(bluehost.SlotOnAir)
+		writeJSON(w, http.StatusOK, hostStatusResponse{
+			Preview: hostSlotStatus{SceneDigest: previewDigest, Loaded: previewDigest != ""},
+			OnAir:   hostSlotStatus{SceneDigest: onAirDigest, Loaded: onAirDigest != ""},
+		})
+	})
 }
 
 func actionResultStatus(a attestation.Action) string {

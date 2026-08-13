@@ -11,22 +11,12 @@ import (
 
 	"github.com/ZabLaboratory/Orion/internal/adapters"
 	"github.com/ZabLaboratory/Orion/internal/auth"
-	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/config"
 	"github.com/ZabLaboratory/Orion/internal/effects"
 	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
-	"github.com/ZabLaboratory/Orion/internal/store"
 	"github.com/ZabLaboratory/Orion/internal/ws"
 )
-
-// ServiceTokenSource is the slice of the service-token manager the public
-// surface uses: the Bearer to present outbound, and the operator-visible state
-// word (ADR ZabAuth 003 Am.3 § A3.6 R21 / RC 51).
-type ServiceTokenSource interface {
-	Token() string
-	State() auth.ServiceTokenState
-}
 
 // PublicDeps groups every dependency the public router needs.
 type PublicDeps struct {
@@ -36,32 +26,16 @@ type PublicDeps struct {
 	Show     *runtime.Show
 	Inbox    *adapters.Inbox
 	Test     *runtime.TestSessionManager
-	Store    store.Store
-	Fetcher  compiler.Fetcher
 	WSServer *ws.Server
 
-	// AirValidator is the air-eligibility read seam (ADR 016 Amendment 1,
-	// issue #247). Nil ⇒ the store (antenne: read the PG `validated` row —
-	// byte-for-byte the prior path). embedded-local supplies a
-	// store.MirrorValidator that reads the validated-record seed from the
-	// mirror filesystem instead. The gate logic is identical either way;
-	// only the source of the `validated` record changes. Resolved via
-	// deps.airValidator() at every gate call site.
-	AirValidator AirValidator
-
-	// Harness runs scene-validation campaigns (ADR 003 §3.2, issue #87).
-	// ValidationRunner serialises campaigns per (scene, version).
-	Harness          *runtime.Harness
-	ValidationRunner *validationRunner
-	StaticDir        http.FileSystem // /static/solar/...
-	QuasarBaseURL    string          // e.g. http://zabgate:4000/quasar
-
-	// ServiceTokens is the outbound service-token source: the Bearer for the
-	// credentials proxy, and the state word `/ready` publishes (RC 51).
-	// *auth.ServiceTokenManager in production; an interface so the readiness
-	// surface can be asserted in each of its three states without standing up
-	// a ZabAuth and a Postgres.
-	ServiceTokens ServiceTokenSource
+	// Harness runs scene-validation campaigns (ADR 003 §3.2, issue #87) —
+	// still consumed by postSimulate (validate_simulate.go). The serialised
+	// per-(scene,version) campaign RUNNER (ValidationRunner) was only used
+	// by POST/GET .../validate, RETIRED with the antenna-eligibility gate
+	// (#15, #331) — see public.go's route-registration comment.
+	Harness       *runtime.Harness
+	StaticDir     http.FileSystem // /static/solar/...
+	QuasarBaseURL string          // e.g. http://zabgate:4000/quasar
 
 	// SchemaClient fetches a datasource's read-only catalog (`_schema`)
 	// for the DB-catalog surface (ADR Blue 008 §3.4). Nil ⇒ the catalog
@@ -109,9 +83,6 @@ type PublicDeps struct {
 // per the workspace convention (`agents/_shared/conventions.md`).
 // Same handler, two paths.
 func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
-	if deps.ValidationRunner == nil {
-		deps.ValidationRunner = newValidationRunner()
-	}
 	// Select the identity source for the auth gates (ADR 016 §3.2-2).
 	// Default = HeaderAuthSource: byte-for-byte today's antenne behaviour.
 	if deps.AuthSource != nil {
@@ -124,19 +95,24 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/health", health)
 	mux.HandleFunc("GET /api/v1/ready", ready(deps))
 
-	mux.HandleFunc("POST /api/v1/scenes/{id}/push", pushScene(deps))
+	// POST /api/v1/scenes/{id}/push — RETIRED (#15, #331): see the removed
+	// scenes_push.go. Superseded by POST /api/v1/host/scene-intent below.
 	mux.HandleFunc("GET /api/v1/scenes/{id}/render-bundle", getRenderBundle(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/lsml-bundle", getLSMLBundle(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/operator-inputs", getOperatorInputs(deps))
-	mux.HandleFunc("GET /api/v1/scenes/{id}/graph", getGraph(deps))
+	// GET /api/v1/scenes/{id}/graph — RETIRED (#15, #331): see scenes_get.go.
 	// Preview→air state hand-off export seam (ADR Prism 005 Amendment 2
 	// §A2.2.d, issue #256). Operator-gated; servable ONLY on the preview
 	// sidecar (embedded-local) — a prod/antenne Orion 404s it (Bastion #11).
 	mux.HandleFunc("GET /api/v1/scenes/{id}/state-snapshot", getStateSnapshot(deps))
-	mux.HandleFunc("POST /api/v1/scenes/{id}/status", postSceneStatus(deps))
-	// Scene-validation gate (ADR 003 §3.2.2, issue #87).
-	mux.HandleFunc("POST /api/v1/scenes/{id}/validate", postValidate(deps))
-	mux.HandleFunc("GET /api/v1/scenes/{id}/validation", getValidation(deps))
+	// POST /api/v1/scenes/{id}/status (archive/reactivate) — RETIRED (#15,
+	// #331): see the removed scenes_get.go handlers, no equivalent concept.
+	// POST /api/v1/scenes/{id}/validate, GET .../validation — RETIRED (#15,
+	// #331): the antenna-eligibility gate (ADR 003 §3.2.2, #87,
+	// execForAir/isAirEligible) is superseded by the ZabCanvas
+	// `zabcanvas.resolved-scene-ref.v1` attestation (ADR-BLUE-012 §6.2) —
+	// an unattested/unproven scene ref never verifies, so a separate
+	// "validated" record and read-gate no longer have a role to play.
 	// External animation completion report (B-syswrite, issue #86).
 	// R9: registered but inert until the phase-4 gate — exec dormant in
 	// prod, so every report drops as an unknown wake key, 202.
@@ -150,7 +126,12 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("POST /api/v1/validate/simulate", postSimulate(deps))
 
 	mux.HandleFunc("GET /api/v1/show", getShow(deps))
-	mux.HandleFunc("POST /api/v1/show/active-scene", postActiveScene(deps))
+	// POST /api/v1/show/active-scene — RETIRED (#15, #331): see the removed
+	// postActiveScene in show.go. Superseded by POST /api/v1/host/scene-intent
+	// below (attestation-driven, no client-supplied state_snapshot import —
+	// ADR-BLUE-012 invariant #8). BREAKS Prism (embedded-boot.ts:172,
+	// scene-push.ts) — migration to scene-intent is a separate Prism-repo
+	// work stream, not implemented here; see the #331 final report.
 	mux.HandleFunc("POST /api/v1/show/test-sessions", postTestSession(deps))
 	// Preview/antenne split: the cockpit preview flips the PERSISTENT preview
 	// wire (a clone behind /show/preview.lsdp), never the antenne's active
@@ -159,11 +140,12 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// the preview scene). Operator-gated; degrade when Preview is nil.
 	mux.HandleFunc("POST /api/v1/show/preview-active-scene", postPreviewActiveScene(deps))
 	mux.HandleFunc("GET /api/v1/show/preview-snapshot", getPreviewSnapshot(deps))
-	// Stream-level Blue rules (ADR 009 §3.1, issue #154): operator-gated
-	// promotion/demotion of a roster scene into an always-on rule.
-	mux.HandleFunc("GET /api/v1/show/stream-rules", getStreamRules(deps))
-	mux.HandleFunc("POST /api/v1/show/stream-rules", postStreamRule(deps))
-	mux.HandleFunc("DELETE /api/v1/show/stream-rules/{id}", deleteStreamRule(deps))
+	// Stream-level Blue rules (ADR 009 §3.1, issue #154) — capacity paused
+	// (#15, #331), not abandoned: HTTP surface AND handlers
+	// (internal/api/stream_rules.go) fully removed with internal/store.
+	// Successor tracked by the R6 ledger in Orion#332 (11-ORION-PROVIDERS,
+	// routing) + ZabCanvas (durability) — not yet opened. cockpit/operator
+	// read an empty rule set gracefully, so no caller regression.
 
 	// DB catalog surface (ADR Blue 008 §3.4, issue #211): read-only
 	// introspection of whitelisted datasources for cockpit selectors.
@@ -186,13 +168,30 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// (reveals the live operator surface); read-only, never stored.
 	mux.HandleFunc("GET /api/v1/cockpit/contracts", getCockpitContracts(deps))
 
-	mux.HandleFunc("GET /api/v1/assets/{id}", getAsset(deps))
-	mux.HandleFunc("GET /api/v1/credentials/{id}/stream-key", getStreamKey(deps))
+	// GET /api/v1/assets/{id} — RETIRED (#15, #331): Prism already fetches
+	// assets DIRECTLY from ZabCanvas (asset-refs.ts, asset-hydration.ts:
+	// `${gatewayUrl}/canvas/api/v1/scene-assets/{hash}/bytes`), a different
+	// endpoint shape entirely — this Orion proxy (internal/api/assets.go,
+	// deleted) was dead in the real client flow already, no surprise
+	// caller found (rg across Prism/Solar).
+	// GET /api/v1/credentials/{id}/stream-key — RETIRED (#15, #331): porteur
+	// confirmed Orion no longer owns any part of the stream lifecycle,
+	// Pulsar does. Prism already fetches the Twitch stream key directly
+	// from Quasar via ZabGate (Prism/src/main/broadcast-engine.ts:6675,
+	// `${gatewayUrl}/quasar/api/v1/credentials/{id}/stream-key`) — this
+	// Orion proxy was dead code in the real client flow before removal.
 
 	// Stateless-cutover surface (#331, ADR-BLUE-012 §4.4/§6.4) — additive,
 	// registered only once cmd/orion provisions Trust/Workload/Host.
 	if deps.SceneIntent != nil {
 		mux.HandleFunc("POST /api/v1/host/scene-intent", postSceneIntent(*deps.SceneIntent))
+		// Read-path migration of GET /api/v1/show (#15 route-by-route plan,
+		// Refs #331) — bluehost-backed slot status, additive beside the
+		// legacy handler.
+		mux.HandleFunc("GET /api/v1/host/status", getHostStatus(*deps.SceneIntent))
+		// Read-path migration of GET /scenes/{id}/render-bundle (#15) —
+		// serves the bundle SetBundle stashed at the last Prepare/Take.
+		mux.HandleFunc("GET /api/v1/host/render-bundle", getHostRenderBundle(*deps.SceneIntent))
 	}
 
 	// WebSocket endpoints. coder/websocket lives behind these handlers.
@@ -244,38 +243,21 @@ func health(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-// ready reports DB ping + show roster status. Returns 503 if either
-// fails so a load balancer can pull traffic during a degraded boot.
+// ready reports show roster status.
 //
-// It also publishes `service_token` (armed | degraded | unpersisted), the
-// operator-visible state of the durable service-token manager — ADR ZabAuth
-// 003 Amendment 3 § A3.6 R21 / RC 51. That field NEVER changes the status
-// code: a token problem degrades egress, it is not a liveness verdict, exactly
-// as ZabAuth's own `unadopted_families_24h` stays 200. It is a state word and
-// nothing else — no token material, no family id, no expiry.
+// The DB ping (`database`) and `service_token` state word — ADR ZabAuth 003
+// Amendment 3 § A3.6 R21 / RC 51 — are RETIRED (#15, #331): Orion holds no
+// DB and no ServiceTokenManager anymore (ADR-BLUE-012 §4.3). `/ready` no
+// longer has a durable dependency to report on; it always answers 200 once
+// the process is up (the show roster is in-memory, never a boot-blocking
+// external call).
 func ready(deps PublicDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
 		body := map[string]any{
-			"status":  "ok",
-			"service": "orion",
+			"status":        "ok",
+			"service":       "orion",
+			"scenes_loaded": len(deps.Show.IDs()),
 		}
-		// No manager wired (unit fixtures) reads as "no token", which is what
-		// degraded means.
-		serviceToken := auth.ServiceTokenDegraded
-		if deps.ServiceTokens != nil {
-			serviceToken = deps.ServiceTokens.State()
-		}
-		body["service_token"] = string(serviceToken)
-		if deps.Store != nil {
-			if err := deps.Store.Ping(r.Context()); err != nil {
-				body["status"] = "degraded"
-				body["database"] = "down"
-				writeJSON(w, http.StatusServiceUnavailable, body)
-				return
-			}
-			body["database"] = "ok"
-		}
-		body["scenes_loaded"] = len(deps.Show.IDs())
 		writeJSON(w, http.StatusOK, body)
 	}
 }
@@ -318,17 +300,15 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
-// codeFromError maps store errors to API error codes.
+// codeFromError maps runtime errors to API error codes. The two Store-only
+// cases (ErrNotFound, ErrSceneInUse — archive/status feature) are RETIRED
+// with internal/store (#15, #331); their callers are gone.
 func codeFromError(err error) (int, string) {
 	switch {
-	case errors.Is(err, store.ErrNotFound):
-		return http.StatusNotFound, "NOT_FOUND"
 	case errors.Is(err, runtime.ErrSceneNotFound):
 		return http.StatusNotFound, "SCENE_NOT_FOUND"
 	case errors.Is(err, runtime.ErrSceneNotPushed):
 		return http.StatusConflict, "SCENE_NOT_PUSHED"
-	case errors.Is(err, store.ErrSceneInUse):
-		return http.StatusConflict, "SCENE_IN_USE"
 	case errors.Is(err, runtime.ErrRuleIsActiveScene):
 		// ADR 009 §3.1 criterion #5: a rule and the active scene are
 		// disjoint roles — promoting the active scene is refused.
