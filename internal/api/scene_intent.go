@@ -17,6 +17,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/attestation"
@@ -63,6 +65,51 @@ type SceneIntentDeps struct {
 	// 100ms.
 	ProjectionInterval time.Duration
 	Logger             *slog.Logger
+
+	// Idempotency deduplicates a replayed intent (§6.4: "une idempotency_key
+	// client seule n'est jamais globale" — always scoped, never a bare
+	// lookup). Nil ⇒ every request is processed fresh (dark by default,
+	// same posture as MirrorFor/Bridges).
+	Idempotency *IdempotencyCache
+}
+
+// IdempotencyCache remembers the typed result of a scoped (principal,
+// owner, tenant, stream, action, scene_digest, ref_id, idempotency_key)
+// tuple — the minimum dedup key §6.4 requires. A replayed intent
+// carrying the same tuple and a non-empty idempotency_key returns the
+// cached result instead of re-running Prepare/Take and restarting the
+// bridge. This mirrors ZabCanvas's own `issue_or_replay` idempotence
+// pattern: the SAME request replayed is answered from the prior
+// outcome, never re-executed.
+type IdempotencyCache struct {
+	mu    sync.Mutex
+	cache map[string]sceneIntentResponse
+}
+
+// NewIdempotencyCache builds an empty cache.
+func NewIdempotencyCache() *IdempotencyCache {
+	return &IdempotencyCache{cache: map[string]sceneIntentResponse{}}
+}
+
+func (c *IdempotencyCache) lookup(key string) (sceneIntentResponse, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	resp, ok := c.cache[key]
+	return resp, ok
+}
+
+func (c *IdempotencyCache) store(key string, resp sceneIntentResponse) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cache[key] = resp
+}
+
+// idempotencyKey builds the §6.4 minimum dedup tuple. Fields are
+// NUL-joined (never user-controlled to contain NUL) rather than any
+// separator that could appear in an id, so two distinct tuples can
+// never collide by concatenation ambiguity.
+func idempotencyKey(principal, owner, tenant, stream string, action attestation.Action, sceneDigest, refID, idempotencyKey string) string {
+	return strings.Join([]string{principal, owner, tenant, stream, string(action), sceneDigest, refID, idempotencyKey}, "\x00")
 }
 
 // sceneIntentRequest is `orion.scene-intent.v1` (§6.4). ResolvedSceneRef
@@ -132,6 +179,20 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 
+		// Idempotent replay (§6.4): a request scoped to the same tuple and
+		// carrying the same non-empty idempotency_key gets the PRIOR
+		// outcome, never a re-run — no second Admit/Mint/Fetch, no second
+		// Prepare/Take, no bridge restart. A missing/empty idempotency_key
+		// is never treated as a cache hit (§6.4: never a bare/global key).
+		var dedupKey string
+		if deps.Idempotency != nil && req.IdempotencyKey != "" {
+			dedupKey = idempotencyKey(principal, deps.OwnerID, deps.TenantID, req.StreamID, action, claims.SceneDigest, claims.RefID, req.IdempotencyKey)
+			if cached, ok := deps.Idempotency.lookup(dedupKey); ok {
+				writeJSON(w, http.StatusOK, cached)
+				return
+			}
+		}
+
 		ctx := r.Context()
 		admission, err := deps.Workload.AdmitAuthContext(ctx, ticket)
 		if err != nil {
@@ -187,12 +248,19 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 
 		startBridge(deps, slot, action, claims, req.IntentID)
 
-		writeJSON(w, http.StatusOK, sceneIntentResponse{
+		resp := sceneIntentResponse{
 			Status:     actionResultStatus(action),
 			IntentID:   req.IntentID,
 			SceneID:    claims.SceneID,
 			RevisionID: claims.RevisionID,
-		})
+		}
+		// Only a SUCCESSFUL outcome is cached — a rejection/failure is
+		// never memoized, so a corrected retry (new ticket, new artifact)
+		// is always re-attempted rather than replaying a stale failure.
+		if dedupKey != "" {
+			deps.Idempotency.store(dedupKey, resp)
+		}
+		writeJSON(w, http.StatusOK, resp)
 	})
 }
 
