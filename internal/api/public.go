@@ -93,6 +93,12 @@ type PublicDeps struct {
 	// gate logic (role check) is byte-for-byte identical either way —
 	// only WHO derives the Identity changes.
 	AuthSource auth.AuthSource
+
+	// SceneIntent wires the additive stateless-cutover surface (#331,
+	// ADR-BLUE-012). Nil ⇒ POST /api/v1/host/scene-intent is not
+	// registered — every existing route above is unaffected. Non-nil only
+	// once Trust/Workload/Host are all provisioned by cmd/orion.
+	SceneIntent *SceneIntentDeps
 }
 
 // RegisterPublic wires every endpoint per ADR 004 § 2. Routes start
@@ -182,6 +188,12 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 
 	mux.HandleFunc("GET /api/v1/assets/{id}", getAsset(deps))
 	mux.HandleFunc("GET /api/v1/credentials/{id}/stream-key", getStreamKey(deps))
+
+	// Stateless-cutover surface (#331, ADR-BLUE-012 §4.4/§6.4) — additive,
+	// registered only once cmd/orion provisions Trust/Workload/Host.
+	if deps.SceneIntent != nil {
+		mux.HandleFunc("POST /api/v1/host/scene-intent", postSceneIntent(*deps.SceneIntent))
+	}
 
 	// WebSocket endpoints. coder/websocket lives behind these handlers.
 	mux.HandleFunc("/api/v1/show/stream", deps.WSServer.ServeShowStream)
