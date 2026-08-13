@@ -36,6 +36,7 @@ var (
 type entry struct {
 	instance *blueruntime.InstanceHandle
 	digest   string // scene_digest / program identity this slot is serving
+	bundle   []byte // optional LSML render-bundle bytes for this slot, set via SetBundle
 }
 
 // Host owns exactly one preview and one on-air instance at a time, per
@@ -115,6 +116,32 @@ func (h *Host) Digest(slot Slot) string {
 		return ""
 	}
 	return e.digest
+}
+
+// SetBundle attaches the content-addressed LSML render-bundle bytes to
+// slot's current entry, so a caller (the GET render-bundle route) can
+// serve back exactly what Prepare/Take last loaded without a second
+// Canvas fetch or any Store dependency. No-op if slot is empty — a
+// caller races Release only at its own risk, same as every other Host
+// method.
+func (h *Host) SetBundle(slot Slot, bundle []byte) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if e, ok := h.slots[slot]; ok {
+		e.bundle = bundle
+	}
+}
+
+// Bundle returns the LSML render-bundle bytes SetBundle last attached to
+// slot, or nil if none was set (or the slot is empty).
+func (h *Host) Bundle(slot Slot) []byte {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.slots[slot]
+	if !ok {
+		return nil
+	}
+	return e.bundle
 }
 
 // Dispatch delivers an inbound event to the slot's instance.

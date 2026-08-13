@@ -124,3 +124,31 @@ func TestHost_ReleaseThenReprepare(t *testing.T) {
 		t.Fatalf("re-Prepare after Release: %v", err)
 	}
 }
+
+func TestHost_SetBundleAndBundle(t *testing.T) {
+	h := NewHost()
+	program := fixture(t)
+
+	if h.Bundle(SlotPreview) != nil {
+		t.Fatal("expected nil bundle on empty slot")
+	}
+	h.SetBundle(SlotPreview, []byte("no-op on empty slot"))
+	if h.Bundle(SlotPreview) != nil {
+		t.Fatal("expected SetBundle on an empty slot to be a no-op")
+	}
+
+	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	h.SetBundle(SlotPreview, []byte("lsml-bytes"))
+	if got := h.Bundle(SlotPreview); string(got) != "lsml-bytes" {
+		t.Fatalf("expected %q, got %q", "lsml-bytes", got)
+	}
+
+	if err := h.Release(SlotPreview, "done"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if h.Bundle(SlotPreview) != nil {
+		t.Fatal("expected nil bundle after Release")
+	}
+}

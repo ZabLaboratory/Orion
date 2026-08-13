@@ -197,6 +197,9 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 		// Refs #331) — bluehost-backed slot status, additive beside the
 		// legacy handler.
 		mux.HandleFunc("GET /api/v1/host/status", getHostStatus(*deps.SceneIntent))
+		// Read-path migration of GET /scenes/{id}/render-bundle (#15) —
+		// serves the bundle SetBundle stashed at the last Prepare/Take.
+		mux.HandleFunc("GET /api/v1/host/render-bundle", getHostRenderBundle(*deps.SceneIntent))
 	}
 
 	// WebSocket endpoints. coder/websocket lives behind these handlers.

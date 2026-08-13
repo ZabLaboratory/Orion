@@ -500,3 +500,78 @@ func TestGetHostStatus_RequiresOperatorRole(t *testing.T) {
 		t.Fatalf("expected 403, got %d", rec.Code)
 	}
 }
+
+func TestDecodeAndVerifyBundle_ValidBundle(t *testing.T) {
+	raw := []byte(`{"root":{}}`)
+	digest := sha256Digest(raw)
+	body, _ := json.Marshal(resolvedSceneEnvelope{
+		LSMLBundle:       base64.StdEncoding.EncodeToString(raw),
+		LSMLBundleDigest: digest,
+	})
+	got, err := decodeAndVerifyBundle(body)
+	if err != nil {
+		t.Fatalf("decodeAndVerifyBundle: %v", err)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("expected %q, got %q", raw, got)
+	}
+}
+
+func TestDecodeAndVerifyBundle_NoBundleIsNilNil(t *testing.T) {
+	body, _ := json.Marshal(resolvedSceneEnvelope{})
+	got, err := decodeAndVerifyBundle(body)
+	if err != nil || got != nil {
+		t.Fatalf("expected (nil, nil) for an envelope with no bundle, got (%v, %v)", got, err)
+	}
+}
+
+func TestDecodeAndVerifyBundle_DigestMismatchRejected(t *testing.T) {
+	body, _ := json.Marshal(resolvedSceneEnvelope{
+		LSMLBundle:       base64.StdEncoding.EncodeToString([]byte(`{"root":{}}`)),
+		LSMLBundleDigest: "sha256:" + strings.Repeat("f", 64),
+	})
+	if _, err := decodeAndVerifyBundle(body); err == nil {
+		t.Fatal("expected digest mismatch to be rejected")
+	}
+}
+
+func TestGetHostRenderBundle_ServesPreparedBundle(t *testing.T) {
+	host := bluehost.NewHost()
+	program := minimalProgram(t)
+	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	host.SetBundle(bluehost.SlotPreview, []byte(`{"root":{}}`))
+	deps := SceneIntentDeps{Host: host}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/host/render-bundle", nil)
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+	rec := httptest.NewRecorder()
+	getHostRenderBundle(deps)(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != `{"root":{}}` {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+	if rec.Header().Get("Cache-Control") == "" {
+		t.Fatal("expected an immutable cache header")
+	}
+	if rec.Header().Get("ETag") != `"sha256:abc"` {
+		t.Fatalf("unexpected ETag: %q", rec.Header().Get("ETag"))
+	}
+}
+
+func TestGetHostRenderBundle_MissingSlotIs404(t *testing.T) {
+	deps := SceneIntentDeps{Host: bluehost.NewHost()}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/host/render-bundle", nil)
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+	rec := httptest.NewRecorder()
+	getHostRenderBundle(deps)(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+}
