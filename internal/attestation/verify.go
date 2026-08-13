@@ -26,7 +26,7 @@ type Action string
 
 const (
 	ActionPreparePreview Action = "prepare-preview"
-	ActionTakeOnAir       Action = "take-on-air"
+	ActionTakeOnAir      Action = "take-on-air"
 )
 
 // Claims is the single parsed object produced by Verify. Per §6.2 it is
@@ -37,7 +37,7 @@ type Claims struct {
 	RefID                  string   `json:"ref_id"`
 	AttestationID          string   `json:"attestation_id"`
 	Issuer                 string   `json:"issuer"`
-	Audience                string   `json:"audience"`
+	Audience               string   `json:"audience"`
 	Subject                string   `json:"subject"`
 	OwnerID                string   `json:"owner_id"`
 	TenantID               string   `json:"tenant_id"`
