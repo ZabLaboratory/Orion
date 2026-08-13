@@ -193,6 +193,10 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// registered only once cmd/orion provisions Trust/Workload/Host.
 	if deps.SceneIntent != nil {
 		mux.HandleFunc("POST /api/v1/host/scene-intent", postSceneIntent(*deps.SceneIntent))
+		// Read-path migration of GET /api/v1/show (#15 route-by-route plan,
+		// Refs #331) — bluehost-backed slot status, additive beside the
+		// legacy handler.
+		mux.HandleFunc("GET /api/v1/host/status", getHostStatus(*deps.SceneIntent))
 	}
 
 	// WebSocket endpoints. coder/websocket lives behind these handlers.

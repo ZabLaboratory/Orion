@@ -281,6 +281,32 @@ func releaseSlot(deps SceneIntentDeps, slot bluehost.Slot, reason string) error 
 	return deps.Host.Release(slot, reason)
 }
 
+// hostStatusResponse is the new path's read equivalent of legacy's
+// `GET /api/v1/show` (show summary): which scene_digest, if any, each
+// bluehost.Host slot currently carries. First read-route migration of
+// #15's route-by-route plan (Refs #331) — additive, registered beside
+// GET /api/v1/show, not replacing it yet.
+type hostStatusResponse struct {
+	Preview hostSlotStatus `json:"preview"`
+	OnAir   hostSlotStatus `json:"on_air"`
+}
+
+type hostSlotStatus struct {
+	SceneDigest string `json:"scene_digest,omitempty"`
+	Loaded      bool   `json:"loaded"`
+}
+
+func getHostStatus(deps SceneIntentDeps) http.HandlerFunc {
+	return requireOperator(func(w http.ResponseWriter, _ *http.Request) {
+		previewDigest := deps.Host.Digest(bluehost.SlotPreview)
+		onAirDigest := deps.Host.Digest(bluehost.SlotOnAir)
+		writeJSON(w, http.StatusOK, hostStatusResponse{
+			Preview: hostSlotStatus{SceneDigest: previewDigest, Loaded: previewDigest != ""},
+			OnAir:   hostSlotStatus{SceneDigest: onAirDigest, Loaded: onAirDigest != ""},
+		})
+	})
+}
+
 func actionResultStatus(a attestation.Action) string {
 	if a == attestation.ActionTakeOnAir {
 		return "taken"

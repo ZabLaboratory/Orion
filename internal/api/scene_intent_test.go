@@ -351,3 +351,58 @@ func TestPostSceneIntent_RequiresOperatorRole(t *testing.T) {
 		t.Fatalf("expected 403 (operator gate), got %d", rec.Code)
 	}
 }
+
+func TestGetHostStatus_EmptyHost(t *testing.T) {
+	deps := SceneIntentDeps{Host: bluehost.NewHost()}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/host/status", nil)
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+
+	rec := httptest.NewRecorder()
+	getHostStatus(deps)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var resp hostStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Preview.Loaded || resp.OnAir.Loaded {
+		t.Fatalf("expected an empty host to report nothing loaded, got %+v", resp)
+	}
+}
+
+func TestGetHostStatus_ReflectsPreparedSlot(t *testing.T) {
+	host := bluehost.NewHost()
+	program := minimalProgram(t)
+	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	deps := SceneIntentDeps{Host: host}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/host/status", nil)
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+
+	rec := httptest.NewRecorder()
+	getHostStatus(deps)(rec, req)
+	var resp hostStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Preview.Loaded || resp.Preview.SceneDigest != "sha256:abc" {
+		t.Fatalf("expected preview loaded with sha256:abc, got %+v", resp.Preview)
+	}
+	if resp.OnAir.Loaded {
+		t.Fatalf("expected on_air empty, got %+v", resp.OnAir)
+	}
+}
+
+func TestGetHostStatus_RequiresOperatorRole(t *testing.T) {
+	deps := SceneIntentDeps{Host: bluehost.NewHost()}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/host/status", nil)
+	rec := httptest.NewRecorder()
+	getHostStatus(deps)(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+}
