@@ -16,7 +16,7 @@ type fakeSteps struct {
 	calls   int
 }
 
-func (f *fakeSteps) Step(slot bluehost.Slot) (StepResult, error) {
+func (f *fakeSteps) Step(_ bluehost.Slot) (StepResult, error) {
 	i := f.calls
 	f.calls++
 	if i < len(f.errs) && f.errs[i] != nil {

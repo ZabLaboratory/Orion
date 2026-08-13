@@ -27,21 +27,21 @@ type fakeWorkload struct {
 	body     json.RawMessage
 }
 
-func (f *fakeWorkload) AdmitAuthContext(ctx context.Context, ticket string) (*workload.AuthContextAdmission, error) {
+func (f *fakeWorkload) AdmitAuthContext(_ context.Context, ticket string) (*workload.AuthContextAdmission, error) {
 	if f.admitErr != nil {
 		return nil, f.admitErr
 	}
 	return &workload.AuthContextAdmission{AdmissionID: "adm-1", IntentID: "intent-1"}, nil
 }
 
-func (f *fakeWorkload) MintDelegation(ctx context.Context, admission *workload.AuthContextAdmission) (*workload.Delegation, error) {
+func (f *fakeWorkload) MintDelegation(_ context.Context, admission *workload.AuthContextAdmission) (*workload.Delegation, error) {
 	if f.mintErr != nil {
 		return nil, f.mintErr
 	}
 	return &workload.Delegation{JTI: "jti-1"}, nil
 }
 
-func (f *fakeWorkload) FetchCanvas(ctx context.Context, jti string) (*workload.CanvasArtifact, error) {
+func (f *fakeWorkload) FetchCanvas(_ context.Context, jti string) (*workload.CanvasArtifact, error) {
 	if f.fetchErr != nil {
 		return nil, f.fetchErr
 	}
@@ -75,7 +75,7 @@ func canvasEnvelope(program []byte) (json.RawMessage, string) {
 	return body, digest
 }
 
-func signedRef(t *testing.T, priv ed25519.PrivateKey, kid string, action attestation.Action, now time.Time, blueProgramDigest string) string {
+func signedRef(t *testing.T, priv ed25519.PrivateKey, kid string, _ attestation.Action, now time.Time, blueProgramDigest string) string {
 	t.Helper()
 	header := map[string]any{"alg": "EdDSA", "kid": kid, "typ": "zabcanvas-resolved-scene-ref+jws"}
 	payload := map[string]any{

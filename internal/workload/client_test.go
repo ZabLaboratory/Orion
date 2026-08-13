@@ -64,7 +64,7 @@ func TestAdmitAuthContext_Success(t *testing.T) {
 }
 
 func TestMintDelegation_KnownCode(t *testing.T) {
-	client, srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, srv := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": string(CodeDelegationAlreadyUsed)})
 	})
@@ -84,7 +84,7 @@ func TestMintDelegation_KnownCode(t *testing.T) {
 }
 
 func TestMintDelegation_UnknownCodeFailsClosed(t *testing.T) {
-	client, srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, srv := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "SOMETHING_NEW"})
 	})
@@ -102,7 +102,7 @@ func TestMintDelegation_UnknownCodeFailsClosed(t *testing.T) {
 
 func TestFetchCanvas_NeverRetriedOnPending(t *testing.T) {
 	calls := 0
-	client, srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+	client, srv := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		w.WriteHeader(http.StatusConflict)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": string(CodeDelegationReconciliationPending)})
@@ -139,11 +139,8 @@ func TestReconcile_Success(t *testing.T) {
 
 func TestFingerprintCert(t *testing.T) {
 	got := FingerprintCert([]byte("hello"))
-	want := "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-	if got == "" || got == want {
-		// Just assert determinism/non-empty; the exact SHA-256 of "hello"
-		// starts with 2cf24d..., checked loosely to avoid a brittle full
-		// hard-coded digest mismatch across encodings.
+	if got != FingerprintCert([]byte("hello")) {
+		t.Fatal("expected FingerprintCert to be deterministic")
 	}
 	if len(got) != 64 {
 		t.Fatalf("expected 64 hex chars, got %d", len(got))
