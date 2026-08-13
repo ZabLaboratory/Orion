@@ -12,11 +12,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/attestation"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/bluewire"
+	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
 
@@ -27,21 +30,21 @@ type fakeWorkload struct {
 	body     json.RawMessage
 }
 
-func (f *fakeWorkload) AdmitAuthContext(_ context.Context, ticket string) (*workload.AuthContextAdmission, error) {
+func (f *fakeWorkload) AdmitAuthContext(_ context.Context, _ string) (*workload.AuthContextAdmission, error) {
 	if f.admitErr != nil {
 		return nil, f.admitErr
 	}
 	return &workload.AuthContextAdmission{AdmissionID: "adm-1", IntentID: "intent-1"}, nil
 }
 
-func (f *fakeWorkload) MintDelegation(_ context.Context, admission *workload.AuthContextAdmission) (*workload.Delegation, error) {
+func (f *fakeWorkload) MintDelegation(_ context.Context, _ *workload.AuthContextAdmission) (*workload.Delegation, error) {
 	if f.mintErr != nil {
 		return nil, f.mintErr
 	}
 	return &workload.Delegation{JTI: "jti-1"}, nil
 }
 
-func (f *fakeWorkload) FetchCanvas(_ context.Context, jti string) (*workload.CanvasArtifact, error) {
+func (f *fakeWorkload) FetchCanvas(_ context.Context, _ string) (*workload.CanvasArtifact, error) {
 	if f.fetchErr != nil {
 		return nil, f.fetchErr
 	}
@@ -252,6 +255,89 @@ func TestPostSceneIntent_RejectsArtifactDigestMismatch(t *testing.T) {
 	postSceneIntent(deps)(rec, req)
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502 (digest mismatch), got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+type recordingMirror struct {
+	mu        sync.Mutex
+	forwarded int
+}
+
+func (m *recordingMirror) Forward(any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.forwarded++
+}
+
+func (m *recordingMirror) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.forwarded
+}
+
+// TestPostSceneIntent_BridgeFullLifecycle proves the bridge Conduit asked
+// for: PreparePreview starts a bridge forwarding onto the resolved
+// mirror, and releaseSlot stops it cleanly (no further forwards, no
+// panic on the subsequent bluehost.Release).
+func TestPostSceneIntent_BridgeFullLifecycle(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	envelope, digest := canvasEnvelope(program)
+	now := time.Now()
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+
+	mirror := &recordingMirror{}
+	deps := SceneIntentDeps{
+		Trust:              attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix:      "scenes/",
+		OwnerID:            "owner-1",
+		TenantID:           "tenant-1",
+		Workload:           &fakeWorkload{body: envelope},
+		Host:               bluehost.NewHost(),
+		MirrorFor:          func(string) runtime.SceneMirror { return mirror },
+		Bridges:            bluewire.NewRegistry(),
+		ProjectionInterval: 5 * time.Millisecond,
+	}
+
+	body, _ := json.Marshal(sceneIntentRequest{
+		IntentID: "intent-1", StreamID: "stream-1", Target: "preview",
+		Action: string(attestation.ActionPreparePreview), ResolvedSceneRef: ref,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+	req.Header.Set(authContextHeader, "opaque-ticket")
+
+	rec := httptest.NewRecorder()
+	postSceneIntent(deps)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if !deps.Bridges.Running(bluehost.SlotPreview) {
+		t.Fatal("expected the bridge to be running after a successful prepare-preview")
+	}
+
+	// The minimal fixture's on-start entrypoint produces no leaf output,
+	// so Bridge.StepOnce's empty-projection no-op (mirroring the legacy
+	// zero-patch-delta drop) means mirror.Forward is never actually
+	// called here — this lifecycle test asserts the START/STOP wiring
+	// itself (Running before, not Running after), not payload delivery,
+	// which internal/bluewire's own tests already cover with a
+	// non-empty-output fake.
+	time.Sleep(30 * time.Millisecond)
+
+	if err := releaseSlot(deps, bluehost.SlotPreview, "test-release"); err != nil {
+		t.Fatalf("releaseSlot: %v", err)
+	}
+	if deps.Bridges.Running(bluehost.SlotPreview) {
+		t.Fatal("expected the bridge to be stopped after releaseSlot")
+	}
+
+	countAtRelease := mirror.count()
+	time.Sleep(30 * time.Millisecond)
+	if mirror.count() != countAtRelease {
+		t.Fatalf("expected no further forwards after release, count went from %d to %d", countAtRelease, mirror.count())
 	}
 }
 

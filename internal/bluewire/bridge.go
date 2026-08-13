@@ -49,13 +49,15 @@ func (a hostAdapter) Step(slot bluehost.Slot) (StepResult, error) {
 // Bridge steps one (host, slot) pair on an interval and forwards every
 // non-empty projection onto mirror as a protocol.Delta.
 type Bridge struct {
-	steps       StepSource
-	slot        bluehost.Slot
-	mirror      runtime.SceneMirror
-	sceneID     string
-	sceneDigest string
-	instanceID  string
-	target      blueproject.Target
+	steps          StepSource
+	slot           bluehost.Slot
+	mirror         runtime.SceneMirror
+	sceneID        string
+	sceneDigest    string
+	instanceID     string
+	target         blueproject.Target
+	renderRevision string
+	correlationID  string
 }
 
 // NewBridge wires host's slot onto mirror. target should be
@@ -65,15 +67,20 @@ type Bridge struct {
 // name, since the two vocabularies (Host slot vs. §6.7 target) are
 // deliberately kept separate (bluehost translates Orion's own
 // preview/on-air words; blueproject speaks the ADR's wire vocabulary).
-func NewBridge(host *bluehost.Host, slot bluehost.Slot, mirror runtime.SceneMirror, sceneID, sceneDigest, instanceID string, target blueproject.Target) *Bridge {
+// renderRevision/correlationID are stamped on every Projection this
+// bridge produces — the caller's revision_id/intent_id, not derived
+// here.
+func NewBridge(host *bluehost.Host, slot bluehost.Slot, mirror runtime.SceneMirror, sceneID, sceneDigest, instanceID string, target blueproject.Target, renderRevision, correlationID string) *Bridge {
 	return &Bridge{
-		steps:       hostAdapter{host: host},
-		slot:        slot,
-		mirror:      mirror,
-		sceneID:     sceneID,
-		sceneDigest: sceneDigest,
-		instanceID:  instanceID,
-		target:      target,
+		steps:          hostAdapter{host: host},
+		slot:           slot,
+		mirror:         mirror,
+		sceneID:        sceneID,
+		sceneDigest:    sceneDigest,
+		instanceID:     instanceID,
+		target:         target,
+		renderRevision: renderRevision,
+		correlationID:  correlationID,
 	}
 }
 
@@ -87,7 +94,7 @@ func (b *Bridge) StepOnce() error {
 	}
 	proj := blueproject.Project(
 		blueproject.StepOutputs{RuntimeSequence: result.RuntimeSequence, Outputs: result.Outputs},
-		b.sceneDigest, b.instanceID, "", "", b.target,
+		b.sceneDigest, b.instanceID, b.renderRevision, b.correlationID, b.target,
 	)
 	if len(proj.Patches) == 0 {
 		return nil

@@ -15,10 +15,15 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/attestation"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/blueproject"
+	"github.com/ZabLaboratory/Orion/internal/bluewire"
+	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
 
@@ -41,6 +46,23 @@ type SceneIntentDeps struct {
 	TenantID      string
 	Workload      WorkloadPortal
 	Host          *bluehost.Host
+
+	// MirrorFor resolves the LSDP scene pairing a bluewire.Bridge forwards
+	// onto, for a given scene_id — normally lsdp.Wire.MirrorFor. Nil ⇒ no
+	// bridge is ever started: Prepare/Take still run, the handler still
+	// returns its typed result, but nothing reaches Solar over this path
+	// yet (the pre-B3-R6-12-ORION-PROJECTION posture).
+	MirrorFor func(sceneID string) runtime.SceneMirror
+	// Bridges tracks the running bridge per bluehost.Slot so a superseding
+	// Take (or a re-Prepare) stops the previous one instead of leaking a
+	// goroutine stepping an instance the Host has already released.
+	// Required whenever MirrorFor is set; built once by cmd/orion via
+	// bluewire.NewRegistry().
+	Bridges *bluewire.Registry
+	// ProjectionInterval paces the bridge's Step loop. <= 0 defaults to
+	// 100ms.
+	ProjectionInterval time.Duration
+	Logger             *slog.Logger
 }
 
 // sceneIntentRequest is `orion.scene-intent.v1` (§6.4). ResolvedSceneRef
@@ -163,6 +185,8 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 
+		startBridge(deps, slot, action, claims, req.IntentID)
+
 		writeJSON(w, http.StatusOK, sceneIntentResponse{
 			Status:     actionResultStatus(action),
 			IntentID:   req.IntentID,
@@ -206,6 +230,55 @@ func decodeAndVerifyProgram(body json.RawMessage, expectedDigest string) ([]byte
 		return nil, errors.New("scene-intent: computed program digest does not match the attested claim")
 	}
 	return program, nil
+}
+
+const defaultProjectionInterval = 100 * time.Millisecond
+
+// startBridge pairs the just-Prepared/Taken bluehost instance with the
+// LSDP scene deps.MirrorFor resolves for claims.SceneID, and starts a
+// bluewire.Bridge stepping it. A nil MirrorFor or Bridges leaves this a
+// no-op — Prepare/Take already succeeded and the typed response is
+// unaffected either way (the pre-B3-R6-12-ORION-PROJECTION posture).
+// deps.Bridges.Start stops whatever bridge previously owned slot before
+// starting this one, so a Take superseding the on-air instance never
+// leaves a goroutine stepping an instance bluehost.Host has released.
+func startBridge(deps SceneIntentDeps, slot bluehost.Slot, action attestation.Action, claims *attestation.Claims, intentID string) {
+	if deps.MirrorFor == nil || deps.Bridges == nil {
+		return
+	}
+	mirror := deps.MirrorFor(claims.SceneID)
+	if mirror == nil {
+		return
+	}
+	target := blueproject.TargetPreview
+	if action == attestation.ActionTakeOnAir {
+		target = blueproject.TargetProgram
+	}
+	bridge := bluewire.NewBridge(deps.Host, slot, mirror, claims.SceneID, claims.SceneDigest, claims.RefID, target, claims.RevisionID, intentID)
+	interval := deps.ProjectionInterval
+	if interval <= 0 {
+		interval = defaultProjectionInterval
+	}
+	logger := deps.Logger
+	deps.Bridges.Start(slot, bridge, interval, func(err error) {
+		if logger != nil {
+			logger.Warn("bluewire bridge step failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
+		}
+	})
+}
+
+// releaseSlot stops slot's bridge (if any) BEFORE releasing the
+// bluehost instance, so the bridge goroutine never observes
+// bluehost.ErrNotLoaded from a Host.Release that already ran — the
+// "arrêt propre du Bridge au Release" the #331 checkpoint requires.
+// Not wired to any HTTP route yet (no release action exists in
+// sceneIntentRequest today); exercised directly by its own lifecycle
+// test until a release route is added.
+func releaseSlot(deps SceneIntentDeps, slot bluehost.Slot, reason string) error {
+	if deps.Bridges != nil {
+		deps.Bridges.Stop(slot)
+	}
+	return deps.Host.Release(slot, reason)
 }
 
 func actionResultStatus(a attestation.Action) string {
