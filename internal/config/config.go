@@ -211,6 +211,46 @@ type Config struct {
 	// LocalAuthUser is the cosmetic user id stamped on the local operator
 	// Identity (ORION_LOCAL_AUTH_USER). Optional; role is what gates.
 	LocalAuthUser string
+
+	// --- stateless-cutover workload surface (#331, ADR-BLUE-012 §4.7/§6.2) ---
+	// All optional and dark by default: cmd/orion wires SceneIntentDeps
+	// only when WorkloadZabGateURL AND the mTLS cert/key AND at least one
+	// Canvas trust key are present. Absent ⇒ POST /api/v1/host/scene-intent
+	// is not registered — byte-for-byte the pre-#331 boot.
+	//
+	// WorkloadZabGateURL is the base URL of ZabGate's internal workload
+	// surface (ORION_WORKLOAD_ZABGATE_URL), e.g. https://zabgate.internal.
+	WorkloadZabGateURL string
+	// WorkloadClientCertPath / WorkloadClientKeyPath are the PEM files
+	// backing Orion's short-lived mTLS workload identity
+	// (ORION_WORKLOAD_CLIENT_CERT_PATH / ORION_WORKLOAD_CLIENT_KEY_PATH).
+	// The private key is generated and rotated by the deployment
+	// substrate (§4.7) — Orion only reads the files, never mints them.
+	WorkloadClientCertPath string
+	WorkloadClientKeyPath  string
+	// WorkloadCAPath pins the trust anchor for ZabGate's server
+	// certificate (ORION_WORKLOAD_CA_PATH). Required alongside the client
+	// cert — no default system trust store is consulted for this leg.
+	WorkloadCAPath string
+	// WorkloadSAN is Orion's own SPIFFE SAN as provisioned by the
+	// substrate (ORION_WORKLOAD_SAN,
+	// spiffe://zab/workload/orion/<environment>/<instance_id>, §4.7),
+	// surfaced on every workload call as x-workload-san.
+	WorkloadSAN string
+
+	// CanvasTrustPath points to a JSON file `{"<kid>":"<base64 Ed25519
+	// pubkey>", ...}` — ZabCanvas's published resolved-scene-ref signing
+	// keys (ORION_CANVAS_TRUST_PATH, §6.2). Rotation is a file update, no
+	// URL is ever consulted from inside an attestation.
+	CanvasTrustPath string
+	// CanvasLocatorPrefix confines every accepted canvas_locator
+	// (ORION_CANVAS_LOCATOR_PREFIX, §6.2), e.g. "scenes/".
+	CanvasLocatorPrefix string
+	// OwnerID / TenantID are the Canvas domain-of-authority this Orion
+	// instance serves (ORION_OWNER_ID / ORION_TENANT_ID, §6.2) — every
+	// accepted attestation must carry exactly these.
+	OwnerID  string
+	TenantID string
 }
 
 // Load reads env vars, applies defaults, and validates required fields.
@@ -241,6 +281,16 @@ func Load() (Config, error) {
 		ValidationMirrorRoot: getenv("ORION_VALIDATION_MIRROR_ROOT", ""),
 		HTTPPollUserAgent:    getenv("ORION_HTTP_POLL_USER_AGENT", "orion-poller/1.0"),
 		LogLevel:             strings.ToLower(getenv("ORION_LOG_LEVEL", "info")),
+
+		WorkloadZabGateURL:     strings.TrimRight(getenv("ORION_WORKLOAD_ZABGATE_URL", ""), "/"),
+		WorkloadClientCertPath: getenv("ORION_WORKLOAD_CLIENT_CERT_PATH", ""),
+		WorkloadClientKeyPath:  getenv("ORION_WORKLOAD_CLIENT_KEY_PATH", ""),
+		WorkloadCAPath:         getenv("ORION_WORKLOAD_CA_PATH", ""),
+		WorkloadSAN:            getenv("ORION_WORKLOAD_SAN", ""),
+		CanvasTrustPath:        getenv("ORION_CANVAS_TRUST_PATH", ""),
+		CanvasLocatorPrefix:    getenv("ORION_CANVAS_LOCATOR_PREFIX", "scenes/"),
+		OwnerID:                getenv("ORION_OWNER_ID", ""),
+		TenantID:               getenv("ORION_TENANT_ID", ""),
 	}
 
 	switch strings.ToLower(getenv("ORION_LOG_FORMAT", "json")) {

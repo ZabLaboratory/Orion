@@ -390,6 +390,18 @@ func run() error {
 		AuthSource: authSource,
 	}
 
+	// Additive stateless-cutover surface (#331, ADR-BLUE-012). Dark by
+	// default (nil) unless every ORION_WORKLOAD_*/ORION_CANVAS_TRUST_PATH
+	// var is set — see cmd/orion/scene_intent_wiring.go. A config error
+	// here is NOT a boot failure: the legacy path stays fully live either
+	// way (Phase A of the #331 cutover plan).
+	sceneIntent, sierr := wireSceneIntent(cfg)
+	if sierr != nil {
+		logger.Error("scene-intent surface not wired; legacy path unaffected", "err", sierr)
+	} else if sceneIntent != nil {
+		logger.Info("scene-intent surface wired", "workload_zabgate_url", cfg.WorkloadZabGateURL)
+	}
+
 	// Public mux: HTTP + WS surface routed through ZabGate.
 	publicMux := http.NewServeMux()
 	api.RegisterPublic(publicMux, api.PublicDeps{
@@ -414,6 +426,7 @@ func run() error {
 		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway + live
 		// service token as the db.query client; proxies `_schema` only.
 		SchemaClient: effects.NewSchemaClientWithTokenFunc(cfg.ZabGateURL, serviceTokens.Token, nil),
+		SceneIntent:  sceneIntent,
 	})
 
 	// Internal-only HTTP surface for prom scrape + dev probes.
