@@ -159,11 +159,13 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// the preview scene). Operator-gated; degrade when Preview is nil.
 	mux.HandleFunc("POST /api/v1/show/preview-active-scene", postPreviewActiveScene(deps))
 	mux.HandleFunc("GET /api/v1/show/preview-snapshot", getPreviewSnapshot(deps))
-	// Stream-level Blue rules (ADR 009 §3.1, issue #154): operator-gated
-	// promotion/demotion of a roster scene into an always-on rule.
-	mux.HandleFunc("GET /api/v1/show/stream-rules", getStreamRules(deps))
-	mux.HandleFunc("POST /api/v1/show/stream-rules", postStreamRule(deps))
-	mux.HandleFunc("DELETE /api/v1/show/stream-rules/{id}", deleteStreamRule(deps))
+	// Stream-level Blue rules (ADR 009 §3.1, issue #154) — RETIRED (#15,
+	// #331): porteur confirmed no bluehost N-instance model is coming;
+	// same documented-retirement posture as state_snapshot (ADR-BLUE-012
+	// invariant #8). The handlers (internal/api/stream_rules.go) and the
+	// underlying runtime.Show/store machinery stay for now — this is the
+	// HTTP surface retirement only, so cockpit/operator (which read an
+	// empty rule set gracefully) are unaffected.
 
 	// DB catalog surface (ADR Blue 008 §3.4, issue #211): read-only
 	// introspection of whitelisted datasources for cockpit selectors.
@@ -187,7 +189,12 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/cockpit/contracts", getCockpitContracts(deps))
 
 	mux.HandleFunc("GET /api/v1/assets/{id}", getAsset(deps))
-	mux.HandleFunc("GET /api/v1/credentials/{id}/stream-key", getStreamKey(deps))
+	// GET /api/v1/credentials/{id}/stream-key — RETIRED (#15, #331): porteur
+	// confirmed Orion no longer owns any part of the stream lifecycle,
+	// Pulsar does. Prism already fetches the Twitch stream key directly
+	// from Quasar via ZabGate (Prism/src/main/broadcast-engine.ts:6675,
+	// `${gatewayUrl}/quasar/api/v1/credentials/{id}/stream-key`) — this
+	// Orion proxy was dead code in the real client flow before removal.
 
 	// Stateless-cutover surface (#331, ADR-BLUE-012 §4.4/§6.4) — additive,
 	// registered only once cmd/orion provisions Trust/Workload/Host.
