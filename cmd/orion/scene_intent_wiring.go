@@ -13,6 +13,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/attestation"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/config"
+	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
 
@@ -81,6 +82,8 @@ func wireSceneIntent(cfg config.Config) (*api.SceneIntentDeps, error) {
 		return nil, fmt.Errorf("scene-intent: %s carries no trust keys", cfg.CanvasTrustPath)
 	}
 
+	httpEgressAllowed := len(cfg.HTTPEgressAllowHosts) > 0
+
 	return &api.SceneIntentDeps{
 		Trust:         trust,
 		LocatorPrefix: cfg.CanvasLocatorPrefix,
@@ -88,6 +91,8 @@ func wireSceneIntent(cfg config.Config) (*api.SceneIntentDeps, error) {
 		TenantID:      cfg.TenantID,
 		Workload:      wc,
 		Host:          bluehost.NewHost(),
+		Providers:     providers.Registry(),
+		Policy:        providers.Policy(httpEgressAllowed),
 	}, nil
 }
 

@@ -21,6 +21,8 @@ import (
 	"sync"
 	"time"
 
+	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
+
 	"github.com/ZabLaboratory/Orion/internal/attestation"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/blueproject"
@@ -48,6 +50,18 @@ type SceneIntentDeps struct {
 	TenantID      string
 	Workload      WorkloadPortal
 	Host          *bluehost.Host
+
+	// Providers is the Zab capability-provider catalogue (internal/providers
+	// .Registry()) passed to bluehost.Host.Prepare/Take so a program
+	// declaring `requires` can be admitted by the portable runtime's
+	// checkProviders — nil means every capability-requiring program is
+	// refused CAPABILITY_UNAVAILABLE (only display-only programs with no
+	// `requires` succeed), same posture as before this field existed.
+	Providers []map[string]any
+	// Policy is the host-side CapabilityPolicy admission gate
+	// (internal/providers.Policy(...)) — nil means the portable runtime's
+	// own default-allow posture applies to every declared provider.
+	Policy blueruntime.CapabilityPolicy
 
 	// MirrorFor resolves the LSDP scene pairing a bluewire.Bridge forwards
 	// onto, for a given scene_id — normally lsdp.Wire.MirrorFor. Nil ⇒ no
@@ -240,14 +254,14 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		var opErr error
 		switch action {
 		case attestation.ActionPreparePreview:
-			opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneDigest, program, nil, nil)
+			opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneDigest, program, deps.Providers, deps.Policy)
 			if errors.Is(opErr, bluehost.ErrAlreadyLoaded) {
 				if deps.Host.Digest(slot) == claims.SceneDigest {
 					opErr = nil // idempotent re-prepare of the same digest
 				}
 			}
 		case attestation.ActionTakeOnAir:
-			opErr = deps.Host.Take(claims.RefID, claims.SceneDigest, program, nil, nil)
+			opErr = deps.Host.Take(claims.RefID, claims.SceneDigest, program, deps.Providers, deps.Policy)
 		}
 		if opErr != nil {
 			writeJSON(w, http.StatusInternalServerError, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "HOST_PREPARE_FAILED"})
