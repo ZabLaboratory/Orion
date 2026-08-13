@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -55,7 +57,25 @@ func minimalProgram(t *testing.T) json.RawMessage {
 	return data
 }
 
-func signedRef(t *testing.T, priv ed25519.PrivateKey, kid string, action attestation.Action, now time.Time) string {
+// sha256Digest formats the `sha256:<hex>` digest string §6.2 requires.
+func sha256Digest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// canvasEnvelope builds the `zabcanvas.resolved-scene.v1` slice
+// decodeAndVerifyProgram consumes: the program bytes base64-encoded
+// alongside their own digest, self-consistent by construction.
+func canvasEnvelope(program []byte) (json.RawMessage, string) {
+	digest := sha256Digest(program)
+	body, _ := json.Marshal(resolvedSceneEnvelope{
+		BlueProgram:       base64.StdEncoding.EncodeToString(program),
+		BlueProgramDigest: digest,
+	})
+	return body, digest
+}
+
+func signedRef(t *testing.T, priv ed25519.PrivateKey, kid string, action attestation.Action, now time.Time, blueProgramDigest string) string {
 	t.Helper()
 	header := map[string]any{"alg": "EdDSA", "kid": kid, "typ": "zabcanvas-resolved-scene-ref+jws"}
 	payload := map[string]any{
@@ -73,7 +93,7 @@ func signedRef(t *testing.T, priv ed25519.PrivateKey, kid string, action attesta
 		"revision_id":              "rev-1",
 		"scene_digest":             "sha256:" + strings.Repeat("a", 64),
 		"artifact_set_digest":      "sha256:" + strings.Repeat("b", 64),
-		"blue_program_digest":      "sha256:" + strings.Repeat("c", 64),
+		"blue_program_digest":      blueProgramDigest,
 		"readiness_attestation_id": "ready-1",
 		"readiness_digest":         "sha256:" + strings.Repeat("d", 64),
 		"readiness_expires_at":     now.Add(time.Hour).Unix(),
@@ -94,15 +114,16 @@ func signedRef(t *testing.T, priv ed25519.PrivateKey, kid string, action attesta
 func TestPostSceneIntent_PreparePreview_Success(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	program := minimalProgram(t)
+	envelope, digest := canvasEnvelope(program)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
 		LocatorPrefix: "scenes/",
 		OwnerID:       "owner-1",
 		TenantID:      "tenant-1",
-		Workload:      &fakeWorkload{body: program},
+		Workload:      &fakeWorkload{body: envelope},
 		Host:          bluehost.NewHost(),
 	}
 
@@ -151,7 +172,7 @@ func TestPostSceneIntent_RejectsBadAttestation(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil) // key not in trust set
 	otherPub, _, _ := ed25519.GenerateKey(nil)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "sha256:"+strings.Repeat("c", 64))
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": otherPub},
@@ -179,7 +200,7 @@ func TestPostSceneIntent_RejectsBadAttestation(t *testing.T) {
 func TestPostSceneIntent_WorkloadRefusalPropagates(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "sha256:"+strings.Repeat("c", 64))
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
@@ -201,6 +222,36 @@ func TestPostSceneIntent_WorkloadRefusalPropagates(t *testing.T) {
 	postSceneIntent(deps)(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPostSceneIntent_RejectsArtifactDigestMismatch(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	_, digest := canvasEnvelope(program)
+	now := time.Now()
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+
+	deps := SceneIntentDeps{
+		Trust:         attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix: "scenes/",
+		OwnerID:       "owner-1",
+		TenantID:      "tenant-1",
+		Workload:      &fakeWorkload{body: json.RawMessage(`{"blue_program":"` + base64.StdEncoding.EncodeToString([]byte("tampered-bytes")) + `","blue_program_digest":"` + digest + `"}`)},
+		Host:          bluehost.NewHost(),
+	}
+	body, _ := json.Marshal(sceneIntentRequest{
+		IntentID: "intent-1", StreamID: "stream-1", Action: string(attestation.ActionPreparePreview), ResolvedSceneRef: ref,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+	req.Header.Set(authContextHeader, "opaque-ticket")
+
+	rec := httptest.NewRecorder()
+	postSceneIntent(deps)(rec, req)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 (digest mismatch), got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

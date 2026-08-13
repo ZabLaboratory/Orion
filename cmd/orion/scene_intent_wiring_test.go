@@ -157,3 +157,11 @@ func TestWireSceneIntent_MissingOwnerTenantFailsClosed(t *testing.T) {
 		t.Fatal("expected error for missing owner/tenant")
 	}
 }
+
+func TestWireSceneIntent_SingleVarSetIsMisconfigurationNotDark(t *testing.T) {
+	cfg := config.Config{WorkloadZabGateURL: "https://zabgate.internal"}
+	_, err := wireSceneIntent(cfg)
+	if err == nil {
+		t.Fatal("expected an error — one var set is a misconfiguration, not the dark default")
+	}
+}

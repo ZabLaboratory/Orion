@@ -17,22 +17,37 @@ import (
 )
 
 // wireSceneIntent builds the additive stateless-cutover surface (#331,
-// ADR-BLUE-012). It returns (nil, nil) whenever the feature is not
-// configured — WorkloadZabGateURL, the mTLS cert/key/CA, and at least
-// one Canvas trust key are ALL required; any one missing leaves the
-// route unregistered and every other boot behaviour byte-for-byte
-// unchanged (Phase A of the #331 cutover plan posted on the issue).
+// ADR-BLUE-012). It returns (nil, nil) only when NONE of the workload
+// vars are set — the intentional, fully-dark default. If ANY one of
+// them is set but not every required one, that is an operator mistake
+// (a half-finished rollout, a typo'd env name), not "feature off" — it
+// returns an error instead of silently staying dark, so a misconfigured
+// deploy is visible at boot rather than a route that quietly never
+// registers. Phase A of the #331 cutover plan posted on the issue.
 func wireSceneIntent(cfg config.Config) (*api.SceneIntentDeps, error) {
-	if cfg.WorkloadZabGateURL == "" ||
-		cfg.WorkloadClientCertPath == "" || cfg.WorkloadClientKeyPath == "" || cfg.WorkloadCAPath == "" ||
-		cfg.CanvasTrustPath == "" {
-		return nil, nil
+	required := map[string]string{
+		"ORION_WORKLOAD_ZABGATE_URL":      cfg.WorkloadZabGateURL,
+		"ORION_WORKLOAD_CLIENT_CERT_PATH": cfg.WorkloadClientCertPath,
+		"ORION_WORKLOAD_CLIENT_KEY_PATH":  cfg.WorkloadClientKeyPath,
+		"ORION_WORKLOAD_CA_PATH":          cfg.WorkloadCAPath,
+		"ORION_CANVAS_TRUST_PATH":         cfg.CanvasTrustPath,
+		"ORION_WORKLOAD_SAN":              cfg.WorkloadSAN,
+		"ORION_OWNER_ID":                  cfg.OwnerID,
+		"ORION_TENANT_ID":                 cfg.TenantID,
 	}
-	if cfg.WorkloadSAN == "" {
-		return nil, fmt.Errorf("scene-intent: ORION_WORKLOAD_SAN is required once the workload surface is configured")
+	present, missing := 0, []string{}
+	for name, v := range required {
+		if v == "" {
+			missing = append(missing, name)
+		} else {
+			present++
+		}
 	}
-	if cfg.OwnerID == "" || cfg.TenantID == "" {
-		return nil, fmt.Errorf("scene-intent: ORION_OWNER_ID and ORION_TENANT_ID are required once the workload surface is configured")
+	if present == 0 {
+		return nil, nil // fully dark: intentional feature-off
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("scene-intent: partially configured (%d/%d vars set) — missing %v; set all of them or none", present, len(required), missing)
 	}
 
 	cert, err := tls.LoadX509KeyPair(cfg.WorkloadClientCertPath, cfg.WorkloadClientKeyPath)

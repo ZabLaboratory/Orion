@@ -10,6 +10,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -130,13 +133,17 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 
-		// artifact.Body is `zabcanvas.resolved-scene.v1` (§6.3): among
-		// other pinned artefacts it carries the blue.program.v1 bytes
-		// blue-runtime-go loads directly. This slice hosts exactly one
-		// scene's program; the full envelope parse (LSML bundle, digest
-		// cross-checks against claims.*Digest) is the remaining wiring
-		// work, not yet implemented here — see AGENT_REPORT.
-		program := artifact.Body
+		// artifact.Body is `zabcanvas.resolved-scene.v1` (§6.3). This slice
+		// consumes only the pinned blue_program bytes it carries; the LSML
+		// render-bundle / projection resources are the Phase-B WS-wiring
+		// scope Conduit is scoping separately. Every byte is verified
+		// against claims.BlueProgramDigest BEFORE Load — §6.2: "Orion
+		// revérifie tous les digests sur les bytes reçus avant Load."
+		program, err := decodeAndVerifyProgram(artifact.Body, claims.BlueProgramDigest)
+		if err != nil {
+			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
+			return
+		}
 
 		slot := bluehost.SlotPreview
 		var opErr error
@@ -163,6 +170,42 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			RevisionID: claims.RevisionID,
 		})
 	})
+}
+
+// resolvedSceneEnvelope is the slice of `zabcanvas.resolved-scene.v1`
+// (§6.3) this handler consumes: the pinned blue.program.v1 bytes,
+// base64-encoded, plus the digest Canvas computed over them at
+// publication. Every other §6.3 field (LSML render-bundle, projection
+// resources, full attestation echo) is out of this handler's scope.
+type resolvedSceneEnvelope struct {
+	BlueProgram       string `json:"blue_program"`
+	BlueProgramDigest string `json:"blue_program_digest"`
+}
+
+// decodeAndVerifyProgram parses the Canvas artifact envelope, decodes
+// the pinned program bytes, and cross-checks BOTH the envelope's own
+// claimed digest and the freshly computed sha256 of the received bytes
+// against expectedDigest (claims.BlueProgramDigest, from the SIGNED
+// attestation — the only digest actually trusted). A mismatch anywhere
+// in this chain fails closed: Orion never Loads bytes it cannot prove
+// match what ZabCanvas attested to sign.
+func decodeAndVerifyProgram(body json.RawMessage, expectedDigest string) ([]byte, error) {
+	var envelope resolvedSceneEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.BlueProgramDigest != expectedDigest {
+		return nil, errors.New("scene-intent: envelope blue_program_digest does not match the attested claim")
+	}
+	program, err := base64.StdEncoding.DecodeString(envelope.BlueProgram)
+	if err != nil {
+		return nil, err
+	}
+	sum := sha256.Sum256(program)
+	if "sha256:"+hex.EncodeToString(sum[:]) != expectedDigest {
+		return nil, errors.New("scene-intent: computed program digest does not match the attested claim")
+	}
+	return program, nil
 }
 
 func actionResultStatus(a attestation.Action) string {
