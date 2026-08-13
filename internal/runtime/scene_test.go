@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
+	"sync"
 	"testing"
 	"time"
 
@@ -419,4 +420,58 @@ func TestShow_SwitchMigratesLiveSubsAndEmitsSceneChanged(t *testing.T) {
 			t.Fatalf("timed out, gotChanged=%v gotSnap=%v", gotChanged, gotSnap)
 		}
 	}
+}
+
+// TestScene_ConcurrentCloseDuringFanoutNeverPanics regression-tests the
+// #331 CI finding (run 31729211951, TestOperator_CallRuleSelectorFires):
+// fanout snapshots the subscriber list outside subsMu, so a concurrent
+// Subscription.Close can run between that snapshot and fanout's send —
+// without Subscription.mu serializing trySend/drainAndSeed against
+// Close's close(Out), this is a real send-on-a-closing-channel race
+// (panics), not merely a -race false positive. A tiny buffer (size 1)
+// maximizes the chance fanout hits the full-queue collapse path, the
+// other guarded call site.
+func TestScene_ConcurrentCloseDuringFanoutNeverPanics(t *testing.T) {
+	scene := passthroughScene(t, "scene-race")
+	scene.SeedOnAir(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go scene.Run(ctx)
+	t.Cleanup(scene.Stop)
+
+	const subscribers = 20
+	subs := make([]*Subscription, subscribers)
+	for i := range subs {
+		sub, _ := scene.Subscribe(1)
+		subs[i] = sub
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			scene.Input(InputMsg{
+				Path: "score.team_a", Value: json.RawMessage(`14`),
+				Source: "operator:u", ClientMsgID: "race",
+			})
+		}
+	}()
+
+	var wg sync.WaitGroup
+	for _, sub := range subs {
+		wg.Add(1)
+		go func(s *Subscription) {
+			defer wg.Done()
+			// Drain a little so some sends succeed via trySend before
+			// this subscriber closes concurrently with the emitter.
+			select {
+			case <-s.Out:
+			default:
+			}
+			s.Close()
+		}(sub)
+	}
+
+	<-done
+	wg.Wait()
 }

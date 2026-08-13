@@ -97,6 +97,15 @@ type Subscription struct {
 	Out    chan SubscriberMsg
 	closed atomic.Bool
 	scene  *Scene
+	// mu serializes Close's close(Out) against every send on Out. fanout
+	// (and Show's scene-switch migration) take a snapshot of the
+	// subscriber list OUTSIDE any per-subscription lock, so a concurrent
+	// Close can run between that snapshot and a send already headed for
+	// this subscription — a real send-on-a-closing-channel race, not a
+	// -race false positive (caught in CI on #331, TestOperator_
+	// CallRuleSelectorFires). Every direct Out send/drain goes through
+	// trySend/drainAndSeed below instead of touching the channel raw.
+	mu sync.Mutex
 }
 
 // Close drains the subscriber and removes it from the scene. Idempotent.
@@ -107,7 +116,54 @@ func (s *Subscription) Close() {
 	if s.scene != nil {
 		s.scene.unsubscribe(s)
 	}
+	s.mu.Lock()
 	close(s.Out)
+	s.mu.Unlock()
+}
+
+// trySend attempts a non-blocking delivery to Out, mutually exclusive
+// with Close. Returns false if the subscription is already closed
+// (never touches Out) or its queue is full (Out untouched, caller
+// decides — e.g. collapse to a fresh snapshot).
+func (s *Subscription) trySend(msg SubscriberMsg) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed.Load() {
+		return false
+	}
+	select {
+	case s.Out <- msg:
+		return true
+	default:
+		return false
+	}
+}
+
+// drainAndSeed empties Out then delivers snap, waiting up to timeout —
+// same mutual exclusion with Close as trySend. Returns false if the
+// subscription was already closed (Out untouched) or the send timed out
+// (the caller then closes the stuck subscriber, outside this lock to
+// avoid Close's own lock acquisition deadlocking against this one).
+func (s *Subscription) drainAndSeed(snap SubscriberMsg, timeout time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed.Load() {
+		return false
+	}
+drain:
+	for {
+		select {
+		case <-s.Out:
+		default:
+			break drain
+		}
+	}
+	select {
+	case s.Out <- snap:
+		return true
+	case <-time.After(timeout):
+		return false
+	}
 }
 
 // Scene is one live scene instance — a graph + state + a goroutine
@@ -1197,25 +1253,20 @@ func (s *Scene) fanout(msg SubscriberMsg) {
 	copy(subs, s.subs)
 	s.subsMu.Unlock()
 	for _, sub := range subs {
-		select {
-		case sub.Out <- msg:
-		default:
-			// Slow consumer — collapse into a snapshot (ADR 002 § 9).
+		if sub.trySend(msg) {
+			continue
+		}
+		// Already closed (a concurrent Close raced this fanout — trySend
+		// is a no-op then, correctly) or queue full. Only the full case
+		// needs a collapse; a closed subscription has nothing left to
+		// collapse into.
+		if !sub.closed.Load() {
 			s.collapseToSnapshot(sub)
 		}
 	}
 }
 
 func (s *Scene) collapseToSnapshot(sub *Subscription) {
-	// Drain the existing queue.
-	for {
-		select {
-		case <-sub.Out:
-		default:
-			goto seed
-		}
-	}
-seed:
 	seq, state := s.state.Snapshot()
 	snap := &protocol.Snapshot{
 		SceneID:      s.id,
@@ -1223,11 +1274,9 @@ seed:
 		Sequence:     seq,
 		State:        state,
 	}
-	select {
-	case sub.Out <- snap:
-	case <-time.After(50 * time.Millisecond):
-		// Subscriber is *very* stuck — close it; the WS layer will
-		// reconnect.
+	if !sub.drainAndSeed(snap, 50*time.Millisecond) {
+		// Either already closed (no-op) or *very* stuck — Close is
+		// idempotent either way; the WS layer will reconnect a stuck one.
 		sub.Close()
 	}
 }
