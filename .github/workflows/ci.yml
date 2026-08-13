@@ -50,11 +50,12 @@ jobs:
           cache: false
       # go.mod pulls github.com/ZabLaboratory/Blue/runtime/go, a private
       # cross-repo module (issue #331). `go mod download` needs a scoped
-      # token to clone it — the BLUE_READ_APP_ID/PRIVATE_KEY secrets already
-      # provisioned org-wide for exactly this purpose (same App as
-      # ZabCanvas/.github/workflows/integration.yml:59-66). Bastion veto on
-      # #342 (F1/F2/F3): the credential must never be live while a step runs
-      # PR-submitted code (`go test`/`golangci-lint`/`go install` can read
+      # token to clone it — the ORION_BLUE_READ_APP_ID/PRIVATE_KEY secrets are
+      # a dedicated App (orion-blue-read), read-only on Blue only, separate
+      # from ZabCanvas's own blue-read App (private keys are not shared
+      # across Apps). Bastion veto on #342 (F1/F2/F3): the credential must
+      # never be live while a step runs PR-submitted code (`go test`/
+      # `golangci-lint`/`go install` can read
       # `~/.gitconfig` and exfiltrate it), and `insteadOf` must not rewrite
       # every `https://github.com/` clone, only `ZabLaboratory/`. Fixed here:
       # mint → write the scoped rewrite → download/tidy → unset, all inside
@@ -63,8 +64,8 @@ jobs:
         id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.BLUE_READ_APP_ID }}
-          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: fetch private Go module (scoped credential, cleared immediately)
@@ -176,8 +177,8 @@ jobs:
         id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.BLUE_READ_APP_ID }}
-          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: fetch private Go module (scoped credential, cleared immediately)
@@ -209,8 +210,8 @@ jobs:
         id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.BLUE_READ_APP_ID }}
-          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: fetch private Go module (scoped credential, cleared immediately)
@@ -242,8 +243,8 @@ jobs:
         id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.BLUE_READ_APP_ID }}
-          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: fetch private Go module (scoped credential, cleared immediately)
@@ -276,8 +277,8 @@ jobs:
         id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.BLUE_READ_APP_ID }}
-          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: fetch private Go module (scoped credential, cleared immediately)
@@ -307,8 +308,8 @@ jobs:
         id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.BLUE_READ_APP_ID }}
-          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: fetch private Go module (scoped credential, cleared immediately)
@@ -338,8 +339,8 @@ jobs:
         id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.BLUE_READ_APP_ID }}
-          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: fetch private Go module (scoped credential, cleared immediately)
@@ -369,8 +370,8 @@ jobs:
         id: blue-read-app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.BLUE_READ_APP_ID }}
-          private-key: ${{ secrets.BLUE_READ_APP_PRIVATE_KEY }}
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
           owner: ZabLaboratory
           repositories: Blue
       - name: fetch private Go module (scoped credential, cleared immediately)
