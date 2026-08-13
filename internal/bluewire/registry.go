@@ -9,12 +9,28 @@ import (
 )
 
 // Registry tracks the running Bridge, if any, for each bluehost.Slot and
-// guarantees at most one is ever stepping a given slot at a time. A
-// caller starting a new Bridge for a slot that already has one running
-// (a Take superseding the on-air instance, or a re-Prepare) gets the
-// PREVIOUS bridge stopped first — otherwise the old goroutine would keep
-// calling Step on an instance bluehost.Host.Take has already released,
-// erroring forever instead of exiting cleanly.
+// guarantees at most one is ever stepping a given slot at a time.
+//
+// Replacement policy (§6.7 idempotence/replacement, resolved here): a
+// slot has AT MOST ONE bridge, ever. Starting a new bridge for a slot
+// that already has one running (a Take superseding the on-air instance,
+// or a re-Prepare) STOPS the previous one first — new replaces old,
+// never coexists. This is the deliberate, minimal policy: no
+// generation counter, no drain-then-swap, no dual-write window. It
+// mirrors bluehost.Host's own single-instance-per-slot invariant one
+// layer up, so the bridge lifecycle can never diverge from the
+// instance lifecycle it steps. The alternative (letting two bridges
+// briefly coexist on one slot to drain in-flight projections) was
+// rejected: it would let a stale instance's output race a fresh one's
+// onto the same LSDP scene, which is strictly worse than the one-frame
+// gap a hard stop-then-start produces.
+//
+// Idempotent REQUEST replay (distinct from this replacement policy) is
+// handled one layer up, in internal/api's IdempotencyCache: a repeated
+// scene-intent request with the same dedup tuple returns the prior
+// typed result without calling Start again at all — Start's own
+// stop-then-start behavior here is for a genuinely NEW instance
+// superseding an old one, not for replaying the same request.
 type Registry struct {
 	mu     sync.Mutex
 	cancel map[bluehost.Slot]context.CancelFunc

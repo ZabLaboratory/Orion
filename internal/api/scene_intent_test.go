@@ -24,13 +24,15 @@ import (
 )
 
 type fakeWorkload struct {
-	admitErr error
-	mintErr  error
-	fetchErr error
-	body     json.RawMessage
+	admitErr   error
+	mintErr    error
+	fetchErr   error
+	body       json.RawMessage
+	admitCalls int
 }
 
 func (f *fakeWorkload) AdmitAuthContext(_ context.Context, _ string) (*workload.AuthContextAdmission, error) {
+	f.admitCalls++
 	if f.admitErr != nil {
 		return nil, f.admitErr
 	}
@@ -338,6 +340,98 @@ func TestPostSceneIntent_BridgeFullLifecycle(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if mirror.count() != countAtRelease {
 		t.Fatalf("expected no further forwards after release, count went from %d to %d", countAtRelease, mirror.count())
+	}
+}
+
+func TestPostSceneIntent_IdempotentReplaySkipsReExecution(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	envelope, digest := canvasEnvelope(program)
+	now := time.Now()
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+
+	wl := &fakeWorkload{body: envelope}
+	deps := SceneIntentDeps{
+		Trust:         attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix: "scenes/",
+		OwnerID:       "owner-1",
+		TenantID:      "tenant-1",
+		Workload:      wl,
+		Host:          bluehost.NewHost(),
+		Idempotency:   NewIdempotencyCache(),
+	}
+
+	body, _ := json.Marshal(sceneIntentRequest{
+		IntentID: "intent-1", IdempotencyKey: "idem-1", StreamID: "stream-1",
+		Action: string(attestation.ActionPreparePreview), ResolvedSceneRef: ref,
+	})
+
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+		req.Header.Set("X-Authenticated-User", "operator-1")
+		req.Header.Set("X-Authenticated-Role", "operator")
+		req.Header.Set(authContextHeader, "opaque-ticket")
+		rec := httptest.NewRecorder()
+		postSceneIntent(deps)(rec, req)
+		return rec
+	}
+
+	first := send()
+	if first.Code != http.StatusOK {
+		t.Fatalf("first request: expected 200, got %d: %s", first.Code, first.Body.String())
+	}
+	if wl.admitCalls != 1 {
+		t.Fatalf("expected 1 workload admission on first request, got %d", wl.admitCalls)
+	}
+
+	second := send()
+	if second.Code != http.StatusOK {
+		t.Fatalf("second request: expected 200, got %d: %s", second.Code, second.Body.String())
+	}
+	if wl.admitCalls != 1 {
+		t.Fatalf("expected the replay to skip re-execution (still 1 workload admission), got %d", wl.admitCalls)
+	}
+	if first.Body.String() != second.Body.String() {
+		t.Fatalf("expected the replay to return the identical cached result, got %q vs %q", first.Body.String(), second.Body.String())
+	}
+}
+
+func TestPostSceneIntent_NoIdempotencyKeyNeverDedupes(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	envelope, digest := canvasEnvelope(program)
+	now := time.Now()
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+
+	wl := &fakeWorkload{body: envelope}
+	deps := SceneIntentDeps{
+		Trust:         attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix: "scenes/",
+		OwnerID:       "owner-1",
+		TenantID:      "tenant-1",
+		Workload:      wl,
+		Host:          bluehost.NewHost(),
+		Idempotency:   NewIdempotencyCache(),
+	}
+
+	body, _ := json.Marshal(sceneIntentRequest{
+		IntentID: "intent-1", StreamID: "stream-1", // no IdempotencyKey
+		Action: string(attestation.ActionPreparePreview), ResolvedSceneRef: ref,
+	})
+
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+		req.Header.Set("X-Authenticated-User", "operator-1")
+		req.Header.Set("X-Authenticated-Role", "operator")
+		req.Header.Set(authContextHeader, "opaque-ticket")
+		rec := httptest.NewRecorder()
+		postSceneIntent(deps)(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("request %d: expected 200, got %d: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if wl.admitCalls != 2 {
+		t.Fatalf("expected every request without an idempotency_key to re-execute, got %d admissions", wl.admitCalls)
 	}
 }
 

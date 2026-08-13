@@ -401,6 +401,11 @@ func run() error {
 		logger.Error("scene-intent surface not wired; legacy path unaffected", "err", sierr)
 	} else if sceneIntent != nil {
 		logger.Info("scene-intent surface wired", "workload_zabgate_url", cfg.WorkloadZabGateURL)
+		// Request-replay idempotence (§6.4/§6.7): a repeated intent with the
+		// same dedup tuple + idempotency_key returns the prior typed result
+		// instead of re-running Prepare/Take and restarting the bridge.
+		// Unconditional — applies whether or not a bridge is wired below.
+		sceneIntent.Idempotency = api.NewIdempotencyCache()
 		// Pair the bluehost instance with the SAME lsdp.Wire scene the
 		// legacy Show-backed path already drives (B3-R6-12-ORION-PROJECTION,
 		// Conduit's verdict on #331: internal/lsdp is the sole Solar
