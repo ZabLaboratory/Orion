@@ -29,10 +29,10 @@ func TestRegistry_StartThenStop(t *testing.T) {
 	// already dequeued from the ticker before cancellation a moment to
 	// finish, then assert no further growth.
 	time.Sleep(10 * time.Millisecond)
-	callsAtStop := steps.calls
+	callsAtStop := steps.callCount()
 	time.Sleep(20 * time.Millisecond)
-	if steps.calls != callsAtStop {
-		t.Fatalf("expected no further steps after Stop, calls went from %d to %d", callsAtStop, steps.calls)
+	if steps.callCount() != callsAtStop {
+		t.Fatalf("expected no further steps after Stop, calls went from %d to %d", callsAtStop, steps.callCount())
 	}
 }
 
@@ -54,12 +54,12 @@ func TestRegistry_StartReplacesPreviousBridgeForSameSlot(t *testing.T) {
 	// cancellation (Run's select is non-deterministic when both cases are
 	// ready) — allow that single race window, then assert no further growth.
 	time.Sleep(10 * time.Millisecond)
-	oldCallsAtSwap := oldSteps.calls
+	oldCallsAtSwap := oldSteps.callCount()
 	time.Sleep(20 * time.Millisecond)
-	if oldSteps.calls != oldCallsAtSwap {
-		t.Fatalf("expected the superseded bridge to stop stepping; calls went from %d to %d", oldCallsAtSwap, oldSteps.calls)
+	if oldSteps.callCount() != oldCallsAtSwap {
+		t.Fatalf("expected the superseded bridge to stop stepping; calls went from %d to %d", oldCallsAtSwap, oldSteps.callCount())
 	}
-	if newSteps.calls == 0 {
+	if newSteps.callCount() == 0 {
 		t.Fatal("expected the replacing bridge to be stepping")
 	}
 	reg.Stop(bluehost.SlotOnAir)

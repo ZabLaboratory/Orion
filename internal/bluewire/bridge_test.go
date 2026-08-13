@@ -2,6 +2,7 @@ package bluewire
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,13 +11,21 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/protocol"
 )
 
+// fakeSteps is shared between a Bridge's own goroutine (Run/StepOnce
+// calling Step) and the test goroutine reading .calls to assert on
+// progress — calls must be mutex-guarded or `go test -race` (CI's
+// build-test job) flags it, even though the two writers/readers never
+// logically overlap by test design.
 type fakeSteps struct {
+	mu      sync.Mutex
 	results []StepResult
 	errs    []error
 	calls   int
 }
 
 func (f *fakeSteps) Step(_ bluehost.Slot) (StepResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	i := f.calls
 	f.calls++
 	if i < len(f.errs) && f.errs[i] != nil {
@@ -26,6 +35,12 @@ func (f *fakeSteps) Step(_ bluehost.Slot) (StepResult, error) {
 		return f.results[i], nil
 	}
 	return StepResult{}, nil
+}
+
+func (f *fakeSteps) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
 }
 
 type fakeMirror struct {
@@ -116,7 +131,7 @@ func TestBridge_Run_ReportsErrorsButKeepsGoing(t *testing.T) {
 	if gotErrs == 0 {
 		t.Fatal("expected onError to be called at least once")
 	}
-	if steps.calls < 2 {
-		t.Fatalf("expected the loop to keep stepping after an error, got %d calls", steps.calls)
+	if steps.callCount() < 2 {
+		t.Fatalf("expected the loop to keep stepping after an error, got %d calls", steps.callCount())
 	}
 }
