@@ -15,7 +15,7 @@ concurrency:
 # ---------------------------------------------------------------------------
 # Self-hosted runners on vps-ovh (org GitHub Actions billing frozen).
 # Runs on the shared org-scoped `vps-ovh` pool. SSHes to the public host IP
-# and runs rsync + `docker compose` + goose ON the host (no docker.sock in
+# and runs rsync + `docker compose` ON the host (no docker.sock in
 # the runner). Triggered on push to main (= merge); the PR's CI (ci.yml)
 # already gated the merge.
 # ---------------------------------------------------------------------------
@@ -239,11 +239,9 @@ jobs:
             sleep 2
           done
 
-          echo "=== Migrate (goose) ==="
-          docker compose -f docker-compose.prod.yml run --rm -T \
-            --entrypoint /goose orion \
-            -dir /migrations postgres \
-            "$(grep '^ORION_DATABASE_URL=' .env | cut -d= -f2-)" up < /dev/null
+          # Migrate (goose) — RETIRED (#15, #331, ADR-BLUE-012 §4.3, Bastion
+          # C3): Orion holds no database and no /migrations/goose binary in
+          # the image anymore.
 
           # ONE boot per deploy. `up -d` followed by `up -d --force-recreate
           # orion` started Orion twice: the first instance took the rotation
