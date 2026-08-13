@@ -48,6 +48,24 @@ jobs:
           # zero benefit. With cache off, `go` re-fetches from the module
           # proxy in seconds. Re-enable only behind a fast local cache backend.
           cache: false
+      # go.mod pulls github.com/ZabLaboratory/Blue/runtime/go, a private
+      # cross-repo module (issue #331). `go mod download`/`go build` need a
+      # scoped token to clone it — the forge GitHub App installation token,
+      # requested fresh per job (short-lived, never a long-lived PAT).
+      - name: mint forge App token for private Go module fetch
+        id: forge-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORGE_GH_APP_ID }}
+          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: configure private module auth
+        env:
+          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
       - name: go mod tidy check
         run: |
           go mod tidy
@@ -147,6 +165,20 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint forge App token for private Go module fetch
+        id: forge-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORGE_GH_APP_ID }}
+          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: configure private module auth
+        env:
+          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
       # Whole tests/e2e tree: the Probe-authored API contract tests
       # (tests/e2e/contract/, ADR-002 §6) AND the Forge e2e tests.
       - name: run e2e tests (ADR-002 §6 contract + Forge e2e)
@@ -164,6 +196,20 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint forge App token for private Go module fetch
+        id: forge-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORGE_GH_APP_ID }}
+          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: configure private module auth
+        env:
+          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
       - name: run 20k benchmark gate
         run: go test -v -count=1 -run 'TestPerf20k' ./internal/runtime/
 
@@ -181,6 +227,20 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint forge App token for private Go module fetch
+        id: forge-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORGE_GH_APP_ID }}
+          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: configure private module auth
+        env:
+          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
       - name: structural matrix + ratchet + registry cross-check
         run: go test -v -count=1 ./internal/conformance/
       - name: every served executor runs through the real engine
@@ -199,6 +259,20 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint forge App token for private Go module fetch
+        id: forge-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORGE_GH_APP_ID }}
+          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: configure private module auth
+        env:
+          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
       - name: seed-vs-runtime port/config parity
         run: go test -v -count=1 -run 'TestExecPortParity' ./internal/conformance/
       - name: cross-repo QueryDescriptor golden parity (Orion arm)
@@ -214,6 +288,20 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint forge App token for private Go module fetch
+        id: forge-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORGE_GH_APP_ID }}
+          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: configure private module auth
+        env:
+          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
       - name: install staticcheck
         run: go install honnef.co/go/tools/cmd/staticcheck@latest
       - name: run
@@ -229,6 +317,20 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint forge App token for private Go module fetch
+        id: forge-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORGE_GH_APP_ID }}
+          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: configure private module auth
+        env:
+          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
       - name: install govulncheck
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - name: run
@@ -244,6 +346,20 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: false
+      - name: mint forge App token for private Go module fetch
+        id: forge-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.FORGE_GH_APP_ID }}
+          private-key: ${{ secrets.FORGE_GH_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: configure private module auth
+        env:
+          GH_TOKEN: ${{ steps.forge-app-token.outputs.token }}
+        run: |
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/".insteadOf "https://github.com/"
+          echo "GOPRIVATE=github.com/ZabLaboratory/*" >> "$GITHUB_ENV"
       # Install from source so it uses our Go toolchain (pre-built binaries
       # refuse modules declaring `go 1.26`).
       - name: install golangci-lint from source
