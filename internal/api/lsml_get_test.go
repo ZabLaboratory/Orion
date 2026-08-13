@@ -3,12 +3,11 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 
-	"github.com/ZabLaboratory/Orion/internal/config"
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
 )
 
 func lsmlRequest(sceneID, query string) *http.Request {
@@ -21,13 +20,13 @@ func lsmlRequest(sceneID, query string) *http.Request {
 	return r
 }
 
-// Acceptance #3 + "no-op without flag": in bespoke mode (the default)
-// the LSML endpoint is inert — it returns 404 LSML_DISABLED and never
-// touches the store, so a deploy with ORION_LSDP_MODE unset changes
-// nothing. (deps.Store is nil here; the handler must short-circuit
-// before dereferencing it.)
-func TestLSMLBundle_DisabledInBespokeMode(t *testing.T) {
-	deps := PublicDeps{Config: config.Config{LSDPMode: config.LSDPModeBespoke}}
+// getLSMLBundle is migrated off Store onto bluehost.Host.Bundle (#15,
+// #331) — {id} is now vestigial (kept for URL-shape compatibility with
+// Solar/Prism), so a missing/nil SceneIntent (no bluehost.Host wired at
+// all) is the only "disabled" posture left; there is no LSDP-mode gate
+// anymore.
+func TestLSMLBundle_NoHostWiredIs404(t *testing.T) {
+	deps := PublicDeps{}
 	w := httptest.NewRecorder()
 
 	getLSMLBundle(deps)(w, lsmlRequest(uuid.NewString(), "v=sha256:abc"))
@@ -35,35 +34,38 @@ func TestLSMLBundle_DisabledInBespokeMode(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "LSML_DISABLED") {
-		t.Fatalf("body = %s, want LSML_DISABLED", w.Body.String())
+}
+
+// A ?v= that matches no loaded slot's digest 404s.
+func TestLSMLBundle_UnknownVersionIs404(t *testing.T) {
+	deps := PublicDeps{SceneIntent: &SceneIntentDeps{Host: bluehost.NewHost()}}
+	w := httptest.NewRecorder()
+
+	getLSMLBundle(deps)(w, lsmlRequest(uuid.NewString(), "v=sha256:abc"))
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
 	}
 }
 
-// In dual mode, a request without ?v= is rejected: the LSML artifact is
-// immutable + content-addressed, so the caller must pin the version.
-func TestLSMLBundle_VersionRequiredInDualMode(t *testing.T) {
-	deps := PublicDeps{Config: config.Config{LSDPMode: config.LSDPModeDual}}
+// Without ?v=, whatever slot is loaded answers (legacy's "no ?v= ⇒
+// latest" default, ported to "no ?v= ⇒ whatever's current").
+func TestLSMLBundle_ServesLoadedSlotWithoutVersionPin(t *testing.T) {
+	host := bluehost.NewHost()
+	program := minimalProgram(t)
+	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	host.SetBundle(bluehost.SlotPreview, []byte(`{"root":{}}`))
+	deps := PublicDeps{SceneIntent: &SceneIntentDeps{Host: host}}
 	w := httptest.NewRecorder()
 
 	getLSMLBundle(deps)(w, lsmlRequest(uuid.NewString(), ""))
 
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", w.Code)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "VERSION_REQUIRED") {
-		t.Fatalf("body = %s, want VERSION_REQUIRED", w.Body.String())
-	}
-}
-
-// A malformed scene id is a 400 before any store lookup.
-func TestLSMLBundle_InvalidSceneID(t *testing.T) {
-	deps := PublicDeps{Config: config.Config{LSDPMode: config.LSDPModeDual}}
-	w := httptest.NewRecorder()
-
-	getLSMLBundle(deps)(w, lsmlRequest("not-a-uuid", "v=sha256:abc"))
-
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, want 400", w.Code)
+	if w.Body.String() != `{"root":{}}` {
+		t.Fatalf("unexpected body: %s", w.Body.String())
 	}
 }

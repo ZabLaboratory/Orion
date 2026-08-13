@@ -3,12 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"github.com/google/uuid"
 
-	"github.com/ZabLaboratory/Orion/internal/compiler"
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/store"
 )
 
@@ -18,91 +17,102 @@ import (
 type pgxTx = store.Tx
 
 // getRenderBundle serves /api/v1/scenes/{id}/render-bundle?v={hash}.
-// Cacheable forever by hash (immutable artefact). Without ?v= the
-// latest pushed version is served and Cache-Control is short.
+//
+// Migrated off Store (#15, #331): the {id} path segment is now VESTIGIAL
+// (kept for URL-shape compatibility with Solar/Prism, which hardcode
+// this path — porteur decision) and is not resolved against anything;
+// the ?v= hash is the real lookup key, matched against whichever
+// bluehost.Host slot (on-air first, then preview) currently carries it.
+// Porteur's accepted narrowing: unlike the legacy Store-backed archive
+// of every pushed version ever, bluehost only holds what's CURRENTLY
+// loaded — no historical/rolled-back version is servable. Accepted
+// because a live scene never changes version without a fresh ZabCanvas
+// push, and Prism always sends the current scene on every switch, so
+// there is no real path that needs an old version.
 func getRenderBundle(deps PublicDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		serveCompiledArtefact(w, r, deps, func(pv *store.ScenePushedVersion) (json.RawMessage, *compiler.RenderBundle) {
-			return pv.BundleJSON, nil
-		})
+		serveHostBundle(w, r, deps)
 	}
 }
 
-// getOperatorInputs serves the same operator_inputs slice from the
-// bundle to non-Solar adapters (Companion, mPrism). The render
-// bundle's bytes already carry the slice; we extract just that slice
-// to keep payload tight.
+// getOperatorInputs serves the operator_inputs slice from the bundle to
+// non-Solar adapters (Companion, mPrism).
+//
+// Migrated off Store (#15, #331), same posture as getRenderBundle. The
+// bundle bytes now come from ZabCanvas's lsml_bundle (§6.3), whose exact
+// JSON schema for an "operator_inputs" field has NOT been confirmed
+// against Orion's legacy compiler.RenderBundle.OperatorInputs shape —
+// unmarshalled here as a generic top-level key, best-effort, rather than
+// a typed struct that could silently mismatch. Absent key ⇒ empty array,
+// never an error (an authored scene may declare none).
 func getOperatorInputs(deps PublicDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		pv, code, err := resolvePushedVersion(r.Context(), deps, r)
-		if err != nil {
-			writeJSON(w, code, map[string]string{"code": "PUSHED_VERSION_NOT_FOUND", "error": err.Error()})
+		digest, bundle, ok := resolveHostBundle(deps, r)
+		if !ok {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "PUSHED_VERSION_NOT_FOUND"})
 			return
 		}
-		var bundle compiler.RenderBundle
-		if err := json.Unmarshal(pv.BundleJSON, &bundle); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
-			return
+		var envelope map[string]json.RawMessage
+		operatorInputs := json.RawMessage(`[]`)
+		if err := json.Unmarshal(bundle, &envelope); err == nil {
+			if v, ok := envelope["operator_inputs"]; ok {
+				operatorInputs = v
+			}
 		}
-		writeImmutable(w, pv.SceneVersion, http.StatusOK)
+		writeImmutable(w, digest, http.StatusOK)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"scene_version":    bundle.SceneVersion,
-			"operator_inputs":  bundle.OperatorInputs,
+			"scene_version":   digest,
+			"operator_inputs": operatorInputs,
 		})
 	}
 }
 
-// getGraph serves the internal graph artefact. Service-only auth.
-func getGraph(deps PublicDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		// Per ADR 004 § 2: service-only.
-		// Operator/admin allowed too for debugging.
-		// (auth gate is delegated to the trust headers — anyone with
-		//  a valid JWT can fetch; tighten later if needed).
-		serveCompiledArtefact(w, r, deps, func(pv *store.ScenePushedVersion) (json.RawMessage, *compiler.RenderBundle) {
-			return pv.GraphJSON, nil
-		})
-	}
-}
+// getGraph — RETIRED (#15, #331): served Orion's own legacy compiled
+// compiler.Graph artifact, which does not exist in the new model at all
+// (ZabCanvas/Blue produce blue.program.v1 directly; Orion no longer
+// compiles a graph). Verified no caller before removal — no client repo
+// (Prism/Solar/mPrism/companion-module) references
+// `api/v1/scenes/{id}/graph`; the one "graph" hit in Prism's
+// capture-resolver.ts is a ZabCanvas route, unrelated.
 
-func serveCompiledArtefact(
-	w http.ResponseWriter,
-	r *http.Request,
-	deps PublicDeps,
-	pick func(*store.ScenePushedVersion) (json.RawMessage, *compiler.RenderBundle),
-) {
-	pv, code, err := resolvePushedVersion(r.Context(), deps, r)
-	if err != nil {
-		writeJSON(w, code, map[string]string{"code": "PUSHED_VERSION_NOT_FOUND", "error": err.Error()})
+// serveHostBundle writes the bundle bytes bluehost.Host currently holds
+// for whichever slot matches the request, immutably cacheable by digest.
+func serveHostBundle(w http.ResponseWriter, r *http.Request, deps PublicDeps) {
+	digest, bundle, ok := resolveHostBundle(deps, r)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"code": "PUSHED_VERSION_NOT_FOUND"})
 		return
 	}
-	body, _ := pick(pv)
-	writeImmutable(w, pv.SceneVersion, http.StatusOK)
-	_, _ = w.Write(body)
+	writeImmutable(w, digest, http.StatusOK)
+	_, _ = w.Write(bundle)
 }
 
-// resolvePushedVersion looks up the requested pushed version, either
-// pinned via ?v= or implicitly the latest.
-func resolvePushedVersion(ctx context.Context, deps PublicDeps, r *http.Request) (*store.ScenePushedVersion, int, error) {
-	sceneID, ok := parseUUID(r.PathValue("id"))
-	if !ok {
-		return nil, http.StatusBadRequest, errors.New("invalid scene id")
+// resolveHostBundle finds the bundle bytes matching ?v= (if provided)
+// across both bluehost slots, on-air first — the on-air instance is the
+// one actually airing, so it wins a tie when both slots happen to share
+// the same digest. Without ?v=, the first non-empty slot (same order)
+// answers, matching legacy's "no ?v= ⇒ latest" default.
+func resolveHostBundle(deps PublicDeps, r *http.Request) (digest string, bundle []byte, ok bool) {
+	if deps.SceneIntent == nil || deps.SceneIntent.Host == nil {
+		return "", nil, false
 	}
+	host := deps.SceneIntent.Host
 	v := r.URL.Query().Get("v")
-	if v != "" {
-		pv, err := deps.Store.GetPushedVersion(ctx, sceneID, v)
-		if err != nil {
-			status, _ := codeFromError(err)
-			return nil, status, err
+	for _, slot := range []bluehost.Slot{bluehost.SlotOnAir, bluehost.SlotPreview} {
+		d := host.Digest(slot)
+		if d == "" {
+			continue
 		}
-		return pv, http.StatusOK, nil
+		if v != "" && v != d {
+			continue
+		}
+		b := host.Bundle(slot)
+		if b == nil {
+			continue
+		}
+		return d, b, true
 	}
-	pv, err := deps.Store.GetLatestPushedVersion(ctx, sceneID)
-	if err != nil {
-		status, _ := codeFromError(err)
-		return nil, status, err
-	}
-	return pv, http.StatusOK, nil
+	return "", nil, false
 }
 
 // writeImmutable sets Content-Type, the per-version content hash as
@@ -174,8 +184,8 @@ func handleArchive(ctx context.Context, w http.ResponseWriter, deps PublicDeps, 
 	}
 	deps.Show.Unload(sceneID.String())
 	writeJSON(w, http.StatusOK, map[string]string{
-		"status":                  string(store.SceneArchived),
-		"latest_pushed_version":   "",
+		"status":                string(store.SceneArchived),
+		"latest_pushed_version": "",
 	})
 }
 

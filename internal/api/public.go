@@ -128,7 +128,7 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/scenes/{id}/render-bundle", getRenderBundle(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/lsml-bundle", getLSMLBundle(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/operator-inputs", getOperatorInputs(deps))
-	mux.HandleFunc("GET /api/v1/scenes/{id}/graph", getGraph(deps))
+	// GET /api/v1/scenes/{id}/graph — RETIRED (#15, #331): see scenes_get.go.
 	// Preview→air state hand-off export seam (ADR Prism 005 Amendment 2
 	// §A2.2.d, issue #256). Operator-gated; servable ONLY on the preview
 	// sidecar (embedded-local) — a prod/antenne Orion 404s it (Bastion #11).
@@ -188,7 +188,12 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// (reveals the live operator surface); read-only, never stored.
 	mux.HandleFunc("GET /api/v1/cockpit/contracts", getCockpitContracts(deps))
 
-	mux.HandleFunc("GET /api/v1/assets/{id}", getAsset(deps))
+	// GET /api/v1/assets/{id} — RETIRED (#15, #331): Prism already fetches
+	// assets DIRECTLY from ZabCanvas (asset-refs.ts, asset-hydration.ts:
+	// `${gatewayUrl}/canvas/api/v1/scene-assets/{hash}/bytes`), a different
+	// endpoint shape entirely — this Orion proxy (internal/api/assets.go,
+	// deleted) was dead in the real client flow already, no surprise
+	// caller found (rg across Prism/Solar).
 	// GET /api/v1/credentials/{id}/stream-key — RETIRED (#15, #331): porteur
 	// confirmed Orion no longer owns any part of the stream lifecycle,
 	// Pulsar does. Prism already fetches the Twitch stream key directly
