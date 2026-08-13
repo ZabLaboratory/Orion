@@ -1,0 +1,185 @@
+{
+  "budgets": {
+    "max_effects_per_dispatch": 1,
+    "max_execution_ms": 1000,
+    "max_pending_effects": 1,
+    "max_queue_depth": 16,
+    "max_steps_per_dispatch": 16,
+    "max_timers": 0
+  },
+  "compiler_version": "0.1.0",
+  "data_edges": [],
+  "data_literals": [
+    {
+      "node_id": "http-call",
+      "port": "request",
+      "value": {}
+    }
+  ],
+  "determinism": {
+    "clock": "injected",
+    "entropy": "injected",
+    "map_iteration": "canonical",
+    "scheduler": "injected"
+  },
+  "effects": [
+    {
+      "cancellable": false,
+      "capability": "core.http.request",
+      "completion_topic": "effect.http.completed",
+      "deadline_ms": 0,
+      "id": "http-call",
+      "idempotency": "not_required",
+      "operation": "request",
+      "request_type": "core.json",
+      "response_type": "core.json",
+      "version": "1"
+    }
+  ],
+  "entrypoints": [
+    {
+      "id": "start",
+      "kind": "start",
+      "node_id": "entry",
+      "port": "then"
+    }
+  ],
+  "errors": {
+    "profile": "blue.runtime.error.v1",
+    "unhandled": "halt"
+  },
+  "exec_edges": [
+    {
+      "from_node": "entry",
+      "from_port": "then",
+      "sequence": 0,
+      "to_node": "http-call",
+      "to_port": "exec_in"
+    }
+  ],
+  "nodes": [
+    {
+      "config": {},
+      "id": "entry",
+      "opcode": "core.event.on-start@1"
+    },
+    {
+      "config": {
+        "effect": "http-call"
+      },
+      "id": "http-call",
+      "opcode": "core.effect.invoke@1"
+    }
+  ],
+  "opcodes": [
+    {
+      "config": [
+        {
+          "kind": "data",
+          "name": "effect",
+          "required": true,
+          "type": "core.string"
+        }
+      ],
+      "id": "core.effect.invoke@1",
+      "inputs": [
+        {
+          "kind": "data",
+          "name": "request",
+          "required": true,
+          "type": "core.json"
+        },
+        {
+          "kind": "exec",
+          "name": "exec_in",
+          "required": true,
+          "type": "core.exec"
+        }
+      ],
+      "kind": "effect",
+      "outputs": [
+        {
+          "kind": "exec",
+          "name": "then",
+          "required": true,
+          "type": "core.exec"
+        }
+      ]
+    },
+    {
+      "config": [],
+      "id": "core.event.on-start@1",
+      "inputs": [],
+      "kind": "entrypoint",
+      "outputs": [
+        {
+          "kind": "exec",
+          "name": "then",
+          "required": true,
+          "type": "core.exec"
+        }
+      ]
+    }
+  ],
+  "ordering": {
+    "duplicate_event": "idempotent_same_digest",
+    "effect_completion": "explicit_fifo_event",
+    "event_inbox": "fifo_by_runtime_sequence",
+    "event_sequence_scope": "instance_per_origin",
+    "exec_fanout": "ascending_edge_sequence",
+    "sequence_gap": "reject",
+    "timer_tie_break": "due_at_then_timer_id"
+  },
+  "program_digest": "sha256:a31b4a971566419d04851adfeef5789aef2d51e30c7d04f4e479e64daa278352",
+  "program_id": "fixture-http-requires",
+  "requires": [
+    {
+      "cancellation": "not_required",
+      "capability": "core.http.request",
+      "deadline": "not_required",
+      "idempotency": "not_required",
+      "max_deadline_ms": 0,
+      "operation": "request",
+      "version": "1"
+    }
+  ],
+  "runtime_abi": "blue-runtime-abi.v1",
+  "runtime_module": {
+    "name": "blue-runtime-go",
+    "version": "0.1.0"
+  },
+  "schema_version": "blue.program.v1",
+  "source_revision": {
+    "digest": "sha256:3aa201ed0203ce41437936bc3d4de2f6b7f3689117eec787ad0a4b5a7eb64158",
+    "id": "fixture-http-requires",
+    "kind": "blueprint-version",
+    "revision": 1
+  },
+  "state": {
+    "outputs": [],
+    "variables": []
+  },
+  "timers": [],
+  "topics": [
+    {
+      "name": "effect.http.completed",
+      "payload_type": "blue.effect.completion.v1"
+    }
+  ],
+  "types": [
+    {
+      "id": "core.json",
+      "kind": "primitive",
+      "spec": {
+        "base": "json"
+      }
+    },
+    {
+      "id": "core.string",
+      "kind": "primitive",
+      "spec": {
+        "base": "string"
+      }
+    }
+  ]
+}
