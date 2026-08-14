@@ -53,7 +53,7 @@ func TestLSMLBundle_UnknownVersionIs404(t *testing.T) {
 func TestLSMLBundle_ServesLoadedSlotWithoutVersionPin(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	host.SetBundle(bluehost.SlotPreview, []byte(`{"root":{}}`))

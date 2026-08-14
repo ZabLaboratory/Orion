@@ -63,6 +63,13 @@ type SceneIntentDeps struct {
 	// own default-allow posture applies to every declared provider.
 	Policy blueruntime.CapabilityPolicy
 
+	// Effects binds the 3 opcodes-of-full-right EffectHandlers
+	// (ENGINE-B-PARITY-ORION, bluehost.NewEffectHandlers) — the SAME
+	// egress policy / db.query client Engine A's SceneEffects uses (zero
+	// value = every core.http.request@1/core.http-request@1/core.db.query@1
+	// node fires `error`/EFFECT_PROVIDER_UNAVAILABLE, never a crash).
+	Effects bluehost.EffectDeps
+
 	// MirrorFor resolves the LSDP scene pairing a bluewire.Bridge forwards
 	// onto, for a given scene_id — normally lsdp.Wire.MirrorFor. Nil ⇒ no
 	// bridge is ever started: Prepare/Take still run, the handler still
@@ -254,14 +261,14 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		var opErr error
 		switch action {
 		case attestation.ActionPreparePreview:
-			opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneDigest, program, deps.Providers, deps.Policy)
+			opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Preview))
 			if errors.Is(opErr, bluehost.ErrAlreadyLoaded) {
 				if deps.Host.Digest(slot) == claims.SceneDigest {
 					opErr = nil // idempotent re-prepare of the same digest
 				}
 			}
 		case attestation.ActionTakeOnAir:
-			opErr = deps.Host.Take(claims.RefID, claims.SceneDigest, program, deps.Providers, deps.Policy)
+			opErr = deps.Host.Take(claims.RefID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Execute))
 		}
 		if opErr != nil {
 			writeJSON(w, http.StatusInternalServerError, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "HOST_PREPARE_FAILED"})
