@@ -1,4 +1,4 @@
-# Runbook — CI Orion : cache VCS Go pollué par un token App révoqué
+# Runbook — CI Orion : fetch privé Blue instable (cache + race + toolchain)
 
 ## Symptôme
 
@@ -59,6 +59,35 @@ download-cache de GOPROXY, non affecté par ce wipe. Chaque job force ainsi un
 clone frais sous son propre token, toujours valide au moment de l'appel,
 indépendamment de la réutilisation du runner.
 
+**v3 (PR #354, commit `22524fd`, squash `5cf6c695`) — 2e bug distinct, race
+de concurrence.** Après v2, échec encore intermittent (staticcheck échoue en
+moins d'1s sur un cache qui vient d'être purgé dans le MÊME step — donc pas un
+résidu). Preuve par les timestamps du run 31760822765 : `perf-20k gate`/
+`conformance-matrix gate` démarrés à 01:30:35, encore actifs pendant la
+fenêtre `staticcheck` (01:32:06-01:32:17). Les jobs d'une même run s'exécutent
+**concurremment** sur ce runner non conteneurisé par job, et `git config
+--global` mute un `~/.gitconfig` **partagé** entre eux : le `--unset` de
+nettoyage d'un job fini peut courir pendant qu'un autre job est encore dans sa
+fenêtre `go mod download`, lui arrachant son `insteadOf` sous les pieds. Fix :
+scoper la config Git au job via `GIT_CONFIG_GLOBAL="$RUNNER_TEMP/gitconfig-blue-read-$GITHUB_JOB"`
+au lieu de muter le fichier global partagé — confirmé déterministe sur le run
+suivant (31761103392, commit `43ed950` : 8/9 jobs verts, seul govulncheck
+restait rouge pour une raison distincte, cf. ci-dessous).
+
+**v4 (PR #355, commit `bf17b31`, squash `d37cd7cb`) — govulncheck, pas un
+problème de fetch.** 6 CVE stdlib (net/url, crypto/tls×2, net/http×2,
+encoding/xml, encoding/asn1 — GO-2026-6218/6090/6089/6088/5972/5026), toutes
+`Fixed in: go1.26.6`. Le wildcard `go-version: "1.26.x"` du workflow
+résolvait vers `1.26.5` sur ce runner (toolchain en cache non renouvelée sous
+le wildcard). Fix : pin exact `go-version: "1.26.6"` sur les 8 jobs Go.
+Clearance Bastion obtenue avant merge (`CLEARED_WITH_CONDITIONS`, Orion#336) :
+CVE DoS-only, aucun RCE/confidentialité/intégrité, pas de veto. 2 conditions
+de clôture restent ouvertes, hors de ce work unit (suivi séparé) : mesurer le
+toolchain qui compile réellement le binaire prod (`Dockerfile:4
+FROM golang:1.26-alpine` flottant, `deploy.yml:233 docker compose build` sans
+`--pull`), et pin par digest (rejoint aussi le drift `postgres:16-alpine`
+noté dans `conventions.md` §Docker).
+
 ## Portée du fix / limite connue
 
 Le fix est local au workflow (`ci.yml`) : il s'applique à chaque run pris
@@ -68,18 +97,23 @@ ouverte AVANT le fix ne le reçoit pas automatiquement — elle doit merge/rebas
 pousser directement le correctif dans le worktree local (lease runtime
 branch-keyed, déjà tenu par l'agent Forge propriétaire de la branche) :
 propagé à la place via l'API GitHub server-side (`POST /merges`, base=PR#349,
-head=main) pour les deux itérations — commits `4fc4158` (v2) après `77ef2d6`
-(fix Forge go.sum). Cette voie (merge API, pas de worktree local) reste la
+head=main) pour chaque itération — commits `4fc4158` (v2), `43ed950` (v3),
+`914bc5fa` (v4). Cette voie (merge API, pas de worktree local) reste la
 méthode à privilégier pour tout futur besoin de propagation urgente vers une
 branche déjà leasée par un autre agent.
 
 ## Rollback
 
-Revert du commit `cfcdf09` / PR #352 sur `main` si le purge inconditionnel
-s'avère insuffisant ou casse un autre job — aucune dépendance croisée,
-changement isolé aux étapes de fetch du module privé Blue. Le v1 (`49659b1` /
-PR #350) reste inoffensif mais inutile (sa condition ne se déclenche jamais) ;
-pas besoin de le revert séparément.
+- Revert `cfcdf09` / PR #352 (purge inconditionnelle) si elle casse un autre
+  job — isolé aux étapes de fetch Blue.
+- Revert `22524fd` / PR #354 (`GIT_CONFIG_GLOBAL` scopé) si un job a besoin
+  d'un état git global partagé (aucun cas connu à ce jour).
+- Revert `bf17b31` / PR #355 (pin `1.26.6`) en cas de régression toolchain —
+  repasser au wildcard rouvre les 6 CVE govulncheck, à ne faire qu'en dernier
+  recours documenté.
+
+Le v1 (`49659b1` / PR #350) reste inoffensif mais inutile (sa condition ne se
+déclenche jamais) ; pas besoin de le revert séparément.
 
 ## Non résolu, hors scope Keeper
 
