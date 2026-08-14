@@ -20,10 +20,9 @@ func buildEntrypointProgram(t *testing.T, kind, entryOpcode, dataOutPort string,
 	dataPort := func(name, typ string, required bool) map[string]any {
 		return map[string]any{"name": name, "kind": "data", "type": typ, "required": required}
 	}
+	// sortedComposite(kind,name) order: data ports before exec ports.
 	entryOutputs := []any{execPort("then")}
 	if dataOutPort != "" {
-		entryOutputs = append(entryOutputs, dataPort(dataOutPort, "core.json", false))
-		// re-sort: data before exec per sortedComposite(kind,name)
 		entryOutputs = []any{dataPort(dataOutPort, "core.json", false), execPort("then")}
 	}
 	entrypoint := map[string]any{"id": "arm", "kind": kind, "node_id": "tick-entry", "port": "then"}
