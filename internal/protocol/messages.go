@@ -81,12 +81,18 @@ type Snapshot struct {
 // recompute pass. ADR 002 § 5: patch order within a delta is
 // meaningful only if Logic declared it so.
 type Delta struct {
-	Type     string  `json:"type"`
-	V        int     `json:"v"`
-	SceneID  string  `json:"scene_id"`
-	Sequence uint64  `json:"sequence"`
-	Patches  []Patch `json:"patches"`
-	Cause    *Cause  `json:"cause,omitempty"`
+	Type              string  `json:"type"`
+	V                 int     `json:"v"`
+	SceneID           string  `json:"scene_id"`
+	Sequence          uint64  `json:"sequence"`
+	SchemaVersion     string  `json:"schema_version,omitempty"`
+	SceneDigest       string  `json:"scene_digest,omitempty"`
+	RuntimeInstanceID string  `json:"runtime_instance_id,omitempty"`
+	Target            string  `json:"target,omitempty"`
+	RenderRevision    string  `json:"render_revision,omitempty"`
+	CorrelationID     string  `json:"correlation_id,omitempty"`
+	Patches           []Patch `json:"patches"`
+	Cause             *Cause  `json:"cause,omitempty"`
 }
 
 // Patch addresses a single leaf with its new value and an optional
@@ -107,11 +113,11 @@ type Cause struct {
 // of the same scene id landed). Always immediately followed by a
 // fresh Snapshot of the destination scene.
 type SceneChanged struct {
-	Type         string          `json:"type"`
-	V            int             `json:"v"`
-	FromSceneID  string          `json:"from_scene_id"`
-	ToSceneID    string          `json:"to_scene_id"`
-	Transition   json.RawMessage `json:"transition,omitempty"`
+	Type        string          `json:"type"`
+	V           int             `json:"v"`
+	FromSceneID string          `json:"from_scene_id"`
+	ToSceneID   string          `json:"to_scene_id"`
+	Transition  json.RawMessage `json:"transition,omitempty"`
 }
 
 // Error is the server-emitted error envelope. recoverable: false

@@ -32,39 +32,79 @@ import (
 // stop-then-start behavior here is for a genuinely NEW instance
 // superseding an old one, not for replaying the same request.
 type Registry struct {
-	mu     sync.Mutex
-	cancel map[bluehost.Slot]context.CancelFunc
+	mu      sync.Mutex
+	opMu    sync.Mutex
+	running map[bluehost.Slot]*bridgeRun
+}
+
+type bridgeRun struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
 // NewRegistry builds an empty Registry.
 func NewRegistry() *Registry {
-	return &Registry{cancel: map[bluehost.Slot]context.CancelFunc{}}
+	return &Registry{running: map[bluehost.Slot]*bridgeRun{}}
 }
 
 // Start stops whatever bridge currently owns slot (if any) and starts
-// bridge's Run loop in its own goroutine on interval. onError is the
-// caller's per-step error sink (e.g. a logger call) — Run itself never
-// aborts the loop on a step error.
+// bridge's Run loop in its own goroutine on interval. The previous run is
+// cancelled and JOINED before the replacement is published, so a stale
+// bridge cannot keep stepping a slot after a generation swap. onError is the
+// caller's per-step error sink (e.g. a logger call) — Run itself never aborts
+// the loop on a step error.
 func (r *Registry) Start(slot bluehost.Slot, bridge *Bridge, interval time.Duration, onError func(error)) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if cancel, ok := r.cancel[slot]; ok {
-		cancel()
+	if bridge == nil {
+		return
 	}
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
+
+	// Start/Stop/StopAll are serialized so a concurrent replacement cannot
+	// publish an older generation after a newer one has already started.
+	r.opMu.Lock()
+	defer r.opMu.Unlock()
+
+	r.mu.Lock()
+	previous := r.running[slot]
+	delete(r.running, slot)
+	if previous != nil {
+		previous.cancel()
+	}
+	r.mu.Unlock()
+	if previous != nil {
+		<-previous.done
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
-	r.cancel[slot] = cancel
-	go bridge.Run(ctx, interval, onError)
+	run := &bridgeRun{cancel: cancel, done: make(chan struct{})}
+	r.mu.Lock()
+	r.running[slot] = run
+	r.mu.Unlock()
+	go func() {
+		defer close(run.done)
+		bridge.Run(ctx, interval, onError)
+	}()
 }
 
 // Stop stops slot's bridge, if any, and forgets it. Safe to call on a
-// slot with no running bridge (no-op) — a Release path never needs its
-// own existence check.
+// slot with no running bridge (no-op) — a Release path never needs its own
+// existence check. Stop waits for the cancelled loop, making cleanup
+// deterministic for Host.Release and generation replacement.
 func (r *Registry) Stop(slot bluehost.Slot) {
+	r.opMu.Lock()
+	defer r.opMu.Unlock()
+
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if cancel, ok := r.cancel[slot]; ok {
-		cancel()
-		delete(r.cancel, slot)
+	run := r.running[slot]
+	delete(r.running, slot)
+	if run != nil {
+		run.cancel()
+	}
+	r.mu.Unlock()
+	if run != nil {
+		<-run.done
 	}
 }
 
@@ -73,16 +113,24 @@ func (r *Registry) Stop(slot bluehost.Slot) {
 func (r *Registry) Running(slot bluehost.Slot) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	_, ok := r.cancel[slot]
+	_, ok := r.running[slot]
 	return ok
 }
 
 // StopAll stops every running bridge. Intended for process shutdown.
 func (r *Registry) StopAll() {
+	r.opMu.Lock()
+	defer r.opMu.Unlock()
+
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	for slot, cancel := range r.cancel {
-		cancel()
-		delete(r.cancel, slot)
+	runs := make([]*bridgeRun, 0, len(r.running))
+	for slot, run := range r.running {
+		runs = append(runs, run)
+		run.cancel()
+		delete(r.running, slot)
+	}
+	r.mu.Unlock()
+	for _, run := range runs {
+		<-run.done
 	}
 }

@@ -18,6 +18,7 @@ import (
 
 	"github.com/ZabLaboratory/Orion/internal/attestation"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/blueproject"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
@@ -72,11 +73,20 @@ func sha256Digest(data []byte) string {
 // decodeAndVerifyProgram consumes: the program bytes base64-encoded
 // alongside their own digest, self-consistent by construction.
 func canvasEnvelope(program []byte) (json.RawMessage, string) {
+	return canvasEnvelopeWithBundle(program, nil)
+}
+
+func canvasEnvelopeWithBundle(program, bundle []byte) (json.RawMessage, string) {
 	digest := sha256Digest(program)
-	body, _ := json.Marshal(resolvedSceneEnvelope{
+	envelope := resolvedSceneEnvelope{
 		BlueProgram:       base64.StdEncoding.EncodeToString(program),
 		BlueProgramDigest: digest,
-	})
+	}
+	if bundle != nil {
+		envelope.LSMLBundle = base64.StdEncoding.EncodeToString(bundle)
+		envelope.LSMLBundleDigest = sha256Digest(bundle)
+	}
+	body, _ := json.Marshal(envelope)
 	return body, digest
 }
 
@@ -157,6 +167,130 @@ func TestPostSceneIntent_PreparePreview_Success(t *testing.T) {
 	}
 	if resp.Status != "prepared" || resp.SceneID != "scene-1" {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
+func TestPostSceneIntent_TakeOnAirOwnsBundleAndBridgeOnAir(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	bundle := []byte(`{"scene":"on-air"}`)
+	envelope, digest := canvasEnvelopeWithBundle(program, bundle)
+	now := time.Now()
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+	host := bluehost.NewHost()
+	bridges := bluewire.NewRegistry()
+	t.Cleanup(func() {
+		bridges.StopAll()
+		_ = host.Release(bluehost.SlotPreview, "test-cleanup")
+		_ = host.Release(bluehost.SlotOnAir, "test-cleanup")
+	})
+	deps := SceneIntentDeps{
+		Trust:              attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix:      "scenes/",
+		OwnerID:            "owner-1",
+		TenantID:           "tenant-1",
+		Workload:           &fakeWorkload{body: envelope},
+		Host:               host,
+		MirrorFor:          func(string) runtime.SceneMirror { return &recordingMirror{} },
+		Bridges:            bridges,
+		ProjectionInterval: time.Hour,
+	}
+
+	send := func(action attestation.Action, target string) *httptest.ResponseRecorder {
+		body, _ := json.Marshal(sceneIntentRequest{
+			IntentID:         "intent-" + string(action),
+			StreamID:         "stream-1",
+			Target:           target,
+			Action:           string(action),
+			ResolvedSceneRef: ref,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+		req.Header.Set("X-Authenticated-User", "operator-1")
+		req.Header.Set("X-Authenticated-Role", "operator")
+		req.Header.Set(authContextHeader, "opaque-ticket")
+		rec := httptest.NewRecorder()
+		postSceneIntent(deps)(rec, req)
+		return rec
+	}
+
+	if rec := send(attestation.ActionPreparePreview, "preview"); rec.Code != http.StatusOK {
+		t.Fatalf("prepare-preview: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := host.Bundle(bluehost.SlotPreview); string(got) != string(bundle) {
+		t.Fatalf("prepare-preview bundle attached to wrong value: %q", got)
+	}
+	if host.Bundle(bluehost.SlotOnAir) != nil {
+		t.Fatal("prepare-preview must not attach a bundle to on-air")
+	}
+	if !bridges.Running(bluehost.SlotPreview) {
+		t.Fatal("prepare-preview should run the preview bridge")
+	}
+
+	if rec := send(attestation.ActionTakeOnAir, "on-air"); rec.Code != http.StatusOK {
+		t.Fatalf("take-on-air: expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := host.Bundle(bluehost.SlotOnAir); string(got) != string(bundle) {
+		t.Fatalf("take-on-air bundle was not attached to on-air: %q", got)
+	}
+	if !bridges.Running(bluehost.SlotOnAir) {
+		t.Fatal("take-on-air should run the on-air bridge")
+	}
+}
+
+func TestPostSceneIntent_TakeOnAirFailurePreservesCommittedGeneration(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	host := bluehost.NewHost()
+	if err := host.Take("old-instance", "sha256:old", program, nil, nil, nil); err != nil {
+		t.Fatalf("seed Host.Take: %v", err)
+	}
+	oldBundle := []byte(`{"scene":"old"}`)
+	host.SetBundle(bluehost.SlotOnAir, oldBundle)
+	bridges := bluewire.NewRegistry()
+	bridges.Start(bluehost.SlotOnAir, bluewire.NewBridge(host, bluehost.SlotOnAir, &recordingMirror{}, "scene-1", "sha256:old", "old-instance", blueproject.TargetProgram, "rev-1", "intent-old"), time.Hour, nil)
+	t.Cleanup(func() {
+		bridges.StopAll()
+		_ = host.Release(bluehost.SlotOnAir, "test-cleanup")
+	})
+
+	invalidProgram := []byte(`{"not":"a blue program"}`)
+	envelope, digest := canvasEnvelope(invalidProgram)
+	now := time.Now()
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionTakeOnAir, now, digest)
+	deps := SceneIntentDeps{
+		Trust:         attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix: "scenes/",
+		OwnerID:       "owner-1",
+		TenantID:      "tenant-1",
+		Workload:      &fakeWorkload{body: envelope},
+		Host:          host,
+		Bridges:       bridges,
+	}
+	body, _ := json.Marshal(sceneIntentRequest{
+		IntentID:         "intent-failed-take",
+		StreamID:         "stream-1",
+		Target:           "on-air",
+		Action:           string(attestation.ActionTakeOnAir),
+		ResolvedSceneRef: ref,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+	req.Header.Set(authContextHeader, "opaque-ticket")
+	rec := httptest.NewRecorder()
+	postSceneIntent(deps)(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected failed take to return 500, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := host.Digest(bluehost.SlotOnAir); got != "sha256:old" {
+		t.Fatalf("failed pre-commit take changed on-air digest to %q", got)
+	}
+	if got := host.Bundle(bluehost.SlotOnAir); string(got) != string(oldBundle) {
+		t.Fatalf("failed pre-commit take changed on-air bundle to %q", got)
+	}
+	if !bridges.Running(bluehost.SlotOnAir) {
+		t.Fatal("failed pre-commit take must preserve the committed on-air bridge")
 	}
 }
 
