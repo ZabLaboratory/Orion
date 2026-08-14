@@ -18,6 +18,7 @@ services:
       args:
         ORION_GIT_REVISION: ${ORION_GIT_REVISION:-unknown}
         ORION_GIT_SOURCE: ${ORION_GIT_SOURCE:-https://github.com/ZabLaboratory/Orion}
+        ORION_GO_VERSION: ${ORION_GO_VERSION:-unknown}
     container_name: orion
     restart: unless-stopped
     env_file: .env
@@ -104,7 +105,9 @@ services:
           - orion-api
 
   orion-db:
-    image: postgres:16-alpine
+    # Digest verified against Docker Hub on 2026-08-14; update only through a
+    # reviewed dependency/toolchain change.
+    image: postgres:16-alpine@sha256:44c4ee9810eff91f7eab4d822642e01115b1a9eccce4bcbdde7604752d68eac6
     container_name: orion-postgres
     restart: unless-stopped
     environment:

@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1.7
 
 # ---- build stage ----------------------------------------------------------
-FROM golang:1.26-alpine AS build
+# Digest verified against the registry on 2026-08-14. Update only through a
+# reviewed toolchain change so the production compiler cannot drift by tag.
+FROM golang:1.26-alpine@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816 AS build
 
 # The private Blue module is fetched through Git over HTTPS. The official
 # Alpine Go image does not include Git, so install only the client and CA
@@ -49,7 +51,9 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # C3): Orion holds no database and no migrations/ directory anymore.
 
 # ---- runtime stage --------------------------------------------------------
-FROM gcr.io/distroless/static:nonroot
+# Digest verified against the registry on 2026-08-14. The runtime base is
+# pinned independently from the Go build image.
+FROM gcr.io/distroless/static:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6
 
 # Distroless static: orion only. .env.template stays in the repo (docs
 # only); it never makes it into the image because rsync's
@@ -61,8 +65,14 @@ COPY --from=build /out/healthcheck  /healthcheck
 # stage boundaries) so they land on the final image, not the build stage.
 ARG ORION_GIT_REVISION=unknown
 ARG ORION_GIT_SOURCE=https://github.com/ZabLaboratory/Orion
+ARG ORION_GO_VERSION=unknown
 LABEL org.opencontainers.image.revision="${ORION_GIT_REVISION}"
 LABEL org.opencontainers.image.source="${ORION_GIT_SOURCE}"
+LABEL org.opencontainers.image.build.base.name="golang:1.26-alpine"
+LABEL org.opencontainers.image.build.base.digest="sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816"
+LABEL org.opencontainers.image.base.name="gcr.io/distroless/static:nonroot"
+LABEL org.opencontainers.image.base.digest="sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6"
+LABEL org.opencontainers.image.build.go-version="${ORION_GO_VERSION}"
 
 USER nonroot:nonroot
 EXPOSE 4007 4017

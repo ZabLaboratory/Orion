@@ -81,12 +81,13 @@ encoding/xml, encoding/asn1 — GO-2026-6218/6090/6089/6088/5972/5026), toutes
 résolvait vers `1.26.5` sur ce runner (toolchain en cache non renouvelée sous
 le wildcard). Fix : pin exact `go-version: "1.26.6"` sur les 8 jobs Go.
 Clearance Bastion obtenue avant merge (`CLEARED_WITH_CONDITIONS`, Orion#336) :
-CVE DoS-only, aucun RCE/confidentialité/intégrité, pas de veto. 2 conditions
-de clôture restent ouvertes, hors de ce work unit (suivi séparé) : mesurer le
-toolchain qui compile réellement le binaire prod (`Dockerfile:4
-FROM golang:1.26-alpine` flottant, `deploy.yml:233 docker compose build` sans
-`--pull`), et pin par digest (rejoint aussi le drift `postgres:16-alpine`
-noté dans `conventions.md` §Docker).
+CVE DoS-only, aucun RCE/confidentialité/intégrité, pas de veto. Les conditions
+de toolchain sont maintenant traitées dans Orion#318 : les images Go,
+distroless, Postgres et curl sont référencées par digest ; le déploiement force
+`docker compose build --pull` ; et le job SSH imprime le Docker, Compose,
+Buildx, l'image Go exacte, son `RepoDigest` et le `go version` issu de cette
+image avant la compilation. Le `go version` est aussi injecté dans le label OCI
+`org.opencontainers.image.build.go-version` de l'image Orion.
 
 ## Portée du fix / limite connue
 
@@ -114,6 +115,18 @@ branche déjà leasée par un autre agent.
 
 Le v1 (`49659b1` / PR #350) reste inoffensif mais inutile (sa condition ne se
 déclenche jamais) ; pas besoin de le revert séparément.
+
+## Mesure et renouvellement du toolchain de production
+
+Le step `Build, migrate, restart` du workflow de déploiement est la preuve
+canonique du toolchain effectivement utilisé sur le VPS. Chaque run doit
+contenir les lignes `Production build toolchain`, `docker=`,
+`docker_compose=`, `docker_buildx=`, `go_build_image=`,
+`go_build_image_repo_digest=` et `go_toolchain=` avant `Build`. Les digests
+référencés par `Dockerfile`, `docker-compose.prod.yml` et la probe interne sont
+mis à jour ensemble dans une PR, après vérification des manifestes du registre.
+Après une mise à jour, vérifier le run de déploiement et le label OCI de l'image
+finale ; un tag flottant seul n'est pas une preuve de renouvellement.
 
 ## Non résolu, hors scope Keeper
 

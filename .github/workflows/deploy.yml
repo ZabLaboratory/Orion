@@ -243,8 +243,21 @@ jobs:
             fi
           done
 
+          echo "=== Production build toolchain ==="
+          GO_BUILD_IMAGE='golang:1.26-alpine@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816'
+          docker pull --quiet "$GO_BUILD_IMAGE" >/dev/null
+          echo "docker=$(docker version --format 'client={{.Client.Version}} server={{.Server.Version}}')"
+          echo "docker_compose=$(docker compose version)"
+          BUILDX_VERSION="$(docker buildx version 2>/dev/null || true)"
+          echo "docker_buildx=${BUILDX_VERSION:-unavailable}"
+          echo "go_build_image=$GO_BUILD_IMAGE"
+          echo "go_build_image_repo_digest=$(docker image inspect "$GO_BUILD_IMAGE" --format '{{index .RepoDigests 0}}')"
+          ORION_GO_VERSION="$(docker run --rm --pull=never "$GO_BUILD_IMAGE" go version)"
+          export ORION_GO_VERSION
+          echo "go_toolchain=$ORION_GO_VERSION"
+
           echo "=== Build ==="
-          docker compose -f docker-compose.prod.yml build --quiet
+          docker compose -f docker-compose.prod.yml build --pull --quiet
           unset BLUE_READ_TOKEN
 
           echo "=== Ensure DB is up ==="
@@ -271,12 +284,14 @@ jobs:
           echo "=== Up services (single boot) ==="
           docker compose -f docker-compose.prod.yml up -d orion-db
           docker compose -f docker-compose.prod.yml up -d --force-recreate orion
+          ORION_IMAGE_ID="$(docker inspect --format '{{.Image}}' orion)"
+          docker image inspect "$ORION_IMAGE_ID" --format 'orion_image_id={{.Id}} revision={{index .Config.Labels "org.opencontainers.image.revision"}} go_toolchain={{index .Config.Labels "org.opencontainers.image.build.go-version"}} build_base_digest={{index .Config.Labels "org.opencontainers.image.build.base.digest"}} runtime_base_digest={{index .Config.Labels "org.opencontainers.image.base.digest"}}'
 
           echo "=== Health (internal) ==="
           sleep 5
           HEALTHY=0
           for i in $(seq 1 15); do
-            if docker run --rm --network zab-internal curlimages/curl:latest -sf http://orion:4007/api/v1/health > /dev/null 2>&1; then
+            if docker run --rm --network zab-internal curlimages/curl:latest@sha256:7c12af72ceb38b7432ab85e1a265cff6ae58e06f95539d539b654f2cfa64bb13 -sf http://orion:4007/api/v1/health > /dev/null 2>&1; then
               HEALTHY=1; break
             fi
             echo "  Waiting... ($i/15)"; sleep 3
