@@ -7,6 +7,8 @@ services:
   orion:
     build:
       context: .
+      secrets:
+        - blue_read_token
       # Feed the OCI image labels (org.opencontainers.image.revision /
       # .source, declared in the Dockerfile) so built images are traceable
       # to a commit instead of carrying the `unknown` defaults. The deploy
@@ -135,3 +137,10 @@ volumes:
 networks:
   zab-internal:
     external: true
+
+secrets:
+  # The deploy workflow exposes this only to the BuildKit build process so
+  # the private Blue runtime module can be fetched. It is never written to
+  # .env or copied into the resulting image.
+  blue_read_token:
+    environment: BLUE_READ_TOKEN

@@ -16,7 +16,13 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
-    go mod download
+    --mount=type=secret,id=blue_read_token,required \
+    set -eu; \
+    token="$(cat /run/secrets/blue_read_token)"; \
+    git config --global "url.https://x-access-token:${token}@github.com/ZabLaboratory/.insteadOf" "https://github.com/ZabLaboratory/"; \
+    cleanup() { git config --global --unset "url.https://x-access-token:${token}@github.com/ZabLaboratory/.insteadOf" || true; }; \
+    trap cleanup EXIT; \
+    GIT_TERMINAL_PROMPT=0 GOPRIVATE=github.com/ZabLaboratory/* GONOSUMDB=github.com/ZabLaboratory/* go mod download
 
 COPY . .
 
