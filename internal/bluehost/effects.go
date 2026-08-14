@@ -175,22 +175,22 @@ type serviceCallRoute struct {
 // baked under __route; authored values can only fill escaped template params,
 // and the ServiceCallClient remains fail-closed when no scoped token exists.
 func doServiceCall(ctx context.Context, client *effects.ServiceCallClient, budget *effects.StreamEgressLimiter, budgetKey string, config, inputs map[string]any) (map[string]any, error) {
+	route, err := serviceCallRouteOf(config)
+	if err != nil {
+		return nil, err
+	}
 	if budgetKey == "" {
 		budgetKey = "bluehost"
 	}
 	if budget != nil && !budget.Allow(budgetKey) {
 		return nil, fmt.Errorf("EGRESS_BUDGET_EXCEEDED")
 	}
-	if client == nil {
-		return nil, fmt.Errorf("SERVICE_CALL_UNCONFIGURED")
-	}
-	route, err := serviceCallRouteOf(config)
-	if err != nil {
-		return nil, err
-	}
 	path, err := effects.BuildPath(route.PathTemplate, route.Params, serviceParamsOf(inputs["params"]))
 	if err != nil {
 		return nil, fmt.Errorf("EGRESS_PARAM_MISSING: %w", err)
+	}
+	if client == nil {
+		return nil, fmt.Errorf("SERVICE_CALL_UNCONFIGURED")
 	}
 	payload := bodyBytes(inputs["payload"])
 	callCtx, cancel := context.WithTimeout(ctx, timeoutFrom(inputs["timeout_ms"]))
