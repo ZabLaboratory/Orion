@@ -1,5 +1,5 @@
 {
-  "count": 85,
+  "count": 86,
   "entries": [
     {
       "node_id": "core.animation.play@1",
@@ -658,6 +658,17 @@
       "category": "io",
       "is_pure": true,
       "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.overlay-app.set@1",
+      "namespace": "core.overlay-app",
+      "name": "set",
+      "version": 1,
+      "category": "side-effect",
+      "is_pure": false,
+      "is_bounded": false,
       "source": "stdlib",
       "platform": null
     },
