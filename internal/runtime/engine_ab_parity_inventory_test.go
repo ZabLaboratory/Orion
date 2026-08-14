@@ -23,14 +23,12 @@ import (
 )
 
 // TestEngineABParity_OperationInventory is the unique-9 inventory for the
-// Engine A/Engine B operation corpus. Each row either exercises both real
-// seams or owns a separately named non-equivalence test; no unsupported
-// operation is counted as parity.
+// Engine A/Engine B operation corpus. Every row exercises the real seam and
+// has a direct differential assertion.
 func TestEngineABParity_OperationInventory(t *testing.T) {
 	cases := []struct {
 		id  string
 		run func(*testing.T)
-		gap parityNonEquivalenceError
 	}{
 		{id: "core.http.request@1", run: testParityInventoryHTTP},
 		{id: "core.db.query@1", run: TestEngineABParity_DBQueryObservableAndPreviewNoQuery},
@@ -44,11 +42,7 @@ func TestEngineABParity_OperationInventory(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
-			if tc.run != nil {
-				tc.run(t)
-				return
-			}
-			parityAssertTypedGap(t, tc.gap)
+			tc.run(t)
 		})
 	}
 

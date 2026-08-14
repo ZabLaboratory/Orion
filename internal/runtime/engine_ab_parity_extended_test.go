@@ -23,21 +23,6 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/providers"
 )
 
-// parityNonEquivalenceError is deliberately a test-only blocker type. It is
-// used whenever Engine A and Engine B expose different contracts; keeping
-// the primitive and scenario in the value prevents a direct-runtime proof
-// from being mistaken for host parity.
-type parityNonEquivalenceError struct {
-	Primitive string
-	Scenario  string
-	EngineA   string
-	EngineB   string
-}
-
-func (e parityNonEquivalenceError) Error() string {
-	return fmt.Sprintf("primitive=%s scenario=%s Engine A=%s Engine B=%s", e.Primitive, e.Scenario, e.EngineA, e.EngineB)
-}
-
 func parityExecPort(name string) map[string]any {
 	return map[string]any{"name": name, "kind": "exec", "type": "core.exec", "required": true}
 }
@@ -346,35 +331,6 @@ func parityWaitForALogs(t *testing.T, sc *Scene, want int, timeout time.Duration
 	value, _ := sc.state.Get("__debug.bp.print")
 	t.Fatalf("primitive=core.event.on-event@1 scenario=ordering Engine A logs=%s, want at least %d entries", value, want)
 	return nil
-}
-
-func parityAssertTypedGap(t *testing.T, gap parityNonEquivalenceError) {
-	t.Helper()
-	if gap.Primitive == "" || gap.Scenario == "" || gap.EngineA == "" || gap.EngineB == "" {
-		t.Fatalf("typed parity gap is incomplete: %#v", gap)
-	}
-	// A typed gap is evidence that the A/B contract is not equivalent. It is
-	// never a passing substitute for the differential gate. Keep this helper
-	// name for the existing blocker cases, but make every such case fail with
-	// an explicit routing signal until its owning seam is resolved.
-	t.Fatalf("PARITY_BLOCKER owner=%s route before accepting #358: %v", parityGapOwner(gap), gap)
-}
-
-func parityGapOwner(gap parityNonEquivalenceError) string {
-	switch gap.Primitive {
-	case "core.service.call@1":
-		return "Blue#314/Forge-1 ABI-route (__route admission and walker completion)"
-	case "core.show.emit@1", "core.overlay-app.set@1", "core.animation.play@1":
-		return "Blue ABI local-effect seam plus Forge-2 host mirror"
-	case "core.operator.await-value@1":
-		return "Blue#314/Forge-1 Resolve type-admission seam"
-	case "core.event.on-event@1", "core.event.on-platform-event@1":
-		return "Forge-2 production ingress/active-only host path plus Conduit contract"
-	case "core.http.request@1", "core.db.query@1":
-		return "Engine-A preview policy seam; Orion host remains fail-closed and routes the decision"
-	default:
-		return "Forge-2/Conduit parity seam"
-	}
 }
 
 func parityBlueErrorCode(err error) string {
