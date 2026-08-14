@@ -3,6 +3,12 @@
 # ---- build stage ----------------------------------------------------------
 FROM golang:1.26-alpine AS build
 
+# The private Blue module is fetched through Git over HTTPS. The official
+# Alpine Go image does not include Git, so install only the client and CA
+# roots needed for the module-download step; the runtime stage remains
+# distroless and contains neither Git nor the build credentials.
+RUN apk add --no-cache git ca-certificates
+
 # OCI provenance. Fed by the deploy/build pipeline so every image on the
 # VPS is traceable to a commit + repo (the running prod image carried no
 # revision/source label, which is what let a stale tree drift in silently).
