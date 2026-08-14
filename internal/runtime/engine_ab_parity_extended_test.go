@@ -22,7 +22,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/effects"
 )
 
-// parityNonEquivalenceError is deliberately a test-only report type. It is
+// parityNonEquivalenceError is deliberately a test-only blocker type. It is
 // used whenever Engine A and Engine B expose different contracts; keeping
 // the primitive and scenario in the value prevents a direct-runtime proof
 // from being mistaken for host parity.
@@ -332,7 +332,28 @@ func parityAssertTypedGap(t *testing.T, gap parityNonEquivalenceError) {
 	if gap.Primitive == "" || gap.Scenario == "" || gap.EngineA == "" || gap.EngineB == "" {
 		t.Fatalf("typed parity gap is incomplete: %#v", gap)
 	}
-	t.Logf("expected typed non-equivalence: %v", gap)
+	// A typed gap is evidence that the A/B contract is not equivalent. It is
+	// never a passing substitute for the differential gate. Keep this helper
+	// name for the existing blocker cases, but make every such case fail with
+	// an explicit routing signal until its owning seam is resolved.
+	t.Fatalf("PARITY_BLOCKER owner=%s route before accepting #358: %v", parityGapOwner(gap), gap)
+}
+
+func parityGapOwner(gap parityNonEquivalenceError) string {
+	switch gap.Primitive {
+	case "core.service.call@1":
+		return "Blue#314/Forge-1 ABI-route (__route admission and walker completion)"
+	case "core.show.emit@1", "core.overlay-app.set@1", "core.animation.play@1":
+		return "Blue ABI local-effect seam plus Forge-2 host mirror"
+	case "core.operator.await-value@1":
+		return "Blue#314/Forge-1 Resolve type-admission seam"
+	case "core.event.on-event@1", "core.event.on-platform-event@1":
+		return "Forge-2 production ingress/active-only host path plus Conduit contract"
+	case "core.http.request@1", "core.db.query@1":
+		return "Engine-A preview policy seam; Orion host remains fail-closed and routes the decision"
+	default:
+		return "Forge-2/Conduit parity seam"
+	}
 }
 
 func parityBlueErrorCode(err error) string {

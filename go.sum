@@ -4,6 +4,8 @@ github.com/ZabLaboratory/Blue/runtime/go v0.0.0-20260814095414-454b027f7413 h1:E
 github.com/ZabLaboratory/Blue/runtime/go v0.0.0-20260814095414-454b027f7413/go.mod h1:IFCHQr+8V5XV/Z8qFyNtvvSSTnAHFUTX1AMkyOVWnK8=
 github.com/ZabLaboratory/Blue/runtime/go v0.0.0-20260814143824-cb5cbef644c7 h1:zrLdgpZ+aaeWGnTjZQ9hbTfPUEq5VDdtVxlrc036hQU=
 github.com/ZabLaboratory/Blue/runtime/go v0.0.0-20260814143824-cb5cbef644c7/go.mod h1:IFCHQr+8V5XV/Z8qFyNtvvSSTnAHFUTX1AMkyOVWnK8=
+github.com/ZabLaboratory/Blue/runtime/go v0.0.0-20260814205612-55ccc10c7475 h1:nHQVIX7JhUyuqc8WYh7WIrIIWtSNHWSTZotAmHeFrtE=
+github.com/ZabLaboratory/Blue/runtime/go v0.0.0-20260814205612-55ccc10c7475/go.mod h1:IFCHQr+8V5XV/Z8qFyNtvvSSTnAHFUTX1AMkyOVWnK8=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
