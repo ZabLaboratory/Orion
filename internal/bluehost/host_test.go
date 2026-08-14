@@ -18,10 +18,10 @@ func TestHost_PreparePreviewAndOnAirAreIsolated(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
 
-	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare preview: %v", err)
 	}
-	if err := h.Take("onair-1", "sha256:aaa", program, nil, nil); err != nil {
+	if err := h.Take("onair-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 
@@ -44,10 +44,10 @@ func TestHost_PrepareRefusesDoubleLoad(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
 
-	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	if err := h.Prepare(SlotPreview, "preview-2", "sha256:bbb", program, nil, nil); err == nil {
+	if err := h.Prepare(SlotPreview, "preview-2", "sha256:bbb", program, nil, nil, nil); err == nil {
 		t.Fatal("expected ErrAlreadyLoaded on second Prepare of the same slot")
 	}
 }
@@ -56,10 +56,10 @@ func TestHost_TakeSupersedesPreviousOnAirWithoutStateTransfer(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
 
-	if err := h.Take("onair-1", "sha256:aaa", program, nil, nil); err != nil {
+	if err := h.Take("onair-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("first Take: %v", err)
 	}
-	if err := h.Take("onair-2", "sha256:bbb", program, nil, nil); err != nil {
+	if err := h.Take("onair-2", "sha256:bbb", program, nil, nil, nil); err != nil {
 		t.Fatalf("second Take: %v", err)
 	}
 	if h.Digest(SlotOnAir) != "sha256:bbb" {
@@ -77,11 +77,11 @@ func TestHost_TakeFailureLeavesPreviousOnAirUntouched(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
 
-	if err := h.Take("onair-1", "sha256:aaa", program, nil, nil); err != nil {
+	if err := h.Take("onair-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("first Take: %v", err)
 	}
 
-	if err := h.Take("onair-2", "sha256:bbb", []byte(`not-json`), nil, nil); err == nil {
+	if err := h.Take("onair-2", "sha256:bbb", []byte(`not-json`), nil, nil, nil); err == nil {
 		t.Fatal("expected failure loading malformed program")
 	}
 
@@ -111,7 +111,7 @@ func TestHost_ReleaseThenReprepare(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
 
-	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if err := h.Release(SlotPreview, "operator-cancelled"); err != nil {
@@ -120,7 +120,7 @@ func TestHost_ReleaseThenReprepare(t *testing.T) {
 	if h.Digest(SlotPreview) != "" {
 		t.Fatalf("expected empty slot after Release")
 	}
-	if err := h.Prepare(SlotPreview, "preview-2", "sha256:bbb", program, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-2", "sha256:bbb", program, nil, nil, nil); err != nil {
 		t.Fatalf("re-Prepare after Release: %v", err)
 	}
 }
@@ -137,7 +137,7 @@ func TestHost_SetBundleAndBundle(t *testing.T) {
 		t.Fatal("expected SetBundle on an empty slot to be a no-op")
 	}
 
-	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	h.SetBundle(SlotPreview, []byte("lsml-bytes"))

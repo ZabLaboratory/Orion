@@ -2,9 +2,11 @@
 // (ADR-BLUE-012 §4.3/§4.4/§6.6): it owns the preview/on-air instance
 // lifecycle and isolation, translating Orion's broadcast vocabulary
 // (preview/on-air) to the runtime's portable Mode (Preview/Execute).
-// It has no network, storage or Zab dependency of its own — the runtime
-// package it wraps is intentionally host-neutral; every Zab-specific
-// capability rides through the Providers a caller passes to Prepare/Take.
+// The runtime package it wraps is intentionally host-neutral — it opens no
+// socket and holds no DB pool of its own; every Zab-specific capability
+// (providers, and since ENGINE-B-PARITY-ORION the 3 opcodes-of-full-right
+// EffectHandlers: core.http.request@1/core.http-request@1/core.db.query@1,
+// see effects.go) rides through what a caller passes to Prepare/Take.
 package bluehost
 
 import (
@@ -90,7 +92,7 @@ func modeFor(slot Slot) blueruntime.Mode {
 // portable runtime at admission (never read from a DB/catalogue) — the
 // caller builds them from Orion's adapters, never from Prism or a client
 // payload (§4.4 invariant: no mutable payload initializes an instance).
-func (h *Host) Prepare(slot Slot, instanceID, digest string, program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy) error {
+func (h *Host) Prepare(slot Slot, instanceID, digest string, program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy, effectHandlers map[string]blueruntime.EffectFunc) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -104,10 +106,11 @@ func (h *Host) Prepare(slot Slot, instanceID, digest string, program []byte, pro
 	}
 
 	instance, err := h.runtime.Start(handle, blueruntime.StartOptions{
-		InstanceID: instanceID,
-		Mode:       modeFor(slot),
-		Providers:  providers,
-		Policy:     policy,
+		InstanceID:     instanceID,
+		Mode:           modeFor(slot),
+		Providers:      providers,
+		Policy:         policy,
+		EffectHandlers: effectHandlers,
 	})
 	if err != nil {
 		return fmt.Errorf("bluehost: start %s: %w", slot, err)
@@ -214,7 +217,7 @@ func (h *Host) Release(slot Slot, reason string) error {
 // A failure before the new instance starts leaves the previous on-air
 // instance (if any) completely untouched — the atomicity boundary §4.4
 // promises ("un échec avant commit ne modifie pas l'active").
-func (h *Host) Take(instanceID, digest string, program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy) error {
+func (h *Host) Take(instanceID, digest string, program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy, effectHandlers map[string]blueruntime.EffectFunc) error {
 	h.mu.Lock()
 	handle, err := h.runtime.Load(program)
 	if err != nil {
@@ -222,10 +225,11 @@ func (h *Host) Take(instanceID, digest string, program []byte, providers []map[s
 		return fmt.Errorf("bluehost: load on-air: %w", err)
 	}
 	instance, err := h.runtime.Start(handle, blueruntime.StartOptions{
-		InstanceID: instanceID,
-		Mode:       blueruntime.Execute,
-		Providers:  providers,
-		Policy:     policy,
+		InstanceID:     instanceID,
+		Mode:           blueruntime.Execute,
+		Providers:      providers,
+		Policy:         policy,
+		EffectHandlers: effectHandlers,
 	})
 	if err != nil {
 		h.mu.Unlock()
@@ -244,4 +248,81 @@ func (h *Host) Take(instanceID, digest string, program []byte, providers []map[s
 		return h.runtime.Stop(previous.instance, "superseded-by-take")
 	}
 	return nil
+}
+
+// Tick advances slot's instance virtual clock by deltaSeconds, firing
+// `core.event.on-tick@1` (ENGINE-B-PARITY-ORION entrypoint genre #1) and
+// every `core.flow.delay@1` continuation now due. Mirrors Engine A's
+// injected-clock contract (internal/runtime/exec_timer.go) — the caller
+// (a periodic ticker, same cadence as the antenne scene loop) is
+// responsible for calling this at a steady rate; the Host itself owns no
+// clock or goroutine of its own.
+func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.slots[slot]
+	if !ok {
+		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
+	}
+	return h.runtime.Tick(e.instance, deltaSeconds)
+}
+
+// Call fires `core.operator.on-call@1` (entrypoint genre #3) on slot's
+// instance, addressed by callID — the Engine B analogue of Orion's
+// `POST /operator/call/{entrypoint_id}` (Blue ADR 008 §3.2), same
+// active-only routing as Engine A: a slot with no prepared instance
+// returns ErrNotLoaded, never a silent no-op.
+func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.slots[slot]
+	if !ok {
+		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
+	}
+	return h.runtime.Call(e.instance, callID, payload)
+}
+
+// WritePlatformEvent fires `core.event.on-platform-event@1` (entrypoint
+// genre #2) by writing payload onto leaf — the canonical
+// `__inputs.platform.<platform>.<channel>.last_<event_type>` string,
+// byte-identical to Orion's platformEventEntryLeaf (Engine A,
+// internal/runtime/exec_on_platform_test.go convention) — so the SAME
+// inbound platform event (Quasar/Twitch) arms Engine A and Engine B
+// identically.
+func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (blueruntime.StepResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.slots[slot]
+	if !ok {
+		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
+	}
+	return h.runtime.WritePlatformEvent(e.instance, leaf, payload)
+}
+
+// Resolve resumes one parked `core.operator.await-value@1` continuation
+// on slot's instance — the Engine B analogue of Orion's
+// `POST /operator/resolve/{await_name}` (Blue ADR 008 §3.3).
+func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.StepResult, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.slots[slot]
+	if !ok {
+		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
+	}
+	return h.runtime.Resolve(e.instance, awaitName, value)
+}
+
+// Complete reports a provider's outcome for a `core.effect.invoke@1`
+// invocation Step/Tick/Call/WritePlatformEvent previously emitted
+// (StepResult.Invocations) — the async admission-protocol completion
+// path, distinct from the 3 synchronous EffectHandlers opcodes of full
+// right wired at Prepare/Take.
+func (h *Host) Complete(slot Slot, data []byte) (blueruntime.Receipt, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.slots[slot]
+	if !ok {
+		return blueruntime.Receipt{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
+	}
+	return h.runtime.Complete(e.instance, data)
 }

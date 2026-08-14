@@ -469,7 +469,7 @@ func TestGetHostStatus_EmptyHost(t *testing.T) {
 func TestGetHostStatus_ReflectsPreparedSlot(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	deps := SceneIntentDeps{Host: host}
@@ -550,7 +550,7 @@ func TestDecodeAndVerifyBundle_MissingDigestRejected(t *testing.T) {
 func TestGetHostRenderBundle_ServesPreparedBundle(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	host.SetBundle(bluehost.SlotPreview, []byte(`{"root":{}}`))
