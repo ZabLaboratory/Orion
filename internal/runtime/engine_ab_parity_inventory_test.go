@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,10 +21,10 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/effects"
 )
 
-// TestEngineABParity_OperationInventory is intentionally a small inventory,
-// not a claim that every primitive has the same host contract.  HTTP and DB
-// execute through both real engines.  The remaining entries retain an
-// explicit typed gap until bluehost exposes the corresponding A seam.
+// TestEngineABParity_OperationInventory is the unique-9 inventory for the
+// Engine A/Engine B operation corpus. Each row either exercises both real
+// seams or owns a separately named non-equivalence test; no unsupported
+// operation is counted as parity.
 func TestEngineABParity_OperationInventory(t *testing.T) {
 	cases := []struct {
 		id  string
@@ -31,7 +33,7 @@ func TestEngineABParity_OperationInventory(t *testing.T) {
 	}{
 		{id: "core.http.request@1", run: testParityInventoryHTTP},
 		{id: "core.db.query@1", run: TestEngineABParity_DBQueryObservableAndPreviewNoQuery},
-		{id: "core.service.call@1", run: testParityInventoryServiceGap},
+		{id: "core.service.call@1", run: testParityInventoryService},
 		{id: "core.show.emit@1", run: testParityInventoryShow},
 		{id: "core.overlay-app.set@1", run: testParityInventoryOverlay},
 		{id: "core.animation.play@1", run: testParityInventoryAnimation},
@@ -403,46 +405,210 @@ func parityAssertBLocalSideEffect(t *testing.T, primitive string, value any, con
 	return step
 }
 
-func testParityInventoryServiceGap(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+func parityServiceCallProgram() *ExecProgram {
+	return &ExecProgram{
+		BlueprintKey: "bp",
+		Nodes: map[string]*ExecNode{
+			"call": {ID: "call", Op: OpServiceCall, Config: map[string]json.RawMessage{
+				bakedRouteConfigKey: raw(echoRouteJSON),
+				"params":            raw(`{"name":"alice"}`),
+				"payload":           raw(`{"source":"orion-358"}`),
+			}, Next: map[string]ExecTarget{
+				"then":  {Node: "set.status"},
+				"error": {Node: "set.err"},
+			}},
+			"set.status": setFromPin("set.status", "status", "call", "status", map[string]ExecTarget{"then": {Node: "set.body"}}),
+			"set.body":   setFromPin("set.body", "body", "call", "body", map[string]ExecTarget{"then": {Node: "set.then"}}),
+			"set.then":   constSet("set.then", "then", `"then"`),
+			"set.err":    setFromPin("set.err", "error", "call", "error", nil),
+		},
+		Entrypoints: map[string]ExecEntry{"e": {Target: ExecTarget{Node: "call"}}},
+	}
+}
+
+func parityBuildBServiceProgram(t *testing.T) []byte {
+	t.Helper()
+	var route map[string]any
+	if err := json.Unmarshal([]byte(echoRouteJSON), &route); err != nil {
+		t.Fatalf("primitive=core.service.call@1 scenario=fixture route: %v", err)
+	}
+	return parityBuildProgram(t, "ab-inventory-service",
+		[]any{
+			map[string]any{"id": "core.event.on-start@1", "kind": "entrypoint", "config": []any{}, "inputs": []any{}, "outputs": []any{parityExecPort("then")}},
+			map[string]any{
+				"id": "core.service.call@1", "kind": "control",
+				"config": []any{},
+				"inputs": []any{
+					parityDataPort("params", "core.json", false), parityDataPort("payload", "core.json", false),
+					parityDataPort("timeout_ms", "core.json", false), parityExecPort("in"),
+				},
+				"outputs": []any{
+					parityDataPort("body", "core.json", false), parityDataPort("error", "core.json", false),
+					parityDataPort("ok", "core.json", false), parityDataPort("status", "core.json", false),
+					parityExecPort("error"), parityExecPort("then"),
+				},
+			},
+			map[string]any{
+				"id": "core.variable.set@1", "kind": "pure",
+				"config":  []any{parityDataPort("variable", "core.string", true)},
+				"inputs":  []any{parityDataPort("value", "core.json", true), parityExecPort("in")},
+				"outputs": []any{parityDataPort("value", "core.json", false), parityExecPort("then")},
+			},
+		},
+		[]any{
+			map[string]any{"id": "call", "opcode": "core.service.call@1", "config": map[string]any{"__route": route}},
+			map[string]any{"id": "set-body", "opcode": "core.variable.set@1", "config": map[string]any{"variable": "body"}},
+			map[string]any{"id": "set-error", "opcode": "core.variable.set@1", "config": map[string]any{"variable": "error"}},
+			map[string]any{"id": "set-status", "opcode": "core.variable.set@1", "config": map[string]any{"variable": "status"}},
+			map[string]any{"id": "set-then", "opcode": "core.variable.set@1", "config": map[string]any{"variable": "then"}},
+			map[string]any{"id": "start-node", "opcode": "core.event.on-start@1", "config": map[string]any{}},
+		},
+		[]any{map[string]any{"id": "start", "kind": "start", "node_id": "start-node", "port": "then"}},
+		[]any{
+			map[string]any{"from_node": "call", "from_port": "error", "to_node": "set-error", "to_port": "in", "sequence": 0},
+			map[string]any{"from_node": "call", "from_port": "then", "to_node": "set-status", "to_port": "in", "sequence": 0},
+			map[string]any{"from_node": "set-body", "from_port": "then", "to_node": "set-then", "to_port": "in", "sequence": 0},
+			map[string]any{"from_node": "set-status", "from_port": "then", "to_node": "set-body", "to_port": "in", "sequence": 0},
+			map[string]any{"from_node": "start-node", "from_port": "then", "to_node": "call", "to_port": "in", "sequence": 0},
+		},
+		[]any{
+			map[string]any{"from_node": "call", "from_port": "body", "to_node": "set-body", "to_port": "value"},
+			map[string]any{"from_node": "call", "from_port": "error", "to_node": "set-error", "to_port": "value"},
+			map[string]any{"from_node": "call", "from_port": "status", "to_node": "set-status", "to_port": "value"},
+		},
+		[]any{
+			map[string]any{"node_id": "call", "port": "params", "value": map[string]any{"name": "alice"}},
+			map[string]any{"node_id": "call", "port": "payload", "value": map[string]any{"source": "orion-358"}},
+			map[string]any{"node_id": "set-then", "port": "value", "value": "then"},
+		}, []any{},
+		[]any{
+			map[string]any{"name": "body", "type": "core.json", "initial": nil},
+			map[string]any{"name": "error", "type": "core.json", "initial": nil},
+			map[string]any{"name": "status", "type": "core.json", "initial": nil},
+			map[string]any{"name": "then", "type": "core.json", "initial": nil},
+		},
+	)
+}
+
+func testParityInventoryService(t *testing.T) {
+	type request struct {
+		method string
+		path   string
+		body   []byte
+	}
+	var mu sync.Mutex
+	var requests []request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("primitive=core.service.call@1 scenario=success read request body: %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, request{method: r.Method, path: r.URL.Path, body: append([]byte(nil), body...)})
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true,"source":"blue314"}`))
 	}))
 	defer srv.Close()
 	minter := &recordingMinter{token: "inventory-token"}
-	a := effectsScene(t, "inventory-service-a", serviceCallProgram(echoRouteJSON, `{"name":"alice"}`), &SceneEffects{
-		Runner: newTestRunner(t), ServiceCall: effects.NewServiceCallClient(srv.URL, minter.mint, nil),
+	client := effects.NewServiceCallClient(srv.URL, minter.mint, nil)
+
+	a := effectsScene(t, "inventory-service-a", parityServiceCallProgram(), &SceneEffects{
+		Runner: newTestRunner(t), ServiceCall: client,
 	})
 	startScene(t, a)
 	mustFire(t, a, "e")
 	waitForState(t, a, "__vars.bp.status", "200", 2*time.Second)
+	waitForState(t, a, "__vars.bp.body", `{"ok":true,"source":"blue314"}`, 2*time.Second)
 	aStatus, _ := a.state.Get("__vars.bp.status")
+	aBody, _ := a.state.Get("__vars.bp.body")
+	aThen, _ := a.state.Get("__vars.bp.then")
+	if string(aThen) != `"then"` {
+		t.Fatalf("primitive=core.service.call@1 scenario=success Engine A then=%s, want \"then\"", aThen)
+	}
+	if _, ok := a.state.Get("__vars.bp.error"); ok {
+		t.Fatalf("primitive=core.service.call@1 scenario=success Engine A unexpectedly fired error")
+	}
 
-	program := parityBuildProgram(t, "ab-inventory-service",
-		[]any{
-			map[string]any{"id": "core.event.on-start@1", "kind": "entrypoint", "config": []any{}, "inputs": []any{}, "outputs": []any{parityExecPort("then")}},
-			map[string]any{"id": "core.service.call@1", "kind": "control", "config": []any{}, "inputs": []any{parityExecPort("in")}, "outputs": []any{parityExecPort("error"), parityExecPort("then")}},
-		},
-		[]any{
-			map[string]any{"id": "call", "opcode": "core.service.call@1", "config": map[string]any{}},
-			map[string]any{"id": "start-node", "opcode": "core.event.on-start@1", "config": map[string]any{}},
-		},
-		[]any{map[string]any{"id": "start", "kind": "start", "node_id": "start-node", "port": "then"}},
-		[]any{map[string]any{"from_node": "start-node", "from_port": "then", "to_node": "call", "to_port": "in", "sequence": 0}},
-		[]any{}, []any{}, []any{}, []any{},
-	)
 	h := bluehost.NewHost()
 	t.Cleanup(func() { _ = h.Release(bluehost.SlotOnAir, "test-cleanup") })
-	err := h.Prepare(bluehost.SlotOnAir, "inventory-service-b", "sha256:inventory-service-b", program, nil, nil, nil)
-	if err == nil {
-		_, err = h.Step(bluehost.SlotOnAir)
+	if err := h.Prepare(bluehost.SlotOnAir, "inventory-service-b", "sha256:inventory-service-b", parityBuildBServiceProgram(t), nil, nil,
+		bluehost.NewEffectHandlers(bluehost.EffectDeps{ServiceCall: client}, blueruntime.Execute)); err != nil {
+		if parityBlueErrorCode(err) != "PROGRAM_PORT_INVALID" {
+			t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam unexpected Engine B Host.Prepare error code=%q err=%v", parityBlueErrorCode(err), err)
+		}
+		t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam BLOCKER: Engine A status=%s body=%s path=/example/api/v1/items/alice/echo then=%q; the exact compiler-shaped Blue fixture with opcode config=[] and nodes[call].config.__route was rejected before execution with %v. The current Blue Go parser does not accept the hidden curated-route metadata, so the real walker cannot receive the route and A/B status/path/body/then/error comparison cannot be claimed without a Blue change excluded by this work-unit", aStatus, aBody, aThen, err)
 	}
-	if code := parityBlueErrorCode(err); code != "PROGRAM_OPCODE_UNSUPPORTED" {
-		t.Fatalf("primitive=core.service.call@1 scenario=host-unsupported Engine A status=%s Engine B code=%q err=%v, want PROGRAM_OPCODE_UNSUPPORTED", aStatus, code, err)
+	bStep := parityBStep(t, h, bluehost.SlotOnAir, "service.call success")
+	if bError, ok := bStep.Variables["error"].(string); ok && bError != "" {
+		mu.Lock()
+		requestCount := len(requests)
+		mu.Unlock()
+		if bError != "EGRESS_ROUTE_NOT_BAKED" {
+			t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam unexpected Engine B error=%q; request count=%d", bError, requestCount)
+		}
+		t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam BLOCKER: Engine A status=%s body=%s path=/example/api/v1/items/alice/echo then=%q; Engine B walker dispatched core.service.call@1 but returned %q, with no status/body/path/then and %d server requests. Blue's compiler-required __route cannot be represented by the current Go program schema (PROGRAM_PORT_INVALID: invalid identifier), so bluehost.NewEffectHandlers cannot receive the curated route without a Blue change excluded by this work-unit", aStatus, aBody, aThen, bError, requestCount)
 	}
-	parityAssertTypedGap(t, parityNonEquivalenceError{
-		Primitive: "core.service.call@1", Scenario: "host-unsupported",
-		EngineA: "Engine A executed serviceCallProgram and observed HTTP 200",
-		EngineB: "real bluehost.Host rejected core.service.call@1 with PROGRAM_OPCODE_UNSUPPORTED",
+	bStatus, ok := bStep.Variables["status"].(json.Number)
+	if !ok || bStatus.String() != string(aStatus) {
+		t.Fatalf("primitive=core.service.call@1 scenario=success status diverges: Engine A=%s Engine B=%#v", aStatus, bStep.Variables["status"])
+	}
+	parityAssertInventoryResult(t, "core.service.call@1", "success-response-body", aBody, bStep.Variables["body"])
+	if got, _ := bStep.Variables["then"].(string); got != "then" {
+		t.Fatalf("primitive=core.service.call@1 scenario=success Engine B then=%q, want then", got)
+	}
+	if value := bStep.Variables["error"]; value != nil {
+		t.Fatalf("primitive=core.service.call@1 scenario=success Engine B unexpectedly fired error: %#v", value)
+	}
+
+	mu.Lock()
+	if len(requests) != 2 {
+		mu.Unlock()
+		t.Fatalf("primitive=core.service.call@1 scenario=success request count=%d, want Engine A and Engine B", len(requests))
+	}
+	aRequest, bRequest := requests[0], requests[1]
+	mu.Unlock()
+	if aRequest.method != bRequest.method || aRequest.path != bRequest.path || !bytes.Equal(aRequest.body, bRequest.body) {
+		t.Fatalf("primitive=core.service.call@1 scenario=success request observable diverges: Engine A=%+v Engine B=%+v", aRequest, bRequest)
+	}
+	if aRequest.method != http.MethodPost || aRequest.path != "/example/api/v1/items/alice/echo" || string(aRequest.body) != `{"source":"orion-358"}` {
+		t.Fatalf("primitive=core.service.call@1 scenario=success unexpected request=%+v", aRequest)
+	}
+
+	t.Run("typed-error-and-error-routing", func(t *testing.T) {
+		var errorHits atomic.Int32
+		errorServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			errorHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer errorServer.Close()
+		noToken := &recordingMinter{}
+		aErrScene := effectsScene(t, "inventory-service-error-a", parityServiceCallProgram(), &SceneEffects{
+			Runner: newTestRunner(t), ServiceCall: effects.NewServiceCallClient(errorServer.URL, noToken.mint, nil),
+		})
+		startScene(t, aErrScene)
+		mustFire(t, aErrScene, "e")
+		waitFor(t, "Engine A service.call error continuation", func() bool {
+			_, ok := aErrScene.state.Get("__vars.bp.error")
+			return ok
+		})
+		aError, _ := aErrScene.state.Get("__vars.bp.error")
+
+		bErrHost := bluehost.NewHost()
+		t.Cleanup(func() { _ = bErrHost.Release(bluehost.SlotOnAir, "test-cleanup") })
+		if err := bErrHost.Prepare(bluehost.SlotOnAir, "inventory-service-error-b", "sha256:inventory-service-error-b", parityBuildBServiceProgram(t), nil, nil,
+			bluehost.NewEffectHandlers(bluehost.EffectDeps{ServiceCall: effects.NewServiceCallClient(errorServer.URL, noToken.mint, nil)}, blueruntime.Execute)); err != nil {
+			t.Fatalf("primitive=core.service.call@1 scenario=typed-error Engine B Host.Prepare: %v", err)
+		}
+		bErrorStep := parityBStep(t, bErrHost, bluehost.SlotOnAir, "service.call typed error")
+		parityAssertInventoryResult(t, "core.service.call@1", "typed-error", aError, bErrorStep.Variables["error"])
+		if _, ok := aErrScene.state.Get("__vars.bp.then"); ok || bErrorStep.Variables["then"] != nil {
+			t.Fatalf("primitive=core.service.call@1 scenario=typed-error then branch fired on Engine A/B")
+		}
+		if got := errorHits.Load(); got != 0 {
+			t.Fatalf("primitive=core.service.call@1 scenario=typed-error server hits=%d, want zero without scoped token", got)
+		}
 	})
 }
 

@@ -261,12 +261,19 @@ func (h *Host) Take(instanceID, digest string, program []byte, providers []map[s
 // clock or goroutine of its own.
 func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Tick(e.instance, deltaSeconds)
+	instance := e.instance
+	result, err := h.runtime.Tick(instance, deltaSeconds)
+	h.mu.Unlock()
+	if err != nil {
+		return result, err
+	}
+	h.dispatchInvocations(slot, instance, result.Invocations)
+	return result, nil
 }
 
 // Call fires `core.operator.on-call@1` (entrypoint genre #3) on slot's
@@ -276,12 +283,19 @@ func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, er
 // returns ErrNotLoaded, never a silent no-op.
 func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Call(e.instance, callID, payload)
+	instance := e.instance
+	result, err := h.runtime.Call(instance, callID, payload)
+	h.mu.Unlock()
+	if err != nil {
+		return result, err
+	}
+	h.dispatchInvocations(slot, instance, result.Invocations)
+	return result, nil
 }
 
 // WritePlatformEvent fires `core.event.on-platform-event@1` (entrypoint
@@ -293,12 +307,19 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 // identically.
 func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.WritePlatformEvent(e.instance, leaf, payload)
+	instance := e.instance
+	result, err := h.runtime.WritePlatformEvent(instance, leaf, payload)
+	h.mu.Unlock()
+	if err != nil {
+		return result, err
+	}
+	h.dispatchInvocations(slot, instance, result.Invocations)
+	return result, nil
 }
 
 // Resolve resumes one parked `core.operator.await-value@1` continuation
@@ -306,12 +327,19 @@ func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (bluerunt
 // `POST /operator/resolve/{await_name}` (Blue ADR 008 §3.3).
 func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Resolve(e.instance, awaitName, value)
+	instance := e.instance
+	result, err := h.runtime.Resolve(instance, awaitName, value)
+	h.mu.Unlock()
+	if err != nil {
+		return result, err
+	}
+	h.dispatchInvocations(slot, instance, result.Invocations)
+	return result, nil
 }
 
 // Complete reports a provider's outcome for a `core.effect.invoke@1`
