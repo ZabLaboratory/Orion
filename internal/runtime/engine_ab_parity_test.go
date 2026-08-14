@@ -171,7 +171,7 @@ func buildEngineBHTTPProgram(t *testing.T, targetURL string) []byte {
 // identical status code — the on-air/execute half of ENGINE-B-PARITY-
 // ORION's differential proof (issue #358 §4).
 func TestEngineABParity_HTTPRequestExecuteSameServerSameStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer srv.Close()

@@ -243,7 +243,7 @@ func TestEffectHandlers_PreviewNeverDialsNetwork(t *testing.T) {
 // server is hit and its status code round-trips onto the declared state
 // output.
 func TestEffectHandlers_ExecuteDispatchesRealHTTP(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusCreated)
 	}))
 	defer srv.Close()

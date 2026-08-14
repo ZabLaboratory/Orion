@@ -85,7 +85,7 @@ func dropForwardHeader(name string) bool {
 // reported, not resolved unilaterally (an architecture call for
 // Atlas/Conduit, not a Forge judgment call).
 func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueruntime.EffectFunc {
-	http := func(config, inputs map[string]any) (map[string]any, error) {
+	http := func(_, inputs map[string]any) (map[string]any, error) {
 		if mode != blueruntime.Execute {
 			return previewHTTPResult(), nil
 		}
