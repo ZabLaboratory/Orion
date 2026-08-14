@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -309,5 +310,94 @@ func TestEffectHandlers_ExecuteWithoutEgressPolicyFailsClosed(t *testing.T) {
 	}
 	if v := step.Outputs["result"]; v != nil {
 		t.Fatalf("unconfigured egress must fail closed to `error`, not `then`: outputs=%#v", step.Outputs)
+	}
+}
+
+func TestEffectHandlers_ServiceCallPreviewNeverDials(t *testing.T) {
+	dialed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		dialed = true
+	}))
+	defer srv.Close()
+	client := effects.NewServiceCallClient(srv.URL, func([]string) string { return "scoped" }, nil)
+	handler := NewEffectHandlers(EffectDeps{ServiceCall: client}, blueruntime.Preview)["core.service.call@1"]
+
+	outputs, err := handler(map[string]any{
+		"__route": map[string]any{
+			"method":        "POST",
+			"path_template": "/svc/{id}",
+			"params":        []string{"id"},
+			"token_paths":   []string{"svc.write"},
+		},
+	}, map[string]any{
+		"params":  map[string]any{"id": "preview"},
+		"payload": map[string]any{"ok": true},
+	})
+	if err != nil {
+		t.Fatalf("preview service.call: %v", err)
+	}
+	if dialed {
+		t.Fatal("preview service.call dialed the network")
+	}
+	if got := outputs["preview"]; got != true {
+		t.Fatalf("preview service.call did not return synthetic result: %#v", outputs)
+	}
+}
+
+func TestEffectHandlers_ExecuteServiceCallBuildsPathAndCalls(t *testing.T) {
+	var gotPath, gotAuth string
+	var gotBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		gotAuth = r.Header.Get("Authorization")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"accepted":true}`))
+	}))
+	defer srv.Close()
+	client := effects.NewServiceCallClient(srv.URL, func(paths []string) string {
+		if len(paths) != 1 || paths[0] != "svc.write" {
+			t.Fatalf("unexpected token paths: %v", paths)
+		}
+		return "scoped"
+	}, nil)
+	handler := NewEffectHandlers(EffectDeps{
+		ServiceCall:  client,
+		EgressBudget: effects.NewStreamEgressLimiter(1, 10),
+	}, blueruntime.Execute)["core.service.call@1"]
+
+	outputs, err := handler(map[string]any{
+		"__route": map[string]any{
+			"method":        "POST",
+			"path_template": "/svc/{id}",
+			"params":        []string{"id"},
+			"token_paths":   []string{"svc.write"},
+		},
+	}, map[string]any{
+		"params":  map[string]any{"id": "a/b"},
+		"payload": map[string]any{"ok": true},
+	})
+	if err != nil {
+		t.Fatalf("execute service.call: %v", err)
+	}
+	if gotPath != "/svc/a%2Fb" {
+		t.Fatalf("service.call path was not escaped: %q", gotPath)
+	}
+	if gotAuth != "Bearer scoped" {
+		t.Fatalf("service.call authorization drift: %q", gotAuth)
+	}
+	if string(gotBody) != `{"ok":true}` {
+		t.Fatalf("service.call payload drift: %s", gotBody)
+	}
+	if status, ok := outputs["status"].(json.Number); !ok || status.String() != "201" {
+		t.Fatalf("service.call status drift: %#v", outputs)
+	}
+	if outputs["ok"] != true {
+		t.Fatalf("service.call did not expose ok=true: %#v", outputs)
+	}
+	body, ok := outputs["body"].(map[string]any)
+	if !ok || body["accepted"] != true {
+		t.Fatalf("service.call body drift: %#v", outputs["body"])
 	}
 }

@@ -12,18 +12,22 @@ import (
 )
 
 // EffectDeps is the shared host-side dependency bundle. NewEffectHandlers
-// into Engine B's 3 opcodes of full right (ENGINE-B-PARITY-BLUE:
-// core.http.request@1, core.http-request@1, core.db.query@1 — the opcodes
+// into Engine B's 4 opcodes of full right (ENGINE-B-PARITY-BLUE:
+// core.http.request@1, core.http-request@1, core.db.query@1,
+// core.service.call@1 — the opcodes
 // walker.go dispatches through StartOptions.EffectHandlers, NOT the
 // core.effect.invoke@1 async admission protocol). The Runner is used by
 // the generic invocation adapter; the other fields are used by the direct
 // handlers. cmd/orion/main.go creates this bundle once and passes the same
 // instances to Engine A and the scene-intent bluehost surface.
 type EffectDeps struct {
-	Runner      *effects.Runner
-	Egress      *effects.EgressPolicy
-	DataSources map[string]effects.DataSource
-	DB          *effects.DBQueryClient
+	Runner          *effects.Runner
+	Egress          *effects.EgressPolicy
+	DataSources     map[string]effects.DataSource
+	DB              *effects.DBQueryClient
+	ServiceCall     *effects.ServiceCallClient
+	EgressBudget    *effects.StreamEgressLimiter
+	EgressBudgetKey string
 }
 
 // NewEffectHandlers builds the StartOptions.EffectHandlers table for one
@@ -54,10 +58,17 @@ func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueru
 		}
 		return doDBQuery(context.Background(), deps.DB, deps.DataSources, config, inputs)
 	}
+	serviceCall := func(config, inputs map[string]any) (map[string]any, error) {
+		if mode != blueruntime.Execute {
+			return previewServiceCallResult(), nil
+		}
+		return doServiceCall(context.Background(), deps.ServiceCall, deps.EgressBudget, deps.EgressBudgetKey, config, inputs)
+	}
 	return map[string]blueruntime.EffectFunc{
 		"core.http.request@1": http,
 		"core.http-request@1": http,
 		"core.db.query@1":     db,
+		"core.service.call@1": serviceCall,
 	}
 }
 
@@ -81,6 +92,15 @@ func previewDBResult() map[string]any {
 		"count":      json.Number("0"),
 		"elapsed_ms": json.Number("0"),
 		"preview":    true,
+	}
+}
+
+func previewServiceCallResult() map[string]any {
+	return map[string]any{
+		"status":  json.Number("0"),
+		"body":    nil,
+		"ok":      false,
+		"preview": true,
 	}
 }
 
@@ -141,6 +161,90 @@ func doDBQuery(ctx context.Context, db *effects.DBQueryClient, dataSources map[s
 		"count":      json.Number(strconv.Itoa(res.Count)),
 		"elapsed_ms": json.Number(strconv.FormatFloat(res.ElapsedMS, 'f', -1, 64)),
 	}, nil
+}
+
+type serviceCallRoute struct {
+	Method       string   `json:"method"`
+	PathTemplate string   `json:"path_template"`
+	Params       []string `json:"params"`
+	TokenPaths   []string `json:"token_paths"`
+}
+
+// doServiceCall is the direct Engine-B host seam for the same curated route
+// contract Engine A executes in exec_service_call.go. The route is compiler-
+// baked under __route; authored values can only fill escaped template params,
+// and the ServiceCallClient remains fail-closed when no scoped token exists.
+func doServiceCall(ctx context.Context, client *effects.ServiceCallClient, budget *effects.StreamEgressLimiter, budgetKey string, config, inputs map[string]any) (map[string]any, error) {
+	if budgetKey == "" {
+		budgetKey = "bluehost"
+	}
+	if budget != nil && !budget.Allow(budgetKey) {
+		return nil, fmt.Errorf("EGRESS_BUDGET_EXCEEDED")
+	}
+	if client == nil {
+		return nil, fmt.Errorf("SERVICE_CALL_UNCONFIGURED")
+	}
+	route, err := serviceCallRouteOf(config)
+	if err != nil {
+		return nil, err
+	}
+	path, err := effects.BuildPath(route.PathTemplate, route.Params, serviceParamsOf(inputs["params"]))
+	if err != nil {
+		return nil, fmt.Errorf("EGRESS_PARAM_MISSING: %w", err)
+	}
+	payload := bodyBytes(inputs["payload"])
+	callCtx, cancel := context.WithTimeout(ctx, timeoutFrom(inputs["timeout_ms"]))
+	defer cancel()
+	result, err := client.Call(callCtx, route.Method, path, route.TokenPaths, payload)
+	if err != nil {
+		return nil, fmt.Errorf("SERVICE_CALL_FAILED: %w", err)
+	}
+	var body any
+	if len(result.Body) > 0 {
+		if err := json.Unmarshal(result.Body, &body); err != nil {
+			body = string(result.Body)
+		}
+	}
+	return map[string]any{
+		"status": json.Number(strconv.Itoa(result.Status)),
+		"body":   body,
+		"ok":     result.Status >= 200 && result.Status <= 299,
+	}, nil
+}
+
+func serviceCallRouteOf(config map[string]any) (serviceCallRoute, error) {
+	raw, ok := config["__route"]
+	if !ok {
+		return serviceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_NOT_BAKED")
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return serviceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_INVALID: %w", err)
+	}
+	var route serviceCallRoute
+	if err := json.Unmarshal(encoded, &route); err != nil || route.Method == "" || route.PathTemplate == "" {
+		return serviceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_INVALID")
+	}
+	return route, nil
+}
+
+func serviceParamsOf(value any) map[string]string {
+	params := map[string]string{}
+	values, ok := value.(map[string]any)
+	if !ok {
+		return params
+	}
+	for name, value := range values {
+		if text, ok := value.(string); ok {
+			params[name] = text
+			continue
+		}
+		encoded, err := json.Marshal(value)
+		if err == nil {
+			params[name] = string(encoded)
+		}
+	}
+	return params
 }
 
 // strOf reads a string field from a decoded JSON `any` value — "" for

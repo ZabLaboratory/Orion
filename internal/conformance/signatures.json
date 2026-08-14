@@ -1,5 +1,5 @@
 {
-  "count": 71,
+  "count": 72,
   "signatures": {
     "core.animation.play@1": {
       "inputs": [
@@ -659,6 +659,24 @@
         "then"
       ],
       "config": []
+    },
+    "core.service.call@1": {
+      "inputs": [
+        "in",
+        "params",
+        "payload"
+      ],
+      "outputs": [
+        "body",
+        "error",
+        "ok",
+        "status",
+        "then"
+      ],
+      "config": [
+        "route_id",
+        "service"
+      ]
     },
     "core.show.emit@1": {
       "inputs": [
