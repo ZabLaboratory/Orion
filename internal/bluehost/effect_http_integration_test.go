@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -175,7 +176,7 @@ func TestHost_HTTPEffectFullCycle(t *testing.T) {
 	defer runner.Stop()
 
 	h := bluehost.NewHost()
-	h.SetHTTPEffects(egress, runner, slog.Default())
+	h.SetHTTPEffects(bluehost.EffectDeps{Egress: egress, Runner: runner}, slog.Default())
 
 	program := buildHTTPEffectProgram(t, server.URL)
 	if err := h.Take("http-effect-cycle", "sha256:http-effect-cycle", program, providers.Registry(), providers.Policy(true), nil); err != nil {
@@ -216,5 +217,73 @@ func TestHost_HTTPEffectFullCycle(t *testing.T) {
 	body, ok := response["body"].(map[string]any)
 	if !ok || body["echo"] != "orion-336" {
 		t.Fatalf("unexpected response body: %#v", response["body"])
+	}
+}
+
+func TestHost_HTTPEffectMissingDependenciesCompletesFailure(t *testing.T) {
+	cases := []struct {
+		name      string
+		configure func(*bluehost.Host, *testing.T)
+	}{
+		{name: "bundle absent"},
+		{
+			name: "runner absent",
+			configure: func(h *bluehost.Host, _ *testing.T) {
+				egress := effects.NewEgressPolicy([]string{"example.invalid"}, false)
+				h.SetHTTPEffects(bluehost.EffectDeps{Egress: egress}, slog.Default())
+			},
+		},
+		{
+			name: "egress absent",
+			configure: func(h *bluehost.Host, t *testing.T) {
+				runner := effects.NewRunner(1, 1, slog.Default())
+				runner.Start()
+				t.Cleanup(runner.Stop)
+				h.SetHTTPEffects(bluehost.EffectDeps{Runner: runner}, slog.Default())
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := bluehost.NewHost()
+			if tc.configure != nil {
+				tc.configure(h, t)
+			}
+			program := buildHTTPEffectProgram(t, "https://unreachable.invalid/effect")
+			if err := h.Take("missing-http-deps", "sha256:missing-http-deps", program, providers.Registry(), providers.Policy(true), nil); err != nil {
+				t.Fatalf("Take: %v", err)
+			}
+
+			deadline := time.Now().Add(5 * time.Second)
+			var result map[string]any
+			for time.Now().Before(deadline) {
+				step, err := h.Step(bluehost.SlotOnAir)
+				if err != nil {
+					t.Fatalf("Step: %v", err)
+				}
+				if value, ok := step.Variables["result"].(map[string]any); ok {
+					result = value
+					break
+				}
+				time.Sleep(20 * time.Millisecond)
+			}
+			if result == nil {
+				t.Fatal("timed out waiting for the provider-unavailable completion")
+			}
+			if status, _ := result["status"].(string); status != "failed" {
+				t.Fatalf("unexpected completion status: %#v", result["status"])
+			}
+			failure, ok := result["error"].(map[string]any)
+			if !ok {
+				t.Fatalf("missing completion error: %#v", result["error"])
+			}
+			if code, _ := failure["code"].(string); code != "PROVIDER_FAILED" {
+				t.Fatalf("unexpected completion error code: %#v", failure["code"])
+			}
+			if message, _ := failure["message"].(string); !strings.Contains(message, "EFFECT_PROVIDER_UNAVAILABLE") {
+				t.Fatalf("missing provider-unavailable message: %#v", failure["message"])
+			}
+		})
 	}
 }

@@ -15,7 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/config"
+	"github.com/ZabLaboratory/Orion/internal/effects"
 )
 
 // writeSelfSignedCert generates a throwaway Ed25519 leaf cert + key,
@@ -79,7 +81,7 @@ func writeCanvasTrust(t *testing.T, dir string) string {
 }
 
 func TestWireSceneIntent_DarkByDefault(t *testing.T) {
-	deps, err := wireSceneIntent(config.Config{}, slog.Default())
+	deps, err := wireSceneIntent(config.Config{}, slog.Default(), bluehost.EffectDeps{})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -104,8 +106,14 @@ func TestWireSceneIntent_FullyConfigured(t *testing.T) {
 		OwnerID:                "owner-1",
 		TenantID:               "tenant-1",
 	}
+	effectDeps := bluehost.EffectDeps{
+		Runner:      effects.NewRunner(1, 1, slog.Default()),
+		Egress:      effects.NewEgressPolicy([]string{"api.example.com"}, false),
+		DB:          effects.NewDBQueryClient("https://zabgate.internal", "token", nil),
+		DataSources: map[string]effects.DataSource{"truth": {Name: "truth", Svc: "truth"}},
+	}
 
-	deps, err := wireSceneIntent(cfg, slog.Default())
+	deps, err := wireSceneIntent(cfg, slog.Default(), effectDeps)
 	if err != nil {
 		t.Fatalf("wireSceneIntent: %v", err)
 	}
@@ -117,6 +125,21 @@ func TestWireSceneIntent_FullyConfigured(t *testing.T) {
 	}
 	if deps.Host == nil || deps.Workload == nil {
 		t.Fatal("expected Host and Workload to be wired")
+	}
+	if deps.Effects.Runner != effectDeps.Runner {
+		t.Fatal("scene-intent must use the shared effects runner")
+	}
+	if deps.Effects.Egress != effectDeps.Egress {
+		t.Fatal("scene-intent must use the shared egress policy")
+	}
+	if deps.Effects.DB != effectDeps.DB {
+		t.Fatal("scene-intent must use the shared DB client")
+	}
+	if len(deps.Effects.DataSources) != len(effectDeps.DataSources) {
+		t.Fatal("scene-intent must receive the shared datasource map")
+	}
+	if deps.Effects.DataSources["truth"] != effectDeps.DataSources["truth"] {
+		t.Fatal("scene-intent datasource map diverged from the shared bundle")
 	}
 }
 
@@ -135,7 +158,7 @@ func TestWireSceneIntent_MissingSANFailsClosed(t *testing.T) {
 		TenantID:               "tenant-1",
 	}
 
-	if _, err := wireSceneIntent(cfg, slog.Default()); err == nil {
+	if _, err := wireSceneIntent(cfg, slog.Default(), bluehost.EffectDeps{}); err == nil {
 		t.Fatal("expected error for missing ORION_WORKLOAD_SAN")
 	}
 }
@@ -154,14 +177,14 @@ func TestWireSceneIntent_MissingOwnerTenantFailsClosed(t *testing.T) {
 		CanvasTrustPath:        trustPath,
 	}
 
-	if _, err := wireSceneIntent(cfg, slog.Default()); err == nil {
+	if _, err := wireSceneIntent(cfg, slog.Default(), bluehost.EffectDeps{}); err == nil {
 		t.Fatal("expected error for missing owner/tenant")
 	}
 }
 
 func TestWireSceneIntent_SingleVarSetIsMisconfigurationNotDark(t *testing.T) {
 	cfg := config.Config{WorkloadZabGateURL: "https://zabgate.internal"}
-	_, err := wireSceneIntent(cfg, slog.Default())
+	_, err := wireSceneIntent(cfg, slog.Default(), bluehost.EffectDeps{})
 	if err == nil {
 		t.Fatal("expected an error — one var set is a misconfiguration, not the dark default")
 	}

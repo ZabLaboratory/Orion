@@ -59,8 +59,9 @@ type Host struct {
 	// (Blue PR #313, runtime/go effects.go/runtime.go: StepResult.
 	// Invocations + Runtime.Complete) to a real outbound HTTP executor for
 	// `core.http.request` invocations — see effect_http.go. Both nil by
-	// default: every invocation then stays pending, never a silent
-	// capability grant. Set once via SetHTTPEffects.
+	// default: HTTP invocations receive an explicit provider-unavailable
+	// completion, while unsupported capabilities remain pending. Set once via
+	// SetHTTPEffects.
 	httpEgress *effects.EgressPolicy
 	httpRunner *effects.Runner
 	logger     *slog.Logger

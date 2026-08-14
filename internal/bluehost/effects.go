@@ -3,70 +3,27 @@ package bluehost
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
 	"github.com/ZabLaboratory/Orion/internal/effects"
 )
 
-// EffectDeps bundles the host-side transport clients NewEffectHandlers wires
+// EffectDeps is the shared host-side dependency bundle. NewEffectHandlers
 // into Engine B's 3 opcodes of full right (ENGINE-B-PARITY-BLUE:
 // core.http.request@1, core.http-request@1, core.db.query@1 — the opcodes
 // walker.go dispatches through StartOptions.EffectHandlers, NOT the
-// core.effect.invoke@1 async admission protocol). deps is the SAME
-// *effects.EgressPolicy / *effects.DBQueryClient instance cmd/orion/main.go
-// wires into Engine A's SceneEffects, so both engines are bound by one
-// allowlist and one service token — never a second independent transport
-// stack.
+// core.effect.invoke@1 async admission protocol). The Runner is used by
+// the generic invocation adapter; the other fields are used by the direct
+// handlers. cmd/orion/main.go creates this bundle once and passes the same
+// instances to Engine A and the scene-intent bluehost surface.
 type EffectDeps struct {
+	Runner      *effects.Runner
 	Egress      *effects.EgressPolicy
 	DataSources map[string]effects.DataSource
 	DB          *effects.DBQueryClient
-}
-
-const (
-	// maxHostEffectResponse bounds an http.request body read — same 1 MiB
-	// bound as Engine A's maxEffectResponse (exec_effects.go).
-	maxHostEffectResponse = 1 << 20
-	// defaultHostEffectTimeout mirrors Engine A's defaultEffectTimeout.
-	defaultHostEffectTimeout = 10 * time.Second
-	// maxHostEffectTimeout mirrors Engine A's maxEffectTimeout ceiling.
-	maxHostEffectTimeout = 60 * time.Second
-)
-
-// forbiddenForwardHeaders is Engine A's exact deny-list (exec_effects.go
-// forbiddenForwardHeaders) — duplicated here because the source list is
-// unexported from internal/runtime and internal/runtime must not import
-// internal/bluehost (no reverse dependency onto the engine it parity-tests
-// against). Flagged for Conduit/Bastion: a shared internal/effects home for
-// this constant would remove the duplication; not done unilaterally here
-// since it touches Engine A's file (exclusion: "Engine A reste intact").
-var forbiddenForwardHeaders = map[string]struct{}{
-	"authorization":       {},
-	"cookie":              {},
-	"proxy-authorization": {},
-	"host":                {},
-	"content-length":      {},
-	"connection":          {},
-	"transfer-encoding":   {},
-	"upgrade":             {},
-	"te":                  {},
-	"trailer":             {},
-}
-
-func dropForwardHeader(name string) bool {
-	lower := strings.ToLower(name)
-	if _, denied := forbiddenForwardHeaders[lower]; denied {
-		return true
-	}
-	return strings.HasPrefix(lower, "proxy-")
 }
 
 // NewEffectHandlers builds the StartOptions.EffectHandlers table for one
@@ -136,65 +93,21 @@ func previewDBResult() map[string]any {
 // error, which walker.go's fireEffectOp maps onto the node's `error` pin —
 // never a crash, never a silent `then` (same effect semantics as Engine A).
 func doHTTPRequest(ctx context.Context, egress *effects.EgressPolicy, inputs map[string]any) (map[string]any, error) {
-	if egress == nil {
-		return nil, fmt.Errorf("EFFECT_PROVIDER_UNAVAILABLE: no egress policy configured (deny-all)")
-	}
-	rawURL, _ := inputs["url"].(string)
-	method := strings.ToUpper(strOf(inputs["method"]))
-	if method == "" {
-		method = http.MethodGet
-	}
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return nil, fmt.Errorf("HTTP_REQUEST_INVALID_URL: malformed url")
-	}
-	if err := mergeQuery(u, inputs["query"]); err != nil {
-		return nil, err
-	}
-	if err := egress.CheckURL(u); err != nil {
-		return nil, fmt.Errorf("EGRESS_BLOCKED: %s: %w", u.Hostname(), err)
-	}
-	var reader io.Reader
-	if body := bodyBytes(inputs["body"]); len(body) > 0 {
-		reader = strings.NewReader(string(body))
-	}
 	timeoutCtx, cancel := context.WithTimeout(ctx, timeoutFrom(inputs["timeout_ms"]))
 	defer cancel()
-	req, err := http.NewRequestWithContext(timeoutCtx, method, u.String(), reader)
+	response, err := executeHTTP(timeoutCtx, egress, httpTransportRequest{
+		URL:     strOf(inputs["url"]),
+		Method:  strOf(inputs["method"]),
+		Query:   inputs["query"],
+		Headers: inputs["headers"],
+		Body:    bodyBytes(inputs["body"]),
+	})
 	if err != nil {
-		return nil, fmt.Errorf("HTTP_REQUEST_INVALID: %s", httpFailureReason(u.Hostname(), err))
-	}
-	if reader != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Accept", "application/json")
-	if err := applyAuthoredHeaders(req, inputs["headers"]); err != nil {
 		return nil, err
 	}
-	resp, err := egress.Client().Do(req)
-	if err != nil {
-		if errors.Is(err, effects.ErrEgressBlocked) {
-			return nil, fmt.Errorf("EGRESS_BLOCKED: %s: %w", u.Hostname(), err)
-		}
-		return nil, fmt.Errorf("HTTP_REQUEST_FAILED: %s", httpFailureReason(u.Hostname(), err))
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxHostEffectResponse))
-	if err != nil {
-		return nil, fmt.Errorf("HTTP_REQUEST_READ: %w", err)
-	}
-	var bodyValue any
-	if len(respBody) > 0 {
-		if jsonErr := json.Unmarshal(respBody, &bodyValue); jsonErr != nil {
-			bodyValue = string(respBody)
-		}
-	}
-	return map[string]any{
-		"status":  json.Number(strconv.Itoa(resp.StatusCode)),
-		"body":    bodyValue,
-		"headers": flattenHeaders(resp.Header),
-		"ok":      resp.StatusCode >= 200 && resp.StatusCode <= 299,
-	}, nil
+	values := response.values()
+	values["ok"] = response.Status >= 200 && response.Status <= 299
+	return values, nil
 }
 
 // doDBQuery executes `core.db.query@1` for real — Engine A's execDBQuery
@@ -254,19 +167,10 @@ func bodyBytes(v any) []byte {
 	return b
 }
 
-// timeoutFrom reads `timeout_ms`, clamped to (0, maxHostEffectTimeout] —
-// absent/zero/negative falls back to defaultHostEffectTimeout, mirroring
-// Engine A's effectTimeoutMillis fallback.
+// timeoutFrom reads `timeout_ms` through the shared transport bound; absent,
+// zero, or negative values use the same default for both host adapters.
 func timeoutFrom(v any) time.Duration {
-	ms := numOf(v)
-	if ms <= 0 {
-		return defaultHostEffectTimeout
-	}
-	d := time.Duration(ms) * time.Millisecond
-	if d > maxHostEffectTimeout {
-		return maxHostEffectTimeout
-	}
-	return d
+	return httpTransportTimeout(v)
 }
 
 // numOf decodes a JSON number arriving as json.Number (the portable ABI's
@@ -283,85 +187,4 @@ func numOf(v any) float64 {
 		return float64(n)
 	}
 	return 0
-}
-
-// mergeQuery merges an authored `query` object (string -> scalar) into
-// u's query string — pre-existing params are preserved, mirroring Engine
-// A's mergeQuery (exec_effects.go).
-func mergeQuery(u *url.URL, raw any) error {
-	obj, ok := raw.(map[string]any)
-	if !ok || len(obj) == 0 {
-		return nil
-	}
-	q := u.Query()
-	for key, value := range obj {
-		q.Set(key, scalarToString(value))
-	}
-	u.RawQuery = q.Encode()
-	return nil
-}
-
-func scalarToString(v any) string {
-	switch t := v.(type) {
-	case string:
-		return t
-	case json.Number:
-		return t.String()
-	case bool:
-		return strconv.FormatBool(t)
-	case nil:
-		return ""
-	default:
-		b, err := json.Marshal(t)
-		if err != nil {
-			return ""
-		}
-		return string(b)
-	}
-}
-
-// applyAuthoredHeaders forwards an authored `headers` object (string ->
-// scalar) onto req, dropping sensitive/hop-by-hop headers
-// (dropForwardHeader) — Engine A's applyAuthoredHeaders (exec_effects.go)
-// hardening (b)/(c), same deny-list.
-func applyAuthoredHeaders(req *http.Request, raw any) error {
-	obj, ok := raw.(map[string]any)
-	if !ok || len(obj) == 0 {
-		return nil
-	}
-	for name, value := range obj {
-		if dropForwardHeader(name) {
-			continue
-		}
-		req.Header.Set(name, scalarToString(value))
-	}
-	return nil
-}
-
-func flattenHeaders(h http.Header) map[string]any {
-	out := make(map[string]any, len(h))
-	for k, v := range h {
-		if len(v) > 0 {
-			out[k] = v[0]
-		}
-	}
-	return out
-}
-
-// httpFailureReason is host-only: never interpolates the raw error (which
-// can re-echo the authored URL/query, a potential secret-exfiltration
-// channel) — same discipline as Engine A's httpFailureReason.
-func httpFailureReason(host string, err error) string {
-	return fmt.Sprintf("request to %s failed: %s", host, classifyNetErr(err))
-}
-
-func classifyNetErr(err error) string {
-	switch {
-	case errors.Is(err, context.DeadlineExceeded):
-		return "timeout"
-	case errors.Is(err, effects.ErrEgressBlocked):
-		return "egress blocked"
-	default:
-		return "transport error"
-	}
 }

@@ -63,11 +63,13 @@ type SceneIntentDeps struct {
 	// own default-allow posture applies to every declared provider.
 	Policy blueruntime.CapabilityPolicy
 
-	// Effects binds the 3 opcodes-of-full-right EffectHandlers
-	// (ENGINE-B-PARITY-ORION, bluehost.NewEffectHandlers) — the SAME
-	// egress policy / db.query client Engine A's SceneEffects uses (zero
-	// value = every core.http.request@1/core.http-request@1/core.db.query@1
-	// node fires `error`/EFFECT_PROVIDER_UNAVAILABLE, never a crash).
+	// Effects binds the direct EffectHandlers (ENGINE-B-PARITY-ORION,
+	// bluehost.NewEffectHandlers) and carries the Runner/Egress fields used by
+	// the Host's generic core.effect.invoke@1 adapter. The bundle is the SAME
+	// egress policy / DB client / datasource map / runner Engine A's
+	// SceneEffects uses. The direct handlers fail closed when its fields are
+	// absent; the generic adapter remains unwired when its runner or policy is
+	// absent, preserving its explicit async admission protocol.
 	Effects bluehost.EffectDeps
 
 	// MirrorFor resolves the LSDP scene pairing a bluewire.Bridge forwards
