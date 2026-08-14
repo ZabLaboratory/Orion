@@ -1,7 +1,5 @@
 github.com/Lumencast/lumencast-go v0.3.0 h1:5Q3EvGAGAWKz4tVf+KgLMHsH+/ZYXH7vWgXjibtMWdQ=
 github.com/Lumencast/lumencast-go v0.3.0/go.mod h1:S99/WPDLew+UDUW9tHsoaGdMMDCdtf4dF/HJbxn8rAE=
-github.com/ZabLaboratory/Blue/runtime/go v0.0.0-20260813141418-96b3dcb4c841 h1:FhqkQFJO4mGzrKfvza968SQFuP75xgzDi7nof/yR0vM=
-github.com/ZabLaboratory/Blue/runtime/go v0.0.0-20260813141418-96b3dcb4c841/go.mod h1:IFCHQr+8V5XV/Z8qFyNtvvSSTnAHFUTX1AMkyOVWnK8=
 github.com/ZabLaboratory/Blue/runtime/go v0.0.0-20260814004833-e96bc5709899 h1:xtqyZLGkV7db3SiRQ5GZb5fpm7Gd8kfkIrbykpvAYwQ=
 github.com/ZabLaboratory/Blue/runtime/go v0.0.0-20260814004833-e96bc5709899/go.mod h1:IFCHQr+8V5XV/Z8qFyNtvvSSTnAHFUTX1AMkyOVWnK8=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
