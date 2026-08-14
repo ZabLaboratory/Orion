@@ -74,6 +74,14 @@ jobs:
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
           export GOPRIVATE=github.com/ZabLaboratory/*
+          # The self-hosted runner container is reused across jobs of the
+          # same workflow run: the Go module VCS cache can hold a bare clone
+          # whose `origin` remote embeds a PREVIOUS job's App token, already
+          # auto-revoked at that job's end (`skip-token-revoke: false`).
+          # Reusing it here fails with "Invalid username or token" even
+          # though THIS job's token is fresh and valid. Force a clean clone.
+          rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
+          for d in "$(go env GOMODCACHE)"/cache/vcs/*/; do git -C "$d" remote get-url origin 2>/dev/null | grep -q ZabLaboratory/Blue && rm -rf "$d"; done
           go mod download
           go mod tidy
           git diff --exit-code -- go.mod go.sum
@@ -187,6 +195,10 @@ jobs:
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
           export GOPRIVATE=github.com/ZabLaboratory/*
+          # See build-test's fetch step: runner container is reused across
+          # jobs, purge any stale Blue VCS clone carrying a revoked token.
+          rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
+          for d in "$(go env GOMODCACHE)"/cache/vcs/*/; do git -C "$d" remote get-url origin 2>/dev/null | grep -q ZabLaboratory/Blue && rm -rf "$d"; done
           go mod download
           git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       # Whole tests/e2e tree: the Probe-authored API contract tests
@@ -220,6 +232,10 @@ jobs:
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
           export GOPRIVATE=github.com/ZabLaboratory/*
+          # See build-test's fetch step: runner container is reused across
+          # jobs, purge any stale Blue VCS clone carrying a revoked token.
+          rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
+          for d in "$(go env GOMODCACHE)"/cache/vcs/*/; do git -C "$d" remote get-url origin 2>/dev/null | grep -q ZabLaboratory/Blue && rm -rf "$d"; done
           go mod download
           git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: run 20k benchmark gate
@@ -253,6 +269,10 @@ jobs:
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
           export GOPRIVATE=github.com/ZabLaboratory/*
+          # See build-test's fetch step: runner container is reused across
+          # jobs, purge any stale Blue VCS clone carrying a revoked token.
+          rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
+          for d in "$(go env GOMODCACHE)"/cache/vcs/*/; do git -C "$d" remote get-url origin 2>/dev/null | grep -q ZabLaboratory/Blue && rm -rf "$d"; done
           go mod download
           git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: structural matrix + ratchet + registry cross-check
@@ -287,6 +307,10 @@ jobs:
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
           export GOPRIVATE=github.com/ZabLaboratory/*
+          # See build-test's fetch step: runner container is reused across
+          # jobs, purge any stale Blue VCS clone carrying a revoked token.
+          rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
+          for d in "$(go env GOMODCACHE)"/cache/vcs/*/; do git -C "$d" remote get-url origin 2>/dev/null | grep -q ZabLaboratory/Blue && rm -rf "$d"; done
           go mod download
           git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: seed-vs-runtime port/config parity
@@ -318,6 +342,10 @@ jobs:
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
           export GOPRIVATE=github.com/ZabLaboratory/*
+          # See build-test's fetch step: runner container is reused across
+          # jobs, purge any stale Blue VCS clone carrying a revoked token.
+          rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
+          for d in "$(go env GOMODCACHE)"/cache/vcs/*/; do git -C "$d" remote get-url origin 2>/dev/null | grep -q ZabLaboratory/Blue && rm -rf "$d"; done
           go mod download
           git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: install staticcheck
@@ -349,6 +377,10 @@ jobs:
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
           export GOPRIVATE=github.com/ZabLaboratory/*
+          # See build-test's fetch step: runner container is reused across
+          # jobs, purge any stale Blue VCS clone carrying a revoked token.
+          rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
+          for d in "$(go env GOMODCACHE)"/cache/vcs/*/; do git -C "$d" remote get-url origin 2>/dev/null | grep -q ZabLaboratory/Blue && rm -rf "$d"; done
           go mod download
           git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       - name: install govulncheck
@@ -380,6 +412,10 @@ jobs:
         run: |
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
           export GOPRIVATE=github.com/ZabLaboratory/*
+          # See build-test's fetch step: runner container is reused across
+          # jobs, purge any stale Blue VCS clone carrying a revoked token.
+          rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
+          for d in "$(go env GOMODCACHE)"/cache/vcs/*/; do git -C "$d" remote get-url origin 2>/dev/null | grep -q ZabLaboratory/Blue && rm -rf "$d"; done
           go mod download
           git config --global --unset url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf
       # Install from source so it uses our Go toolchain (pre-built binaries
