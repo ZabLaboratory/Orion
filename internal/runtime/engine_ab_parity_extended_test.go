@@ -297,6 +297,18 @@ func parityLogs(step blueruntime.StepResult) []string {
 	return logs
 }
 
+func parityNormalizeEventTrace(logs []string) []string {
+	trace := make([]string, 0, len(logs))
+	for _, log := range logs {
+		value := strings.TrimPrefix(log, "print: ")
+		if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+			value = value[1 : len(value)-1]
+		}
+		trace = append(trace, value)
+	}
+	return trace
+}
+
 func parityWaitForALogs(t *testing.T, sc *Scene, want int, timeout time.Duration) []string {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -358,11 +370,13 @@ func TestEngineABParity_EventFIFOOrderingThroughHost(t *testing.T) {
 		t.Fatalf("primitive=core.event.on-event@1 scenario=ordering Engine B Host.Step final: %v", err)
 	}
 	bLogs := parityLogs(bStep)
-	if len(bLogs) != 2 || bLogs[0] != "print: 'one'" || bLogs[1] != "print: 'two'" {
-		t.Fatalf("primitive=core.event.on-event@1 scenario=ordering Engine B Host logs=%v, want ordered one/two", bLogs)
+	aTrace := parityNormalizeEventTrace(aLogs)
+	bTrace := parityNormalizeEventTrace(bLogs)
+	if fmt.Sprint(aTrace) != "[one two]" || fmt.Sprint(bTrace) != "[one two]" {
+		t.Fatalf("primitive=core.event.on-event@1 scenario=ordering FIFO trace is not [one two]: Engine A=%v Engine B=%v rawB=%v", aTrace, bTrace, bLogs)
 	}
-	if strings.TrimPrefix(bLogs[0], "print: '") != "one'" {
-		t.Fatalf("primitive=core.event.on-event@1 scenario=ordering Engine B log normalization changed: %v", bLogs)
+	if fmt.Sprint(aTrace) != fmt.Sprint(bTrace) {
+		t.Fatalf("primitive=core.event.on-event@1 scenario=ordering normalized trace diverges: Engine A=%v Engine B=%v", aTrace, bTrace)
 	}
 }
 
@@ -468,9 +482,33 @@ func TestEngineABParity_ActiveOnlyPlatformEventUsesHostSlots(t *testing.T) {
 	waitForState(t, a, "__vars.bp.result", string(payload), 2*time.Second)
 	aValue, _ := a.state.Get("__vars.bp.result")
 
-	h := parityPrepareBHost(t, bluehost.SlotOnAir, "platform-active-b", parityBuildBEntrypointProgram(t, "platform-event", leaf))
-	if _, err := h.WritePlatformEvent(bluehost.SlotPreview, leaf, map[string]any{"inactive": true}); !errors.Is(err, bluehost.ErrNotLoaded) {
-		t.Fatalf("primitive=core.event.on-platform-event@1 scenario=active-only Engine B preview route err=%v, want bluehost.ErrNotLoaded", err)
+	h := bluehost.NewHost()
+	t.Cleanup(func() {
+		_ = h.Release(bluehost.SlotPreview, "test-cleanup")
+		_ = h.Release(bluehost.SlotOnAir, "test-cleanup")
+	})
+	program := parityBuildBEntrypointProgram(t, "platform-event", leaf)
+	for _, slot := range []struct {
+		name string
+		slot bluehost.Slot
+	}{
+		{name: "preview", slot: bluehost.SlotPreview},
+		{name: "on-air", slot: bluehost.SlotOnAir},
+	} {
+		if err := h.Prepare(slot.slot, "platform-"+slot.name+"-b", "sha256:platform-"+slot.name, program, nil, nil, nil); err != nil {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=active-only Engine B Host.Prepare %s: %v", slot.name, err)
+		}
+		if _, err := h.Step(slot.slot); err != nil {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=active-only Engine B Host.Step %s: %v", slot.name, err)
+		}
+	}
+	previewPayload := map[string]any{"type": "chat", "payload": map[string]any{"text": "preview"}}
+	previewStep, err := h.WritePlatformEvent(bluehost.SlotPreview, leaf, previewPayload)
+	if err != nil {
+		t.Fatalf("primitive=core.event.on-platform-event@1 scenario=active-only Engine B bluehost.Host.WritePlatformEvent Preview: %v", err)
+	}
+	if got := canonicalJSONForTest(previewStep.Outputs["result"]); string(got) != string(canonicalJSONForTest(previewPayload)) {
+		t.Fatalf("primitive=core.event.on-platform-event@1 scenario=active-only Engine B Preview content=%s, want %s", got, canonicalJSONForTest(previewPayload))
 	}
 	bStep, err := h.WritePlatformEvent(bluehost.SlotOnAir, leaf, map[string]any{"type": "chat", "payload": map[string]any{"text": "active"}})
 	if err != nil {
@@ -483,6 +521,12 @@ func TestEngineABParity_ActiveOnlyPlatformEventUsesHostSlots(t *testing.T) {
 	if string(canonicalJSONForTest(decodedA)) != string(canonicalJSONForTest(bStep.Outputs["result"])) {
 		t.Fatalf("primitive=core.event.on-platform-event@1 scenario=active-only Engine A=%s Engine B=%#v", aValue, bStep.Outputs["result"])
 	}
+	parityAssertTypedGap(t, parityNonEquivalenceError{
+		Primitive: "core.event.on-platform-event@1",
+		Scenario:  "active-only-host-gate",
+		EngineA:   "GateTriggers suppresses the off-air platform event; only the on-air event changes result",
+		EngineB:   "bluehost.Host has independently addressable Preview and OnAir slots; WritePlatformEvent Preview also returned the preview payload",
+	})
 }
 
 func TestEngineABParity_PlatformIngressDispatchGapIsTyped(t *testing.T) {
@@ -595,19 +639,12 @@ func TestEngineABParity_DBQueryObservableAndPreviewNoQuery(t *testing.T) {
 	if got := queries.Load(); got != 3 {
 		t.Fatalf("primitive=core.db.query@1 scenario=preview-observable Engine A query count=%d, want one B on-air + one A on-air + one A preview", got)
 	}
-	divergence := parityNonEquivalenceError{
+	parityAssertTypedGap(t, parityNonEquivalenceError{
 		Primitive: "core.db.query@1",
 		Scenario:  "preview-no-world-effect",
 		EngineA:   "PreviewSlot performs the observable DB query",
 		EngineB:   "bluehost.Host SlotPreview returns synthetic count=0 without a query",
-	}
-	var typed *parityNonEquivalenceError
-	copyOf := divergence
-	typed = &copyOf
-	if typed.Primitive == "" || typed.Scenario == "" {
-		t.Fatalf("typed preview divergence lost its primitive/scenario: %v", typed)
-	}
-	t.Logf("expected typed non-equivalence: %v", typed)
+	})
 }
 
 func TestEngineABParity_HostEntrypointMatrix(t *testing.T) {
