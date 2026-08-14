@@ -19,6 +19,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/effects"
+	"github.com/ZabLaboratory/Orion/internal/providers"
 )
 
 // TestEngineABParity_OperationInventory is the unique-9 inventory for the
@@ -195,10 +196,10 @@ func TestEngineABParity_HTTPPreviewNoNetworkAndOnAirObservable(t *testing.T) {
 	aPreview.SetEffects(&SceneEffects{Runner: newTestRunner(t), Egress: egress})
 	aPreview.Activate("inventory-http-preview-a", effectsGraph("inventory-http-preview-a"), &compiler.RenderBundle{SceneVersion: "sha256:inventory-http-preview"}, aPreviewProgram)
 	t.Cleanup(aPreview.Close)
-	waitForState(t, aPreview.Current(), "__vars.bp.status", "201", 2*time.Second)
+	waitForState(t, aPreview.Current(), "__vars.bp.status", "0", 2*time.Second)
 	aPreviewValue, _ := aPreview.Current().state.Get("__vars.bp.status")
-	if got := requests.Load(); got != 3 {
-		t.Fatalf("primitive=core.http.request@1 scenario=preview Engine A request count=%d, want 3 (A on-air, B on-air, A preview)", got)
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("primitive=core.http.request@1 scenario=preview Engine A request count=%d, want 2 (A on-air, B on-air; preview synthetic)", got)
 	}
 
 	bPreview := bluehost.NewHost()
@@ -211,125 +212,124 @@ func TestEngineABParity_HTTPPreviewNoNetworkAndOnAirObservable(t *testing.T) {
 	if status, ok := bPreviewStep.Outputs["result"].(json.Number); !ok || status.String() != "0" {
 		t.Fatalf("primitive=core.http.request@1 scenario=preview Engine B status=%#v, want synthetic 0", bPreviewStep.Outputs["result"])
 	}
-	if got := requests.Load(); got != 3 {
+	parityAssertInventoryResult(t, "core.http.request@1", "preview", aPreviewValue, bPreviewStep.Outputs["result"])
+	if got := requests.Load(); got != 2 {
 		t.Fatalf("primitive=core.http.request@1 scenario=preview Engine B performed a network request; count=%d", got)
 	}
-	if string(aPreviewValue) != "201" {
-		t.Fatalf("primitive=core.http.request@1 scenario=preview Engine A status=%s, want 201", aPreviewValue)
+	if string(aPreviewValue) != "0" {
+		t.Fatalf("primitive=core.http.request@1 scenario=preview Engine A status=%s, want synthetic 0", aPreviewValue)
 	}
-	parityAssertTypedGap(t, parityNonEquivalenceError{
-		Primitive: "core.http.request@1", Scenario: "preview-no-network",
-		EngineA: "Engine A PreviewSlot executed the bounded egress and observed HTTP 201",
-		EngineB: "bluehost.Host SlotPreview returned synthetic status 0 and did not increment the httptest spy",
-	})
 }
 
 func TestEngineABParity_EventSequenceRecoveryDedupAndOutOfOrder(t *testing.T) {
-	t.Run("gap-recovery-1-3-2", func(t *testing.T) {
-		a := execScene(t, "ab-sequence-recovery-a", parityEngineAEventPrintProgram())
-		startScene(t, a)
-		for _, value := range []string{"one", "two"} {
-			if !a.Input(InputMsg{Path: eventsPrefix + "score", Value: raw(`"` + value + `"`), Source: "event:test"}) {
-				t.Fatalf("primitive=core.event.on-event@1 scenario=sequence-gap Engine A rejected %s", value)
-			}
-		}
-		aTrace := parityNormalizeEventTrace(parityWaitForALogs(t, a, 2, 2*time.Second))
+	leaf := "__inputs.platform.twitch.channel_1.last_chat"
+	prepare := func(t *testing.T, suffix string) (*Show, *Scene, *CanonicalEventIngress, *bluehost.Host) {
+		t.Helper()
+		_, a, ingress := parityPrepareAPlatformIngress(t, "inventory-event-a-"+suffix, leaf)
+		h := parityPrepareBHost(t, bluehost.SlotOnAir, "inventory-event-b-"+suffix, parityBuildBEntrypointProgram(t, "platform-event", leaf))
+		providers.ResetActiveIngress(h)
+		t.Cleanup(func() { providers.ResetActiveIngress(h) })
+		return nil, a, ingress, h
+	}
 
-		h := parityPrepareBHost(t, bluehost.SlotOnAir, "sequence-recovery-b", parityBuildBTopicPrintProgram(t))
-		first, err := h.Dispatch(bluehost.SlotOnAir, parityEventEnvelope(t, "evt-1", "platform.twitch", 1, "one"))
-		if err != nil || first.Status != "accepted" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=sequence-gap seq=1 receipt=%+v err=%v", first, err)
+	t.Run("gap-recovery-1-3-2", func(t *testing.T) {
+		_, a, ingress, h := prepare(t, "recovery")
+		firstA, err := ingress.InjectPlatform(leaf, parityEventEnvelope(t, "evt-1", "platform.twitch", 1, "one"))
+		if err != nil || firstA.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=sequence-gap A seq=1 receipt=%+v err=%v", firstA, err)
 		}
-		if got := parityNormalizeEventTrace(parityLogs(parityHostStep(t, h, bluehost.SlotOnAir, "sequence-gap seq=1"))); fmt.Sprint(got) != "[one]" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=sequence-gap after seq=1 trace=%v", got)
+		waitForState(t, a, "__vars.bp.result", `"one"`, 2*time.Second)
+		firstB, err := providers.InjectActivePlatform(h, leaf, parityEventEnvelope(t, "evt-1", "platform.twitch", 1, "one"))
+		if err != nil || firstB.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=sequence-gap B seq=1 receipt=%+v err=%v", firstB, err)
 		}
-		_, err = h.Dispatch(bluehost.SlotOnAir, parityEventEnvelope(t, "evt-3", "platform.twitch", 3, "three"))
-		if code := parityBlueErrorCode(err); code != "EVENT_SEQUENCE_GAP" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=sequence-gap seq=3 code=%q err=%v, want EVENT_SEQUENCE_GAP", code, err)
+		_ = parityHostStep(t, h, bluehost.SlotOnAir, "sequence-gap seq=1")
+		_, gapAErr := ingress.InjectPlatform(leaf, parityEventEnvelope(t, "evt-3", "platform.twitch", 3, "three"))
+		_, gapBErr := providers.InjectActivePlatform(h, leaf, parityEventEnvelope(t, "evt-3", "platform.twitch", 3, "three"))
+		if parityIngressErrorCode(gapAErr) != "EVENT_SEQUENCE_GAP" || parityBlueErrorCode(gapBErr) != "EVENT_SEQUENCE_GAP" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=sequence-gap gap codes: A=%s err=%v B=%s err=%v", parityIngressErrorCode(gapAErr), gapAErr, parityBlueErrorCode(gapBErr), gapBErr)
 		}
-		second, err := h.Dispatch(bluehost.SlotOnAir, parityEventEnvelope(t, "evt-2", "platform.twitch", 2, "two"))
-		if err != nil || second.Status != "accepted" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=sequence-gap seq=2 recovery receipt=%+v err=%v", second, err)
+		secondA, err := ingress.InjectPlatform(leaf, parityEventEnvelope(t, "evt-2", "platform.twitch", 2, "two"))
+		if err != nil || secondA.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=sequence-gap A seq=2 receipt=%+v err=%v", secondA, err)
 		}
-		if got := parityNormalizeEventTrace(parityLogs(parityHostStep(t, h, bluehost.SlotOnAir, "sequence-gap seq=2"))); fmt.Sprint(got) != "[one two]" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=sequence-gap recovery trace=%v, want [one two]", got)
+		waitForState(t, a, "__vars.bp.result", `"two"`, 2*time.Second)
+		secondB, err := providers.InjectActivePlatform(h, leaf, parityEventEnvelope(t, "evt-2", "platform.twitch", 2, "two"))
+		if err != nil || secondB.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=sequence-gap B seq=2 receipt=%+v err=%v", secondB, err)
 		}
-		third, err := h.Dispatch(bluehost.SlotOnAir, parityEventEnvelope(t, "evt-3", "platform.twitch", 3, "three"))
-		if err != nil || third.Status != "accepted" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=sequence-gap retry seq=3 receipt=%+v err=%v", third, err)
+		_ = parityHostStep(t, h, bluehost.SlotOnAir, "sequence-gap seq=2")
+		thirdA, err := ingress.InjectPlatform(leaf, parityEventEnvelope(t, "evt-3", "platform.twitch", 3, "three"))
+		if err != nil || thirdA.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=sequence-gap A retry seq=3 receipt=%+v err=%v", thirdA, err)
 		}
-		bTrace := parityNormalizeEventTrace(parityLogs(parityHostStep(t, h, bluehost.SlotOnAir, "sequence-gap retry seq=3")))
-		if fmt.Sprint(bTrace) != "[one two three]" || fmt.Sprint(aTrace) != "[one two]" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=sequence-gap normalized traces: Engine A=%v Engine B=%v", aTrace, bTrace)
+		waitForState(t, a, "__vars.bp.result", `"three"`, 2*time.Second)
+		thirdB, err := providers.InjectActivePlatform(h, leaf, parityEventEnvelope(t, "evt-3", "platform.twitch", 3, "three"))
+		if err != nil || thirdB.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=sequence-gap B retry seq=3 receipt=%+v err=%v", thirdB, err)
 		}
-		parityAssertTypedGap(t, parityNonEquivalenceError{
-			Primitive: "core.event.on-event@1", Scenario: "sequence-gap",
-			EngineA: "InputMsg has no source-sequence admission and accepts 1 then 2",
-			EngineB: "Host.Dispatch rejects 3 with EVENT_SEQUENCE_GAP, accepts 2, then accepts retried 3",
-		})
+		step := parityHostStep(t, h, bluehost.SlotOnAir, "sequence-gap retry seq=3")
+		if firstA.RuntimeSequence != firstB.RuntimeSequence || secondA.RuntimeSequence != secondB.RuntimeSequence || thirdA.RuntimeSequence != thirdB.RuntimeSequence || string(canonicalJSONForTest(step.Outputs["result"])) != `"three"` {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=sequence-gap A receipts=[%+v %+v %+v] B receipts=[%+v %+v %+v] result=%#v", firstA, secondA, thirdA, firstB, secondB, thirdB, step.Outputs["result"])
+		}
 	})
 
 	t.Run("exact-duplicate-execution-count", func(t *testing.T) {
-		h := parityPrepareBHost(t, bluehost.SlotOnAir, "sequence-duplicate-b", parityBuildBTopicPrintProgram(t))
+		_, a, ingress, h := prepare(t, "duplicate")
 		event := parityEventEnvelope(t, "evt-duplicate", "platform.twitch", 1, "same")
-		first, err := h.Dispatch(bluehost.SlotOnAir, event)
-		if err != nil || first.Status != "accepted" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=duplicate seq=1 receipt=%+v err=%v", first, err)
+		firstA, err := ingress.InjectPlatform(leaf, event)
+		if err != nil || firstA.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=duplicate A first receipt=%+v err=%v", firstA, err)
+		}
+		waitForState(t, a, "__vars.bp.result", `"same"`, 2*time.Second)
+		duplicateA, err := ingress.InjectPlatform(leaf, event)
+		firstB, errB := providers.InjectActivePlatform(h, leaf, event)
+		if errB != nil || firstB.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=duplicate B first receipt=%+v err=%v", firstB, errB)
 		}
 		step := parityHostStep(t, h, bluehost.SlotOnAir, "duplicate first")
-		duplicate, err := h.Dispatch(bluehost.SlotOnAir, event)
-		if err != nil || duplicate.Status != "duplicate" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=duplicate receipt=%+v err=%v, want duplicate", duplicate, err)
+		duplicateB, errB := providers.InjectActivePlatform(h, leaf, event)
+		if err != nil || duplicateA != firstA || errB != nil || duplicateB != firstB || string(canonicalJSONForTest(step.Outputs["result"])) != `"same"` {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=duplicate A=(%+v err=%v duplicate=%+v) B=(%+v err=%v duplicate=%+v) result=%#v", firstA, err, duplicateA, firstB, errB, duplicateB, step.Outputs["result"])
 		}
-		if got := parityNormalizeEventTrace(parityLogs(step)); fmt.Sprint(got) != "[same]" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=duplicate execution trace=%v, want one execution", got)
-		}
-		parityAssertTypedGap(t, parityNonEquivalenceError{
-			Primitive: "core.event.on-event@1", Scenario: "duplicate",
-			EngineA: "InputMsg does not carry event_id/payload_digest and repeated input executes twice",
-			EngineB: "Host.Dispatch returns duplicate for the exact event and keeps one execution trace",
-		})
 	})
 
 	t.Run("same-sequence-conflict", func(t *testing.T) {
-		h := parityPrepareBHost(t, bluehost.SlotOnAir, "sequence-conflict-b", parityBuildBTopicPrintProgram(t))
-		first, err := h.Dispatch(bluehost.SlotOnAir, parityEventEnvelope(t, "evt-conflict-one", "platform.twitch", 1, "one"))
-		if err != nil || first.Status != "accepted" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=conflict first receipt=%+v err=%v", first, err)
+		_, a, ingress, h := prepare(t, "conflict")
+		firstA, err := ingress.InjectPlatform(leaf, parityEventEnvelope(t, "evt-conflict-one", "platform.twitch", 1, "one"))
+		if err != nil || firstA.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=conflict A first receipt=%+v err=%v", firstA, err)
 		}
-		step := parityHostStep(t, h, bluehost.SlotOnAir, "conflict first")
-		_, err = h.Dispatch(bluehost.SlotOnAir, parityEventEnvelope(t, "evt-conflict-two", "platform.twitch", 1, "again"))
-		if code := parityBlueErrorCode(err); code != "EVENT_SEQUENCE_CONFLICT" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=conflict code=%q err=%v, want EVENT_SEQUENCE_CONFLICT", code, err)
+		waitForState(t, a, "__vars.bp.result", `"one"`, 2*time.Second)
+		_, conflictAErr := ingress.InjectPlatform(leaf, parityEventEnvelope(t, "evt-conflict-two", "platform.twitch", 1, "again"))
+		firstB, err := providers.InjectActivePlatform(h, leaf, parityEventEnvelope(t, "evt-conflict-one", "platform.twitch", 1, "one"))
+		if err != nil || firstB.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=conflict B first receipt=%+v err=%v", firstB, err)
 		}
-		if got := parityNormalizeEventTrace(parityLogs(step)); fmt.Sprint(got) != "[one]" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=conflict execution trace=%v, want [one]", got)
+		_ = parityHostStep(t, h, bluehost.SlotOnAir, "conflict first")
+		_, conflictBErr := providers.InjectActivePlatform(h, leaf, parityEventEnvelope(t, "evt-conflict-two", "platform.twitch", 1, "again"))
+		if parityIngressErrorCode(conflictAErr) != "EVENT_SEQUENCE_CONFLICT" || parityBlueErrorCode(conflictBErr) != "EVENT_SEQUENCE_CONFLICT" || firstA.RuntimeSequence != firstB.RuntimeSequence {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=conflict A receipt=%+v code=%s B receipt=%+v code=%s", firstA, parityIngressErrorCode(conflictAErr), firstB, parityBlueErrorCode(conflictBErr))
 		}
-		parityAssertTypedGap(t, parityNonEquivalenceError{
-			Primitive: "core.event.on-event@1", Scenario: "same-sequence-conflict",
-			EngineA: "InputMsg has no source-sequence conflict check and would execute both payloads",
-			EngineB: "Host.Dispatch rejects same source sequence with a different digest as EVENT_SEQUENCE_CONFLICT",
-		})
 	})
 
 	t.Run("out-of-order-before-first", func(t *testing.T) {
-		h := parityPrepareBHost(t, bluehost.SlotOnAir, "sequence-out-of-order-b", parityBuildBTopicPrintProgram(t))
-		_, err := h.Dispatch(bluehost.SlotOnAir, parityEventEnvelope(t, "evt-out-of-order", "platform.twitch", 2, "two"))
-		if code := parityBlueErrorCode(err); code != "EVENT_SEQUENCE_GAP" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=out-of-order-before-first code=%q err=%v, want EVENT_SEQUENCE_GAP", code, err)
+		_, a, ingress, h := prepare(t, "out-of-order")
+		_, gapAErr := ingress.InjectPlatform(leaf, parityEventEnvelope(t, "evt-out-of-order", "platform.twitch", 2, "two"))
+		_, gapBErr := providers.InjectActivePlatform(h, leaf, parityEventEnvelope(t, "evt-out-of-order", "platform.twitch", 2, "two"))
+		firstA, err := ingress.InjectPlatform(leaf, parityEventEnvelope(t, "evt-out-of-order-1", "platform.twitch", 1, "one"))
+		if err != nil || firstA.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=out-of-order-before-first A recovery receipt=%+v err=%v", firstA, err)
 		}
-		first, err := h.Dispatch(bluehost.SlotOnAir, parityEventEnvelope(t, "evt-out-of-order-1", "platform.twitch", 1, "one"))
-		if err != nil || first.Status != "accepted" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=out-of-order-before-first recovery receipt=%+v err=%v", first, err)
+		waitForState(t, a, "__vars.bp.result", `"one"`, 2*time.Second)
+		firstB, err := providers.InjectActivePlatform(h, leaf, parityEventEnvelope(t, "evt-out-of-order-1", "platform.twitch", 1, "one"))
+		if err != nil || firstB.Status != "accepted" {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=out-of-order-before-first B recovery receipt=%+v err=%v", firstB, err)
 		}
-		if got := parityNormalizeEventTrace(parityLogs(parityHostStep(t, h, bluehost.SlotOnAir, "out-of-order recovery"))); fmt.Sprint(got) != "[one]" {
-			t.Fatalf("primitive=core.event.on-event@1 scenario=out-of-order-before-first trace=%v, want [one]", got)
+		step := parityHostStep(t, h, bluehost.SlotOnAir, "out-of-order recovery")
+		if parityIngressErrorCode(gapAErr) != "EVENT_SEQUENCE_GAP" || parityBlueErrorCode(gapBErr) != "EVENT_SEQUENCE_GAP" || firstA.RuntimeSequence != firstB.RuntimeSequence || string(canonicalJSONForTest(step.Outputs["result"])) != `"one"` {
+			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=out-of-order-before-first A code=%s receipt=%+v B code=%s receipt=%+v result=%#v", parityIngressErrorCode(gapAErr), firstA, parityBlueErrorCode(gapBErr), firstB, step.Outputs["result"])
 		}
-		parityAssertTypedGap(t, parityNonEquivalenceError{
-			Primitive: "core.event.on-event@1", Scenario: "out-of-order-before-first",
-			EngineA: "InputMsg has no admission sequence and cannot distinguish this case",
-			EngineB: "Host.Dispatch rejects source sequence 2 before expected sequence 1 with EVENT_SEQUENCE_GAP",
-		})
 	})
 }
 
@@ -347,23 +347,47 @@ func parityBuildBLocalOperationProgram(t *testing.T, opcodeID string, value any,
 	if config == nil {
 		config = map[string]any{}
 	}
+	opConfig := make(map[string]any, len(config))
+	for key, item := range config {
+		opConfig[key] = item
+	}
+	var payload any
+	hasPayload := false
+	if opcodeID == "core.show.emit@1" {
+		payload, hasPayload = opConfig["payload"]
+		delete(opConfig, "payload")
+	}
+	opInputs := []any{parityExecPort("in")}
+	execEdges := []any{
+		map[string]any{"from_node": "op", "from_port": "then", "to_node": "mark", "to_port": "in", "sequence": 0},
+		map[string]any{"from_node": "start-node", "from_port": "then", "to_node": "op", "to_port": "in", "sequence": 0},
+	}
+	dataEdges := []any{}
+	dataLiterals := []any{map[string]any{"node_id": "mark", "port": "value", "value": value}}
+	if hasPayload {
+		// Blue's canonical port order places data inputs before the exec
+		// trigger. Keep the added payload deterministic and schema-valid.
+		opInputs = []any{parityDataPort("payload", "core.json", false), parityExecPort("in")}
+		// A direct data literal is the canonical ABI for an unwired effect
+		// input. Do not introduce a synthetic core.literal node here: Blue's
+		// walker rejects that fixture shape before show.emit can run.
+		dataLiterals = append(dataLiterals, map[string]any{"node_id": "op", "port": "payload", "value": payload})
+	}
+	opcodes := []any{
+		map[string]any{"id": "core.event.on-start@1", "kind": "entrypoint", "config": []any{}, "inputs": []any{}, "outputs": []any{parityExecPort("then")}},
+		map[string]any{"id": opcodeID, "kind": "control", "config": parityInventoryConfigPorts(opcodeID), "inputs": opInputs, "outputs": []any{parityExecPort("then")}},
+		map[string]any{"id": "core.variable.set@1", "kind": "pure", "config": []any{parityDataPort("variable", "core.string", true)}, "inputs": []any{parityDataPort("value", "core.json", true), parityExecPort("in")}, "outputs": []any{parityDataPort("value", "core.json", false), parityExecPort("then")}},
+	}
+	nodes := []any{
+		map[string]any{"id": "mark", "opcode": "core.variable.set@1", "config": map[string]any{"variable": "result"}},
+		map[string]any{"id": "op", "opcode": opcodeID, "config": opConfig},
+		map[string]any{"id": "start-node", "opcode": "core.event.on-start@1", "config": map[string]any{}},
+	}
 	return parityBuildProgram(t, "ab-inventory-local",
-		[]any{
-			map[string]any{"id": "core.event.on-start@1", "kind": "entrypoint", "config": []any{}, "inputs": []any{}, "outputs": []any{parityExecPort("then")}},
-			map[string]any{"id": opcodeID, "kind": "control", "config": parityInventoryConfigPorts(opcodeID), "inputs": []any{parityExecPort("in")}, "outputs": []any{parityExecPort("then")}},
-			map[string]any{"id": "core.variable.set@1", "kind": "pure", "config": []any{parityDataPort("variable", "core.string", true)}, "inputs": []any{parityDataPort("value", "core.json", true), parityExecPort("in")}, "outputs": []any{parityDataPort("value", "core.json", false), parityExecPort("then")}},
-		},
-		[]any{
-			map[string]any{"id": "mark", "opcode": "core.variable.set@1", "config": map[string]any{"variable": "result"}},
-			map[string]any{"id": "op", "opcode": opcodeID, "config": config},
-			map[string]any{"id": "start-node", "opcode": "core.event.on-start@1", "config": map[string]any{}},
-		},
+		opcodes,
+		nodes,
 		[]any{map[string]any{"id": "start", "kind": "start", "node_id": "start-node", "port": "then"}},
-		[]any{
-			map[string]any{"from_node": "op", "from_port": "then", "to_node": "mark", "to_port": "in", "sequence": 0},
-			map[string]any{"from_node": "start-node", "from_port": "then", "to_node": "op", "to_port": "in", "sequence": 0},
-		},
-		[]any{}, []any{map[string]any{"node_id": "mark", "port": "value", "value": value}}, []any{},
+		execEdges, dataEdges, dataLiterals, []any{},
 		[]any{map[string]any{"name": "result", "type": "core.json", "initial": nil}},
 	)
 }
@@ -405,6 +429,48 @@ func parityAssertBLocalSideEffect(t *testing.T, primitive string, value any, con
 	return step
 }
 
+type parityShowEmitter struct {
+	show    *Show
+	mu      sync.Mutex
+	topic   string
+	payload json.RawMessage
+}
+
+func (e *parityShowEmitter) EmitToActive(topic string, payload json.RawMessage) {
+	e.mu.Lock()
+	e.topic = topic
+	e.payload = append(e.payload[:0], payload...)
+	e.mu.Unlock()
+	(&activeOnlyEmitter{show: e.show}).EmitToActive(topic, payload)
+}
+
+func (e *parityShowEmitter) snapshot() (string, json.RawMessage) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.topic, append(json.RawMessage(nil), e.payload...)
+}
+
+func parityLocalRecord(t *testing.T, step blueruntime.StepResult, primitive string) map[string]any {
+	t.Helper()
+	bagName := "__" + strings.TrimSuffix(primitive[len("core."):], "@1")
+	bag, ok := step.Variables[bagName].(map[string]any)
+	if !ok {
+		t.Fatalf("primitive=%s scenario=local-side-effect Engine B reserved observable=%#v", primitive, step.Variables)
+	}
+	record, ok := bag["op"].(map[string]any)
+	if !ok {
+		t.Fatalf("primitive=%s scenario=local-side-effect Engine B structured record=%#v", primitive, bag["op"])
+	}
+	if record["opcode"] != primitive || record["node_id"] != "op" {
+		t.Fatalf("primitive=%s scenario=local-side-effect Engine B record identity=%#v", primitive, record)
+	}
+	continuation, ok := record["continuation"].(map[string]any)
+	if !ok || continuation["port"] != "then" || continuation["status"] != "fired" {
+		t.Fatalf("primitive=%s scenario=local-side-effect Engine B continuation=%#v", primitive, record["continuation"])
+	}
+	return record
+}
+
 func parityServiceCallProgram() *ExecProgram {
 	return &ExecProgram{
 		BlueprintKey: "bp",
@@ -428,10 +494,10 @@ func parityServiceCallProgram() *ExecProgram {
 
 func parityBuildBServiceProgram(t *testing.T) []byte {
 	t.Helper()
-	var route map[string]any
-	if err := json.Unmarshal([]byte(echoRouteJSON), &route); err != nil {
-		t.Fatalf("primitive=core.service.call@1 scenario=fixture route: %v", err)
-	}
+	// Blue's canonical ABI carries only the compiler-baked route reference.
+	// The host resolves it through the authoritative registry supplied in
+	// EffectDeps; method/path/token scope never comes from this program.
+	route := map[string]any{"service": "example", "route_id": "example.echo"}
 	return parityBuildProgram(t, "ab-inventory-service",
 		[]any{
 			map[string]any{"id": "core.event.on-start@1", "kind": "entrypoint", "config": []any{}, "inputs": []any{}, "outputs": []any{parityExecPort("then")}},
@@ -534,21 +600,21 @@ func testParityInventoryService(t *testing.T) {
 	h := bluehost.NewHost()
 	t.Cleanup(func() { _ = h.Release(bluehost.SlotOnAir, "test-cleanup") })
 	if err := h.Prepare(bluehost.SlotOnAir, "inventory-service-b", "sha256:inventory-service-b", parityBuildBServiceProgram(t), nil, nil,
-		bluehost.NewEffectHandlers(bluehost.EffectDeps{ServiceCall: client}, blueruntime.Execute)); err != nil {
+		bluehost.NewEffectHandlers(bluehost.EffectDeps{ServiceCall: client, ResolveServiceRoute: parityServiceRouteResolver}, blueruntime.Execute)); err != nil {
 		if parityBlueErrorCode(err) != "PROGRAM_PORT_INVALID" {
 			t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam unexpected Engine B Host.Prepare error code=%q err=%v", parityBlueErrorCode(err), err)
 		}
-		t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam BLOCKER: Engine A status=%s body=%s path=/example/api/v1/items/alice/echo then=%q; the exact compiler-shaped Blue fixture with opcode config=[] and nodes[call].config.__route was rejected before execution with %v. The current Blue Go parser does not accept the hidden curated-route metadata, so the real walker cannot receive the route and A/B status/path/body/then/error comparison cannot be claimed without a Blue change excluded by this work-unit", aStatus, aBody, aThen, err)
+		t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam BLOCKER: Engine A status=%s body=%s path=/example/api/v1/items/alice/echo then=%q; the canonical Blue route reference __route={service,route_id} was rejected before execution with %v. Recheck the consumed Blue ABI and the authoritative Orion route resolver before claiming A/B status/path/body/then/error parity", aStatus, aBody, aThen, err)
 	}
 	bStep := parityBStep(t, h, bluehost.SlotOnAir, "service.call success")
 	if bError, ok := bStep.Variables["error"].(string); ok && bError != "" {
 		mu.Lock()
 		requestCount := len(requests)
 		mu.Unlock()
-		if bError != "EGRESS_ROUTE_NOT_BAKED" {
+		if !strings.HasPrefix(bError, "EGRESS_ROUTE_UNRESOLVED") {
 			t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam unexpected Engine B error=%q; request count=%d", bError, requestCount)
 		}
-		t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam BLOCKER: Engine A status=%s body=%s path=/example/api/v1/items/alice/echo then=%q; Engine B walker dispatched core.service.call@1 but returned %q, with no status/body/path/then and %d server requests. Blue's compiler-required __route cannot be represented by the current Go program schema (PROGRAM_PORT_INVALID: invalid identifier), so bluehost.NewEffectHandlers cannot receive the curated route without a Blue change excluded by this work-unit", aStatus, aBody, aThen, bError, requestCount)
+		t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam BLOCKER: Engine A status=%s body=%s path=/example/api/v1/items/alice/echo then=%q; Engine B received the canonical route reference but the Host/API dependency bundle carried no authoritative resolver and returned %q, with no status/body/path/then and %d server requests", aStatus, aBody, aThen, bError, requestCount)
 	}
 	bStatus, ok := bStep.Variables["status"].(json.Number)
 	if !ok || bStatus.String() != string(aStatus) {
@@ -598,7 +664,7 @@ func testParityInventoryService(t *testing.T) {
 		bErrHost := bluehost.NewHost()
 		t.Cleanup(func() { _ = bErrHost.Release(bluehost.SlotOnAir, "test-cleanup") })
 		if err := bErrHost.Prepare(bluehost.SlotOnAir, "inventory-service-error-b", "sha256:inventory-service-error-b", parityBuildBServiceProgram(t), nil, nil,
-			bluehost.NewEffectHandlers(bluehost.EffectDeps{ServiceCall: effects.NewServiceCallClient(errorServer.URL, noToken.mint, nil)}, blueruntime.Execute)); err != nil {
+			bluehost.NewEffectHandlers(bluehost.EffectDeps{ServiceCall: effects.NewServiceCallClient(errorServer.URL, noToken.mint, nil), ResolveServiceRoute: parityServiceRouteResolver}, blueruntime.Execute)); err != nil {
 			t.Fatalf("primitive=core.service.call@1 scenario=typed-error Engine B Host.Prepare: %v", err)
 		}
 		bErrorStep := parityBStep(t, bErrHost, bluehost.SlotOnAir, "service.call typed error")
@@ -615,7 +681,8 @@ func testParityInventoryService(t *testing.T) {
 func testParityInventoryShow(t *testing.T) {
 	show := NewShow(NewComputeRegistry(), quietLogger())
 	t.Cleanup(show.Stop)
-	show.SetEmitter(&activeOnlyEmitter{show: show})
+	emitter := &parityShowEmitter{show: show}
+	show.SetEmitter(emitter)
 	show.LoadExec("inventory-show-a", varsGraph("inventory-show-a"), &compiler.RenderBundle{SceneVersion: "sha256:inventory-show"}, emitOnStartProg("inventory"))
 	if err := show.SetActive("inventory-show-a", nil); err != nil {
 		t.Fatalf("primitive=core.show.emit@1 scenario=on-air Engine A SetActive: %v", err)
@@ -623,13 +690,20 @@ func testParityInventoryShow(t *testing.T) {
 	a, _ := show.Get("inventory-show-a")
 	waitForState(t, a, "__vars.bp.emitted", "1", 2*time.Second)
 	aValue, _ := a.state.Get("__vars.bp.emitted")
-	b := parityAssertBLocalSideEffect(t, "core.show.emit@1", 1, map[string]any{"topic": "inventory"})
-	parityAssertInventoryResult(t, "core.show.emit@1", "then-routing", aValue, b.Outputs["result"])
-	parityAssertTypedGap(t, parityNonEquivalenceError{
-		Primitive: "core.show.emit@1", Scenario: "external-observable",
-		EngineA: "Show emitter delivered an active-only event and then set __vars.bp.emitted=1",
-		EngineB: "Host runtime only exposes __show.emit reserved state; no Host emitter/active-scene mirror exists",
+	topic, payload := emitter.snapshot()
+	if topic != "inventory" || string(payload) != `{"k":"v"}` {
+		t.Fatalf("primitive=core.show.emit@1 scenario=external-observable Engine A emission=(%q,%s), want inventory/{k:v}", topic, payload)
+	}
+	b := parityAssertBLocalSideEffect(t, "core.show.emit@1", 1, map[string]any{
+		"topic": "inventory", "payload": map[string]any{"k": "v"},
 	})
+	parityAssertInventoryResult(t, "core.show.emit@1", "then-routing", aValue, b.Outputs["result"])
+	record := parityLocalRecord(t, b, "core.show.emit@1")
+	config, _ := record["config"].(map[string]any)
+	inputs, _ := record["inputs"].(map[string]any)
+	if config["topic"] != topic || string(canonicalJSONForTest(inputs["payload"])) != string(canonicalJSONForTest(map[string]any{"k": "v"})) {
+		t.Fatalf("primitive=core.show.emit@1 scenario=external-observable semantic record=%#v, want topic/payload parity", record)
+	}
 }
 
 func testParityInventoryOverlay(t *testing.T) {
@@ -647,11 +721,11 @@ func testParityInventoryOverlay(t *testing.T) {
 	}
 	b := parityAssertBLocalSideEffect(t, "core.overlay-app.set@1", 1, map[string]any{"app_id": "inventory-app", "running": true})
 	parityAssertInventoryResult(t, "core.overlay-app.set@1", "then-routing", aValue, b.Outputs["result"])
-	parityAssertTypedGap(t, parityNonEquivalenceError{
-		Primitive: "core.overlay-app.set@1", Scenario: "external-observable",
-		EngineA: "Scene.SetOverlayAppSetter observed one app_id/running mirror call and then-routing",
-		EngineB: "Host runtime only exposes __overlay-app.set reserved state; no Host overlay mirror exists",
-	})
+	record := parityLocalRecord(t, b, "core.overlay-app.set@1")
+	config, _ := record["config"].(map[string]any)
+	if config["app_id"] != "inventory-app" || config["running"] != true {
+		t.Fatalf("primitive=core.overlay-app.set@1 scenario=external-observable semantic record=%#v, want app_id/running parity", config)
+	}
 }
 
 func testParityInventoryAnimation(t *testing.T) {
@@ -665,11 +739,14 @@ func testParityInventoryAnimation(t *testing.T) {
 		"overlay_id": "ov", "animation_id": "fade", "duration_seconds": 0,
 	})
 	parityAssertInventoryResult(t, "core.animation.play@1", "then-routing", aValue, b.Outputs["result"])
-	parityAssertTypedGap(t, parityNonEquivalenceError{
-		Primitive: "core.animation.play@1", Scenario: "renderer-completion",
-		EngineA: "Scene emitted __anim.ov generation 1 and exposes completed/error continuation",
-		EngineB: "Host runtime only exposes __animation.play reserved state; no renderer report/completion seam exists",
-	})
+	if got := animScalarGen(t, a, "__anim.ov"); got != 1 {
+		t.Fatalf("primitive=core.animation.play@1 scenario=renderer-trigger Engine A generation=%d, want 1", got)
+	}
+	record := parityLocalRecord(t, b, "core.animation.play@1")
+	config, _ := record["config"].(map[string]any)
+	if config["overlay_id"] != "ov" || config["animation_id"] != "fade" || fmt.Sprint(config["duration_seconds"]) != "0" {
+		t.Fatalf("primitive=core.animation.play@1 scenario=renderer-trigger semantic record=%#v, want authored trigger parity", config)
+	}
 }
 
 func parityBuildBAwaitProgram(t *testing.T) []byte {
@@ -677,11 +754,11 @@ func parityBuildBAwaitProgram(t *testing.T) []byte {
 	return parityBuildProgram(t, "ab-inventory-await",
 		[]any{
 			map[string]any{"id": "core.event.on-start@1", "kind": "entrypoint", "config": []any{}, "inputs": []any{}, "outputs": []any{parityExecPort("then")}},
-			map[string]any{"id": "core.operator.await-value@1", "kind": "control", "config": []any{parityDataPort("await_name", "core.string", false)}, "inputs": []any{parityExecPort("in")}, "outputs": []any{parityDataPort("value", "core.json", false), parityExecPort("then")}},
+			map[string]any{"id": "core.operator.await-value@1", "kind": "control", "config": []any{parityDataPort("await_name", "core.string", false), parityDataPort("value_type", "core.string", false)}, "inputs": []any{parityExecPort("in")}, "outputs": []any{parityDataPort("value", "core.json", false), parityExecPort("then")}},
 			map[string]any{"id": "core.variable.set@1", "kind": "pure", "config": []any{parityDataPort("variable", "core.string", true)}, "inputs": []any{parityDataPort("value", "core.json", true), parityExecPort("in")}, "outputs": []any{parityDataPort("value", "core.json", false), parityExecPort("then")}},
 		},
 		[]any{
-			map[string]any{"id": "await", "opcode": "core.operator.await-value@1", "config": map[string]any{"await_name": "confirm"}},
+			map[string]any{"id": "await", "opcode": "core.operator.await-value@1", "config": map[string]any{"await_name": "confirm", "value_type": "core.primitive.integer"}},
 			map[string]any{"id": "mark", "opcode": "core.variable.set@1", "config": map[string]any{"variable": "result"}},
 			map[string]any{"id": "start-node", "opcode": "core.event.on-start@1", "config": map[string]any{}},
 		},
@@ -722,14 +799,12 @@ func testParityInventoryAwait(t *testing.T) {
 	}
 	bMismatch := parityPrepareBHost(t, bluehost.SlotOnAir, "inventory-await-mismatch-b", parityBuildBAwaitProgram(t))
 	_, bMismatchErr := bMismatch.Resolve(bluehost.SlotOnAir, "confirm", 3.5)
-	if bMismatchErr != nil {
-		t.Fatalf("primitive=core.operator.await-value@1 scenario=type-mismatch Engine B unexpectedly rejected value: %v", bMismatchErr)
+	if parityBlueErrorCode(bMismatchErr) != "AWAIT_TYPE_MISMATCH" {
+		t.Fatalf("primitive=core.operator.await-value@1 scenario=type-mismatch Engine B code=%q err=%v, want AWAIT_TYPE_MISMATCH", parityBlueErrorCode(bMismatchErr), bMismatchErr)
 	}
-	parityAssertTypedGap(t, parityNonEquivalenceError{
-		Primitive: "core.operator.await-value@1", Scenario: "type-mismatch",
-		EngineA: "ResolveAwait rejects fractional value for core.primitive.integer with ErrAwaitTypeMismatch",
-		EngineB: "bluehost.Host.Resolve accepts 3.5 because current Blue await config has no value_type admission",
-	})
+	if _, err := bMismatch.Resolve(bluehost.SlotOnAir, "confirm", json.Number("3")); err != nil {
+		t.Fatalf("primitive=core.operator.await-value@1 scenario=type-mismatch Engine B did not remain recoverable after rejection: %v", err)
+	}
 }
 
 func parityBuildBGateProgram(t *testing.T) []byte {

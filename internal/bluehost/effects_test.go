@@ -323,12 +323,7 @@ func TestEffectHandlers_ServiceCallPreviewNeverDials(t *testing.T) {
 	handler := NewEffectHandlers(EffectDeps{ServiceCall: client}, blueruntime.Preview)["core.service.call@1"]
 
 	outputs, err := handler(map[string]any{
-		"__route": map[string]any{
-			"method":        "POST",
-			"path_template": "/svc/{id}",
-			"params":        []string{"id"},
-			"token_paths":   []string{"svc.write"},
-		},
+		"__route": serviceParityRouteReference(),
 	}, map[string]any{
 		"params":  map[string]any{"id": "preview"},
 		"payload": map[string]any{"ok": true},
@@ -363,17 +358,13 @@ func TestEffectHandlers_ExecuteServiceCallBuildsPathAndCalls(t *testing.T) {
 		return "scoped"
 	}, nil)
 	handler := NewEffectHandlers(EffectDeps{
-		ServiceCall:  client,
-		EgressBudget: effects.NewStreamEgressLimiter(1, 10),
+		ServiceCall:         client,
+		ResolveServiceRoute: serviceParityRouteResolver,
+		EgressBudget:        effects.NewStreamEgressLimiter(1, 10),
 	}, blueruntime.Execute)["core.service.call@1"]
 
 	outputs, err := handler(map[string]any{
-		"__route": map[string]any{
-			"method":        "POST",
-			"path_template": "/svc/{id}",
-			"params":        []string{"id"},
-			"token_paths":   []string{"svc.write"},
-		},
+		"__route": serviceParityRouteReference(),
 	}, map[string]any{
 		"params":  map[string]any{"id": "a/b"},
 		"payload": map[string]any{"ok": true},

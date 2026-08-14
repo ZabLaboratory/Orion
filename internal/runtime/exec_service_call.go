@@ -42,6 +42,16 @@ func execServiceCall(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 			bindServiceCallResult(node.ID, env, value)
 		})
 	}
+	if e := s.effects; e != nil && e.Preview {
+		out, err := json.Marshal(effects.ServiceCallResult{Status: 0, Body: nil})
+		if err != nil {
+			return serviceCallError(s, node, "SERVICE_PREVIEW_ENCODE: "+err.Error())
+		}
+		// Preview is synthetic before route, budget, parameter, or client
+		// admission. This is the same ordering as Blue's Preview handler:
+		// authored transport details cannot turn preview into an error path.
+		return previewEffectOutcome(s, node, out)
+	}
 
 	route, ok := bakedRouteOf(node)
 	if !ok {

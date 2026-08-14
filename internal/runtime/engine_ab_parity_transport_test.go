@@ -50,6 +50,20 @@ func parityCanonicalJSONBytes(data []byte) []byte {
 	return canonicalJSONForTest(value)
 }
 
+func parityServiceRouteResolver(service, routeID string) (bluehost.ServiceCallRoute, bool) {
+	if service != "example" || routeID != "example.echo" {
+		return bluehost.ServiceCallRoute{}, false
+	}
+	return bluehost.ServiceCallRoute{
+		Service:      service,
+		RouteID:      routeID,
+		Method:       http.MethodPost,
+		PathTemplate: "/example/api/v1/items/{name}/echo",
+		Params:       []string{"name"},
+		TokenPaths:   []string{"example.echo"},
+	}, true
+}
+
 func buildParityEngineAHTTPTransportProgram(targetURL, method string, query, headers, body map[string]any) *ExecProgram {
 	return &ExecProgram{
 		BlueprintKey: "bp",

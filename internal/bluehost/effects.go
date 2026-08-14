@@ -21,14 +21,39 @@ import (
 // handlers. cmd/orion/main.go creates this bundle once and passes the same
 // instances to Engine A and the scene-intent bluehost surface.
 type EffectDeps struct {
-	Runner          *effects.Runner
-	Egress          *effects.EgressPolicy
-	DataSources     map[string]effects.DataSource
-	DB              *effects.DBQueryClient
-	ServiceCall     *effects.ServiceCallClient
-	EgressBudget    *effects.StreamEgressLimiter
-	EgressBudgetKey string
+	Runner      *effects.Runner
+	Egress      *effects.EgressPolicy
+	DataSources map[string]effects.DataSource
+	DB          *effects.DBQueryClient
+	ServiceCall *effects.ServiceCallClient
+	// ResolveServiceRoute is the authoritative registry bridge for Blue's
+	// canonical __route reference. The scene-intent/API path passes this
+	// dependency bundle unchanged into NewEffectHandlers; nil is deliberately
+	// fail-closed rather than an invitation to trust authored route details.
+	ResolveServiceRoute ServiceRouteResolver
+	EgressBudget        *effects.StreamEgressLimiter
+	EgressBudgetKey     string
 }
+
+// ServiceCallRoute is the host-resolved portion of a compiler-curated
+// service.call route. Blue's portable ABI carries only the opaque
+// (service, route_id) reference under __route; Orion resolves that reference
+// against the same authoritative route registry used by its compiler before
+// constructing the gateway request. A missing resolver or route fails closed.
+type ServiceCallRoute struct {
+	Service      string   `json:"service"`
+	RouteID      string   `json:"route_id"`
+	Method       string   `json:"method"`
+	PathTemplate string   `json:"path_template"`
+	Params       []string `json:"params"`
+	TokenPaths   []string `json:"token_paths"`
+}
+
+// ServiceRouteResolver resolves a Blue-baked service/route identifier to the
+// host transport details. The callback is intentionally optional: callers
+// without an authoritative registry retain the fail-closed behavior instead
+// of accepting authored method, path, or token scope data.
+type ServiceRouteResolver func(service, routeID string) (ServiceCallRoute, bool)
 
 // NewEffectHandlers builds the StartOptions.EffectHandlers table for one
 // instance. mode gates the transport: blueruntime.Preview NEVER dials the
@@ -37,14 +62,9 @@ type EffectDeps struct {
 // while blueruntime.Execute dispatches for real through deps, the same
 // policy (allowlist, token, response caps) Engine A's on-air scene uses.
 //
-// This is a DELIBERATE divergence from Engine A's OWN preview.go clone,
-// which makes real bounded egress in preview (a per-stream budget, not a
-// no-op — see preview.go's SetEffects doc comment). The issue's acceptance
-// criteria are explicit and testable ("aucune requête... émise" in preview);
-// Engine A's actual runtime behaviour contradicts them. This function
-// implements the ISSUE's stated contract; the discrepancy itself is
-// reported, not resolved unilaterally (an architecture call for
-// Atlas/Conduit, not a Forge judgment call).
+// Engine A's PreviewSlot applies the same stateless policy to its private
+// effect bundle, so both host implementations expose the same synthetic
+// preview observation before transport admission.
 func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueruntime.EffectFunc {
 	http := func(_, inputs map[string]any) (map[string]any, error) {
 		if mode != blueruntime.Execute {
@@ -62,7 +82,7 @@ func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueru
 		if mode != blueruntime.Execute {
 			return previewServiceCallResult(), nil
 		}
-		return doServiceCall(context.Background(), deps.ServiceCall, deps.EgressBudget, deps.EgressBudgetKey, config, inputs)
+		return doServiceCall(context.Background(), deps.ServiceCall, deps.ResolveServiceRoute, deps.EgressBudget, deps.EgressBudgetKey, config, inputs)
 	}
 	return map[string]blueruntime.EffectFunc{
 		"core.http.request@1": http,
@@ -163,19 +183,12 @@ func doDBQuery(ctx context.Context, db *effects.DBQueryClient, dataSources map[s
 	}, nil
 }
 
-type serviceCallRoute struct {
-	Method       string   `json:"method"`
-	PathTemplate string   `json:"path_template"`
-	Params       []string `json:"params"`
-	TokenPaths   []string `json:"token_paths"`
-}
-
 // doServiceCall is the direct Engine-B host seam for the same curated route
 // contract Engine A executes in exec_service_call.go. The route is compiler-
 // baked under __route; authored values can only fill escaped template params,
 // and the ServiceCallClient remains fail-closed when no scoped token exists.
-func doServiceCall(ctx context.Context, client *effects.ServiceCallClient, budget *effects.StreamEgressLimiter, budgetKey string, config, inputs map[string]any) (map[string]any, error) {
-	route, err := serviceCallRouteOf(config)
+func doServiceCall(ctx context.Context, client *effects.ServiceCallClient, resolveRoute ServiceRouteResolver, budget *effects.StreamEgressLimiter, budgetKey string, config, inputs map[string]any) (map[string]any, error) {
+	route, err := serviceCallRouteOf(config, resolveRoute)
 	if err != nil {
 		return nil, err
 	}
@@ -212,18 +225,35 @@ func doServiceCall(ctx context.Context, client *effects.ServiceCallClient, budge
 	}, nil
 }
 
-func serviceCallRouteOf(config map[string]any) (serviceCallRoute, error) {
+func serviceCallRouteOf(config map[string]any, resolveRoute ServiceRouteResolver) (ServiceCallRoute, error) {
 	raw, ok := config["__route"]
 	if !ok {
-		return serviceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_NOT_BAKED")
+		return ServiceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_NOT_BAKED")
 	}
-	encoded, err := json.Marshal(raw)
-	if err != nil {
-		return serviceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_INVALID: %w", err)
+	object, ok := raw.(map[string]any)
+	if !ok {
+		return ServiceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_INVALID")
 	}
-	var route serviceCallRoute
-	if err := json.Unmarshal(encoded, &route); err != nil || route.Method == "" || route.PathTemplate == "" {
-		return serviceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_INVALID")
+	// Blue's production ABI admits exactly this two-field reference. Full
+	// method/path/token metadata is not a supported fallback: it is rejected
+	// here as authored transport data and can never reach ServiceCallClient.
+	if len(object) != 2 {
+		return ServiceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_INVALID")
+	}
+	service, serviceOK := object["service"].(string)
+	routeID, routeOK := object["route_id"].(string)
+	if !serviceOK || service == "" || !routeOK || routeID == "" {
+		return ServiceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_INVALID")
+	}
+	if resolveRoute == nil {
+		return ServiceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_UNRESOLVED: %s/%s", service, routeID)
+	}
+	route, found := resolveRoute(service, routeID)
+	if !found {
+		return ServiceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_NOT_DECLARED: %s/%s", service, routeID)
+	}
+	if route.Service != service || route.RouteID != routeID || route.Method == "" || route.PathTemplate == "" {
+		return ServiceCallRoute{}, fmt.Errorf("EGRESS_ROUTE_INVALID")
 	}
 	return route, nil
 }

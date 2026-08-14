@@ -11,9 +11,12 @@
 package bluehost
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
@@ -39,9 +42,10 @@ var (
 // entry pairs a running instance with the program handle it was started
 // from, so Step/Stop never need the caller to keep the handle around.
 type entry struct {
-	instance *blueruntime.InstanceHandle
-	digest   string // scene_digest / program identity this slot is serving
-	bundle   []byte // optional LSML render-bundle bytes for this slot, set via SetBundle
+	instance   *blueruntime.InstanceHandle
+	digest     string            // scene_digest / program identity this slot is serving
+	bundle     []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
+	awaitTypes map[string]string // compiler-declared operator.await value types
 }
 
 // Host owns exactly one preview and one on-air instance at a time, per
@@ -124,7 +128,7 @@ func (h *Host) Prepare(slot Slot, instanceID, digest string, program []byte, pro
 		return fmt.Errorf("bluehost: start %s: %w", slot, err)
 	}
 
-	h.slots[slot] = &entry{instance: instance, digest: digest}
+	h.slots[slot] = &entry{instance: instance, digest: digest, awaitTypes: awaitTypesInProgram(program)}
 	return nil
 }
 
@@ -259,7 +263,7 @@ func (h *Host) Take(instanceID, digest string, program []byte, providers []map[s
 	}
 
 	previous := h.slots[SlotOnAir]
-	h.slots[SlotOnAir] = &entry{instance: instance, digest: digest}
+	h.slots[SlotOnAir] = &entry{instance: instance, digest: digest, awaitTypes: awaitTypesInProgram(program)}
 	h.mu.Unlock()
 
 	if previous != nil {
@@ -365,7 +369,21 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
 	instance := e.instance
+	awaitType := e.awaitTypes[awaitName]
 	h.mu.Unlock()
+
+	// Blue's portable Resolve ABI carries the value, while the compiler's
+	// await node carries the static value_type. Enforce that admission at the
+	// Host boundary so a fractional or otherwise malformed operator value
+	// cannot resume a continuation that Engine A would keep parked.
+	if awaitType != "" && !awaitValueMatchesType(value, awaitType) {
+		return blueruntime.StepResult{}, &blueruntime.Error{
+			SchemaVersion: blueruntime.ErrorSchema,
+			Code:          "AWAIT_TYPE_MISMATCH",
+			Stage:         "resolve",
+			Message:       fmt.Sprintf("await %q rejects value for %s", awaitName, awaitType),
+		}
+	}
 
 	h.runtimeMu.Lock()
 	result, err := h.runtime.Resolve(instance, awaitName, value)
@@ -375,6 +393,63 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 	}
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	return result, nil
+}
+
+// awaitTypesInProgram extracts only compiler-authored await metadata. It is
+// intentionally read at Prepare/Take time and never inferred from a resolve
+// payload; a missing or unknown type leaves refinement to the compiler while
+// the Host still rejects all known primitive mismatches fail-closed.
+func awaitTypesInProgram(program []byte) map[string]string {
+	decoder := json.NewDecoder(bytes.NewReader(program))
+	decoder.UseNumber()
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil {
+		return nil
+	}
+	nodes, _ := document["nodes"].([]any)
+	result := make(map[string]string)
+	for _, rawNode := range nodes {
+		node, _ := rawNode.(map[string]any)
+		if node == nil || node["opcode"] != "core.operator.await-value@1" {
+			continue
+		}
+		name, _ := node["id"].(string)
+		config, _ := node["config"].(map[string]any)
+		if configured, ok := config["await_name"].(string); ok && configured != "" {
+			name = configured
+		}
+		valueType, _ := config["value_type"].(string)
+		if name != "" && valueType != "" {
+			result[name] = valueType
+		}
+	}
+	return result
+}
+
+func awaitValueMatchesType(value any, valueType string) bool {
+	encoded, err := json.Marshal(value)
+	if err != nil || !json.Valid(encoded) {
+		return false
+	}
+	switch valueType {
+	case "core.primitive.string":
+		var typed string
+		return json.Unmarshal(encoded, &typed) == nil
+	case "core.primitive.boolean":
+		var typed bool
+		return json.Unmarshal(encoded, &typed) == nil
+	case "core.primitive.float":
+		var typed float64
+		return json.Unmarshal(encoded, &typed) == nil
+	case "core.primitive.integer":
+		var typed float64
+		if json.Unmarshal(encoded, &typed) != nil || math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return false
+		}
+		return typed == math.Trunc(typed)
+	default:
+		return true
+	}
 }
 
 // Complete reports a provider's outcome for a `core.effect.invoke@1`

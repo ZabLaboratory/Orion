@@ -13,13 +13,22 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/effects"
 )
 
-func serviceParityRoute() map[string]any {
-	return map[string]any{
-		"method":        http.MethodPost,
-		"path_template": "/svc/{id}",
-		"params":        []string{"id"},
-		"token_paths":   []string{"svc.write"},
+func serviceParityRouteReference() map[string]any {
+	return map[string]any{"service": "example", "route_id": "example.echo"}
+}
+
+func serviceParityRouteResolver(service, routeID string) (ServiceCallRoute, bool) {
+	if service != "example" || routeID != "example.echo" {
+		return ServiceCallRoute{}, false
 	}
+	return ServiceCallRoute{
+		Service:      service,
+		RouteID:      routeID,
+		Method:       http.MethodPost,
+		PathTemplate: "/svc/{id}",
+		Params:       []string{"id"},
+		TokenPaths:   []string{"svc.write"},
+	}, true
 }
 
 func serviceParityInputs(id string) map[string]any {
@@ -47,8 +56,8 @@ func TestEffectHandlers_ServiceCallNon2xxPreservesStatusBodyAndOK(t *testing.T) 
 		}
 		return "scoped"
 	}, nil)
-	handler := NewEffectHandlers(EffectDeps{ServiceCall: client}, blueruntime.Execute)["core.service.call@1"]
-	outputs, err := handler(map[string]any{"__route": serviceParityRoute()}, serviceParityInputs("a/b"))
+	handler := NewEffectHandlers(EffectDeps{ServiceCall: client, ResolveServiceRoute: serviceParityRouteResolver}, blueruntime.Execute)["core.service.call@1"]
+	outputs, err := handler(map[string]any{"__route": serviceParityRouteReference()}, serviceParityInputs("a/b"))
 	if err != nil {
 		t.Fatalf("service.call non-2xx: %v", err)
 	}
@@ -70,6 +79,50 @@ func TestEffectHandlers_ServiceCallNon2xxPreservesStatusBodyAndOK(t *testing.T) 
 	}
 }
 
+func TestEffectHandlers_ServiceCallReferenceWithoutResolverFailsClosed(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := effects.NewServiceCallClient(srv.URL, func([]string) string { return "scoped" }, nil)
+	handler := NewEffectHandlers(EffectDeps{ServiceCall: client}, blueruntime.Execute)["core.service.call@1"]
+	if _, err := handler(map[string]any{"__route": serviceParityRouteReference()}, serviceParityInputs("alice")); err == nil || err.Error() != "EGRESS_ROUTE_UNRESOLVED: example/example.echo" {
+		t.Fatalf("missing route resolver error=%v, want fail-closed EGRESS_ROUTE_UNRESOLVED", err)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("unresolved route emitted %d requests, want zero", got)
+	}
+}
+
+func TestEffectHandlers_ServiceCallRejectsAuthoredTransportDetails(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	client := effects.NewServiceCallClient(srv.URL, func([]string) string { return "scoped" }, nil)
+	handler := NewEffectHandlers(EffectDeps{ServiceCall: client, ResolveServiceRoute: serviceParityRouteResolver}, blueruntime.Execute)["core.service.call@1"]
+	authoredDetails := map[string]any{
+		"service":       "example",
+		"route_id":      "example.echo",
+		"method":        http.MethodPost,
+		"path_template": "/svc/{id}",
+		"params":        []string{"id"},
+		"token_paths":   []string{"svc.write"},
+	}
+	if _, err := handler(map[string]any{"__route": authoredDetails}, serviceParityInputs("alice")); err == nil || err.Error() != "EGRESS_ROUTE_INVALID" {
+		t.Fatalf("authored transport details error=%v, want EGRESS_ROUTE_INVALID", err)
+	}
+	if got := hits.Load(); got != 0 {
+		t.Fatalf("authored transport details emitted %d requests, want zero", got)
+	}
+}
+
 func TestEffectHandlers_ServiceCallInvalidInputMissingTokenAndBudgetFailClosed(t *testing.T) {
 	var hits atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -79,8 +132,8 @@ func TestEffectHandlers_ServiceCallInvalidInputMissingTokenAndBudgetFailClosed(t
 	defer srv.Close()
 
 	noToken := effects.NewServiceCallClient(srv.URL, func([]string) string { return "" }, nil)
-	noTokenHandler := NewEffectHandlers(EffectDeps{ServiceCall: noToken}, blueruntime.Execute)["core.service.call@1"]
-	if _, err := noTokenHandler(map[string]any{"__route": serviceParityRoute()}, serviceParityInputs("alice")); err == nil || err.Error() != "SERVICE_CALL_FAILED: no scoped egress token for [svc.write]" {
+	noTokenHandler := NewEffectHandlers(EffectDeps{ServiceCall: noToken, ResolveServiceRoute: serviceParityRouteResolver}, blueruntime.Execute)["core.service.call@1"]
+	if _, err := noTokenHandler(map[string]any{"__route": serviceParityRouteReference()}, serviceParityInputs("alice")); err == nil || err.Error() != "SERVICE_CALL_FAILED: no scoped egress token for [svc.write]" {
 		t.Fatalf("missing token error=%v, want fail-closed SERVICE_CALL_FAILED", err)
 	}
 	if got := hits.Load(); got != 0 {
@@ -88,8 +141,8 @@ func TestEffectHandlers_ServiceCallInvalidInputMissingTokenAndBudgetFailClosed(t
 	}
 
 	client := effects.NewServiceCallClient(srv.URL, func([]string) string { return "scoped" }, nil)
-	invalidInputHandler := NewEffectHandlers(EffectDeps{ServiceCall: client}, blueruntime.Execute)["core.service.call@1"]
-	if _, err := invalidInputHandler(map[string]any{"__route": serviceParityRoute()}, map[string]any{
+	invalidInputHandler := NewEffectHandlers(EffectDeps{ServiceCall: client, ResolveServiceRoute: serviceParityRouteResolver}, blueruntime.Execute)["core.service.call@1"]
+	if _, err := invalidInputHandler(map[string]any{"__route": serviceParityRouteReference()}, map[string]any{
 		"params":  map[string]any{},
 		"payload": map[string]any{"source": "orion-358"},
 	}); err == nil || len(err.Error()) < len("EGRESS_PARAM_MISSING") || err.Error()[:len("EGRESS_PARAM_MISSING")] != "EGRESS_PARAM_MISSING" {
@@ -100,13 +153,14 @@ func TestEffectHandlers_ServiceCallInvalidInputMissingTokenAndBudgetFailClosed(t
 	}
 
 	handler := NewEffectHandlers(EffectDeps{
-		ServiceCall:  client,
-		EgressBudget: effects.NewStreamEgressLimiter(1, 60),
+		ServiceCall:         client,
+		ResolveServiceRoute: serviceParityRouteResolver,
+		EgressBudget:        effects.NewStreamEgressLimiter(1, 60),
 	}, blueruntime.Execute)["core.service.call@1"]
-	if _, err := handler(map[string]any{"__route": serviceParityRoute()}, serviceParityInputs("alice")); err != nil {
+	if _, err := handler(map[string]any{"__route": serviceParityRouteReference()}, serviceParityInputs("alice")); err != nil {
 		t.Fatalf("first budgeted service.call: %v", err)
 	}
-	if _, err := handler(map[string]any{"__route": serviceParityRoute()}, serviceParityInputs("bob")); err == nil || err.Error() != "EGRESS_BUDGET_EXCEEDED" {
+	if _, err := handler(map[string]any{"__route": serviceParityRouteReference()}, serviceParityInputs("bob")); err == nil || err.Error() != "EGRESS_BUDGET_EXCEEDED" {
 		t.Fatalf("second budgeted service.call error=%v, want EGRESS_BUDGET_EXCEEDED", err)
 	}
 	if got := hits.Load(); got != 1 {
