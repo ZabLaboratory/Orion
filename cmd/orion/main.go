@@ -298,7 +298,7 @@ func run() error {
 	// var is set — see cmd/orion/scene_intent_wiring.go. A config error
 	// here is NOT a boot failure: the legacy path stays fully live either
 	// way (Phase A of the #331 cutover plan).
-	sceneIntent, sierr := wireSceneIntent(cfg)
+	sceneIntent, sierr := wireSceneIntent(cfg, logger)
 	if sierr != nil {
 		logger.Error("scene-intent surface not wired; legacy path unaffected", "err", sierr)
 	} else if sceneIntent != nil {

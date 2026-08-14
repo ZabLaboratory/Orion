@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"log/slog"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -78,7 +79,7 @@ func writeCanvasTrust(t *testing.T, dir string) string {
 }
 
 func TestWireSceneIntent_DarkByDefault(t *testing.T) {
-	deps, err := wireSceneIntent(config.Config{})
+	deps, err := wireSceneIntent(config.Config{}, slog.Default())
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -104,7 +105,7 @@ func TestWireSceneIntent_FullyConfigured(t *testing.T) {
 		TenantID:               "tenant-1",
 	}
 
-	deps, err := wireSceneIntent(cfg)
+	deps, err := wireSceneIntent(cfg, slog.Default())
 	if err != nil {
 		t.Fatalf("wireSceneIntent: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestWireSceneIntent_MissingSANFailsClosed(t *testing.T) {
 		TenantID:               "tenant-1",
 	}
 
-	if _, err := wireSceneIntent(cfg); err == nil {
+	if _, err := wireSceneIntent(cfg, slog.Default()); err == nil {
 		t.Fatal("expected error for missing ORION_WORKLOAD_SAN")
 	}
 }
@@ -153,14 +154,14 @@ func TestWireSceneIntent_MissingOwnerTenantFailsClosed(t *testing.T) {
 		CanvasTrustPath:        trustPath,
 	}
 
-	if _, err := wireSceneIntent(cfg); err == nil {
+	if _, err := wireSceneIntent(cfg, slog.Default()); err == nil {
 		t.Fatal("expected error for missing owner/tenant")
 	}
 }
 
 func TestWireSceneIntent_SingleVarSetIsMisconfigurationNotDark(t *testing.T) {
 	cfg := config.Config{WorkloadZabGateURL: "https://zabgate.internal"}
-	_, err := wireSceneIntent(cfg)
+	_, err := wireSceneIntent(cfg, slog.Default())
 	if err == nil {
 		t.Fatal("expected an error — one var set is a misconfiguration, not the dark default")
 	}

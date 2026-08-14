@@ -10,9 +10,11 @@ package bluehost
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
+	"github.com/ZabLaboratory/Orion/internal/effects"
 )
 
 // Slot names the two isolated instance roles a Host manages. Per §4.4
@@ -50,6 +52,16 @@ type Host struct {
 	mu      sync.Mutex
 	runtime *blueruntime.Runtime
 	slots   map[Slot]*entry
+
+	// httpEgress/httpRunner wire the async invocation/completion protocol
+	// (Blue PR #313, runtime/go effects.go/runtime.go: StepResult.
+	// Invocations + Runtime.Complete) to a real outbound HTTP executor for
+	// `core.http.request` invocations — see effect_http.go. Both nil by
+	// default: every invocation then stays pending, never a silent
+	// capability grant. Set once via SetHTTPEffects.
+	httpEgress *effects.EgressPolicy
+	httpRunner *effects.Runner
+	logger     *slog.Logger
 }
 
 // NewHost builds an empty Host. One Host per Orion process — it is the
@@ -59,6 +71,7 @@ func NewHost() *Host {
 	return &Host{
 		runtime: blueruntime.NewRuntime(),
 		slots:   map[Slot]*entry{},
+		logger:  slog.Default(),
 	}
 }
 
@@ -155,15 +168,27 @@ func (h *Host) Dispatch(slot Slot, data []byte) (blueruntime.Receipt, error) {
 	return h.runtime.Dispatch(e.instance, data)
 }
 
-// Step advances the slot's instance by one deterministic transition.
+// Step advances the slot's instance by one deterministic transition. Any
+// `core.effect.invoke@1` invocation the transition emitted
+// (StepResult.Invocations) is handed to dispatchInvocations AFTER the
+// runtime lock is released — Step itself never blocks on network I/O; the
+// real HTTP call (when wired via SetHTTPEffects) runs on the worker pool
+// and reports back through Runtime.Complete on its own goroutine.
 func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Step(e.instance)
+	instance := e.instance
+	result, err := h.runtime.Step(instance)
+	h.mu.Unlock()
+	if err != nil {
+		return result, err
+	}
+	h.dispatchInvocations(slot, instance, result.Invocations)
+	return result, nil
 }
 
 // Release stops and forgets the slot's instance. Safe to call on an
