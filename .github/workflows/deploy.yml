@@ -56,6 +56,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The production image downloads the private Blue runtime module during
+      # the remote Docker build. Mint the same repository-scoped read token
+      # used by CI; the deploy step passes it only as a BuildKit secret and
+      # never persists it in the remote .env or image.
+      - name: mint Blue-read App token for remote image build
+        id: blue-read-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+
       - name: Setup SSH
         run: |
           mkdir -p ~/.ssh
@@ -213,10 +226,11 @@ jobs:
           APP_PATH: ${{ secrets.VPS_APP_PATH }}
           GIT_REVISION: ${{ github.sha }}
           GIT_SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          BLUE_READ_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
         run: |
-          $SSH_CMD "APP_PATH='$APP_PATH' ORION_GIT_REVISION='$GIT_REVISION' ORION_GIT_SOURCE='$GIT_SOURCE' bash -s" << 'DEPLOY_SCRIPT'
+          $SSH_CMD "APP_PATH='$APP_PATH' ORION_GIT_REVISION='$GIT_REVISION' ORION_GIT_SOURCE='$GIT_SOURCE' BLUE_READ_TOKEN='$BLUE_READ_TOKEN' bash -s" << 'DEPLOY_SCRIPT'
           set -euo pipefail
-          export ORION_GIT_REVISION ORION_GIT_SOURCE
+          export ORION_GIT_REVISION ORION_GIT_SOURCE BLUE_READ_TOKEN
           cd "$APP_PATH"
 
           echo "=== Network preflight ==="
@@ -231,6 +245,7 @@ jobs:
 
           echo "=== Build ==="
           docker compose -f docker-compose.prod.yml build --quiet
+          unset BLUE_READ_TOKEN
 
           echo "=== Ensure DB is up ==="
           docker compose -f docker-compose.prod.yml up -d orion-db
