@@ -1,5 +1,5 @@
 {
-  "count": 86,
+  "count": 87,
   "entries": [
     {
       "node_id": "core.animation.play@1",
@@ -680,6 +680,17 @@
       "category": "io",
       "is_pure": false,
       "is_bounded": true,
+      "source": "stdlib",
+      "platform": null
+    },
+    {
+      "node_id": "core.service.call@1",
+      "namespace": "core.service",
+      "name": "call",
+      "version": 1,
+      "category": "side-effect",
+      "is_pure": false,
+      "is_bounded": false,
       "source": "stdlib",
       "platform": null
     },

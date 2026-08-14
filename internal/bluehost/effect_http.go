@@ -4,21 +4,18 @@
 // runtime/go effects.go/runtime.go) to a real outbound HTTP call, and
 // reports the outcome back to the portable runtime via Runtime.Complete.
 //
-// Any other capability is left pending — the same as before this file
-// existed (Step never even surfaced StepResult.Invocations). db.query@1/
-// source.read@1 are explicitly out of scope for this pass (Orion #336).
+// Any other capability is left pending — this adapter only owns
+// core.http.request. A core.http.request invocation that cannot be dispatched
+// because its bundle is incomplete is completed through the same protocol
+// with EFFECT_PROVIDER_UNAVAILABLE; db.query@1/source.read@1 are explicitly
+// out of scope for this pass (Orion #336).
 package bluehost
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
-	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -31,45 +28,18 @@ import (
 // httpEffectCapability is the only capability this file executes.
 const httpEffectCapability = "core.http.request"
 
-// Bounds mirror internal/runtime/exec_effects.go's Bastion §3.7 hardening
-// for the same capability (header/query/body caps, response cap, timeout
-// ceiling) — same platform posture, applied to the invocation/completion
-// payload shape instead of exec pins.
-const (
-	maxHTTPEffectResponse    = 1 << 20
-	maxHTTPEffectHeaders     = 16 << 10
-	maxHTTPEffectQuery       = 8 << 10
-	maxHTTPEffectBody        = 1 << 20
-	defaultHTTPEffectTimeout = 10 * time.Second
-	maxHTTPEffectTimeout     = 60 * time.Second
-)
-
-// forbiddenHTTPEffectHeaders is the lower-cased set of headers an authored
-// `headers` request field may never forward: sensitive credential headers
-// and hop-by-hop headers. Orion never forwards Authorization — an effect
-// invocation has no caller. Mirrors exec_effects.go's dropForwardHeader.
-var forbiddenHTTPEffectHeaders = map[string]struct{}{
-	"authorization":       {},
-	"cookie":              {},
-	"proxy-authorization": {},
-	"host":                {},
-	"content-length":      {},
-	"connection":          {},
-	"transfer-encoding":   {},
-	"upgrade":             {},
-	"te":                  {},
-	"trailer":             {},
-}
+const httpEffectDependenciesUnavailable = "EFFECT_PROVIDER_UNAVAILABLE: HTTP effect dependencies are not configured"
 
 // SetHTTPEffects wires the deployment's fail-closed egress policy and
 // worker pool so Step can execute `core.http.request` invocations for
-// real. Unwired (nil egress or nil runner) leaves every such invocation
-// pending forever — never a silent capability grant.
-func (h *Host) SetHTTPEffects(egress *effects.EgressPolicy, runner *effects.Runner, logger *slog.Logger) {
+// real. Unwired (nil egress or nil runner) completes such invocations with a
+// provider failure through Runtime.Complete — never a silent capability grant
+// or an invocation left pending indefinitely.
+func (h *Host) SetHTTPEffects(deps EffectDeps, logger *slog.Logger) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.httpEgress = egress
-	h.httpRunner = runner
+	h.httpEgress = deps.Egress
+	h.httpRunner = deps.Runner
 	if logger != nil {
 		h.logger = logger
 	}
@@ -87,6 +57,12 @@ func (h *Host) dispatchInvocations(slot Slot, instance *blueruntime.InstanceHand
 	egress, runner := h.httpEgress, h.httpRunner
 	h.mu.Unlock()
 	if egress == nil || runner == nil {
+		for _, invocation := range invocations {
+			if stringField(invocation, "capability") != httpEffectCapability {
+				continue
+			}
+			h.completeHTTPEffect(slot, instance, invocation, effects.Result{Err: httpEffectDependenciesUnavailable})
+		}
 		return
 	}
 	for _, invocation := range invocations {
@@ -146,22 +122,14 @@ func (h *Host) completeHTTPEffect(slot Slot, instance *blueruntime.InstanceHandl
 }
 
 // httpEffectTimeout reads the request's `timeout_ms` field (the
-// core.http.request convention), clamped to maxHTTPEffectTimeout. Absent
-// or non-positive falls back to defaultHTTPEffectTimeout.
+// core.http.request convention), clamped by the shared transport timeout
+// bound. Absent or non-positive values use the shared default.
 func httpEffectTimeout(inv map[string]any) time.Duration {
 	request, _ := inv["request"].(map[string]any)
-	if request != nil {
-		if n, ok := request["timeout_ms"].(json.Number); ok {
-			if ms, err := n.Int64(); err == nil && ms > 0 {
-				d := time.Duration(ms) * time.Millisecond
-				if d > maxHTTPEffectTimeout {
-					return maxHTTPEffectTimeout
-				}
-				return d
-			}
-		}
+	if request == nil {
+		return httpTransportTimeout(nil)
 	}
-	return defaultHTTPEffectTimeout
+	return httpTransportTimeout(request["timeout_ms"])
 }
 
 func stringField(m map[string]any, key string) string {
@@ -182,190 +150,30 @@ func runHTTPEffect(ctx context.Context, egress *effects.EgressPolicy, inv map[st
 	if request == nil {
 		return effects.Result{Err: "HTTP_REQUEST_INVALID: request is not an object"}
 	}
-	rawURL, _ := request["url"].(string)
-	method := strings.ToUpper(stringField(request, "method"))
-	if method == "" {
-		method = http.MethodGet
-	}
-
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		// Host-only: url.Parse's *url.Error re-echoes the raw URL — never
-		// interpolate it raw (it may carry an authored secret query).
-		return effects.Result{Err: "HTTP_REQUEST_INVALID_URL: malformed url"}
-	}
 
 	var bodyBytes []byte
 	if body, ok := request["body"]; ok && body != nil {
+		var err error
 		bodyBytes, err = json.Marshal(body)
 		if err != nil {
 			return effects.Result{Err: "HTTP_REQUEST_ENCODE: " + err.Error()}
 		}
 	}
-	if len(bodyBytes) > maxHTTPEffectBody {
-		return effects.Result{Err: "HTTP_REQUEST_BODY_TOO_LARGE"}
-	}
-
-	if err := mergeHTTPEffectQuery(u, request["query"]); err != nil {
+	response, err := executeHTTP(ctx, egress, httpTransportRequest{
+		URL:     stringField(request, "url"),
+		Method:  stringField(request, "method"),
+		Query:   request["query"],
+		Headers: request["headers"],
+		Body:    bodyBytes,
+	})
+	if err != nil {
 		return effects.Result{Err: err.Error()}
 	}
-	if err := egress.CheckURL(u); err != nil {
-		return httpEffectEgressDenied(u.Hostname(), err)
-	}
-
-	var reader io.Reader
-	if len(bodyBytes) > 0 {
-		reader = bytes.NewReader(bodyBytes)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, u.String(), reader)
-	if err != nil {
-		return effects.Result{Err: "HTTP_REQUEST_INVALID: " + httpEffectFailureReason(u.Hostname(), err)}
-	}
-	if reader != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Accept", "application/json")
-	if err := applyHTTPEffectHeaders(req, request["headers"]); err != nil {
-		return effects.Result{Err: err.Error()}
-	}
-
-	resp, err := egress.Client().Do(req)
-	if err != nil {
-		if errors.Is(err, effects.ErrEgressBlocked) {
-			return httpEffectEgressDenied(u.Hostname(), err)
-		}
-		return effects.Result{Err: "HTTP_REQUEST_FAILED: " + httpEffectFailureReason(u.Hostname(), err)}
-	}
-	defer resp.Body.Close()
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPEffectResponse))
-	if err != nil {
-		return effects.Result{Err: "HTTP_REQUEST_READ: " + err.Error()}
-	}
-	bodyValue, err := decodeCanonicalJSON(respBody)
-	if err != nil {
-		// Non-JSON body: carry it as a string, same convention as
-		// exec_effects.go's asJSON fallback.
-		bodyValue = string(respBody)
-	}
-	headers := map[string]any{}
-	for name, values := range resp.Header {
-		if len(values) > 0 {
-			headers[name] = values[len(values)-1]
-		}
-	}
-	response := map[string]any{
-		"status":  json.Number(strconv.Itoa(resp.StatusCode)),
-		"body":    bodyValue,
-		"headers": headers,
-	}
-	data, err := json.Marshal(response)
+	data, err := json.Marshal(response.values())
 	if err != nil {
 		return effects.Result{Err: "HTTP_REQUEST_ENCODE: " + err.Error()}
 	}
 	return effects.Result{Value: data}
-}
-
-// mergeHTTPEffectQuery folds an authored `query` object into u's
-// query-string, stringifying scalar values. Enforces maxHTTPEffectQuery.
-func mergeHTTPEffectQuery(u *url.URL, queryValue any) error {
-	query, ok := queryValue.(map[string]any)
-	if !ok || len(query) == 0 {
-		return nil
-	}
-	q := u.Query()
-	for k, v := range query {
-		q.Set(k, httpEffectScalarToString(v))
-	}
-	encoded := q.Encode()
-	if len(encoded) > maxHTTPEffectQuery {
-		return errors.New("HTTP_REQUEST_QUERY_TOO_LARGE")
-	}
-	u.RawQuery = encoded
-	return nil
-}
-
-// applyHTTPEffectHeaders sets the authored `headers` object on req,
-// dropping sensitive/hop-by-hop names and enforcing maxHTTPEffectHeaders.
-func applyHTTPEffectHeaders(req *http.Request, headersValue any) error {
-	headers, ok := headersValue.(map[string]any)
-	if !ok || len(headers) == 0 {
-		return nil
-	}
-	total := 0
-	for name, v := range headers {
-		lower := strings.ToLower(strings.TrimSpace(name))
-		if _, forbidden := forbiddenHTTPEffectHeaders[lower]; forbidden || strings.HasPrefix(lower, "proxy-") {
-			continue
-		}
-		val := httpEffectScalarToString(v)
-		total += len(name) + len(val)
-		if total > maxHTTPEffectHeaders {
-			return errors.New("HTTP_REQUEST_HEADERS_TOO_LARGE")
-		}
-		req.Header.Set(name, val)
-	}
-	return nil
-}
-
-func httpEffectScalarToString(v any) string {
-	switch value := v.(type) {
-	case string:
-		return value
-	case json.Number:
-		return value.String()
-	case bool:
-		if value {
-			return "true"
-		}
-		return "false"
-	case nil:
-		return ""
-	default:
-		b, err := json.Marshal(value)
-		if err != nil {
-			return ""
-		}
-		return string(b)
-	}
-}
-
-// httpEffectFailureReason renders a transport failure as a host-only
-// string, never the full request URL (a *url.Error's .Error() re-echoes
-// it, including any authored query secret).
-func httpEffectFailureReason(host string, err error) string {
-	cause := err.Error()
-	var urlErr *url.Error
-	if errors.As(err, &urlErr) {
-		if urlErr.Err != nil {
-			cause = urlErr.Err.Error()
-		} else {
-			cause = "request failed"
-		}
-	}
-	if host == "" {
-		return cause
-	}
-	return host + ": " + cause
-}
-
-func httpEffectEgressDenied(host string, err error) effects.Result {
-	return effects.Result{Err: "EGRESS_BLOCKED: " + httpEffectFailureReason(host, err)}
-}
-
-// decodeCanonicalJSON decodes data with json.Number for numbers (matching
-// blueruntime's own decoding convention) so the resulting value is
-// providers.CanonicalBytes/Digest-compatible.
-func decodeCanonicalJSON(data []byte) (any, error) {
-	if len(data) == 0 {
-		return nil, nil
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, err
-	}
-	return v, nil
 }
 
 // buildHTTPCompletion builds the blue.effect.completion.v1 envelope for

@@ -20,6 +20,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/adapters"
 	"github.com/ZabLaboratory/Orion/internal/api"
 	"github.com/ZabLaboratory/Orion/internal/auth"
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
 	"github.com/ZabLaboratory/Orion/internal/config"
 	"github.com/ZabLaboratory/Orion/internal/effects"
@@ -192,6 +193,24 @@ func run() error {
 	for name, svc := range cfg.DataSources {
 		dataSources[name] = effects.DataSource{Name: name, Svc: svc}
 	}
+	serviceCallClient := effects.NewServiceCallClient(cfg.ZabGateURL, nil, nil)
+	// The direct bluehost ABI has no stream identity in EffectFunc, so its
+	// conservative fallback budget is shared under one host key. Engine A's
+	// scene runtime keeps the same limiter but supplies its per-stream key.
+	egressBudget := effects.NewStreamEgressLimiter(cfg.EgressBudgetPerStream, cfg.EgressBudgetWindowS)
+	// Build one dependency bundle for both Engine A's SceneEffects and the
+	// scene-intent bluehost. The generic core.effect.invoke@1 adapter and the
+	// direct EffectHandlers use different contracts, but must share the same
+	// worker pool, egress policy, topology-A DB client, and datasource map.
+	effectDeps := bluehost.EffectDeps{
+		Runner:          effectRunner,
+		Egress:          effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP),
+		DB:              effects.NewDBQueryClientWithTokenFunc(cfg.ZabGateURL, noServiceToken, nil),
+		DataSources:     dataSources,
+		ServiceCall:     serviceCallClient,
+		EgressBudget:    egressBudget,
+		EgressBudgetKey: "orion-bluehost",
+	}
 	// Curated service-egress (ADR Blue 002 §3.3) is EXTINGUISHED: its minter
 	// was the last consumer of the standing operator credential, retired with
 	// ORION_OPERATOR_TOKEN (ADR ZabAuth 003 Am.3 § A3.3 part 6, RC 40 measured
@@ -223,14 +242,13 @@ func run() error {
 	// EgressBudgetPerStream curated egress calls per window per stream;
 	// over budget the node fails closed to its `error` port. Surface
 	// flagged for Bastion (R3).
-	egressBudget := effects.NewStreamEgressLimiter(cfg.EgressBudgetPerStream, cfg.EgressBudgetWindowS)
 	sceneEffects := &runtime.SceneEffects{
-		Runner:       effectRunner,
-		Egress:       effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP),
-		DB:           effects.NewDBQueryClientWithTokenFunc(cfg.ZabGateURL, noServiceToken, nil),
-		ServiceCall:  effects.NewServiceCallClient(cfg.ZabGateURL, nil, nil),
+		Runner:       effectDeps.Runner,
+		Egress:       effectDeps.Egress,
+		DB:           effectDeps.DB,
+		ServiceCall:  serviceCallClient,
 		EgressBudget: egressBudget,
-		DataSources:  dataSources,
+		DataSources:  effectDeps.DataSources,
 		Metrics:      metrics,
 	}
 	show.SetEffects(sceneEffects)
@@ -298,7 +316,7 @@ func run() error {
 	// var is set — see cmd/orion/scene_intent_wiring.go. A config error
 	// here is NOT a boot failure: the legacy path stays fully live either
 	// way (Phase A of the #331 cutover plan).
-	sceneIntent, sierr := wireSceneIntent(cfg, logger)
+	sceneIntent, sierr := wireSceneIntent(cfg, logger, effectDeps)
 	if sierr != nil {
 		logger.Error("scene-intent surface not wired; legacy path unaffected", "err", sierr)
 	} else if sceneIntent != nil {

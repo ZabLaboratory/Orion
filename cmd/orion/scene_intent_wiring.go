@@ -14,7 +14,6 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/attestation"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/config"
-	"github.com/ZabLaboratory/Orion/internal/effects"
 	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
@@ -27,7 +26,7 @@ import (
 // returns an error instead of silently staying dark, so a misconfigured
 // deploy is visible at boot rather than a route that quietly never
 // registers. Phase A of the #331 cutover plan posted on the issue.
-func wireSceneIntent(cfg config.Config, logger *slog.Logger) (*api.SceneIntentDeps, error) {
+func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost.EffectDeps) (*api.SceneIntentDeps, error) {
 	required := map[string]string{
 		"ORION_WORKLOAD_ZABGATE_URL":      cfg.WorkloadZabGateURL,
 		"ORION_WORKLOAD_CLIENT_CERT_PATH": cfg.WorkloadClientCertPath,
@@ -86,16 +85,13 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger) (*api.SceneIntentDe
 
 	httpEgressAllowed := len(cfg.HTTPEgressAllowHosts) > 0
 
-	// Wire the async `core.http.request` invocation/completion protocol
-	// (Blue PR #313, Orion #336) to a real outbound HTTP executor — the
-	// same fail-closed egress policy the legacy runtime.SceneEffects path
-	// enforces (ORION_HTTP_EGRESS_ALLOW_HOSTS/_ALLOW_HTTP), but its own
-	// worker pool: this stateless surface's lifecycle is independent of
-	// the legacy Show, so it cannot share that engine's *effects.Runner.
+	// Wire the async `core.effect.invoke@1` invocation/completion protocol
+	// (Blue PR #313, Orion #336) to the same transport dependencies that
+	// Engine A's SceneEffects uses. The host retains Runtime.Complete for
+	// this generic protocol; its direct EffectHandlers are configured from
+	// the same bundle when Prepare/Take runs.
 	host := bluehost.NewHost()
-	httpEffectRunner := effects.NewRunner(cfg.EffectWorkers, cfg.EffectQueue, logger)
-	httpEffectRunner.Start()
-	host.SetHTTPEffects(effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP), httpEffectRunner, logger)
+	host.SetHTTPEffects(effectDeps, logger)
 
 	return &api.SceneIntentDeps{
 		Trust:         trust,
@@ -106,6 +102,7 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger) (*api.SceneIntentDe
 		Host:          host,
 		Providers:     providers.Registry(),
 		Policy:        providers.Policy(httpEgressAllowed),
+		Effects:       effectDeps,
 	}, nil
 }
 

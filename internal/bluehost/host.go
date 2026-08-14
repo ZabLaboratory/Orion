@@ -4,8 +4,9 @@
 // (preview/on-air) to the runtime's portable Mode (Preview/Execute).
 // The runtime package it wraps is intentionally host-neutral — it opens no
 // socket and holds no DB pool of its own; every Zab-specific capability
-// (providers, and since ENGINE-B-PARITY-ORION the 3 opcodes-of-full-right
-// EffectHandlers: core.http.request@1/core.http-request@1/core.db.query@1,
+// (providers, and since ENGINE-B-PARITY-ORION the 4 opcodes-of-full-right
+// EffectHandlers: core.http.request@1/core.http-request@1/core.db.query@1/
+// core.service.call@1,
 // see effects.go) rides through what a caller passes to Prepare/Take.
 package bluehost
 
@@ -59,8 +60,9 @@ type Host struct {
 	// (Blue PR #313, runtime/go effects.go/runtime.go: StepResult.
 	// Invocations + Runtime.Complete) to a real outbound HTTP executor for
 	// `core.http.request` invocations — see effect_http.go. Both nil by
-	// default: every invocation then stays pending, never a silent
-	// capability grant. Set once via SetHTTPEffects.
+	// default: HTTP invocations receive an explicit provider-unavailable
+	// completion, while unsupported capabilities remain pending. Set once via
+	// SetHTTPEffects.
 	httpEgress *effects.EgressPolicy
 	httpRunner *effects.Runner
 	logger     *slog.Logger
@@ -315,7 +317,7 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 // Complete reports a provider's outcome for a `core.effect.invoke@1`
 // invocation Step/Tick/Call/WritePlatformEvent previously emitted
 // (StepResult.Invocations) — the async admission-protocol completion
-// path, distinct from the 3 synchronous EffectHandlers opcodes of full
+// path, distinct from the 4 synchronous EffectHandlers opcodes of full
 // right wired at Prepare/Take.
 func (h *Host) Complete(slot Slot, data []byte) (blueruntime.Receipt, error) {
 	h.mu.Lock()
