@@ -276,19 +276,3 @@ func bodyBytes(v any) []byte {
 func timeoutFrom(v any) time.Duration {
 	return httpTransportTimeout(v)
 }
-
-// numOf decodes a JSON number arriving as json.Number (the portable ABI's
-// decode convention, program.go's jsonNumber) or float64 (a Go-literal
-// input in tests) — 0 for anything else.
-func numOf(v any) float64 {
-	switch n := v.(type) {
-	case json.Number:
-		f, _ := n.Float64()
-		return f
-	case float64:
-		return n
-	case int:
-		return float64(n)
-	}
-	return 0
-}
