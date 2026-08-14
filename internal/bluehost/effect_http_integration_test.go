@@ -178,7 +178,7 @@ func TestHost_HTTPEffectFullCycle(t *testing.T) {
 	h.SetHTTPEffects(egress, runner, slog.Default())
 
 	program := buildHTTPEffectProgram(t, server.URL)
-	if err := h.Take("http-effect-cycle", "sha256:http-effect-cycle", program, providers.Registry(), providers.Policy(true)); err != nil {
+	if err := h.Take("http-effect-cycle", "sha256:http-effect-cycle", program, providers.Registry(), providers.Policy(true), nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 
