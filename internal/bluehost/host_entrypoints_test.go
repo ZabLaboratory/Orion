@@ -279,8 +279,21 @@ func TestHost_EntryPointsUseDirectEffectHandlersBecauseBlueDoesNotReturnInvocati
 			h := NewHost()
 			t.Cleanup(func() { _ = h.Release(SlotOnAir, "test-cleanup") })
 			program := buildDirectHTTPEntrypointProgram(t, tc.kind, server.URL+"/entry/"+tc.name, leaf)
+			digest := "sha256:entrypoint-" + tc.name
+			handlers := NewEffectHandlers(EffectDeps{Egress: egress}, blueruntime.Execute)
+			baseHTTPHandler := handlers["core.http.request@1"]
+			var hostMuAccessible atomic.Bool
+			handlers["core.http.request@1"] = func(config, inputs map[string]any) (map[string]any, error) {
+				// Calling Digest from inside the synchronous handler proves that
+				// Host's slot mutex is not held while handler I/O executes.
+				if h.Digest(SlotOnAir) != digest {
+					t.Errorf("primitive=core.http.request@1 scenario=%s handler observed unexpected slot digest", tc.name)
+				}
+				hostMuAccessible.Store(true)
+				return baseHTTPHandler(config, inputs)
+			}
 			if err := h.Prepare(SlotOnAir, "entrypoint-"+tc.name, "sha256:entrypoint-"+tc.name, program, nil, nil,
-				NewEffectHandlers(EffectDeps{Egress: egress}, blueruntime.Execute)); err != nil {
+				handlers); err != nil {
 				t.Fatalf("primitive=core.http.request@1 scenario=%s Host.Prepare: %v", tc.name, err)
 			}
 			if _, err := h.Step(SlotOnAir); err != nil {
@@ -305,6 +318,9 @@ func TestHost_EntryPointsUseDirectEffectHandlersBecauseBlueDoesNotReturnInvocati
 			}
 			if got := hits.Load(); got != 1 {
 				t.Fatalf("primitive=core.http.request@1 scenario=%s server hits=%d, want 1", tc.name, got)
+			}
+			if !hostMuAccessible.Load() {
+				t.Fatalf("primitive=core.http.request@1 scenario=%s handler did not execute", tc.name)
 			}
 		})
 	}

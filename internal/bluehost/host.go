@@ -52,9 +52,15 @@ type entry struct {
 // Release first, keeping "no on-air effect before commit" structurally
 // true: there is never a moment with two live on-air instances.
 type Host struct {
-	mu      sync.Mutex
-	runtime *blueruntime.Runtime
-	slots   map[Slot]*entry
+	mu sync.Mutex
+
+	// runtimeMu serializes calls into Blue's stateful InstanceHandle. It is
+	// deliberately separate from mu: direct EffectHandlers may perform I/O,
+	// so slot/configuration state must not remain locked while the runtime is
+	// executing a host-provided handler.
+	runtimeMu sync.Mutex
+	runtime   *blueruntime.Runtime
+	slots     map[Slot]*entry
 
 	// httpEgress/httpRunner wire the async invocation/completion protocol
 	// (Blue PR #313, runtime/go effects.go/runtime.go: StepResult.
@@ -165,12 +171,18 @@ func (h *Host) Bundle(slot Slot) []byte {
 // Dispatch delivers an inbound event to the slot's instance.
 func (h *Host) Dispatch(slot Slot, data []byte) (blueruntime.Receipt, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.Receipt{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Dispatch(e.instance, data)
+	instance := e.instance
+	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	receipt, err := h.runtime.Dispatch(instance, data)
+	h.runtimeMu.Unlock()
+	return receipt, err
 }
 
 // Step advances the slot's instance by one deterministic transition. Any
@@ -187,8 +199,11 @@ func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
 	instance := e.instance
-	result, err := h.runtime.Step(instance)
 	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	result, err := h.runtime.Step(instance)
+	h.runtimeMu.Unlock()
 	if err != nil {
 		return result, err
 	}
@@ -201,13 +216,18 @@ func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
 // existence check.
 func (h *Host) Release(slot Slot, reason string) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return nil
 	}
-	err := h.runtime.Stop(e.instance, reason)
+	instance := e.instance
 	delete(h.slots, slot)
+	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	err := h.runtime.Stop(instance, reason)
+	h.runtimeMu.Unlock()
 	return err
 }
 
@@ -247,7 +267,10 @@ func (h *Host) Take(instanceID, digest string, program []byte, providers []map[s
 		// is committed — a Stop failure here is logged by the caller, never
 		// allowed to roll back the take that already succeeded (§4.4: "un
 		// échec après commit produit un état typé et une compensation").
-		return h.runtime.Stop(previous.instance, "superseded-by-take")
+		h.runtimeMu.Lock()
+		err := h.runtime.Stop(previous.instance, "superseded-by-take")
+		h.runtimeMu.Unlock()
+		return err
 	}
 	return nil
 }
@@ -267,8 +290,11 @@ func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, er
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
 	instance := e.instance
-	result, err := h.runtime.Tick(instance, deltaSeconds)
 	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	result, err := h.runtime.Tick(instance, deltaSeconds)
+	h.runtimeMu.Unlock()
 	if err != nil {
 		return result, err
 	}
@@ -289,8 +315,11 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
 	instance := e.instance
-	result, err := h.runtime.Call(instance, callID, payload)
 	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	result, err := h.runtime.Call(instance, callID, payload)
+	h.runtimeMu.Unlock()
 	if err != nil {
 		return result, err
 	}
@@ -313,8 +342,11 @@ func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (bluerunt
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
 	instance := e.instance
-	result, err := h.runtime.WritePlatformEvent(instance, leaf, payload)
 	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	result, err := h.runtime.WritePlatformEvent(instance, leaf, payload)
+	h.runtimeMu.Unlock()
 	if err != nil {
 		return result, err
 	}
@@ -333,8 +365,11 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
 	instance := e.instance
-	result, err := h.runtime.Resolve(instance, awaitName, value)
 	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	result, err := h.runtime.Resolve(instance, awaitName, value)
+	h.runtimeMu.Unlock()
 	if err != nil {
 		return result, err
 	}
@@ -349,10 +384,24 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 // right wired at Prepare/Take.
 func (h *Host) Complete(slot Slot, data []byte) (blueruntime.Receipt, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.Receipt{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Complete(e.instance, data)
+	instance := e.instance
+	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	h.mu.Lock()
+	current, ok := h.slots[slot]
+	if !ok || current.instance != instance {
+		h.mu.Unlock()
+		h.runtimeMu.Unlock()
+		return blueruntime.Receipt{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
+	}
+	h.mu.Unlock()
+	receipt, err := h.runtime.Complete(instance, data)
+	h.runtimeMu.Unlock()
+	return receipt, err
 }
