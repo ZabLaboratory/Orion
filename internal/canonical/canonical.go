@@ -159,10 +159,10 @@ func writeCanonical(buffer *bytes.Buffer, value any) error {
 	return nil
 }
 
-// CanonicalBytes serializes value per the shared LSML canonicalization
-// profile: sorted object keys, minimal separators, shortest-round-trip
-// number formatting. Mirrors blueruntime's private canonicalBytes exactly.
-func CanonicalBytes(value any) ([]byte, error) {
+// Bytes serializes value per the shared LSML canonicalization profile:
+// sorted object keys, minimal separators, shortest-round-trip number
+// formatting. Mirrors blueruntime's private canonicalBytes exactly.
+func Bytes(value any) ([]byte, error) {
 	var buffer bytes.Buffer
 	if err := writeCanonical(&buffer, value); err != nil {
 		return nil, err
@@ -174,7 +174,7 @@ func CanonicalBytes(value any) ([]byte, error) {
 // the same digest domain blueruntime.ParseEvent/ParseProgram/ParseCompletion
 // verify.
 func Digest(value any) (string, error) {
-	data, err := CanonicalBytes(value)
+	data, err := Bytes(value)
 	if err != nil {
 		return "", err
 	}

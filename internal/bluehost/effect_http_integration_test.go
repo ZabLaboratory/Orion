@@ -161,7 +161,7 @@ func buildHTTPEffectProgram(t *testing.T, serverURL string) []byte {
 // path (docs/runbooks/blue-primitives-log-harness.md §14), delivered here
 // through the new bluehost/blueruntime mechanism instead.
 func TestHost_HTTPEffectFullCycle(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"ok":true,"echo":"orion-336"}`))

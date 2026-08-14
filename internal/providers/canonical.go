@@ -11,9 +11,9 @@ import "github.com/ZabLaboratory/Orion/internal/canonical"
 // providers.CanonicalBytes/providers.Digest are unaffected.
 
 // CanonicalBytes serializes value per the shared LSML canonicalization
-// profile. See internal/canonical.CanonicalBytes.
+// profile. See internal/canonical.Bytes.
 func CanonicalBytes(value any) ([]byte, error) {
-	return canonical.CanonicalBytes(value)
+	return canonical.Bytes(value)
 }
 
 // Digest returns the `sha256:<hex>` digest of value's canonical bytes. See
