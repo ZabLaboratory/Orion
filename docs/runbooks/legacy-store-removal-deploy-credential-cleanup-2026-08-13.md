@@ -94,6 +94,11 @@ famille depuis avant la révocation.
   `service-token-lifecycle.md`), pas une résurrection de la famille
   `da3ee7ad-7253-410d-9d88-77dcae4d1f5c`.
 
+> Posture de rollback ADR-BLUE-012 §9 clause 334 (`FORWARD_ONLY`, décision
+> porteur 2026-08-15) : voir `orion-rollback-posture-forward-only-2026-08-15.md`.
+> Ce runbook-ci couvre le hotfix C1/C3 ; l'autre couvre l'état déclaré,
+> le RTO/RPO et le résidu `orion-postgres` légué à #340.
+
 ## Vérifications post-op
 
 | Contrôle | Résultat |
