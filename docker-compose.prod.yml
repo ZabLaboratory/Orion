@@ -52,6 +52,11 @@ services:
     # populated per-version (./solar/v0.1.1/, ./solar/v0.1.2/, ...).
     volumes:
       - ./solar:/var/lib/orion/solar:ro
+      # The software-P256 workload identity is provisioned on the VPS and is
+      # never copied into the repository or image. Orion runs as nonroot and
+      # reads this directory read-only for the client certificate, key and
+      # Canvas resolved-scene-ref trust material.
+      - /var/lib/zab/workload-orion:/etc/zab/workload-orion:ro
     deploy:
       resources:
         limits:
