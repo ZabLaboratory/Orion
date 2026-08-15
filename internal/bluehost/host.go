@@ -11,9 +11,12 @@
 package bluehost
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"sync"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
@@ -39,9 +42,10 @@ var (
 // entry pairs a running instance with the program handle it was started
 // from, so Step/Stop never need the caller to keep the handle around.
 type entry struct {
-	instance *blueruntime.InstanceHandle
-	digest   string // scene_digest / program identity this slot is serving
-	bundle   []byte // optional LSML render-bundle bytes for this slot, set via SetBundle
+	instance   *blueruntime.InstanceHandle
+	digest     string            // scene_digest / program identity this slot is serving
+	bundle     []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
+	awaitTypes map[string]string // compiler-declared operator.await value types
 }
 
 // Host owns exactly one preview and one on-air instance at a time, per
@@ -52,9 +56,15 @@ type entry struct {
 // Release first, keeping "no on-air effect before commit" structurally
 // true: there is never a moment with two live on-air instances.
 type Host struct {
-	mu      sync.Mutex
-	runtime *blueruntime.Runtime
-	slots   map[Slot]*entry
+	mu sync.Mutex
+
+	// runtimeMu serializes calls into Blue's stateful InstanceHandle. It is
+	// deliberately separate from mu: direct EffectHandlers may perform I/O,
+	// so slot/configuration state must not remain locked while the runtime is
+	// executing a host-provided handler.
+	runtimeMu sync.Mutex
+	runtime   *blueruntime.Runtime
+	slots     map[Slot]*entry
 
 	// httpEgress/httpRunner wire the async invocation/completion protocol
 	// (Blue PR #313, runtime/go effects.go/runtime.go: StepResult.
@@ -118,7 +128,7 @@ func (h *Host) Prepare(slot Slot, instanceID, digest string, program []byte, pro
 		return fmt.Errorf("bluehost: start %s: %w", slot, err)
 	}
 
-	h.slots[slot] = &entry{instance: instance, digest: digest}
+	h.slots[slot] = &entry{instance: instance, digest: digest, awaitTypes: awaitTypesInProgram(program)}
 	return nil
 }
 
@@ -165,12 +175,18 @@ func (h *Host) Bundle(slot Slot) []byte {
 // Dispatch delivers an inbound event to the slot's instance.
 func (h *Host) Dispatch(slot Slot, data []byte) (blueruntime.Receipt, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.Receipt{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Dispatch(e.instance, data)
+	instance := e.instance
+	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	receipt, err := h.runtime.Dispatch(instance, data)
+	h.runtimeMu.Unlock()
+	return receipt, err
 }
 
 // Step advances the slot's instance by one deterministic transition. Any
@@ -187,8 +203,11 @@ func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
 	instance := e.instance
-	result, err := h.runtime.Step(instance)
 	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	result, err := h.runtime.Step(instance)
+	h.runtimeMu.Unlock()
 	if err != nil {
 		return result, err
 	}
@@ -201,13 +220,18 @@ func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
 // existence check.
 func (h *Host) Release(slot Slot, reason string) error {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return nil
 	}
-	err := h.runtime.Stop(e.instance, reason)
+	instance := e.instance
 	delete(h.slots, slot)
+	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	err := h.runtime.Stop(instance, reason)
+	h.runtimeMu.Unlock()
 	return err
 }
 
@@ -239,7 +263,7 @@ func (h *Host) Take(instanceID, digest string, program []byte, providers []map[s
 	}
 
 	previous := h.slots[SlotOnAir]
-	h.slots[SlotOnAir] = &entry{instance: instance, digest: digest}
+	h.slots[SlotOnAir] = &entry{instance: instance, digest: digest, awaitTypes: awaitTypesInProgram(program)}
 	h.mu.Unlock()
 
 	if previous != nil {
@@ -247,7 +271,10 @@ func (h *Host) Take(instanceID, digest string, program []byte, providers []map[s
 		// is committed — a Stop failure here is logged by the caller, never
 		// allowed to roll back the take that already succeeded (§4.4: "un
 		// échec après commit produit un état typé et une compensation").
-		return h.runtime.Stop(previous.instance, "superseded-by-take")
+		h.runtimeMu.Lock()
+		err := h.runtime.Stop(previous.instance, "superseded-by-take")
+		h.runtimeMu.Unlock()
+		return err
 	}
 	return nil
 }
@@ -261,12 +288,22 @@ func (h *Host) Take(instanceID, digest string, program []byte, providers []map[s
 // clock or goroutine of its own.
 func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Tick(e.instance, deltaSeconds)
+	instance := e.instance
+	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	result, err := h.runtime.Tick(instance, deltaSeconds)
+	h.runtimeMu.Unlock()
+	if err != nil {
+		return result, err
+	}
+	h.dispatchInvocations(slot, instance, result.Invocations)
+	return result, nil
 }
 
 // Call fires `core.operator.on-call@1` (entrypoint genre #3) on slot's
@@ -276,12 +313,22 @@ func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, er
 // returns ErrNotLoaded, never a silent no-op.
 func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Call(e.instance, callID, payload)
+	instance := e.instance
+	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	result, err := h.runtime.Call(instance, callID, payload)
+	h.runtimeMu.Unlock()
+	if err != nil {
+		return result, err
+	}
+	h.dispatchInvocations(slot, instance, result.Invocations)
+	return result, nil
 }
 
 // WritePlatformEvent fires `core.event.on-platform-event@1` (entrypoint
@@ -293,12 +340,22 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 // identically.
 func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.WritePlatformEvent(e.instance, leaf, payload)
+	instance := e.instance
+	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	result, err := h.runtime.WritePlatformEvent(instance, leaf, payload)
+	h.runtimeMu.Unlock()
+	if err != nil {
+		return result, err
+	}
+	h.dispatchInvocations(slot, instance, result.Invocations)
+	return result, nil
 }
 
 // Resolve resumes one parked `core.operator.await-value@1` continuation
@@ -306,12 +363,93 @@ func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (bluerunt
 // `POST /operator/resolve/{await_name}` (Blue ADR 008 §3.3).
 func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Resolve(e.instance, awaitName, value)
+	instance := e.instance
+	awaitType := e.awaitTypes[awaitName]
+	h.mu.Unlock()
+
+	// Blue's portable Resolve ABI carries the value, while the compiler's
+	// await node carries the static value_type. Enforce that admission at the
+	// Host boundary so a fractional or otherwise malformed operator value
+	// cannot resume a continuation that Engine A would keep parked.
+	if awaitType != "" && !awaitValueMatchesType(value, awaitType) {
+		return blueruntime.StepResult{}, &blueruntime.Error{
+			SchemaVersion: blueruntime.ErrorSchema,
+			Code:          "AWAIT_TYPE_MISMATCH",
+			Stage:         "resolve",
+			Message:       fmt.Sprintf("await %q rejects value for %s", awaitName, awaitType),
+		}
+	}
+
+	h.runtimeMu.Lock()
+	result, err := h.runtime.Resolve(instance, awaitName, value)
+	h.runtimeMu.Unlock()
+	if err != nil {
+		return result, err
+	}
+	h.dispatchInvocations(slot, instance, result.Invocations)
+	return result, nil
+}
+
+// awaitTypesInProgram extracts only compiler-authored await metadata. It is
+// intentionally read at Prepare/Take time and never inferred from a resolve
+// payload; a missing or unknown type leaves refinement to the compiler while
+// the Host still rejects all known primitive mismatches fail-closed.
+func awaitTypesInProgram(program []byte) map[string]string {
+	decoder := json.NewDecoder(bytes.NewReader(program))
+	decoder.UseNumber()
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil {
+		return nil
+	}
+	nodes, _ := document["nodes"].([]any)
+	result := make(map[string]string)
+	for _, rawNode := range nodes {
+		node, _ := rawNode.(map[string]any)
+		if node == nil || node["opcode"] != "core.operator.await-value@1" {
+			continue
+		}
+		name, _ := node["id"].(string)
+		config, _ := node["config"].(map[string]any)
+		if configured, ok := config["await_name"].(string); ok && configured != "" {
+			name = configured
+		}
+		valueType, _ := config["value_type"].(string)
+		if name != "" && valueType != "" {
+			result[name] = valueType
+		}
+	}
+	return result
+}
+
+func awaitValueMatchesType(value any, valueType string) bool {
+	encoded, err := json.Marshal(value)
+	if err != nil || !json.Valid(encoded) {
+		return false
+	}
+	switch valueType {
+	case "core.primitive.string":
+		var typed string
+		return json.Unmarshal(encoded, &typed) == nil
+	case "core.primitive.boolean":
+		var typed bool
+		return json.Unmarshal(encoded, &typed) == nil
+	case "core.primitive.float":
+		var typed float64
+		return json.Unmarshal(encoded, &typed) == nil
+	case "core.primitive.integer":
+		var typed float64
+		if json.Unmarshal(encoded, &typed) != nil || math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return false
+		}
+		return typed == math.Trunc(typed)
+	default:
+		return true
+	}
 }
 
 // Complete reports a provider's outcome for a `core.effect.invoke@1`
@@ -321,10 +459,24 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 // right wired at Prepare/Take.
 func (h *Host) Complete(slot Slot, data []byte) (blueruntime.Receipt, error) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	e, ok := h.slots[slot]
 	if !ok {
+		h.mu.Unlock()
 		return blueruntime.Receipt{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
-	return h.runtime.Complete(e.instance, data)
+	instance := e.instance
+	h.mu.Unlock()
+
+	h.runtimeMu.Lock()
+	h.mu.Lock()
+	current, ok := h.slots[slot]
+	if !ok || current.instance != instance {
+		h.mu.Unlock()
+		h.runtimeMu.Unlock()
+		return blueruntime.Receipt{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
+	}
+	h.mu.Unlock()
+	receipt, err := h.runtime.Complete(instance, data)
+	h.runtimeMu.Unlock()
+	return receipt, err
 }

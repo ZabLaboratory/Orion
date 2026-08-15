@@ -98,6 +98,12 @@ type SceneEffects struct {
 	DataSources map[string]effects.DataSource
 	// Metrics is the phase-3 metrics sink (nil = disabled).
 	Metrics EffectMetrics
+	// Preview makes world-effect execution stateless and construction-safe:
+	// HTTP, DB, and service.call return their synthetic preview result without
+	// reaching a transport, while preserving the normal then continuation.
+	// PreviewSlot owns setting this bit on its private effect bundle; on-air
+	// scenes keep the real bounded providers unchanged.
+	Preview bool
 }
 
 // worldEffectRegistrations is the SINGLE source of truth for the
@@ -216,6 +222,35 @@ func (s *Scene) effectOutcome(node *ExecNode, key string, run func(ctx context.C
 				s.logger.Warn("effect shed: worker pool refused job", "node", node.ID, "op", node.Op)
 				s.resumeParkedWith(key, effectEnv(node.ID, effects.Result{Err: "EFFECT_QUEUE_FULL"}))
 			}
+		},
+	}
+}
+
+// effectError preserves the normal error continuation for a structural
+// refusal that must not depend on a worker pool (including preview encoding).
+func effectError(s *Scene, node *ExecNode, reason string) execOpOutcome {
+	key := s.nextWakeKey()
+	return execOpOutcome{
+		park:    true,
+		parkKey: key,
+		resume:  ExecTarget{Node: node.ID, Port: effectCompletePort},
+		start: func() {
+			s.resumeParkedWith(key, effectEnv(node.ID, effects.Result{Err: reason}))
+		},
+	}
+}
+
+// previewEffectOutcome preserves the normal parked-then continuation while
+// bypassing every world-effect admission check. It is used by PreviewSlot
+// for the stateless policy, including when a bespoke test has no worker pool.
+func previewEffectOutcome(s *Scene, node *ExecNode, value []byte) execOpOutcome {
+	key := s.nextWakeKey()
+	return execOpOutcome{
+		park:    true,
+		parkKey: key,
+		resume:  ExecTarget{Node: node.ID, Port: effectCompletePort},
+		start: func() {
+			s.resumeParkedWith(key, effectEnv(node.ID, effects.Result{Value: value}))
 		},
 	}
 }
@@ -392,6 +427,20 @@ func execHTTPRequest(s *Scene, t *execTask, node *ExecNode, inPort string) execO
 				}
 			}
 		})
+	}
+	if e := s.effects; e != nil && e.Preview {
+		out, err := json.Marshal(struct {
+			Status  int               `json:"status"`
+			Body    json.RawMessage   `json:"body"`
+			Headers map[string]string `json:"headers"`
+		}{Status: 0, Body: json.RawMessage(`null`), Headers: map[string]string{}})
+		if err != nil {
+			return effectError(s, node, "HTTP_PREVIEW_ENCODE: "+err.Error())
+		}
+		// Preview is synthetic before URL, input, client, and budget
+		// admission. Keep the normal parked completion so then/error
+		// continuation remains identical to Execute.
+		return previewEffectOutcome(s, node, out)
 	}
 
 	rawURL := pullString(s, t, node, "url")
@@ -671,6 +720,15 @@ func execDBQuery(s *Scene, t *execTask, node *ExecNode, inPort string) execOpOut
 				env[node.ID+".elapsed_ms"] = json.RawMessage(strconv.FormatFloat(out.ElapsedMS, 'f', -1, 64))
 			}
 		})
+	}
+	if e := s.effects; e != nil && e.Preview {
+		out, err := json.Marshal(effects.QueryResult{Rows: nil, Count: 0, ElapsedMS: 0})
+		if err != nil {
+			return effectError(s, node, "DB_PREVIEW_ENCODE: "+err.Error())
+		}
+		// Preview is synthetic before datasource, descriptor, client, and
+		// budget admission; no DB object is required on this path.
+		return previewEffectOutcome(s, node, out)
 	}
 
 	name := configString(node.Config, "datasource")

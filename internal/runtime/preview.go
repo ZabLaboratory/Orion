@@ -96,15 +96,23 @@ func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *co
 	// (show.go: len(progs) > 0 && sh.effects != nil → scene.SetEffects). Without
 	// this the on-call chain dies on the first db.query (unregistered exec op).
 	// Pre-Run, like the show.
-	if len(progs) > 0 && p.effects != nil {
-		scene.SetEffects(p.effects)
+	if len(progs) > 0 {
+		// Preview is a private, stateless world-effect policy. Clone the
+		// shared dependency bundle so the preview cannot mutate the on-air
+		// policy, then mark only this clone synthetic. The exec seams still
+		// park/resume through their normal then/error machinery, but their
+		// workers never call HTTP, DB, or service transports.
+		previewEffects := SceneEffects{}
+		if p.effects != nil {
+			previewEffects = *p.effects
+		}
+		previewEffects.Preview = true
+		scene.SetEffects(&previewEffects)
 	}
-	// Meter the preview's curated egress against its OWN per-stream budget,
-	// isolated from the live show (ADR Blue 009 §B / R3): a preview clone
-	// shares the antenne effects bundle and makes REAL service.call egress,
-	// so it must be bounded — but never against (nor drainable by) the live
-	// budget. Keyed by sceneID so two previews of distinct scenes are also
-	// independent.
+	// Keep the preview's stream key isolated from the live show (ADR Blue 009
+	// §B / R3). Synthetic preview effects do not spend the egress budget, but
+	// the key remains stable for any non-world local effect accounting and for
+	// a future policy transition. Two preview scene ids remain independent.
 	scene.SetStreamKey("preview:" + sceneID)
 	// Pair with the PREVIEW wire before Run (SetMirror seeds the kit scene with
 	// the clone's snapshot). MirrorFor registers the kit scene under sceneID on

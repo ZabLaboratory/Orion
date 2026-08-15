@@ -10,6 +10,11 @@ package bluewire
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
@@ -23,6 +28,13 @@ import (
 // blue.program.v1 program.
 type StepSource interface {
 	Step(slot bluehost.Slot) (StepResult, error)
+}
+
+// TickSource is the scheduler seam used by a production bridge. The host
+// owns the instance clock; the bridge only injects the elapsed interval. A
+// test can provide this seam without starting a bluehost.Host or sleeping.
+type TickSource interface {
+	Tick(slot bluehost.Slot, deltaSeconds float64) (StepResult, error)
 }
 
 // StepResult mirrors blueruntime.StepResult's fields this package
@@ -46,10 +58,31 @@ func (a hostAdapter) Step(slot bluehost.Slot) (StepResult, error) {
 	return StepResult{RuntimeSequence: r.RuntimeSequence, Outputs: r.Outputs}, nil
 }
 
+func (a hostAdapter) Tick(slot bluehost.Slot, deltaSeconds float64) (StepResult, error) {
+	r, err := a.host.Tick(slot, deltaSeconds)
+	if err != nil {
+		return StepResult{}, err
+	}
+	return StepResult{RuntimeSequence: r.RuntimeSequence, Outputs: r.Outputs}, nil
+}
+
+// SequenceStaleError reports a non-monotone runtime sequence that was not an
+// identical replay. Returning a typed error lets the registry's diagnostic
+// sink observe the drift without allowing an old projection onto the wire.
+type SequenceStaleError struct {
+	Received uint64
+	Last     uint64
+}
+
+func (e *SequenceStaleError) Error() string {
+	return fmt.Sprintf("bluewire: stale runtime sequence %d after %d", e.Received, e.Last)
+}
+
 // Bridge steps one (host, slot) pair on an interval and forwards every
 // non-empty projection onto mirror as a protocol.Delta.
 type Bridge struct {
 	steps          StepSource
+	ticks          TickSource
 	slot           bluehost.Slot
 	mirror         runtime.SceneMirror
 	sceneID        string
@@ -58,6 +91,11 @@ type Bridge struct {
 	target         blueproject.Target
 	renderRevision string
 	correlationID  string
+
+	mu                   sync.Mutex
+	lastRuntimeSequence  uint64
+	lastOutputSequence   uint64
+	lastProjectionDigest string
 }
 
 // NewBridge wires host's slot onto mirror. target should be
@@ -73,6 +111,7 @@ type Bridge struct {
 func NewBridge(host *bluehost.Host, slot bluehost.Slot, mirror runtime.SceneMirror, sceneID, sceneDigest, instanceID string, target blueproject.Target, renderRevision, correlationID string) *Bridge {
 	return &Bridge{
 		steps:          hostAdapter{host: host},
+		ticks:          hostAdapter{host: host},
 		slot:           slot,
 		mirror:         mirror,
 		sceneID:        sceneID,
@@ -88,7 +127,19 @@ func NewBridge(host *bluehost.Host, slot bluehost.Slot, mirror runtime.SceneMirr
 // An empty projection (no wire-legal outputs this step) is a no-op —
 // mirrors the legacy path's zero-patch-delta drop (ADR 002 §6).
 func (b *Bridge) StepOnce() error {
-	result, err := b.steps.Step(b.slot)
+	return b.step(0)
+}
+
+// TickOnce advances the production host clock by deltaSeconds and forwards
+// the resulting projection. NewBridge uses Host.Tick through TickSource;
+// legacy test doubles that only implement StepSource continue to work via
+// the compatibility path in step.
+func (b *Bridge) TickOnce(deltaSeconds float64) error {
+	return b.step(deltaSeconds)
+}
+
+func (b *Bridge) step(deltaSeconds float64) error {
+	result, err := b.advance(deltaSeconds)
 	if err != nil {
 		return err
 	}
@@ -97,20 +148,128 @@ func (b *Bridge) StepOnce() error {
 		b.sceneDigest, b.instanceID, b.renderRevision, b.correlationID, b.target,
 	)
 	if len(proj.Patches) == 0 {
+		b.recordRuntimeSequence(result.RuntimeSequence)
 		return nil
 	}
-	patches := make([]protocol.Patch, 0, len(proj.Patches))
-	for path, val := range proj.Patches {
-		patches = append(patches, protocol.Patch{Path: path, Value: val})
+
+	paths := make([]string, 0, len(proj.Patches))
+	for path := range proj.Patches {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	patches := make([]protocol.Patch, 0, len(paths))
+	for _, path := range paths {
+		patches = append(patches, protocol.Patch{Path: path, Value: proj.Patches[path]})
+	}
+
+	projectionDigest, err := projectionDigest(proj, b.sceneID, patches)
+	if err != nil {
+		return err
+	}
+	sequence, duplicate, err := b.sequenceFor(result.RuntimeSequence, projectionDigest)
+	if err != nil || duplicate {
+		return err
+	}
+	proj.OutputSequence = sequence
+	if b.mirror == nil {
+		return errors.New("bluewire: nil scene mirror")
 	}
 	b.mirror.Forward(&protocol.Delta{
-		Type:     "delta",
-		V:        1,
-		SceneID:  b.sceneID,
-		Sequence: result.RuntimeSequence,
-		Patches:  patches,
+		Type:              "delta",
+		V:                 1,
+		SceneID:           b.sceneID,
+		Sequence:          sequence,
+		SchemaVersion:     proj.SchemaVersion,
+		SceneDigest:       proj.SceneDigest,
+		RuntimeInstanceID: proj.RuntimeInstanceID,
+		Target:            string(proj.Target),
+		RenderRevision:    proj.RenderRevision,
+		CorrelationID:     proj.CorrelationID,
+		Patches:           patches,
 	})
 	return nil
+}
+
+func (b *Bridge) advance(deltaSeconds float64) (StepResult, error) {
+	if b.ticks != nil {
+		return b.ticks.Tick(b.slot, deltaSeconds)
+	}
+	if b.steps != nil {
+		return b.steps.Step(b.slot)
+	}
+	return StepResult{}, errors.New("bluewire: no step or tick source")
+}
+
+func (b *Bridge) recordRuntimeSequence(sequence uint64) {
+	if sequence == 0 {
+		return
+	}
+	b.mu.Lock()
+	if sequence > b.lastRuntimeSequence {
+		b.lastRuntimeSequence = sequence
+	}
+	b.mu.Unlock()
+}
+
+func (b *Bridge) sequenceFor(runtimeSequence uint64, digest string) (uint64, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if runtimeSequence > 0 {
+		if runtimeSequence < b.lastRuntimeSequence {
+			return 0, false, &SequenceStaleError{Received: runtimeSequence, Last: b.lastRuntimeSequence}
+		}
+		if runtimeSequence == b.lastRuntimeSequence {
+			if digest == b.lastProjectionDigest {
+				return 0, true, nil
+			}
+			return 0, false, &SequenceStaleError{Received: runtimeSequence, Last: b.lastRuntimeSequence}
+		}
+		b.lastRuntimeSequence = runtimeSequence
+	}
+
+	// The host Tick ABI deliberately returns no runtime sequence. The bridge
+	// therefore owns the wire sequence for clock-driven projections. It also
+	// suppresses a repeated projection before allocating a new wire sequence.
+	if digest == b.lastProjectionDigest {
+		return 0, true, nil
+	}
+	sequence := runtimeSequence
+	if sequence == 0 || sequence <= b.lastOutputSequence {
+		sequence = b.lastOutputSequence + 1
+	}
+	b.lastOutputSequence = sequence
+	b.lastProjectionDigest = digest
+	return sequence, false, nil
+}
+
+type projectionIdentity struct {
+	SchemaVersion     string
+	SceneID           string
+	SceneDigest       string
+	RuntimeInstanceID string
+	Target            blueproject.Target
+	RenderRevision    string
+	CorrelationID     string
+	Patches           []protocol.Patch
+}
+
+func projectionDigest(proj blueproject.Projection, sceneID string, patches []protocol.Patch) (string, error) {
+	identity := projectionIdentity{
+		SchemaVersion:     proj.SchemaVersion,
+		SceneID:           sceneID,
+		SceneDigest:       proj.SceneDigest,
+		RuntimeInstanceID: proj.RuntimeInstanceID,
+		Target:            proj.Target,
+		RenderRevision:    proj.RenderRevision,
+		CorrelationID:     proj.CorrelationID,
+		Patches:           patches,
+	}
+	data, err := json.Marshal(identity)
+	if err != nil {
+		return "", fmt.Errorf("bluewire: fingerprint projection: %w", err)
+	}
+	return string(data), nil
 }
 
 // Run steps the bridge every interval until ctx is cancelled. A step
@@ -119,6 +278,9 @@ func (b *Bridge) StepOnce() error {
 // aborts the loop — a single instance's misbehaviour must not take down
 // every other paired instance sharing the process.
 func (b *Bridge) Run(ctx context.Context, interval time.Duration, onError func(error)) {
+	if interval <= 0 {
+		interval = 100 * time.Millisecond
+	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -126,7 +288,7 @@ func (b *Bridge) Run(ctx context.Context, interval time.Duration, onError func(e
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := b.StepOnce(); err != nil && onError != nil {
+			if err := b.TickOnce(interval.Seconds()); err != nil && onError != nil {
 				onError(err)
 			}
 		}

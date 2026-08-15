@@ -27,6 +27,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/blueproject"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
+	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
@@ -84,7 +85,7 @@ type SceneIntentDeps struct {
 	// Required whenever MirrorFor is set; built once by cmd/orion via
 	// bluewire.NewRegistry().
 	Bridges *bluewire.Registry
-	// ProjectionInterval paces the bridge's Step loop. <= 0 defaults to
+	// ProjectionInterval paces the bridge's injected Tick loop. <= 0 defaults to
 	// 100ms.
 	ProjectionInterval time.Duration
 	Logger             *slog.Logger
@@ -260,6 +261,9 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		}
 
 		slot := bluehost.SlotPreview
+		if action == attestation.ActionTakeOnAir {
+			slot = bluehost.SlotOnAir
+		}
 		var opErr error
 		switch action {
 		case attestation.ActionPreparePreview:
@@ -279,8 +283,14 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		if bundle != nil {
 			deps.Host.SetBundle(slot, bundle)
 		}
+		if slot == bluehost.SlotOnAir {
+			// A successful take is a new stateless generation, even when the
+			// scene digest is reused. Drop process-local ingress ordering from
+			// the previous instance before the new generation receives events.
+			providers.ResetActiveIngress(deps.Host)
+		}
 
-		startBridge(deps, slot, action, claims, req.IntentID)
+		startBridge(deps, slot, claims, req.IntentID)
 
 		resp := sceneIntentResponse{
 			Status:     actionResultStatus(action),
@@ -409,7 +419,7 @@ const defaultProjectionInterval = 100 * time.Millisecond
 // deps.Bridges.Start stops whatever bridge previously owned slot before
 // starting this one, so a Take superseding the on-air instance never
 // leaves a goroutine stepping an instance bluehost.Host has released.
-func startBridge(deps SceneIntentDeps, slot bluehost.Slot, action attestation.Action, claims *attestation.Claims, intentID string) {
+func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.Claims, intentID string) {
 	if deps.MirrorFor == nil || deps.Bridges == nil {
 		return
 	}
@@ -418,7 +428,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, action attestation.Ac
 		return
 	}
 	target := blueproject.TargetPreview
-	if action == attestation.ActionTakeOnAir {
+	if slot == bluehost.SlotOnAir {
 		target = blueproject.TargetProgram
 	}
 	bridge := bluewire.NewBridge(deps.Host, slot, mirror, claims.SceneID, claims.SceneDigest, claims.RefID, target, claims.RevisionID, intentID)
@@ -444,6 +454,9 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, action attestation.Ac
 func releaseSlot(deps SceneIntentDeps, slot bluehost.Slot, reason string) error {
 	if deps.Bridges != nil {
 		deps.Bridges.Stop(slot)
+	}
+	if slot == bluehost.SlotOnAir {
+		providers.ResetActiveIngress(deps.Host)
 	}
 	return deps.Host.Release(slot, reason)
 }

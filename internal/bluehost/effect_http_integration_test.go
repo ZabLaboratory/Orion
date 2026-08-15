@@ -8,6 +8,7 @@ package bluehost_test
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -217,6 +218,81 @@ func TestHost_HTTPEffectFullCycle(t *testing.T) {
 	body, ok := response["body"].(map[string]any)
 	if !ok || body["echo"] != "orion-336" {
 		t.Fatalf("unexpected response body: %#v", response["body"])
+	}
+}
+
+// TestHost_HTTPEffectStaleCompletionIsDroppedAfterTake proves that an
+// asynchronous completion from the outgoing on-air instance cannot be
+// delivered to the replacement instance. The first request is held open
+// across Take; only the replacement's response is allowed to reach the
+// completion entrypoint.
+func TestHost_HTTPEffectStaleCompletionIsDroppedAfterTake(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/first" {
+			close(firstStarted)
+			<-releaseFirst
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"path":"`+r.URL.Path+`"}`)
+	}))
+	defer server.Close()
+
+	serverHost := server.Listener.Addr().(*net.TCPAddr).IP.String()
+	egress := effects.NewEgressPolicy([]string{serverHost}, true).InsecureAllowPrivateForTest()
+	runner := effects.NewRunner(2, 8, slog.Default())
+	runner.Start()
+	defer runner.Stop()
+
+	h := bluehost.NewHost()
+	h.SetHTTPEffects(bluehost.EffectDeps{Egress: egress, Runner: runner}, slog.Default())
+	firstURL := server.URL + "/first"
+	secondURL := server.URL + "/second"
+	if err := h.Take("stale-first", "sha256:stale-first", buildHTTPEffectProgram(t, firstURL), providers.Registry(), providers.Policy(true), nil); err != nil {
+		t.Fatalf("Take first: %v", err)
+	}
+	if _, err := h.Step(bluehost.SlotOnAir); err != nil {
+		t.Fatalf("Step first: %v", err)
+	}
+	select {
+	case <-firstStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for outgoing instance request")
+	}
+
+	if err := h.Take("stale-second", "sha256:stale-second", buildHTTPEffectProgram(t, secondURL), providers.Registry(), providers.Policy(true), nil); err != nil {
+		t.Fatalf("Take replacement: %v", err)
+	}
+	if _, err := h.Step(bluehost.SlotOnAir); err != nil {
+		t.Fatalf("Step replacement: %v", err)
+	}
+	close(releaseFirst)
+
+	deadline := time.Now().Add(5 * time.Second)
+	var result map[string]any
+	for time.Now().Before(deadline) {
+		step, err := h.Step(bluehost.SlotOnAir)
+		if err != nil {
+			t.Fatalf("Step completion: %v", err)
+		}
+		if value, ok := step.Variables["result"].(map[string]any); ok {
+			result = value
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if result == nil {
+		t.Fatal("timed out waiting for replacement completion")
+	}
+	response, ok := result["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("replacement completion response=%#v", result["response"])
+	}
+	body, ok := response["body"].(map[string]any)
+	if !ok || body["path"] != "/second" {
+		t.Fatalf("stale completion overwrote replacement: response body=%#v", response["body"])
 	}
 }
 

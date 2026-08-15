@@ -106,19 +106,23 @@ func (h *Host) completeHTTPEffect(slot Slot, instance *blueruntime.InstanceHandl
 		return
 	}
 
+	h.runtimeMu.Lock()
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	cur, ok := h.slots[slot]
 	if !ok || cur.instance != instance {
+		h.mu.Unlock()
+		h.runtimeMu.Unlock()
 		// Slot released or superseded (Take) while the effect was in
 		// flight — the instance this completion targets is no longer
 		// reachable through the Host API. Dropping it is correct: the
 		// runtime's own pendingEffects bookkeeping dies with the instance.
 		return
 	}
+	h.mu.Unlock()
 	if _, err := h.runtime.Complete(instance, data); err != nil {
 		h.logger.Error("bluehost: Runtime.Complete rejected effect completion", "invocation_id", inv["invocation_id"], "err", err)
 	}
+	h.runtimeMu.Unlock()
 }
 
 // httpEffectTimeout reads the request's `timeout_ms` field (the

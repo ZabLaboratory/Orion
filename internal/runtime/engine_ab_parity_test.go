@@ -226,14 +226,10 @@ func TestEngineABParity_HTTPRequestExecuteSameServerSameStatus(t *testing.T) {
 	}
 }
 
-// TestEngineABParity_HTTPRequestPreviewNoNetworkOnEngineB documents (and
-// tests) the KNOWN, REPORTED divergence between issue #358 §7's explicit
-// preview criterion (no network in preview) and Engine A's OWN preview.go
-// clone (real bounded egress in preview, see preview.go's SetEffects doc
-// comment). This test proves Engine B's preview honours the issue's
-// criterion; it deliberately does NOT compare against Engine A, since
-// Engine A does not implement the same policy — an open architecture
-// question flagged to Atlas/Conduit, not resolved unilaterally here.
+// TestEngineABParity_HTTPRequestPreviewNoNetworkOnEngineB keeps a direct
+// handler-level guard for Blue's synthetic preview response. The differential
+// Engine-A PreviewSlot comparison, including the no-network assertion, lives
+// in the inventory transport test where both paths are exercised together.
 func TestEngineABParity_HTTPRequestPreviewNoNetworkOnEngineB(t *testing.T) {
 	poison := effects.NewEgressPolicy(nil, false)
 	handlers := bluehost.NewEffectHandlers(bluehost.EffectDeps{Egress: poison}, blueruntime.Preview)

@@ -73,6 +73,7 @@ type Inbox struct {
 	logger  *slog.Logger
 	audit   *Audit
 	metrics InboxMetrics // nil-safe: nil disables the drop counter
+	events  *runtime.CanonicalEventIngress
 
 	// lastDropWarn is the unix-nano stamp of the last drop warn, used
 	// to rate-limit logging (never the metric).
@@ -87,7 +88,27 @@ func NewInbox(show *runtime.Show, logger *slog.Logger, metrics InboxMetrics) *In
 		logger:  logger.With("component", "inbox"),
 		audit:   NewAudit(2048),
 		metrics: metrics,
+		events:  runtime.NewCanonicalEventIngress(show),
 	}
+}
+
+// InjectEvent admits a canonical blue.runtime.event.v1 envelope through the
+// same active-only ordering/dedup gate used by the Engine-B host adapter.
+// Unlike Write, it never routes a generic event to promoted rule scenes.
+func (in *Inbox) InjectEvent(_ context.Context, data []byte) (runtime.EventIngressReceipt, error) {
+	if in == nil || in.events == nil {
+		return runtime.EventIngressReceipt{}, errors.New("adapters: event ingress unavailable")
+	}
+	receipt, err := in.events.Inject(data)
+	if err == nil && receipt.Status == "accepted" {
+		in.audit.Record(AuditEntry{
+			Source:    "event:canonical",
+			Path:      "__events.canonical",
+			ValueHash: hashValue(data),
+			Timestamp: time.Now(),
+		})
+	}
+	return receipt, err
 }
 
 // Write validates scope + routes the write to the ACTIVE scene only,
