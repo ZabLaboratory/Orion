@@ -1,0 +1,75 @@
+{
+  "root": {
+    "children": [
+      {
+        "children": [
+          {
+            "bindings": {
+              "color": "theme.accent",
+              "value": "scoreboard.home.name"
+            },
+            "id": "title",
+            "kind": "text",
+            "props": {
+              "maxLines": 2,
+              "style": {
+                "color": "#fff",
+                "fontSize": 48,
+                "fontWeight": 700
+              }
+            }
+          },
+          {
+            "bindings": {
+              "opacity": "scoreboard.home.alive"
+            },
+            "id": "bar",
+            "kind": "shape",
+            "props": {
+              "cornerRadius": 4,
+              "fill": "#22c55e",
+              "geometry": "rect",
+              "opacity": 0.9,
+              "rotation": 0,
+              "size": {
+                "h": 8,
+                "w": 320
+              },
+              "visible": true
+            },
+            "transitions": {
+              "opacity": 1,
+              "transition": {
+                "duration": 200,
+                "easing": "ease-out"
+              }
+            }
+          }
+        ],
+        "id": "col",
+        "kind": "stack",
+        "props": {
+          "align": "center",
+          "direction": "vertical",
+          "gap": 12,
+          "padding": [
+            8,
+            8,
+            8,
+            8
+          ]
+        }
+      }
+    ],
+    "id": "root",
+    "kind": "frame",
+    "props": {
+      "background": "#0b0b0f",
+      "size": {
+        "h": 1080,
+        "w": 1920
+      }
+    }
+  },
+  "version": "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+}
