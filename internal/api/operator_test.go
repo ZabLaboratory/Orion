@@ -120,9 +120,9 @@ func TestOperator_CallUnknownEntrypointIs409(t *testing.T) {
 // (ORION-OPERATOR-RAIL-ENGINE-B, #335) — the plain default path (no
 // ?target=, no ?rule=) no longer routes to Show.Active() (Show's roster has
 // had no production populator since #331), it routes to bluehost.Host.
-// Address is the default token "_": Engine B hosts no named-blueprint
-// dimension, so a non-default blueprint_id always 409s (see
-// postOperatorCallEngineB's doc) — "bp" would never reach this instance.
+// Addressed via the default token "_" here; TestOperator_CallEngineB
+// _RealBlueprintIDIsAcceptedButIgnored below proves a real (non-default)
+// blueprint_id — what Prism actually sends — works identically.
 func TestOperator_CallFiresWithPayload(t *testing.T) {
 	program := buildEngineBOperatorProgram(t, "call", "called", "", "", "")
 	f := newEngineBOperatorFixture(t, program)
@@ -133,6 +133,39 @@ func TestOperator_CallFiresWithPayload(t *testing.T) {
 	}
 	if got, _ := f.peekVar(t, "called").(string); got != "hello-operator" {
 		t.Fatalf("called = %#v, want %q", f.peekVar(t, "called"), "hello-operator")
+	}
+}
+
+// TestOperator_CallEngineB_RealBlueprintIDIsAcceptedButIgnored pins the
+// fix for the regression team-lead caught: Prism sends a REAL, non-default
+// blueprint_id on every operator/call (cockpit-api.ts builds
+// `/operator/call/${blueprintId}/${entrypointId}` from actual binding data,
+// e.g. composite-tree-stage.tsx's `binding.blueprint_id` — never "" or "_").
+// Gating the antenna leg on blueprint_id == "" would 409 every real Prism
+// button. Verified against Blue's own compiler
+// (blue_engine/program/compiler.py:1000-1011): on-call ids are flat and
+// globally unique per compiled program, never blueprint-key-namespaced, so
+// blueprint_id has no routing role to play — only entrypoint_id does. This
+// asserts an ARBITRARY non-default blueprint_id still fires correctly.
+func TestOperator_CallEngineB_RealBlueprintIDIsAcceptedButIgnored(t *testing.T) {
+	program := buildEngineBOperatorProgram(t, "on_lck_arm", "called", "", "", "")
+	f := newEngineBOperatorFixture(t, program)
+	w := opRequest(t, f.mux, "POST", "/api/v1/operator/call/lck-scoreboard-v2/on_lck_arm", "operator",
+		map[string]any{"payload": "region-lck"})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("call with real blueprint_id: got %d, want 202 (body=%s)", w.Code, w.Body.String())
+	}
+	if got, _ := f.peekVar(t, "called").(string); got != "region-lck" {
+		t.Fatalf("called = %#v, want %q", f.peekVar(t, "called"), "region-lck")
+	}
+
+	// An entrypoint truly absent from the served program still fails closed,
+	// whatever blueprint_id rides along with it — no safety was traded away.
+	wUnknown := opRequest(t, f.mux, "POST", "/api/v1/operator/call/lck-scoreboard-v2/nope", "operator",
+		map[string]any{"payload": 1})
+	if wUnknown.Code != http.StatusConflict {
+		t.Fatalf("unknown entrypoint with real blueprint_id: got %d, want 409 (body=%s)",
+			wUnknown.Code, wUnknown.Body.String())
 	}
 }
 
