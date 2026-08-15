@@ -107,6 +107,12 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost
 		Providers:     providers.Registry(),
 		Policy:        providers.Policy(httpEgressAllowed),
 		Effects:       effectDeps,
+		// Same budget Engine A's /validate/simulate harness runs under
+		// (runtime.NewHarness / cfg.ValidationMaxSteps/MaxWall below) — one
+		// operator-facing knob pair for "how long may a validation run",
+		// not a second one invented for Engine B.
+		ValidationMaxSteps: cfg.ValidationMaxSteps,
+		ValidationMaxWall:  cfg.ValidationMaxWall,
 	}, nil
 }
 

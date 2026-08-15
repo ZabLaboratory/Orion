@@ -13,11 +13,14 @@ import (
 // AUTHORING-level Blue graph through internal/compiler (Engine A), this
 // route accepts an ALREADY-COMPILED blue.program.v1 document and answers
 // whether Orion's Engine B (internal/bluehost + internal/providers) can
-// actually serve it — the class of failure a clean compile can never catch,
-// because only Orion knows its own provider registry. Registered beside
+// actually ADMIT AND RUN it — the class of failure a clean compile can never
+// catch, because only Orion knows its own provider registry, and admission
+// alone cannot catch a node failing on its own inputs or a program-declared
+// execution budget it blows through immediately. Registered beside
 // scene-intent (public.go's `if deps.SceneIntent != nil` block): it needs
-// the SAME Providers/Policy SceneIntentDeps already carries, and is
-// meaningless where Engine B itself isn't provisioned.
+// the SAME Providers/Policy/ValidationMaxSteps/ValidationMaxWall
+// SceneIntentDeps already carries, and is meaningless where Engine B itself
+// isn't provisioned.
 
 // validateProgramScope is the exact service-token scope POST
 // /validate/program requires — same exact-membership pattern as
@@ -40,11 +43,13 @@ type validateProgramRequest struct {
 }
 
 // validateProgramResponse is the contre-validation verdict. Servable=true
-// means Engine B admitted the program end to end (schema/opcode/ABI checks
-// at Load, then every declared `requires` satisfied by the registry under
-// policy at Start) — the same admission a real Prepare/Take performs.
-// Servable=false always carries Code/Stage (a blue.runtime.error.v1 code and
-// the admission phase it failed at) and Reason, so a caller gets a precise
+// means Engine B admitted the program (schema/opcode/ABI checks at Load,
+// every declared `requires` satisfied by the registry under Execute-mode
+// policy at Start) AND ran it for real to settlement within budget — the
+// same admission a real Prepare/Take performs, plus a genuine bounded
+// execution neither performs synchronously. Servable=false always carries
+// Code/Stage (a blue.runtime.error.v1 code and the phase it failed at —
+// "load", "start", or "step") and Reason, so a caller gets a precise
 // refusal, never a bare no. Target mirrors the underlying error's Target
 // when the runtime pinpointed a specific node/effect/capability.
 type validateProgramResponse struct {
@@ -57,9 +62,11 @@ type validateProgramResponse struct {
 
 // postValidateProgram handles POST /api/v1/validate/program. Never touches
 // deps.Host's preview/on-air slots: bluehost.ValidateProgram builds and
-// discards its own throwaway runtime instance (see that function's doc for
-// why it can never execute a single Step or fire an effect). Stateless —
-// nothing here is persisted, cached, or registered across requests.
+// discards its own throwaway runtime instance, bounded by
+// deps.ValidationMaxSteps/deps.ValidationMaxWall (see that function's doc
+// for why it genuinely runs the graph yet can never fire a real effect).
+// Stateless — nothing here is persisted, cached, or registered across
+// requests.
 func postValidateProgram(deps SceneIntentDeps) http.HandlerFunc {
 	return requireServiceScope(validateProgramScope, func(w http.ResponseWriter, r *http.Request) {
 		raw, err := readBounded(r.Body, maxValidateProgramBody)
@@ -78,7 +85,7 @@ func postValidateProgram(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 
-		if verdict := bluehost.ValidateProgram(body.Program, deps.Providers, deps.Policy); verdict != nil {
+		if verdict := bluehost.ValidateProgram(body.Program, deps.Providers, deps.Policy, deps.ValidationMaxSteps, deps.ValidationMaxWall); verdict != nil {
 			writeJSON(w, http.StatusOK, validateProgramResponse{
 				Servable: false,
 				Code:     verdict.Code,
