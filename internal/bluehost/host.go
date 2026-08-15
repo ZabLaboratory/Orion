@@ -43,7 +43,12 @@ var (
 // entry pairs a running instance with the program handle it was started
 // from, so Step/Stop never need the caller to keep the handle around.
 type entry struct {
-	instance   *blueruntime.InstanceHandle
+	instance *blueruntime.InstanceHandle
+
+	// sceneID and digest together are the slot's identity — see Serving.
+	// sceneID is populated by Prepare only; Take leaves it "" (Take never
+	// short-circuits, see Take's own doc, so nothing reads it on that path).
+	sceneID    string
 	digest     string            // scene_digest / program identity this slot is serving
 	bundle     []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
 	awaitTypes map[string]string // compiler-declared operator.await value types
@@ -277,7 +282,10 @@ func modeFor(slot Slot) blueruntime.Mode {
 // portable runtime at admission (never read from a DB/catalogue) — the
 // caller builds them from Orion's adapters, never from Prism or a client
 // payload (§4.4 invariant: no mutable payload initializes an instance).
-func (h *Host) Prepare(slot Slot, instanceID, digest string, program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy, effectHandlers map[string]blueruntime.EffectFunc) error {
+// sceneID is stored alongside digest as the slot's identity — see
+// Serving, the caller's idempotent-repeat check for the ErrAlreadyLoaded
+// case this returns below.
+func (h *Host) Prepare(slot Slot, instanceID, sceneID, digest string, program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy, effectHandlers map[string]blueruntime.EffectFunc) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -302,14 +310,19 @@ func (h *Host) Prepare(slot Slot, instanceID, digest string, program []byte, pro
 	}
 
 	triggers, awaits := declaredContracts(program)
-	h.slots[slot] = &entry{instance: instance, digest: digest, awaitTypes: awaitTypesInProgram(program), triggers: triggers, awaits: awaits}
+	h.slots[slot] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: awaitTypesInProgram(program), triggers: triggers, awaits: awaits}
 	return nil
 }
 
 // Digest reports the scene_digest the slot is currently serving, or ""
-// if the slot is empty — used to short-circuit a redundant re-Prepare on
-// the same digest (idempotent re-push, §4.4 does not require it but it
-// avoids tearing down a healthy instance for a no-op push).
+// if the slot is empty. Digest equality ALONE is not slot identity and
+// must never be used to decide a redundant re-Prepare is a no-op — see
+// Serving. A digest can coincide across two distinct scenes (pre-C3's
+// version-derived scene_digest is not content-bound at all, and even a
+// content-addressed digest can coincide post-C3 when two different
+// scenes happen to compile to byte-identical programs); short-circuiting
+// on digest alone would silently reuse one scene's running instance
+// (and its accumulated state) for a different scene's intent.
 func (h *Host) Digest(slot Slot) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -318,6 +331,24 @@ func (h *Host) Digest(slot Slot) string {
 		return ""
 	}
 	return e.digest
+}
+
+// Serving reports whether slot is currently loaded for EXACTLY
+// (sceneID, digest) — the atomic identity check backing Prepare's
+// idempotent re-push short-circuit (ADR-BLUE-012 §4.4: "avoids tearing
+// down a healthy instance for a no-op push"). Both must match: a slot
+// already serving a different sceneID is never "the same thing already
+// loaded" just because the new intent's digest happens to match too
+// (see Digest's doc for why digest alone is not a safe identity check).
+// False on an empty slot.
+func (h *Host) Serving(slot Slot, sceneID, digest string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.slots[slot]
+	if !ok {
+		return false
+	}
+	return e.sceneID == sceneID && e.digest == digest
 }
 
 // SetBundle attaches the content-addressed LSML render-bundle bytes to

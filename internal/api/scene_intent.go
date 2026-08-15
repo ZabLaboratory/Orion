@@ -382,10 +382,10 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		var opErr error
 		switch action {
 		case attestation.ActionPreparePreview:
-			opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Preview))
+			opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Preview))
 			if errors.Is(opErr, bluehost.ErrAlreadyLoaded) {
-				if deps.Host.Digest(slot) == claims.SceneDigest {
-					opErr = nil // idempotent re-prepare of the same digest
+				if deps.Host.Serving(slot, claims.SceneID, claims.SceneDigest) {
+					opErr = nil // idempotent re-prepare: same scene, same digest already running
 				}
 			}
 		case attestation.ActionTakeOnAir:

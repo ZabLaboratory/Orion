@@ -18,7 +18,7 @@ func TestHost_PreparePreviewAndOnAirAreIsolated(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
 
-	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare preview: %v", err)
 	}
 	if err := h.Take("onair-1", "sha256:aaa", program, nil, nil, nil); err != nil {
@@ -44,10 +44,10 @@ func TestHost_PrepareRefusesDoubleLoad(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
 
-	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
-	if err := h.Prepare(SlotPreview, "preview-2", "sha256:bbb", program, nil, nil, nil); err == nil {
+	if err := h.Prepare(SlotPreview, "preview-2", "scene-2", "sha256:bbb", program, nil, nil, nil); err == nil {
 		t.Fatal("expected ErrAlreadyLoaded on second Prepare of the same slot")
 	}
 }
@@ -111,7 +111,7 @@ func TestHost_ReleaseThenReprepare(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
 
-	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if err := h.Release(SlotPreview, "operator-cancelled"); err != nil {
@@ -120,7 +120,7 @@ func TestHost_ReleaseThenReprepare(t *testing.T) {
 	if h.Digest(SlotPreview) != "" {
 		t.Fatalf("expected empty slot after Release")
 	}
-	if err := h.Prepare(SlotPreview, "preview-2", "sha256:bbb", program, nil, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-2", "scene-2", "sha256:bbb", program, nil, nil, nil); err != nil {
 		t.Fatalf("re-Prepare after Release: %v", err)
 	}
 }
@@ -137,7 +137,7 @@ func TestHost_SetBundleAndBundle(t *testing.T) {
 		t.Fatal("expected SetBundle on an empty slot to be a no-op")
 	}
 
-	if err := h.Prepare(SlotPreview, "preview-1", "sha256:aaa", program, nil, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	h.SetBundle(SlotPreview, []byte("lsml-bytes"))
@@ -150,5 +150,36 @@ func TestHost_SetBundleAndBundle(t *testing.T) {
 	}
 	if h.Bundle(SlotPreview) != nil {
 		t.Fatal("expected nil bundle after Release")
+	}
+}
+
+// TestHost_ServingRequiresBothSceneIDAndDigestToMatch is the unit-level
+// proof for the slot-identity fix backing Prepare's idempotent short-circuit
+// (ADR-BLUE-012 §4.4): digest equality alone is not enough — a slot Prepared
+// for one scene must never read as "Serving" a different scene just because
+// the digest happens to coincide, or a caller could reuse that scene's
+// running instance (and its accumulated state) for an unrelated intent.
+func TestHost_ServingRequiresBothSceneIDAndDigestToMatch(t *testing.T) {
+	h := NewHost()
+	program := fixture(t)
+
+	if h.Serving(SlotPreview, "scene-1", "sha256:aaa") {
+		t.Fatal("expected Serving false on an empty slot")
+	}
+
+	if err := h.Prepare(SlotPreview, "preview-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+
+	if !h.Serving(SlotPreview, "scene-1", "sha256:aaa") {
+		t.Fatal("expected Serving true for the exact (sceneID, digest) just Prepared")
+	}
+	if h.Serving(SlotPreview, "scene-1", "sha256:zzz") {
+		t.Fatal("expected Serving false: same sceneID, different digest must not match")
+	}
+	// The case that matters: a different scene sharing the same digest
+	// must never read as "already serving".
+	if h.Serving(SlotPreview, "scene-2", "sha256:aaa") {
+		t.Fatal("expected Serving false: same digest, different sceneID must not match")
 	}
 }

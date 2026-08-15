@@ -269,7 +269,7 @@ func TestChatDrivenScene_InjectionOrderingIdempotenceProjection(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	envelope, digest := canvasEnvelope(program)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-181", attestation.ActionTakeOnAir, now, digest)
+	ref := signedRef(t, priv, "canvas-key-181", attestation.ActionTakeOnAir, now, "scene-1", digest)
 
 	wl := &fakeWorkload{body: envelope}
 	host := bluehost.NewHost()

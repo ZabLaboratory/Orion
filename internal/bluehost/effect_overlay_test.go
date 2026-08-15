@@ -112,7 +112,7 @@ func TestDispatchOverlayAppSet_PreviewNeverReachesMirror(t *testing.T) {
 	mirror := &fakeOverlayMirror{}
 	h.SetOverlayMirror(mirror)
 
-	if err := h.Prepare(SlotPreview, "preview-1", "sha256:stream-rule", streamRuleOverlayFixture(t), nil, nil, nil); err != nil {
+	if err := h.Prepare(SlotPreview, "preview-1", "scene-stream-rule", "sha256:stream-rule", streamRuleOverlayFixture(t), nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	step, err := h.Step(SlotPreview) // fires on-start

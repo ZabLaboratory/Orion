@@ -213,7 +213,7 @@ func TestNewBridge_TickOnceUsesHostScheduler(t *testing.T) {
 		t.Fatalf("read minimal program: %v", err)
 	}
 	host := bluehost.NewHost()
-	if err := host.Prepare(bluehost.SlotOnAir, "instance-1", "sha256:scene", program, nil, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotOnAir, "instance-1", "scene-1", "sha256:scene", program, nil, nil, nil); err != nil {
 		t.Fatalf("Host.Prepare: %v", err)
 	}
 	t.Cleanup(func() { _ = host.Release(bluehost.SlotOnAir, "test-cleanup") })

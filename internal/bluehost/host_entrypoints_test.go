@@ -293,7 +293,7 @@ func TestHost_EntryPointsUseDirectEffectHandlersBecauseBlueDoesNotReturnInvocati
 				hostMuAccessible.Store(true)
 				return baseHTTPHandler(config, inputs)
 			}
-			if err := h.Prepare(SlotOnAir, "entrypoint-"+tc.name, "sha256:entrypoint-"+tc.name, program, nil, nil,
+			if err := h.Prepare(SlotOnAir, "entrypoint-"+tc.name, "scene-entrypoint-"+tc.name, "sha256:entrypoint-"+tc.name, program, nil, nil,
 				handlers); err != nil {
 				t.Fatalf("primitive=core.http.request@1 scenario=%s Host.Prepare: %v", tc.name, err)
 			}
@@ -330,7 +330,7 @@ func TestHost_EntryPointsUseDirectEffectHandlersBecauseBlueDoesNotReturnInvocati
 func TestHost_TickFiresOnTickEntrypoint(t *testing.T) {
 	program := buildEntrypointProgram(t, "tick", "core.event.on-tick@1", "delta_seconds", nil)
 	h := NewHost()
-	if err := h.Prepare(SlotOnAir, "tick-1", "sha256:tick", program, nil, nil, nil); err != nil {
+	if err := h.Prepare(SlotOnAir, "tick-1", "scene-tick", "sha256:tick", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if _, err := h.Step(SlotOnAir); err != nil { // fires on-start, arms the instance
@@ -351,7 +351,7 @@ func TestHost_TickFiresOnTickEntrypoint(t *testing.T) {
 func TestHost_CallFiresOnCallEntrypoint(t *testing.T) {
 	program := buildEntrypointProgram(t, "call", "core.operator.on-call@1", "payload", nil)
 	h := NewHost()
-	if err := h.Prepare(SlotOnAir, "call-1", "sha256:call", program, nil, nil, nil); err != nil {
+	if err := h.Prepare(SlotOnAir, "call-1", "scene-call", "sha256:call", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if _, err := h.Step(SlotOnAir); err != nil {
@@ -373,7 +373,7 @@ func TestHost_WritePlatformEventFiresEntrypoint(t *testing.T) {
 	leaf := "__inputs.platform.twitch.channel_1.last_follow"
 	program := buildEntrypointProgram(t, "platform-event", "core.event.on-platform-event@1", "payload", map[string]any{"leaf": leaf})
 	h := NewHost()
-	if err := h.Prepare(SlotOnAir, "plat-1", "sha256:plat", program, nil, nil, nil); err != nil {
+	if err := h.Prepare(SlotOnAir, "plat-1", "scene-plat", "sha256:plat", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	if _, err := h.Step(SlotOnAir); err != nil {

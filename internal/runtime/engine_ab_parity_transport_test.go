@@ -287,7 +287,7 @@ func TestEngineABParity_HTTPTransportComparesSuccessErrorPathQueryBodyAndAlias(t
 			h := bluehost.NewHost()
 			t.Cleanup(func() { _ = h.Release(bluehost.SlotOnAir, "test-cleanup") })
 			program := buildParityEngineBHTTPTransportProgram(t, targetURL, method, tc.opcode, query, headers, body)
-			if err := h.Prepare(bluehost.SlotOnAir, "ab-http-transport-b-"+tc.name, "sha256:http-transport-"+tc.name, program, nil, nil,
+			if err := h.Prepare(bluehost.SlotOnAir, "ab-http-transport-b-"+tc.name, "scene-http-transport-"+tc.name, "sha256:http-transport-"+tc.name, program, nil, nil,
 				bluehost.NewEffectHandlers(bluehost.EffectDeps{Egress: egress}, blueruntime.Execute)); err != nil {
 				t.Fatalf("primitive=%s scenario=%s Engine B Host.Prepare: %v", tc.opcode, tc.name, err)
 			}
@@ -456,7 +456,7 @@ func TestEngineABParity_DBTransportComparesQueryRowsCountThenAndError(t *testing
 
 		h := bluehost.NewHost()
 		t.Cleanup(func() { _ = h.Release(bluehost.SlotOnAir, "test-cleanup") })
-		if err := h.Prepare(bluehost.SlotOnAir, "ab-db-transport-b", "sha256:db-transport", buildParityEngineBDBTransportProgram(t, descriptor), nil, nil,
+		if err := h.Prepare(bluehost.SlotOnAir, "ab-db-transport-b", "scene-db-transport", "sha256:db-transport", buildParityEngineBDBTransportProgram(t, descriptor), nil, nil,
 			bluehost.NewEffectHandlers(bluehost.EffectDeps{DB: db, DataSources: ds}, blueruntime.Execute)); err != nil {
 			t.Fatalf("Engine B Host.Prepare: %v", err)
 		}
@@ -487,7 +487,7 @@ func TestEngineABParity_DBTransportComparesQueryRowsCountThenAndError(t *testing
 
 		h := bluehost.NewHost()
 		t.Cleanup(func() { _ = h.Release(bluehost.SlotOnAir, "test-cleanup") })
-		if err := h.Prepare(bluehost.SlotOnAir, "ab-db-transport-error-b", "sha256:db-transport-error", buildParityEngineBDBTransportProgram(t, descriptor), nil, nil,
+		if err := h.Prepare(bluehost.SlotOnAir, "ab-db-transport-error-b", "scene-db-transport-error", "sha256:db-transport-error", buildParityEngineBDBTransportProgram(t, descriptor), nil, nil,
 			bluehost.NewEffectHandlers(bluehost.EffectDeps{}, blueruntime.Execute)); err != nil {
 			t.Fatalf("Engine B Host.Prepare: %v", err)
 		}

@@ -77,7 +77,7 @@ func TestEngineABParity_OperationInventory(t *testing.T) {
 		}
 		h := bluehost.NewHost()
 		t.Cleanup(func() { _ = h.Release(bluehost.SlotOnAir, "test-cleanup") })
-		if err := h.Prepare(bluehost.SlotOnAir, "inventory-http-alias", "sha256:inventory-http-alias", alias, nil, nil,
+		if err := h.Prepare(bluehost.SlotOnAir, "inventory-http-alias", "scene-inventory-http-alias", "sha256:inventory-http-alias", alias, nil, nil,
 			bluehost.NewEffectHandlers(bluehost.EffectDeps{Egress: egress}, blueruntime.Execute)); err != nil {
 			t.Fatalf("primitive=core.http-request@1 scenario=alias Host.Prepare: %v", err)
 		}
@@ -168,7 +168,7 @@ func TestEngineABParity_HTTPPreviewNoNetworkAndOnAirObservable(t *testing.T) {
 
 	bOnAir := bluehost.NewHost()
 	t.Cleanup(func() { _ = bOnAir.Release(bluehost.SlotOnAir, "test-cleanup") })
-	if err := bOnAir.Prepare(bluehost.SlotOnAir, "inventory-http-on-air-b", "sha256:inventory-http-on-air-b", buildEngineBHTTPProgram(t, srv.URL), nil, nil,
+	if err := bOnAir.Prepare(bluehost.SlotOnAir, "inventory-http-on-air-b", "scene-inventory-http-on-air-b", "sha256:inventory-http-on-air-b", buildEngineBHTTPProgram(t, srv.URL), nil, nil,
 		bluehost.NewEffectHandlers(bluehost.EffectDeps{Egress: egress}, blueruntime.Execute)); err != nil {
 		t.Fatalf("primitive=core.http.request@1 scenario=on-air Engine B Prepare: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestEngineABParity_HTTPPreviewNoNetworkAndOnAirObservable(t *testing.T) {
 
 	bPreview := bluehost.NewHost()
 	t.Cleanup(func() { _ = bPreview.Release(bluehost.SlotPreview, "test-cleanup") })
-	if err := bPreview.Prepare(bluehost.SlotPreview, "inventory-http-preview-b", "sha256:inventory-http-preview-b", buildEngineBHTTPProgram(t, srv.URL), nil, nil,
+	if err := bPreview.Prepare(bluehost.SlotPreview, "inventory-http-preview-b", "scene-inventory-http-preview-b", "sha256:inventory-http-preview-b", buildEngineBHTTPProgram(t, srv.URL), nil, nil,
 		bluehost.NewEffectHandlers(bluehost.EffectDeps{Egress: egress}, blueruntime.Preview)); err != nil {
 		t.Fatalf("primitive=core.http.request@1 scenario=preview Engine B Prepare: %v", err)
 	}
@@ -593,7 +593,7 @@ func testParityInventoryService(t *testing.T) {
 
 	h := bluehost.NewHost()
 	t.Cleanup(func() { _ = h.Release(bluehost.SlotOnAir, "test-cleanup") })
-	if err := h.Prepare(bluehost.SlotOnAir, "inventory-service-b", "sha256:inventory-service-b", parityBuildBServiceProgram(t), nil, nil,
+	if err := h.Prepare(bluehost.SlotOnAir, "inventory-service-b", "scene-inventory-service-b", "sha256:inventory-service-b", parityBuildBServiceProgram(t), nil, nil,
 		bluehost.NewEffectHandlers(bluehost.EffectDeps{ServiceCall: client, ResolveServiceRoute: parityServiceRouteResolver}, blueruntime.Execute)); err != nil {
 		if parityBlueErrorCode(err) != "PROGRAM_PORT_INVALID" {
 			t.Fatalf("primitive=core.service.call@1 scenario=real-blue-route-seam unexpected Engine B Host.Prepare error code=%q err=%v", parityBlueErrorCode(err), err)
@@ -657,7 +657,7 @@ func testParityInventoryService(t *testing.T) {
 
 		bErrHost := bluehost.NewHost()
 		t.Cleanup(func() { _ = bErrHost.Release(bluehost.SlotOnAir, "test-cleanup") })
-		if err := bErrHost.Prepare(bluehost.SlotOnAir, "inventory-service-error-b", "sha256:inventory-service-error-b", parityBuildBServiceProgram(t), nil, nil,
+		if err := bErrHost.Prepare(bluehost.SlotOnAir, "inventory-service-error-b", "scene-inventory-service-error-b", "sha256:inventory-service-error-b", parityBuildBServiceProgram(t), nil, nil,
 			bluehost.NewEffectHandlers(bluehost.EffectDeps{ServiceCall: effects.NewServiceCallClient(errorServer.URL, noToken.mint, nil), ResolveServiceRoute: parityServiceRouteResolver}, blueruntime.Execute)); err != nil {
 			t.Fatalf("primitive=core.service.call@1 scenario=typed-error Engine B Host.Prepare: %v", err)
 		}
