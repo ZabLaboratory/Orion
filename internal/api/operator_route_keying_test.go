@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/obs"
@@ -59,25 +58,6 @@ func newLegacyFixture(t *testing.T) *operatorFixture {
 	return &operatorFixture{mux: mux, show: show}
 }
 
-func (f *operatorFixture) waitLegacyVar(t *testing.T, leaf, want string) {
-	t.Helper()
-	sc, err := f.show.Get(legacySceneID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		sub, snap := sc.Subscribe(16)
-		v, ok := snap.State[leaf]
-		sub.Close()
-		if ok && string(v) == want {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("leaf %s never reached %s", leaf, want)
-}
-
 // TestLegacy_EmptyKeyPathDoesNotFire pins the DEFECT: the empty-segment URL the
 // old cockpit built (`blueprint_id:""`) is unroutable — Go's ServeMux never
 // matches an empty `{blueprint_id}` segment, so the request never reaches the
@@ -94,16 +74,22 @@ func TestLegacy_EmptyKeyPathDoesNotFire(t *testing.T) {
 }
 
 // TestLegacy_DefaultTokenFiresOnCall is THE proof: POST /operator/call/_/on_lck
-// on a legacy active scene → 202 and the spine fires, over the real HTTP route
-// (not FireOnCall directly).
+// on the antenna → 202 and the spine fires, over the real HTTP route (not
+// FireOnCall/Host.Call directly). Antenna leg now targets Engine B
+// (ORION-OPERATOR-RAIL-ENGINE-B, #335) — the default token "_" is not just
+// legacy-compatible addressing anymore, it is the ONLY blueprint_id Engine B
+// can ever serve (no named-blueprint dimension exists there).
 func TestLegacy_DefaultTokenFiresOnCall(t *testing.T) {
-	f := newLegacyFixture(t)
+	program := buildEngineBOperatorProgram(t, "on_lck", "called", "", "", "")
+	f := newEngineBOperatorFixture(t, program)
 	w := opRequest(t, f.mux, "POST", "/api/v1/operator/call/_/on_lck", "operator",
-		map[string]any{"payload": map[string]any{"region": "LCK"}})
+		map[string]any{"payload": "LCK"})
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("default-token call: got %d, want 202 (body=%s)", w.Code, w.Body.String())
 	}
-	f.waitLegacyVar(t, "__vars..called", `{"region":"LCK"}`)
+	if got, _ := f.peekVar(t, "called").(string); got != "LCK" {
+		t.Fatalf("called = %#v, want LCK", f.peekVar(t, "called"))
+	}
 }
 
 // TestLegacy_DefaultTokenUnknownEntrypointIs409 confirms the token resolves to
@@ -120,9 +106,11 @@ func TestLegacy_DefaultTokenUnknownEntrypointIs409(t *testing.T) {
 }
 
 // TestLegacy_CockpitAnnouncesDefaultToken proves the contract advertises an
-// ADDRESSABLE blueprint_id ("_"), not "" — so the cockpit builds a routable URL.
+// ADDRESSABLE blueprint_id ("_"), not "" — so the cockpit builds a routable
+// URL. Antenna leg now sourced from Engine B (appendEngineBScene, #335).
 func TestLegacy_CockpitAnnouncesDefaultToken(t *testing.T) {
-	f := newLegacyFixture(t)
+	program := buildEngineBOperatorProgram(t, "on_lck", "called", "", "", "")
+	f := newEngineBOperatorFixture(t, program)
 	w := opRequest(t, f.mux, "GET", "/api/v1/cockpit/contracts?stream_id=s1", "operator", nil)
 	if w.Code != http.StatusOK {
 		t.Fatalf("cockpit: got %d, want 200 (body=%s)", w.Code, w.Body.String())

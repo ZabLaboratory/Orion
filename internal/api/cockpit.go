@@ -1,8 +1,10 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
@@ -28,6 +30,13 @@ import (
 // cockpit's addressing of that show; it is accepted (and required, per the
 // frozen contract) but Orion has no multi-stream partition — the current show
 // IS the stream. An absent stream_id is a 400; any value resolves to the show.
+//
+// ENGINE B ANTENNA (ORION-OPERATOR-RAIL-ENGINE-B, #335): the antenna's
+// scene-scope facet now derives from bluehost.Host's on-air instance
+// (appendEngineBScene), not Show.Active() — Show's roster is structurally
+// empty in production since #331. ?target=preview is unchanged (still
+// Engine A, operatorTarget). The antenna's awaits facet is intentionally
+// empty — see appendEngineBScene's doc for the upstream introspection gap.
 
 // cockpitContractItem<T> is a facet item wrapped with its scope. Because Go
 // has no generics-in-JSON-shape ergonomics here, each facet has its own typed
@@ -99,11 +108,17 @@ func getCockpitContracts(deps PublicDeps) http.HandlerFunc {
 
 		// Scene-scope contract → the operator surface the rail drives. Mode-aware
 		// (preview/antenne split): ``?target=preview`` derives it from the PREVIEW
-		// slot's live clone (so the rail in preview mode reflects the preview
-		// scene), else the global show's active scene (the antenne). Vanishes on a
-		// flip of whichever side it reads.
-		if active := operatorTarget(deps, r); active != nil {
-			appendScene(&out, active, scopeScene, "")
+		// slot's live clone (Engine A, unchanged — operatorTarget), else the
+		// ANTENNA now derives from Engine B's on-air instance
+		// (ORION-OPERATOR-RAIL-ENGINE-B, #335) — Show.Active() has had no
+		// production populator since #331 and is structurally empty. Vanishes on
+		// a flip/take of whichever side it reads.
+		if r.URL.Query().Get("target") == "preview" {
+			if active := operatorTarget(deps, r); active != nil {
+				appendScene(&out, active, scopeScene, "")
+			}
+		} else if host := engineBHost(deps); host != nil {
+			appendEngineBScene(&out, host, bluehost.SlotOnAir)
 		}
 		// Promoted stream-level rules → scope `stream` (permanent). Each item is
 		// stamped with rule_id = the scene's id, which IS the stable rule key in
@@ -157,4 +172,70 @@ func addressBlueprintKey(key string) string {
 		return defaultBlueprintToken
 	}
 	return key
+}
+
+// appendEngineBScene derives the antenna's Engine B contract (scope `scene`)
+// and appends it to out — the Engine B analogue of appendScene(active, ...)
+// for the one instance bluehost.Host hosts per slot (ORION-OPERATOR-RAIL-
+// ENGINE-B, #335). No-op when slot holds no instance.
+//
+// Params come from the LSML render-bundle's `operator_inputs` field (same
+// generic, best-effort decode getOperatorInputs already uses for this same
+// field — ZabCanvas's lsml_bundle schema for it is NOT a confirmed-matching
+// contract against Orion's own compiler shape, so a field that doesn't
+// decode just stays zero-valued, never an error).
+//
+// Triggers come from the loaded program's declared on-call entrypoints
+// (bluehost.Host.DeclaredContracts), addressed under defaultBlueprintToken
+// since Engine B hosts no named blueprint dimension today (see
+// postOperatorCallEngineB's doc).
+//
+// Awaits are DELIBERATELY NOT emitted here: Engine A's await facet is
+// "membership ⇒ armed" — a snapshot of what is CURRENTLY parked
+// (runtime.Scene.listPendingAwaits, the live #209 registry). blueruntime's
+// equivalent live registry (instance.pendingAwaits) exists internally but
+// is not exposed by any public method — runtime.go's own Resolve is the
+// only reader. bluehost.AwaitDecl only carries the DECLARED set (compile-
+// time), and emitting that here would mislabel an already-resolved or
+// never-reached await as a live prompt — worse than omitting the facet.
+// This is a real upstream gap (recommend a PendingAwaits()-style accessor
+// on blueruntime.Runtime as a follow-up), not something this work unit can
+// close inside Orion alone — see PR description.
+func appendEngineBScene(out *cockpitContracts, host *bluehost.Host, slot bluehost.Slot) {
+	if host.Digest(slot) == "" {
+		return
+	}
+	for _, p := range bundleOperatorInputs(host.Bundle(slot)) {
+		out.Params = append(out.Params, cockpitParam{ContractParam: p, Scope: scopeScene})
+	}
+	triggers, _ := host.DeclaredContracts(slot)
+	for _, t := range triggers {
+		out.Triggers = append(out.Triggers, cockpitTrigger{
+			ContractTrigger: runtime.ContractTrigger{
+				BlueprintKey: defaultBlueprintToken,
+				EntrypointID: t.CallID,
+				State:        "armed",
+				UI:           t.UI,
+			},
+			Scope: scopeScene,
+		})
+	}
+}
+
+// bundleOperatorInputs extracts an LSML render-bundle's `operator_inputs`
+// field into the shared ContractParam shape. Best-effort, generic top-level
+// key decode (mirrors getOperatorInputs, scenes_get.go) rather than a typed
+// contract Orion owns end-to-end: nil/malformed bundle or an unrecognised
+// field shape yields nil (never an error) rather than a broken response.
+func bundleOperatorInputs(bundle []byte) []runtime.ContractParam {
+	if len(bundle) == 0 {
+		return nil
+	}
+	var envelope struct {
+		OperatorInputs []runtime.ContractParam `json:"operator_inputs"`
+	}
+	if json.Unmarshal(bundle, &envelope) != nil {
+		return nil
+	}
+	return envelope.OperatorInputs
 }

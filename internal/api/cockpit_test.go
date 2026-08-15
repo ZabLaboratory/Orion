@@ -1,12 +1,14 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
@@ -23,17 +25,22 @@ const (
 	cockpitOtherID  = "44444444-4444-4444-4444-444444444444"
 )
 
-// cockpitFixture builds a Show with:
-//   - an ACTIVE scene (blueprint "bp") with a declared operator input
-//     (param), an on-call entrypoint (trigger) and an on-start-armed await
-//     (pending) — scope `scene`;
-//   - a promoted STREAM-LEVEL rule scene (blueprint "rule") with its own
-//     on-call entrypoint — scope `stream`;
+// cockpitFixture builds:
+//   - the ANTENNA (Engine B, bluehost.Host/SlotOnAir — ORION-OPERATOR-RAIL-
+//     ENGINE-B, #335) with a declared operator input (param) and an on-call
+//     entrypoint (trigger), addressed under the default blueprint token — scope
+//     `scene`. Engine B has no live pending-await introspection (see
+//     appendEngineBScene's doc), so the fixture carries no await; await
+//     coverage lives in TestCockpit_PendingAwaitPresentAndScoped, which
+//     targets the (still Engine A) PREVIEW leg instead;
+//   - a Show with a promoted STREAM-LEVEL rule scene (blueprint "rule") with
+//     its own on-call entrypoint — scope `stream`;
 //   - a DORMANT roster scene (blueprint "ghost") that is neither active nor a
 //     rule — its contracts must NOT appear.
 type cockpitFixture struct {
 	mux  *http.ServeMux
 	show *runtime.Show
+	host *bluehost.Host
 }
 
 func awaitNode(id, name, valueType string) *runtime.ExecNode {
@@ -54,29 +61,16 @@ func newCockpitFixture(t *testing.T) *cockpitFixture {
 	show.SetExecMetrics(m)
 	t.Cleanup(show.Stop)
 
-	// --- active scene: param + on-call trigger + armed await -------------
-	activeGraph := &compiler.Graph{SceneID: cockpitActiveID, SceneVersion: "sha256:a"}
-	activeBundle := &compiler.RenderBundle{
-		SceneVersion: "sha256:a",
-		OperatorInputs: []compiler.OperatorInput{
-			{Path: "__inputs.bp.title", Label: "Title", Type: "text"},
-		},
+	// --- antenna (Engine B): param + on-call trigger, scope scene --------
+	program := buildEngineBOperatorProgram(t, "fire", "x", "", "", "")
+	host := bluehost.NewHost()
+	if err := host.Take("cockpit-fixture", "sha256:cockpit-fixture", program, nil, nil, nil); err != nil {
+		t.Fatalf("Take: %v", err)
 	}
-	activeProg := &runtime.ExecProgram{
-		BlueprintKey: "bp",
-		Nodes: map[string]*runtime.ExecNode{
-			"await": awaitNode("await", "pick", "core.primitive.integer"),
-			"sink":  {ID: "sink", Op: runtime.OpVariableSet, Config: map[string]json.RawMessage{"variable": json.RawMessage(`"x"`)}},
-		},
-		Entrypoints: map[string]runtime.ExecEntry{
-			"fire": {Kind: runtime.EntryOnCall, Node: "fire", Target: runtime.ExecTarget{Node: "sink"}},
-			"arm":  {Kind: runtime.EntryOnStart, Target: runtime.ExecTarget{Node: "await"}},
-		},
+	if _, err := host.Step(bluehost.SlotOnAir); err != nil {
+		t.Fatalf("Step (on-start): %v", err)
 	}
-	show.LoadExec(cockpitActiveID, activeGraph, activeBundle, activeProg)
-	if err := show.SetActive(cockpitActiveID, nil); err != nil {
-		t.Fatalf("SetActive: %v", err)
-	}
+	host.SetBundle(bluehost.SlotOnAir, []byte(`{"operator_inputs":[{"path":"__inputs.bp.title","label":"Title","type":"text"}]}`))
 
 	// --- stream-level rule: one on-call trigger, scope stream ------------
 	ruleGraph := &compiler.Graph{SceneID: cockpitRuleID, SceneVersion: "sha256:r"}
@@ -103,8 +97,11 @@ func newCockpitFixture(t *testing.T) *cockpitFixture {
 	show.LoadExec(cockpitOtherID, ghostGraph, &compiler.RenderBundle{SceneVersion: "sha256:g"}, ghostProg)
 
 	mux := http.NewServeMux()
-	RegisterPublic(mux, PublicDeps{Logger: testLogger(), Metrics: m, Show: show})
-	return &cockpitFixture{mux: mux, show: show}
+	RegisterPublic(mux, PublicDeps{
+		Logger: testLogger(), Metrics: m, Show: show,
+		SceneIntent: &SceneIntentDeps{Host: host},
+	})
+	return &cockpitFixture{mux: mux, show: show, host: host}
 }
 
 func getContracts(t *testing.T, f *cockpitFixture, role, query string) (*httptest.ResponseRecorder, cockpitContracts) {
@@ -148,7 +145,9 @@ func TestCockpit_AggregatesParamsAndTriggers(t *testing.T) {
 	if len(body.Params) != 1 || body.Params[0].Path != "__inputs.bp.title" || body.Params[0].Scope != scopeScene {
 		t.Fatalf("params = %+v, want one scene-scoped __inputs.bp.title", body.Params)
 	}
-	// Triggers: active bp/fire (scene) + rule/toggle (stream). Ghost EXCLUDED.
+	// Triggers: antenna _/fire (scene, Engine B) + rule/toggle (stream, Engine
+	// A). Ghost EXCLUDED. The scene-scope key is the default token, not "bp":
+	// Engine B hosts no named-blueprint dimension (see appendEngineBScene).
 	gotTrig := map[string]string{} // "bp_key/entry" -> scope
 	for _, tr := range body.Triggers {
 		gotTrig[tr.BlueprintKey+"/"+tr.EntrypointID] = tr.Scope
@@ -156,8 +155,9 @@ func TestCockpit_AggregatesParamsAndTriggers(t *testing.T) {
 			t.Fatalf("trigger %s state = %q, want armed", tr.EntrypointID, tr.State)
 		}
 	}
-	if gotTrig["bp/fire"] != scopeScene {
-		t.Fatalf("bp/fire scope = %q, want scene (triggers=%+v)", gotTrig["bp/fire"], body.Triggers)
+	sceneKey := defaultBlueprintToken + "/fire"
+	if gotTrig[sceneKey] != scopeScene {
+		t.Fatalf("%s scope = %q, want scene (triggers=%+v)", sceneKey, gotTrig[sceneKey], body.Triggers)
 	}
 	if gotTrig["rule/toggle"] != scopeStream {
 		t.Fatalf("rule/toggle scope = %q, want stream", gotTrig["rule/toggle"])
@@ -274,12 +274,45 @@ func TestCockpit_SceneItemShapeByteStable(t *testing.T) {
 	check("await", raw.Awaits)
 }
 
+// TestCockpit_PendingAwaitPresentAndScoped proves the pending-await facet
+// (contractAwaits, the LIVE #209 registry) still surfaces over HTTP — via
+// the PREVIEW leg (?target=preview), which stays Engine A/runtime.Scene
+// unchanged by ORION-OPERATOR-RAIL-ENGINE-B (#335). This is deliberate, not
+// a workaround: Engine B's antenna contract does not emit an awaits facet at
+// all (appendEngineBScene's doc) because blueruntime exposes no public
+// introspection of its live pendingAwaits registry — there is no Engine B
+// source to prove this against today.
 func TestCockpit_PendingAwaitPresentAndScoped(t *testing.T) {
-	f := newCockpitFixture(t)
-	// The active scene's on-start arms the await; poll until it surfaces.
+	m := obs.NewMetrics()
+	preview := runtime.NewPreviewSlot(context.Background(), runtime.NewComputeRegistry(), noopPreviewWire{}, testLogger())
+	t.Cleanup(preview.Close)
+
+	graph := &compiler.Graph{SceneID: cockpitActiveID, SceneVersion: "sha256:a"}
+	bundle := &compiler.RenderBundle{SceneVersion: "sha256:a"}
+	prog := &runtime.ExecProgram{
+		BlueprintKey: "bp",
+		Nodes: map[string]*runtime.ExecNode{
+			"await": awaitNode("await", "pick", "core.primitive.integer"),
+			"sink":  {ID: "sink", Op: runtime.OpVariableSet, Config: map[string]json.RawMessage{"variable": json.RawMessage(`"x"`)}},
+		},
+		Entrypoints: map[string]runtime.ExecEntry{
+			"arm": {Kind: runtime.EntryOnStart, Target: runtime.ExecTarget{Node: "await"}},
+		},
+	}
+	preview.Activate(cockpitActiveID, graph, bundle, prog)
+
+	show := runtime.NewShow(runtime.NewComputeRegistry(), testLogger())
+	show.SetExecMetrics(m)
+	t.Cleanup(show.Stop)
+
+	mux := http.NewServeMux()
+	RegisterPublic(mux, PublicDeps{Logger: testLogger(), Metrics: m, Show: show, Preview: preview})
+	f := &cockpitFixture{mux: mux, show: show}
+
+	// The preview scene's on-start arms the await; poll until it surfaces.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		_, body := getContracts(t, f, "operator", "?stream_id=s1")
+		_, body := getContracts(t, f, "operator", "?stream_id=s1&target=preview")
 		if len(body.Awaits) == 1 {
 			a := body.Awaits[0]
 			if a.BlueprintKey != "bp" || a.AwaitName != "pick" {

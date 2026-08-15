@@ -88,25 +88,6 @@ func opRequest(t *testing.T, mux *http.ServeMux, method, path, role string, body
 	return w
 }
 
-func (f *operatorFixture) waitVar(t *testing.T, leaf, want string) {
-	t.Helper()
-	sc, err := f.show.Get(opSceneID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		sub, snap := sc.Subscribe(16)
-		v, ok := snap.State[leaf]
-		sub.Close()
-		if ok && string(v) == want {
-			return
-		}
-		time.Sleep(2 * time.Millisecond)
-	}
-	t.Fatalf("leaf %s never reached %s", leaf, want)
-}
-
 func TestOperator_CallRequiresOperatorRole(t *testing.T) {
 	f := newOperatorFixture(t)
 	w := opRequest(t, f.mux, "POST", "/api/v1/operator/call/bp/call", "viewer",
@@ -134,14 +115,25 @@ func TestOperator_CallUnknownEntrypointIs409(t *testing.T) {
 	}
 }
 
+// TestOperator_CallFiresWithPayload proves the antenna leg of POST
+// /operator/call reaches a REAL Engine B on-air instance
+// (ORION-OPERATOR-RAIL-ENGINE-B, #335) — the plain default path (no
+// ?target=, no ?rule=) no longer routes to Show.Active() (Show's roster has
+// had no production populator since #331), it routes to bluehost.Host.
+// Address is the default token "_": Engine B hosts no named-blueprint
+// dimension, so a non-default blueprint_id always 409s (see
+// postOperatorCallEngineB's doc) — "bp" would never reach this instance.
 func TestOperator_CallFiresWithPayload(t *testing.T) {
-	f := newOperatorFixture(t)
-	w := opRequest(t, f.mux, "POST", "/api/v1/operator/call/bp/call", "operator",
-		map[string]any{"payload": map[string]any{"x": 7}})
+	program := buildEngineBOperatorProgram(t, "call", "called", "", "", "")
+	f := newEngineBOperatorFixture(t, program)
+	w := opRequest(t, f.mux, "POST", "/api/v1/operator/call/_/call", "operator",
+		map[string]any{"payload": "hello-operator"})
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("call: got %d, want 202 (body=%s)", w.Code, w.Body.String())
 	}
-	f.waitVar(t, "__vars.bp.called", `{"x":7}`)
+	if got, _ := f.peekVar(t, "called").(string); got != "hello-operator" {
+		t.Fatalf("called = %#v, want %q", f.peekVar(t, "called"), "hello-operator")
+	}
 }
 
 func TestOperator_PendingListsArmedAwait(t *testing.T) {
@@ -170,10 +162,17 @@ func TestOperator_PendingListsArmedAwait(t *testing.T) {
 	t.Fatal("await never listed in pending")
 }
 
+// TestOperator_ResolveTypeMismatchIs422 and TestOperator_ResolveValidResumes
+// prove the antenna leg of POST /operator/resolve reaches a REAL Engine B
+// on-air instance — same rationale as TestOperator_CallFiresWithPayload.
+// blueruntime's own Resolve already fails closed on an unparked/unknown
+// await name (EVENT_MALFORMED, mapped to 410 AWAIT_GONE by
+// postOperatorResolveEngineB) — these two prove the type-check (Host's own
+// pre-check, AWAIT_TYPE_MISMATCH -> 422) and the success path.
 func TestOperator_ResolveTypeMismatchIs422(t *testing.T) {
-	f := newOperatorFixture(t)
-	waitAwaitArmed(t, f)
-	w := opRequest(t, f.mux, "POST", "/api/v1/operator/resolve/bp/pick", "operator",
+	program := buildEngineBOperatorProgram(t, "call", "called", "pick", "core.primitive.integer", "picked")
+	f := newEngineBOperatorFixture(t, program)
+	w := opRequest(t, f.mux, "POST", "/api/v1/operator/resolve/_/pick", "operator",
 		map[string]any{"value": 3.5})
 	if w.Code != http.StatusUnprocessableEntity {
 		t.Fatalf("type mismatch: got %d, want 422 (body=%s)", w.Code, w.Body.String())
@@ -181,14 +180,16 @@ func TestOperator_ResolveTypeMismatchIs422(t *testing.T) {
 }
 
 func TestOperator_ResolveValidResumes(t *testing.T) {
-	f := newOperatorFixture(t)
-	waitAwaitArmed(t, f)
-	w := opRequest(t, f.mux, "POST", "/api/v1/operator/resolve/bp/pick", "operator",
+	program := buildEngineBOperatorProgram(t, "call", "called", "pick", "core.primitive.integer", "picked")
+	f := newEngineBOperatorFixture(t, program)
+	w := opRequest(t, f.mux, "POST", "/api/v1/operator/resolve/_/pick", "operator",
 		map[string]any{"value": 42})
 	if w.Code != http.StatusOK {
 		t.Fatalf("resolve: got %d, want 200 (body=%s)", w.Code, w.Body.String())
 	}
-	f.waitVar(t, "__vars.bp.picked", `42`)
+	if got, _ := f.peekVar(t, "picked").(float64); got != 42 {
+		t.Fatalf("picked = %#v, want 42", f.peekVar(t, "picked"))
+	}
 }
 
 func TestOperator_LateResolveAfterSwitchAwayIs410(t *testing.T) {
