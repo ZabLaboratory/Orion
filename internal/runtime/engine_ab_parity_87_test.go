@@ -32,7 +32,6 @@ func TestEngineABParity_All87DedicatedBehavior(t *testing.T) {
 
 	seen := make(map[string]struct{}, len(manifest))
 	for _, entry := range manifest {
-		entry := entry
 		if _, duplicate := seen[entry.NodeID]; duplicate {
 			t.Fatalf("manifest contains duplicate primitive %q", entry.NodeID)
 		}
@@ -79,7 +78,6 @@ func TestEngineABParity_ComputeMatrix(t *testing.T) {
 		if !ok || node.Kind != conformance.KindCompute {
 			continue
 		}
-		entry := entry
 		t.Run(entry.NodeID, func(t *testing.T) {
 			parity87RunCompute(t, entry.NodeID)
 		})
@@ -756,8 +754,8 @@ func parity87BuildBSimpleExecProgram(t *testing.T, id, op string) []byte {
 	t.Helper()
 	targetInput := "in"
 	continuation := "then"
-	inputs := []any{}
-	outputs := []any{}
+	var inputs []any
+	var outputs []any
 	config := map[string]any{}
 	literals := []any{}
 	kind := "control"
