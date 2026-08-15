@@ -192,6 +192,12 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 		// Read-path migration of GET /scenes/{id}/render-bundle (#15) —
 		// serves the bundle SetBundle stashed at the last Prepare/Take.
 		mux.HandleFunc("GET /api/v1/host/render-bundle", getHostRenderBundle(*deps.SceneIntent))
+		// C2 contre-validation (ADR-BLUE-012 R6 §6.3, issue #181): does Engine B
+		// actually serve this ALREADY-COMPILED blue.program.v1 — distinct from
+		// /validate/simulate above (Engine A, an authoring graph). Needs the
+		// same Providers/Policy SceneIntentDeps carries for Prepare/Take, so it
+		// is gated here rather than unconditionally beside /validate/simulate.
+		mux.HandleFunc("POST /api/v1/validate/program", postValidateProgram(*deps.SceneIntent))
 	}
 
 	// WebSocket endpoints. coder/websocket lives behind these handlers.
