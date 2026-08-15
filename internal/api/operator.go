@@ -6,6 +6,9 @@ import (
 	"io"
 	"net/http"
 
+	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
+
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
@@ -18,11 +21,24 @@ import (
 // a value INTO a running graph at the antenna, never a read-only surface
 // (the pending listing is operator-only too: it reveals the live UI prompts).
 //
-// ACTIVE-ONLY (ADR 008 invariant): all three operate against Show.Active()
-// ONLY. A blueprint that is not part of the active scene is dormant — its
-// entrypoints cannot be called and its awaits do not exist — answered 409
-// (call) / 410 (resolve) / empty (pending). This matches ADR Orion 008:
-// only the active scene executes, so only its operator surface is live.
+// ACTIVE-ONLY (ADR 008 invariant): all three operate against the live
+// antenna ONLY. A blueprint that is not part of the active scene is
+// dormant — its entrypoints cannot be called and its awaits do not exist —
+// answered 409 (call) / 410 (resolve) / empty (pending). This matches ADR
+// Orion 008: only the active scene executes, so only its operator surface
+// is live.
+//
+// ENGINE B ANTENNA (ORION-OPERATOR-RAIL-ENGINE-B, #335): the antenna leg of
+// call/resolve now targets bluehost.Host's on-air instance
+// (isAntennaEngineBTarget), NOT Show.Active() — Show's roster has had no
+// production populator since POST /show/active-scene was retired (#15,
+// #331) and is structurally empty on the antenna. ?target=preview and
+// ?rule= are UNCHANGED: they still resolve through Show/Preview (Engine A) —
+// see isAntennaEngineBTarget's doc for why neither moved. getRuntimePending
+// (list) is OUT OF SCOPE of that migration and still reads Show.Active()
+// only — a known, intentionally undone gap (see #335 PR notes), not a
+// silent regression: it degrades to an empty list on the antenna exactly as
+// it already did before this change.
 //
 // LIMITS: request bodies are bounded (maxOperatorBody); the path params are
 // taken verbatim as the scene-local blueprint key / entrypoint id / await
@@ -115,6 +131,148 @@ func resolveOperatorScene(w http.ResponseWriter, deps PublicDeps, r *http.Reques
 	return scene, true
 }
 
+// isAntennaEngineBTarget reports whether r addresses the antenna with no
+// stream-rule selector — the ONLY case call/resolve now serve through
+// Engine B (bluehost.Host, SlotOnAir; ORION-OPERATOR-RAIL-ENGINE-B, #335).
+// ?target=preview and ?rule= both stay on Engine A (runtime.Scene) exactly
+// as before this change:
+//   - preview still rides the persistent preview clone (deps.Preview) — the
+//     bail requires the preview path byte-for-byte unregressed.
+//   - a stream-rule selector still resolves through Show's promoted-rule
+//     registry (resolveOperatorScene). Stream-level rules capacity is
+//     paused (#15/#331: HTTP surface + handlers removed with internal/store)
+//     and its successor — composing a rule INTO the program a flow serves —
+//     is tracked but not yet built (Orion#332 R6 ledger + ZabCanvas
+//     durability). Engine B has no rule concept to route to today, so
+//     leaving ?rule= on Engine A's (structurally empty in prod) registry is
+//     the coherent choice: it degrades to a deterministic 409
+//     RULE_NOT_ACTIVE, exactly the "no caller regression" posture
+//     public.go's route-registration comment already documents, without
+//     inventing a new slot/state on the Engine B side.
+func isAntennaEngineBTarget(r *http.Request) bool {
+	q := r.URL.Query()
+	return q.Get("target") != "preview" && q.Get("rule") == ""
+}
+
+// engineBHost is the Engine B instance host for the antenna, or nil when
+// the stateless-cutover surface isn't provisioned (SceneIntent nil) — same
+// degrade-gracefully posture as every other nil-dependency seam in this
+// package (Preview, LSDPHandler, ...).
+func engineBHost(deps PublicDeps) *bluehost.Host {
+	if deps.SceneIntent == nil {
+		return nil
+	}
+	return deps.SceneIntent.Host
+}
+
+// decodeOperatorPayload decodes a raw JSON call/resolve body into the `any`
+// bluehost.Host's portable ABI expects (Engine A passes json.RawMessage
+// straight through instead — FireOnCall/ResolveAwait). An absent body
+// decodes to a nil payload, preserving Engine A's null-payload convention.
+func decodeOperatorPayload(w http.ResponseWriter, raw json.RawMessage) (any, bool) {
+	if len(raw) == 0 {
+		return nil, true
+	}
+	var payload any
+	if json.Unmarshal(raw, &payload) != nil {
+		writeOperatorError(w, http.StatusBadRequest, "BAD_BODY", "malformed JSON payload")
+		return nil, false
+	}
+	return payload, true
+}
+
+// isBlueRuntimeCode reports whether err is a *blueruntime.Error carrying
+// code — the portable ABI's typed failure envelope (blue.runtime.error.v1).
+func isBlueRuntimeCode(err error, code string) bool {
+	var berr *blueruntime.Error
+	return errors.As(err, &berr) && berr.Code == code
+}
+
+// postOperatorCallEngineB serves the antenna leg of POST /operator/call
+// against Engine B's on-air instance (bluehost.Host, SlotOnAir) — the
+// stateless-cutover analogue of Engine A's active-only routing (ADR 008).
+//
+// blueprint_id IS ACCEPTED BUT NOT ROUTED ON. Verified against the primary
+// source (Blue/src/blue_engine/program/compiler.py:1000-1011, the compiler
+// that actually produces a scene's blue.program.v1): an on-call entrypoint's
+// wire id (`call_id`) is `config.entrypoint` (an authored value on the
+// node), falling back to the raw node id — NEVER blueprint-key-prefixed —
+// and the compiler enforces call_id uniqueness PROGRAM-WIDE, hard-failing
+// the compile (PROGRAM_ENTRYPOINT_INVALID) on a collision. So a composed
+// program's on-call ids are flat and globally unique by construction; there
+// is no blueprint-scoped namespace for a `blueprint_id` path segment to
+// reconstruct, and Engine A's `<blueprint_key>/<entry_id>` composite key
+// (internal/runtime/exec.go entryKey) has no Engine B equivalent to route
+// through. Prism sends a real, non-default blueprint_id on every call
+// (cockpit-api.ts, real bindings) — gating on it here would 409 every real
+// operator button while looking "fixed". HasTrigger (below) already fails
+// closed on an unmatched entrypoint_id alone, so accepting-not-routing
+// blueprint_id costs no safety: an entrypoint absent from the served
+// program is still rejected, whatever blueprint_id rode along with it.
+func postOperatorCallEngineB(w http.ResponseWriter, r *http.Request, deps PublicDeps, entrypointID string) {
+	host := engineBHost(deps)
+	live := host != nil && host.Digest(bluehost.SlotOnAir) != ""
+	if !live {
+		writeOperatorError(w, http.StatusConflict, "BLUEPRINT_NOT_ACTIVE",
+			"blueprint is not part of the active scene")
+		return
+	}
+	if !host.HasTrigger(bluehost.SlotOnAir, entrypointID) {
+		writeOperatorError(w, http.StatusConflict, "ENTRYPOINT_UNKNOWN",
+			"no on-call entrypoint by that id on the active blueprint")
+		return
+	}
+
+	var body operatorCallBody
+	if !readOperatorBody(w, r, &body) {
+		return
+	}
+	payload, ok := decodeOperatorPayload(w, body.Payload)
+	if !ok {
+		return
+	}
+	if _, err := host.Call(bluehost.SlotOnAir, entrypointID, payload); err != nil {
+		writeOperatorError(w, http.StatusInternalServerError, "INTERNAL", "call failed")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "fired"})
+}
+
+// postOperatorResolveEngineB serves the antenna leg of POST /operator/resolve
+// against Engine B's on-air instance. blueprint_id is accepted but not
+// routed on — same rationale as postOperatorCallEngineB (await names are
+// compiler-declared per-node config, never blueprint-key-namespaced either).
+// Unlike Call, blueruntime.Runtime.Resolve already fails closed on an
+// unparked/unknown await name on its own (runtime.go: "Resolving an
+// unparked/already-resolved name is reported, not silently dropped" —
+// EVENT_MALFORMED) — no pre-check equivalent to HasTrigger is needed here.
+func postOperatorResolveEngineB(w http.ResponseWriter, deps PublicDeps, awaitName string, rawValue json.RawMessage) {
+	host := engineBHost(deps)
+	live := host != nil && host.Digest(bluehost.SlotOnAir) != ""
+	if !live {
+		writeOperatorError(w, http.StatusGone, "AWAIT_GONE",
+			"no live await for this blueprint (inactive or invalidated)")
+		return
+	}
+	value, ok := decodeOperatorPayload(w, rawValue)
+	if !ok {
+		return
+	}
+	_, err := host.Resolve(bluehost.SlotOnAir, awaitName, value)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+	case isBlueRuntimeCode(err, "AWAIT_TYPE_MISMATCH"):
+		writeOperatorError(w, http.StatusUnprocessableEntity, "VALUE_TYPE_MISMATCH",
+			"value does not match the await's value_type")
+	case isBlueRuntimeCode(err, "EVENT_MALFORMED"):
+		writeOperatorError(w, http.StatusGone, "AWAIT_GONE",
+			"no live await by that name (already resolved or invalidated)")
+	default:
+		writeOperatorError(w, http.StatusInternalServerError, "INTERNAL", "resolve failed")
+	}
+}
+
 // operatorCallBody is the POST /operator/call body: the payload bound under
 // the on-call node's data-out pin. Absent/empty body = null payload.
 type operatorCallBody struct {
@@ -135,6 +293,11 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
 		blueprintID := resolveBlueprintKey(r.PathValue("blueprint_id"))
 		entrypointID := r.PathValue("entrypoint_id")
+
+		if isAntennaEngineBTarget(r) {
+			postOperatorCallEngineB(w, r, deps, entrypointID)
+			return
+		}
 
 		active, ok := resolveOperatorScene(w, deps, r)
 		if !ok {
@@ -201,6 +364,11 @@ func postOperatorResolve(deps PublicDeps) http.HandlerFunc {
 		if len(body.Value) == 0 {
 			writeOperatorError(w, http.StatusBadRequest, "VALUE_REQUIRED",
 				"resolve body must carry a `value`")
+			return
+		}
+
+		if isAntennaEngineBTarget(r) {
+			postOperatorResolveEngineB(w, deps, awaitName, body.Value)
 			return
 		}
 
