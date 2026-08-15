@@ -50,6 +50,7 @@ jobs:
 
   deploy:
     name: Deploy
+    environment: production
     needs: [preflight]
     runs-on: [self-hosted, vps-ovh]
     timeout-minutes: 15
