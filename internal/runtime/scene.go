@@ -89,6 +89,26 @@ type SceneMirror interface {
 	Forward(msg SubscriberMsg)
 }
 
+// WSMetrics is the fanout back-pressure observability seam (Orion#274,
+// ADR-BLUE-012 §12/B8, B3-R6-OPS-ORION). nil-safe: a nil sink (SetWSMetrics
+// never called) disables counting; the collapse/close behavior itself is
+// unaffected — same posture as ExecMetrics.
+type WSMetrics interface {
+	// WSCollapsed counts a fanout that hit a full subscriber queue and was
+	// answered with a fresh-snapshot collapse instead of a silent drop
+	// (`orion_ws_dropped_total{reason="collapse"}`).
+	WSCollapsed(sceneID string)
+	// WSStuckClosed counts a subscriber that was still full after the
+	// collapse's own drain-and-seed deadline and was force-closed
+	// (`orion_ws_dropped_total{reason="stuck_timeout"}`) — the WS layer
+	// reconnects it.
+	WSStuckClosed(sceneID string)
+}
+
+// SetWSMetrics installs the fanout back-pressure metrics sink. Called once
+// at boot (or by a test), before Run — mirrors SetExecMetrics.
+func (s *Scene) SetWSMetrics(m WSMetrics) { s.metrics = m }
+
 // Subscription is one client's lease on a scene's outbound stream.
 // The scene loop pushes onto Out; the WS layer drains it. A bounded
 // channel + the per-connection Drop policy implements the
@@ -221,6 +241,12 @@ type Scene struct {
 	// wire (LSDP/1.1 via lumencast-go — ADR 007 §C.3b). nil = bespoke
 	// mode, the tap is inert.
 	mirror SceneMirror
+
+	// metrics, when non-nil, observes fanout back-pressure (Orion#274,
+	// ADR-BLUE-012 §12/B8). nil = the collapse/close still happens
+	// (correctness is unaffected), it is just unobserved — same posture
+	// as execMetrics.
+	metrics WSMetrics
 
 	// nodeIdx maps a node id to its computeOrder index — the demand-
 	// evaluation entry point of the exec layer's data pulls (issue
@@ -1267,6 +1293,14 @@ func (s *Scene) fanout(msg SubscriberMsg) {
 }
 
 func (s *Scene) collapseToSnapshot(sub *Subscription) {
+	// Observability first (Orion#274 / ADR-BLUE-012 §12/B8): a collapse IS
+	// the backpressure event — count/log it here, not only on the terminal
+	// stuck-close, so a subscriber that recovers on every collapse (never
+	// hits the drainAndSeed deadline) still shows up in the metric.
+	if s.metrics != nil {
+		s.metrics.WSCollapsed(s.id)
+	}
+	s.logger.Warn("ws fanout backpressure: collapsed subscriber to fresh snapshot", "scene_id", s.id)
 	seq, state := s.state.Snapshot()
 	snap := &protocol.Snapshot{
 		SceneID:      s.id,
@@ -1275,8 +1309,16 @@ func (s *Scene) collapseToSnapshot(sub *Subscription) {
 		State:        state,
 	}
 	if !sub.drainAndSeed(snap, 50*time.Millisecond) {
-		// Either already closed (no-op) or *very* stuck — Close is
-		// idempotent either way; the WS layer will reconnect a stuck one.
+		// Either already closed (no-op, not counted twice — Close from a
+		// concurrent disconnect is not a backpressure incident) or *very*
+		// stuck. Close is idempotent either way; the WS layer will
+		// reconnect a stuck one.
+		if !sub.closed.Load() {
+			if s.metrics != nil {
+				s.metrics.WSStuckClosed(s.id)
+			}
+			s.logger.Warn("ws subscriber stuck through collapse drain deadline; closing", "scene_id", s.id)
+		}
 		sub.Close()
 	}
 }

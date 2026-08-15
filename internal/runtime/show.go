@@ -58,6 +58,11 @@ type Show struct {
 	// preempt / parked counts. Installed once at boot.
 	execMetrics ExecMetrics
 
+	// wsMetrics, when non-nil, is handed to every loaded scene so the
+	// fanout back-pressure collapse/close is observed (Orion#274, ADR-
+	// BLUE-012 §12/B8). Installed once at boot, before any scene loads.
+	wsMetrics WSMetrics
+
 	// effects is the shared async-effect executor bundle (ADR 003
 	// §3.1.3 / R9 lift ADR 006 §3.4). Built once at boot from config +
 	// the service-token manager, installed on a scene ONLY when that
@@ -153,6 +158,15 @@ func (sh *Show) SetExecMetrics(m ExecMetrics) {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 	sh.execMetrics = m
+}
+
+// SetWSMetrics installs the fanout back-pressure metrics sink (Orion#274,
+// ADR-BLUE-012 §12/B8). Called once at boot, before any scene loads —
+// mirrors SetExecMetrics.
+func (sh *Show) SetWSMetrics(m WSMetrics) {
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+	sh.wsMetrics = m
 }
 
 // SetEffects installs the shared async-effect executor bundle (R9 lift,
@@ -298,6 +312,9 @@ func (sh *Show) LoadExec(id string, graph *compiler.Graph, bundle *compiler.Rend
 	scene := NewScene(id, graph, bundle, sh.registry, sh.logger)
 	if sh.execMetrics != nil {
 		scene.SetExecMetrics(sh.execMetrics)
+	}
+	if sh.wsMetrics != nil {
+		scene.SetWSMetrics(sh.wsMetrics)
 	}
 	scene.InstallExec(progs...)
 	// `show.emit` active-only injection seam (ADR 009 §3.6, issue #155):
