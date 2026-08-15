@@ -38,6 +38,10 @@ the directory must be traversable by that user, the private key must be mode
 `0600` and owned by UID 65532, and public certificate/trust files may be
 read-only.
 
+`canvas-trust.json` is a JSON object mapping each Canvas signing `kid` to its
+32-byte Ed25519 public key encoded with standard RFC 4648 base64. It is not a
+base64url JWS segment; using the latter makes Orion refuse the surface at boot.
+
 ## Configuration contract
 
 The deploy workflow writes the following non-secret values from the Orion
