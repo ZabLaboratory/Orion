@@ -127,7 +127,7 @@ func buildDirectHTTPEntrypointProgram(t *testing.T, kind, targetURL, leaf string
 	dataPort := func(name string, required bool) map[string]any {
 		return map[string]any{"name": name, "kind": "data", "type": "core.json", "required": required}
 	}
-	entryOpcode := "core.event.on-" + kind + "@1"
+	var entryOpcode string
 	entrypoint := map[string]any{"id": "trigger", "kind": kind, "node_id": "trigger-node", "port": "then"}
 	if kind == "tick" {
 		entryOpcode = "core.event.on-tick@1"
@@ -140,7 +140,7 @@ func buildDirectHTTPEntrypointProgram(t *testing.T, kind, targetURL, leaf string
 		entrypoint["id"] = "platform"
 		entrypoint["leaf"] = leaf
 	}
-	entryOutputs := []any{execPort("then")}
+	var entryOutputs []any
 	if kind == "tick" {
 		entryOutputs = []any{dataPort("delta_seconds", false), execPort("then")}
 	} else {
