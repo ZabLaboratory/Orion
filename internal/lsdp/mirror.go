@@ -80,11 +80,38 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 			// Nothing wire-legal to emit; Emit rejects empty maps anyway.
 			return
 		}
-		_ = m.scene.EmitWithCause(patches, mapCause(v.Cause))
+		_ = m.scene.EmitWithCauseAndMetadata(
+			patches,
+			mapCause(v.Cause),
+			mapProjectionMetadata(v),
+		)
 	case *protocol.SceneChanged:
 		// The scene switch is driven authoritatively from the Show via
 		// Wire.SetActive (kit Server.SetActive migrates live subs with
 		// its own scene_changed + snapshot). Nothing to do per-scene.
+	}
+}
+
+// mapProjectionMetadata preserves Orion's additive projection identity while
+// crossing into the canonical Lumencast server API. A delta without any
+// projection fields stays on the legacy call shape so the 1.0/1.1 wire for
+// existing callers remains byte-compatible.
+func mapProjectionMetadata(v *protocol.Delta) *lproto.ProjectionMetadata {
+	if v == nil || (v.SchemaVersion == "" &&
+		v.SceneDigest == "" &&
+		v.RuntimeInstanceID == "" &&
+		v.Target == "" &&
+		v.RenderRevision == "" &&
+		v.CorrelationID == "") {
+		return nil
+	}
+	return &lproto.ProjectionMetadata{
+		SchemaVersion:     v.SchemaVersion,
+		SceneDigest:       v.SceneDigest,
+		RuntimeInstanceID: v.RuntimeInstanceID,
+		Target:            v.Target,
+		RenderRevision:    v.RenderRevision,
+		CorrelationID:     v.CorrelationID,
 	}
 }
 
