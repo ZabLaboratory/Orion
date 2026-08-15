@@ -112,7 +112,7 @@ jobs:
           $SSH_CMD "APP_PATH='$APP_PATH' bash -s" << 'ROTATION_INSTALL'
           set -euo pipefail
           sudo install -d -o root -g root -m 0755 /var/lib/zab/workload-orion
-          sudo install -d -o root -g root -m 0755 /var/lib/zab/workload-orion-agent
+          sudo install -d -o 1000 -g 1000 -m 0770 /var/lib/zab/workload-orion-agent
           sudo install -o root -g root -m 0755 "$APP_PATH/scripts/orion_workload_identity_rotate.py" /usr/local/sbin/orion-workload-identity-rotate
           sudo install -o root -g root -m 0644 "$APP_PATH/scripts/orion-workload-identity-rotation.service" /etc/systemd/system/orion-workload-identity-rotation.service
           sudo install -o root -g root -m 0644 "$APP_PATH/scripts/orion-workload-identity-rotation.timer" /etc/systemd/system/orion-workload-identity-rotation.timer
