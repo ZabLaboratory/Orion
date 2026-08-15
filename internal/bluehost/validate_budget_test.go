@@ -19,8 +19,16 @@ import (
 // and it is tested here directly rather than left unverified.
 
 // TestStepUntilSettledOrExhausted_StopsWhenIdle proves the normal
-// settlement path: the first "idle" result ends the loop with a nil
-// verdict, and step is called exactly once more.
+// settlement path: TWO consecutive "idle" results end the loop with a nil
+// verdict. Exactly two, not one — the FIRST call's Status=="idle" is never
+// trusted on its own (Bastion finding: runtime.go's Step hardcodes
+// Status="idle" on the pendingStart-consuming call regardless of whether
+// its own walk just admitted a synthetic effect completion onto the inbox;
+// only the SECOND call's report is freshly computed against the inbox and
+// trustworthy — see stepUntilSettledOrExhausted's doc). This is the exact
+// mechanism that lets a previewNoop-synthesized effect completion's
+// downstream continuation genuinely run instead of being silently skipped
+// by trusting an inaccurate first report.
 func TestStepUntilSettledOrExhausted_StopsWhenIdle(t *testing.T) {
 	calls := 0
 	step := func() (blueruntime.StepResult, error) {
@@ -30,8 +38,26 @@ func TestStepUntilSettledOrExhausted_StopsWhenIdle(t *testing.T) {
 	if err := stepUntilSettledOrExhausted(step, 10); err != nil {
 		t.Fatalf("expected nil (settled), got %+v", err)
 	}
-	if calls != 1 {
-		t.Fatalf("expected exactly 1 call, got %d", calls)
+	if calls != 2 {
+		t.Fatalf("expected exactly 2 calls (the first idle report is never trusted alone) — settling after 1 would silently skip a completion-gated continuation, got %d", calls)
+	}
+}
+
+// TestStepUntilSettledOrExhausted_RefusesUnconsumedInvocation proves the
+// second Bastion-mandated guard: any StepResult.Invocations emitted by a
+// call — the async core.effect.invoke@1 protocol's "real" branch, which
+// nothing on this path consumes (unlike bluehost.Host.Step) — is refused by
+// name, never silently dropped, even on an otherwise-idle result.
+func TestStepUntilSettledOrExhausted_RefusesUnconsumedInvocation(t *testing.T) {
+	step := func() (blueruntime.StepResult, error) {
+		return blueruntime.StepResult{Status: "idle", Invocations: []map[string]any{{"invocation_id": "synthetic"}}}, nil
+	}
+	err := stepUntilSettledOrExhausted(step, 10)
+	if err == nil {
+		t.Fatal("expected refusal for an unconsumed invocation, got nil (servable)")
+	}
+	if err.Code != "VALIDATE_INVOCATION_EMITTED" {
+		t.Fatalf("expected code=VALIDATE_INVOCATION_EMITTED, got %+v", err)
 	}
 }
 
@@ -78,10 +104,13 @@ func TestStepUntilSettledOrExhausted_ExhaustsStepBudget(t *testing.T) {
 // microsecond budget, 50x) is chosen to make the race deterministic on a
 // loaded CI runner, not to shave the tightest possible bound.
 func TestRunBoundedSteps_ExceedsWallClock(t *testing.T) {
-	stepStarted := make(chan struct{})
+	stepStarted := make(chan struct{}, 1)
 	stopCalled := make(chan struct{}, 1)
 	step := func() (blueruntime.StepResult, error) {
-		close(stepStarted)
+		select { // signal "started" at most once — this may be called more than once
+		case stepStarted <- struct{}{}:
+		default:
+		}
 		time.Sleep(5 * time.Millisecond)
 		return blueruntime.StepResult{Status: "idle"}, nil
 	}

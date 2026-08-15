@@ -8,13 +8,17 @@ import (
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
 )
 
-// validateInstanceID is the fixed InstanceHandle id every ephemeral
-// contre-validation instance is started with. Safe as a constant: unlike
-// Host.slots, the throwaway *blueruntime.Runtime ValidateProgram builds has
-// no shared instance registry for two concurrent calls to collide on — each
-// call gets its own independent Runtime and InstanceHandle, so a repeated id
-// across requests is inert.
-const validateInstanceID = "validate-program"
+// validateInstanceID / validateAdmissionInstanceID name the two throwaway
+// InstanceHandles ValidateProgram starts from the SAME Load'd handle — see
+// that function's doc for why two. Fixed constants are safe: unlike
+// Host.slots, this package's throwaway *blueruntime.Runtime has no shared
+// instance registry for two concurrent calls (or these two passes) to
+// collide on — each gets its own independent InstanceHandle, so a repeated
+// id across requests, or across the two passes, is inert.
+const (
+	validateInstanceID          = "validate-program"
+	validateAdmissionInstanceID = "validate-program-admission"
+)
 
 // defaultValidateMaxSteps / defaultValidateMaxWall mirror
 // internal/config.Config's ORION_VALIDATION_MAX_STEPS (1_000_000) /
@@ -22,9 +26,13 @@ const validateInstanceID = "validate-program"
 // DefaultValidationBudget, the platform's existing answer to "how long may
 // a validation run" (Engine A's /validate/simulate harness,
 // internal/runtime/validation_harness.go). Reused verbatim per instruction
-// rather than inventing a second number: ValidateProgram's own zero-value
-// fallback mirrors runtime.NewHarness's identical "a zero budget falls back
-// to the ADR default" posture.
+// rather than inventing a second number.
+//
+// Unlike runtime.NewHarness's "both zero" fallback convention, maxSteps and
+// maxWall each fall back to their own default INDEPENDENTLY (see
+// ValidateProgram) — a deliberate divergence, not an oversight: an operator
+// zeroing one budget dimension on a route that executes caller-submitted
+// code must never silently read as "unlimited" on that dimension.
 const (
 	defaultValidateMaxSteps uint64        = 1_000_000
 	defaultValidateMaxWall  time.Duration = 5 * time.Second
@@ -35,52 +43,69 @@ const (
 // widened per the porteur: "il faut qu'on puisse vraiment tout valider,
 // tout — pas de concession"). Admission alone (schema/ABI/capabilities,
 // checkProviders at Start) does not catch a node failing on its own inputs,
-// a program-declared budget it blows through on its very first dispatch, or
-// any other execution-time-only failure — so, after a successful Start,
-// this drives the instance forward with a BOUNDED number of Runtime.Step
-// calls until it settles (StepResult.Status=="idle": inbox drained, nothing
-// left admitted — the portable ABI's own "done" signal) or fails for real.
+// or a program-declared budget it blows through on its very first
+// dispatch — so, after admission, this drives an instance forward with a
+// BOUNDED number of Runtime.Step calls until it settles or fails for real.
 //
-// This exercises the SAME Runtime.Load -> Runtime.Start admission path a
-// real Host.Prepare/Take runs (checkProviders cross-references
-// program["requires"] against providers/policy identically —
-// CAPABILITY_UNAVAILABLE etc. are raised from Start, never Load: Load alone
-// has no providers argument at all). It runs on a throwaway
-// blueruntime.Runtime this function builds and discards itself — it NEVER
-// touches a Host, NEVER reaches SlotPreview/SlotOnAir, and callers must not
-// try to route it through one (Bastion veto: Host.Prepare/Take refuse an
-// already-occupied slot, so a validation sharing either one could collide
-// with the antenne's real preview/on-air instance).
+// TWO Start calls on the SAME Load'd handle (Bastion finding, no single
+// mode gives full coverage):
 //
-// Mode is Execute, not Preview — deliberately, to close the "Preview says
-// yes, Execute says no" gap: checkProviders only requires
-// operation["execute"]=="allowed" when Mode is Execute (operation["preview"]
-// is the field it checks under Preview, a DIFFERENT, potentially looser
-// contract per capability). Validating under the weaker mode would let a
-// preview-only capability pass here and still fail CAPABILITY_MODE_UNSUPPORTED
-// on a real on-air Take — a latent lie this route exists specifically not to
-// tell. This is safe: StartOptions.Mode and NewEffectHandlers' own mode
-// argument are INDEPENDENT (verified against the vendored blueruntime
-// source — Mode is read in exactly four places: two Start-time argument
-// checks, checkProviders' preview/execute field branch, and walker.go's
-// core.effect.invoke@1 previewNoop/real-invocation-record branch, which
-// never dispatches to a provider either way — StepResult.Invocations is
-// inert data this function never reads). EffectHandlers below is pinned to
-// NewEffectHandlers(EffectDeps{}, Preview) regardless of StartOptions.Mode,
-// so the 4 opcodes-of-full-right ALWAYS take the synthetic-preview branch —
-// belt-and-suspenders proven, now including a real Step, by
-// TestValidateProgram_NeverDialsEvenThoughStepReallyExecutes.
+//   - Pass A, Mode Execute: admission ONLY (Start, immediately Stop, no
+//     Step) — checkProviders requires operation["execute"]=="allowed" under
+//     this mode, the stricter, more representative contract a real on-air
+//     Take uses (operation["preview"] is a DIFFERENT, potentially looser
+//     field Preview checks instead). Closes the "Preview says yes, Execute
+//     says no" gap: validating under the weaker mode could pass a
+//     capability a real Take would still refuse CAPABILITY_MODE_UNSUPPORTED.
+//   - Pass B, Mode Preview: the instance actually Step'd under budget.
+//     Deliberately NOT Execute, for a reason as important as Pass A's own:
+//     a core.effect.invoke@1 node's invocation is parked in pendingEffects
+//     and NEVER completes under Execute (nothing here ever calls
+//     Complete()) — the graph stalls at the first effect node, and
+//     everything downstream of its completion_topic is never walked. Under
+//     Preview, a noop-capable provider (walker.go's previewNoop) synthesizes
+//     the completion immediately and admits it, so a completion-gated
+//     continuation genuinely runs. Execute closes the ADMISSION delta;
+//     Preview closes the EXECUTION delta. Neither alone is "more"; they
+//     cover different failure classes.
 //
-// Zero side effects even though Step genuinely runs the graph: no real
-// network/DB/service call the graph's own nodes could trigger, because the
-// only channel to real I/O (EffectHandlers) is hardcoded empty/synthetic —
-// see that test and TestValidateProgram_StartAloneNeverDialsEvenWithLiveExecuteHandlers
-// (Start alone, the narrower foundational fact) for the adversarial proof.
+// Both passes exercise checkProviders (CAPABILITY_UNAVAILABLE etc. are
+// raised from Start, never Load: Load alone has no providers argument at
+// all). Everything runs on a throwaway blueruntime.Runtime this function
+// builds and discards itself — it NEVER touches a Host, NEVER reaches
+// SlotPreview/SlotOnAir, and callers must not try to route it through one
+// (Host.Prepare/Take refuse an already-occupied slot, so a validation
+// sharing either one could collide with the antenne's real instance).
 //
-// maxSteps/maxWall bound the Step loop — zero values fall back to
-// defaultValidateMaxSteps/defaultValidateMaxWall. Exhausting either is a
-// named, fail-closed refusal (VALIDATE_STEP_BUDGET_EXCEEDED /
-// VALIDATE_WALL_BUDGET_EXCEEDED), never a silent "ok" and never a 500 — see
+// EffectHandlers is pinned to NewEffectHandlers(EffectDeps{}, Preview) on
+// BOTH passes regardless of each pass's own Mode — StartOptions.Mode and
+// NewEffectHandlers' own mode argument are independent (verified against
+// the vendored blueruntime source pinned by go.mod, in GOMODCACHE — Mode is
+// read in exactly seven non-test places: runtime.go:193,218,280,283,308 and
+// walker.go:593,599; none of the seven dispatches to a real provider) — so
+// the 4 opcodes-of-full-right always take the synthetic-preview branch on
+// both passes.
+//
+// A SEPARATE, mandatory guard covers the mechanism EffectHandlers does NOT
+// reach: core.effect.invoke@1's GENERIC protocol. Under Pass B's Preview
+// mode, a provider whose operation is NOT preview:"noop" (Orion's registry
+// has one today — core.overlay-app, preview:"emulated") still takes the
+// "real invocation" branch and lands an entry in StepResult.Invocations.
+// Nothing on this path consumes that — Runtime itself contacts no provider,
+// and unlike bluehost.Host.Step (which hands StepResult.Invocations to
+// dispatchInvocations, whose real HTTP call runs on a worker pool), this
+// function never wires such a consumer. That is an invariant of ABSENCE,
+// held by no assertion of its own accord — a future refactor toward
+// Host.Step would compose for real, silently, past this function's own
+// adversarial spy tests (which only cover the 4 direct opcodes).
+// stepUntilSettledOrExhausted asserts StepResult.Invocations is empty after
+// every Step and refuses by name (VALIDATE_INVOCATION_EMITTED) rather than
+// drop it — the belt that survives that refactor.
+//
+// maxSteps/maxWall bound Pass B's Step loop — zero values fall back to
+// defaultValidateMaxSteps/defaultValidateMaxWall (independently — see that
+// constant's doc). Exhausting either, or an emitted invocation, is a named,
+// fail-closed refusal, never a silent "ok" and never a 500 — see
 // runBoundedSteps for why the wall-clock bound is enforced by racing a
 // goroutine against time.After rather than by checking a deadline between
 // calls: Runtime.Step takes no context of its own, and a submitted
@@ -90,10 +115,10 @@ const (
 // pathological call, only racing the call itself against a timer can.
 //
 // A nil return means program is servable as-is against providers/policy — a
-// real execution, not merely an admission, ran clean. A non-nil
-// *blueruntime.Error carries the fail-closed reason (Code/Stage/Message/
-// Target); for an admission failure this is the same taxonomy a real
-// Prepare/Take would fail with, since that path is identical.
+// real execution, not merely an admission, ran clean under both passes. A
+// non-nil *blueruntime.Error carries the fail-closed reason (Code/Stage/
+// Message/Target); for an admission failure this is the same taxonomy a
+// real Prepare/Take would fail with, since Pass A's path is identical.
 func ValidateProgram(program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy, maxSteps uint64, maxWall time.Duration) *blueruntime.Error {
 	if maxSteps == 0 {
 		maxSteps = defaultValidateMaxSteps
@@ -109,9 +134,18 @@ func ValidateProgram(program []byte, providers []map[string]any, policy bluerunt
 		return asRuntimeError(err)
 	}
 
+	// Pass A — Execute: admission verdict only, nothing kept but the
+	// error/nil. Start alone never executes anything (no Step is ever
+	// called on this instance), so the immediate Stop is exactly as inert
+	// as it was before this function ever ran two passes.
+	if verdict := admitUnderExecute(rt, handle, providers, policy); verdict != nil {
+		return verdict
+	}
+
+	// Pass B — Preview: the instance this function actually steps.
 	instance, err := rt.Start(handle, blueruntime.StartOptions{
 		InstanceID:     validateInstanceID,
-		Mode:           blueruntime.Execute,
+		Mode:           blueruntime.Preview,
 		Providers:      providers,
 		Policy:         policy,
 		EffectHandlers: NewEffectHandlers(EffectDeps{}, blueruntime.Preview),
@@ -127,7 +161,29 @@ func ValidateProgram(program []byte, providers []map[string]any, policy bluerunt
 	)
 }
 
-// runBoundedSteps races stepping instance to settlement (via step/stop,
+// admitUnderExecute runs Pass A: Start in Mode Execute against the SAME
+// Load'd handle Pass B will also Start, then immediately Stop without ever
+// calling Step. Its only output is the admission verdict — checkProviders'
+// operation["execute"]=="allowed" contract, the one a real on-air Take
+// actually uses.
+func admitUnderExecute(rt *blueruntime.Runtime, handle blueruntime.ProgramHandle, providers []map[string]any, policy blueruntime.CapabilityPolicy) *blueruntime.Error {
+	instance, err := rt.Start(handle, blueruntime.StartOptions{
+		InstanceID:     validateAdmissionInstanceID,
+		Mode:           blueruntime.Execute,
+		Providers:      providers,
+		Policy:         policy,
+		EffectHandlers: NewEffectHandlers(EffectDeps{}, blueruntime.Preview),
+	})
+	if err != nil {
+		return asRuntimeError(err)
+	}
+	if stopErr := rt.Stop(instance, "validate: admission-only pass discarded"); stopErr != nil {
+		return asRuntimeError(stopErr)
+	}
+	return nil
+}
+
+// runBoundedSteps races stepping an instance to settlement (via step/stop,
 // closures so this function and its tests never need a real blueruntime
 // instance) against a maxWall timer. It runs the step/stop sequence on its
 // OWN goroutine and never touches either closure again after handing off —
@@ -158,36 +214,60 @@ func runBoundedSteps(step func() (blueruntime.StepResult, error), stop func() er
 	case verdict := <-done:
 		return verdict
 	case <-time.After(maxWall):
-		return budgetExceeded("VALIDATE_WALL_BUDGET_EXCEEDED", fmt.Sprintf("execution did not settle within the %s validation wall-clock budget", maxWall))
+		return stepRefusal("VALIDATE_WALL_BUDGET_EXCEEDED", fmt.Sprintf("execution did not settle within the %s validation wall-clock budget", maxWall))
 	}
 }
 
-// stepUntilSettledOrExhausted calls step repeatedly until StepResult.Status
-// is "idle" (runtime.go: the instance's inbox is drained and nothing new
-// was admitted — the portable ABI's own "nothing left to do" signal), step
-// itself fails (a genuine execution failure — a program-declared budget
-// breach, a malformed continuation — surfaced with its native
-// *blueruntime.Error code, e.g. PROGRAM_BUDGET_INVALID), or maxSteps calls
-// have run with neither (VALIDATE_STEP_BUDGET_EXCEEDED).
+// stepUntilSettledOrExhausted calls step repeatedly until it genuinely
+// settles, fails, emits an unconsumed effect invocation, or exhausts
+// maxSteps.
+//
+// Settlement is NOT simply "the first StepResult.Status=='idle'": the very
+// FIRST call (which consumes InstanceHandle.pendingStart) hardcodes
+// Status="idle" in its return regardless of whether its own on-start walk
+// just admitted a synthetic effect completion onto the inbox (walker.go's
+// previewNoop branch, admitEffectEvent) — runtime.go's Step sets
+// instance.status="idle" BEFORE running the walk, and returns that literal,
+// not a fresh read. Every SUBSEQUENT call's Status is freshly computed
+// AFTER its own walk (checked against len(inbox)) and is trustworthy. This
+// route's whole Pass-B rationale is letting a previewNoop-synthesized
+// completion carry a downstream continuation forward — trusting the FIRST
+// call's report would silently skip exactly that: this refuses to consider
+// the instance settled on call index 0 no matter what Status says. Never
+// more than one extra call for an on-start with nothing to synthesize.
+//
+// StepResult.Invocations must be empty on every call — see ValidateProgram's
+// doc for why (the async core.effect.invoke@1 protocol's real branch, which
+// nothing on this path consumes, unlike bluehost.Host.Step). A non-empty
+// Invocations is refused by name (VALIDATE_INVOCATION_EMITTED), never
+// silently dropped.
+//
+// A step call failing outright (a genuine execution failure — a
+// program-declared budget breach, a malformed continuation) surfaces with
+// its native *blueruntime.Error code, e.g. PROGRAM_BUDGET_INVALID.
+// Exhausting maxSteps with neither is VALIDATE_STEP_BUDGET_EXCEEDED.
 func stepUntilSettledOrExhausted(step func() (blueruntime.StepResult, error), maxSteps uint64) *blueruntime.Error {
 	for i := uint64(0); i < maxSteps; i++ {
 		result, err := step()
 		if err != nil {
 			return asRuntimeError(err)
 		}
-		if result.Status == "idle" {
+		if len(result.Invocations) > 0 {
+			return stepRefusal("VALIDATE_INVOCATION_EMITTED", fmt.Sprintf("step emitted %d unconsumed effect invocation(s) — refusing rather than dropping them silently", len(result.Invocations)))
+		}
+		if i > 0 && result.Status == "idle" {
 			return nil
 		}
 	}
-	return budgetExceeded("VALIDATE_STEP_BUDGET_EXCEEDED", fmt.Sprintf("execution did not settle within %d steps", maxSteps))
+	return stepRefusal("VALIDATE_STEP_BUDGET_EXCEEDED", fmt.Sprintf("execution did not settle within %d steps", maxSteps))
 }
 
-// budgetExceeded builds the named, fail-closed refusal for a program that
-// admitted cleanly but never settled within budget — "budget épuisé, non
-// validable": never a default "ok", never a 500, a distinct code per
-// dimension (step count vs wall clock) like every other refusal this route
-// returns.
-func budgetExceeded(code, message string) *blueruntime.Error {
+// stepRefusal builds a named, fail-closed refusal raised by ValidateProgram
+// itself (not the portable runtime) during Pass B's step loop — a budget
+// exhausted or an unconsumed invocation emitted: never a default "ok",
+// never a 500, a distinct code per reason like every other refusal this
+// route returns.
+func stepRefusal(code, message string) *blueruntime.Error {
 	return &blueruntime.Error{SchemaVersion: blueruntime.ErrorSchema, Code: code, Stage: "step", Message: message}
 }
 

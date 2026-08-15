@@ -80,16 +80,17 @@ func TestValidateProgram_StartAloneNeverDialsEvenWithLiveExecuteHandlers(t *test
 // TestValidateProgram_NeverDialsEvenThoughStepReallyExecutes is C2's CENTRAL
 // security guarantee (porteur scope widening on top of the Bastion veto,
 // SCENE-VALIDATION-GATE-C2-ORION): unlike the foundational test above, this
-// calls the REAL, SHIPPED bluehost.ValidateProgram end to end — Load, Start,
-// and now a genuine bounded Step loop that actually walks the graph (that is
-// the whole point of the scope widening: "il faut qu'on puisse vraiment tout
+// calls the REAL, SHIPPED bluehost.ValidateProgram end to end — Load, TWO
+// Start passes (Pass A Execute for admission only, Pass B Preview for a
+// genuine bounded Step loop that actually walks the graph — that is the
+// whole point of the scope widening: "il faut qu'on puisse vraiment tout
 // valider, tout"). A program whose on-start fires core.http.request@1 at a
 // spy server still never dials it, because ValidateProgram hardcodes
 // EffectHandlers to NewEffectHandlers(EffectDeps{}, Preview) regardless of
-// the Execute mode it now runs Step under (see that function's doc for why
-// the two are independent) — and it settles cleanly (servable), proving
-// Step is not a no-op either: the synthetic preview result really does
-// carry the graph to completion.
+// which pass's own Mode Step runs under (see that function's doc for why the
+// two are independent) — and it settles cleanly (servable), proving Step is
+// not a no-op either: the synthetic preview result really does carry the
+// graph to completion.
 func TestValidateProgram_NeverDialsEvenThoughStepReallyExecutes(t *testing.T) {
 	dialed := false
 	spy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
