@@ -18,8 +18,12 @@ import (
 // (validate_simulate_test.go), which dry-runs a draft AUTHORING graph
 // through Engine A. Two axes, same shape as simulate's own test file:
 //
-//   - the requireServiceScope gate, calqued on simulate's own (exact
-//     membership of `orion.validate.program`, a distinct scope);
+//   - the gate: requireServiceScopeOrOperator (validate_program.go) — EITHER
+//     the requireServiceScope contract calqued on simulate's own (exact
+//     membership of `orion.validate.program`, a distinct scope) OR an
+//     authenticated operator/admin principal (Refs #181, additive widening
+//     for ZabCanvas contra-validation — an operator can already run an
+//     arbitrary program live via scene-intent, so this is strictly weaker);
 //   - the verdict itself: a program declaring a capability
 //     internal/providers.Registry() serves is accepted (servable=true); one
 //     declaring a capability nothing in the registry serves is refused
@@ -99,10 +103,14 @@ func unknownCapabilityProgram(t *testing.T) json.RawMessage {
 	return out
 }
 
-// TestPostValidateProgram_RequiresExactServiceScope proves the gate: only
-// role=service AND the exact scope `orion.validate.program` reaches the body
-// handler. A parent/wildcard scope, the wrong role, or no auth at all is a
-// frank 403 — same fail-closed posture as simulateScope.
+// TestPostValidateProgram_RequiresExactServiceScope proves the SERVICE half
+// of the gate for a caller that is neither operator nor admin: role=service
+// AND the exact scope `orion.validate.program` is required to reach the body
+// handler — a parent/wildcard scope, the wrong role, an authenticated
+// non-operator role holding a stray scope header, or no auth at all is a
+// frank 403 (fail-closed, same posture as simulateScope). The operator/admin
+// half of the gate is proved separately by
+// TestPostValidateProgram_AcceptsOperatorOrAdmin.
 func TestPostValidateProgram_RequiresExactServiceScope(t *testing.T) {
 	body := validateProgramBody(t, httpRequiresProgram(t))
 	cases := []struct {
@@ -111,8 +119,7 @@ func TestPostValidateProgram_RequiresExactServiceScope(t *testing.T) {
 		scopes []string
 	}{
 		{"no auth headers", "", nil},
-		{"operator role, exact scope", "operator", []string{validateProgramScope}},
-		{"admin role, exact scope", "admin", []string{validateProgramScope}},
+		{"viewer role, exact scope", "viewer", []string{validateProgramScope}},
 		{"service role, wrong scope", "service", []string{"orion.validate.session"}},
 		{"service role, parent scope", "service", []string{"orion.validate"}},
 		{"service role, wildcard scope", "service", []string{"orion.*"}},
@@ -125,6 +132,35 @@ func TestPostValidateProgram_RequiresExactServiceScope(t *testing.T) {
 			postValidateProgram(validateProgramDeps())(rec, r)
 			if rec.Code != http.StatusForbidden {
 				t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
+// TestPostValidateProgram_AcceptsOperatorOrAdmin proves the OPERATOR half of
+// requireServiceScopeOrOperator (validate_program.go, Refs #181): a plain
+// operator or admin principal reaches the body handler and gets a real
+// verdict — WITHOUT carrying the orion.validate.program scope at all, since
+// an operator session has no `paths` claim to begin with (auth.Identity.Paths
+// is populated only when Role == RoleService). Not a regression on the
+// service-scope path: TestPostValidateProgram_RequiresExactServiceScope
+// covers that half untouched.
+func TestPostValidateProgram_AcceptsOperatorOrAdmin(t *testing.T) {
+	body := validateProgramBody(t, httpRequiresProgram(t))
+	for _, role := range []string{"operator", "admin"} {
+		t.Run(role, func(t *testing.T) {
+			r := validateProgramHTTPRequest(role, nil, body)
+			rec := httptest.NewRecorder()
+			postValidateProgram(validateProgramDeps())(rec, r)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+			}
+			var resp validateProgramResponse
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatal(err)
+			}
+			if !resp.Servable {
+				t.Fatalf("expected servable=true, got %+v", resp)
 			}
 		})
 	}
