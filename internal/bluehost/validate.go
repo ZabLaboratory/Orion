@@ -20,25 +20,41 @@ const validateInstanceID = "validate-program"
 // still declare a `requires` capability nothing here actually serves. This
 // exercises the SAME Runtime.Load -> Runtime.Start admission path a real
 // Host.Prepare/Take runs (checkProviders cross-references program["requires"]
-// against providers/policy identically), but on a throwaway
+// against providers/policy identically — CAPABILITY_UNAVAILABLE etc. are
+// raised from Start, never from Load: Load alone has no providers argument
+// at all, so it cannot be where this route's whole reason to exist — an
+// unserved capability — is caught). This runs on a throwaway
 // blueruntime.Runtime this function builds and discards itself — it NEVER
 // touches a Host, NEVER reaches SlotPreview/SlotOnAir, and callers must not
-// try to route it through one.
+// try to route it through one (Bastion veto, SCENE-VALIDATION-GATE-C2-ORION:
+// Host.Prepare/Take refuse an already-occupied slot, so a validation sharing
+// either one could collide with the antenne's real preview/on-air instance).
 //
-// Zero side effects, not just "none triggered so far": Start alone never
-// executes anything — an InstanceHandle only fires its on-start entrypoints
-// (and any effect) on its FIRST Step (runtime.go's pendingStart flag is
-// consumed exclusively by Step), and this function calls Load/Start/Stop
-// only, never Step/Dispatch/Tick/Call/WritePlatformEvent/Resolve. No
-// EffectHandlers are wired for the same reason: one would never run. Mode is
-// Preview, matching the platform's established no-commit posture (mirrors
-// Host.Prepare(SlotPreview, ...) — see modeFor's doc in host.go).
+// Zero side effects, BY TWO INDEPENDENT LAYERS (Bastion veto: belt AND
+// suspenders, neither alone should be the only thing standing between a
+// submitted program and Orion's own service-token-bearing egress):
+//
+//  1. Structural: Start alone never executes anything — an InstanceHandle
+//     only fires its on-start entrypoints (and any effect) on its FIRST Step
+//     (runtime.go's pendingStart flag is consumed exclusively by Step), and
+//     this function calls Load/Start/Stop only, never Step/Dispatch/Tick/
+//     Call/WritePlatformEvent/Resolve, ever. Proven adversarially — mode
+//     Execute, REAL live EffectHandlers pointed at a spy server — by
+//     TestValidateProgram_StartAloneNeverDialsEvenWithLiveExecuteHandlers,
+//     specifically so this guarantee does not depend on point 2 below.
+//  2. Belt-and-suspenders: Mode is Preview (mirrors Host.Prepare(SlotPreview,
+//     ...) — modeFor's doc in host.go) AND EffectHandlers is
+//     NewEffectHandlers(EffectDeps{}, Preview) — empty deps, not merely a nil
+//     map — so that even a future refactor of this function that starts
+//     calling Step would still find every one of the 4 opcodes-of-full-right
+//     handlers wired to nil Runner/Egress/DB/ServiceCall, synthetic-preview
+//     branch or not.
 //
 // A nil return means program is servable as-is against providers/policy. A
 // non-nil *blueruntime.Error carries the fail-closed reason (Code/Stage/
 // Message/Target) straight from the portable runtime — the same taxonomy a
 // real Prepare/Take would fail with, since the admission path is identical.
-func ValidateProgram(program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy) *blueruntime.Error {
+func ValidateProgram(program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy) (verdict *blueruntime.Error) {
 	rt := blueruntime.NewRuntime()
 
 	handle, err := rt.Load(program)
@@ -47,18 +63,26 @@ func ValidateProgram(program []byte, providers []map[string]any, policy bluerunt
 	}
 
 	instance, err := rt.Start(handle, blueruntime.StartOptions{
-		InstanceID: validateInstanceID,
-		Mode:       blueruntime.Preview,
-		Providers:  providers,
-		Policy:     policy,
+		InstanceID:     validateInstanceID,
+		Mode:           blueruntime.Preview,
+		Providers:      providers,
+		Policy:         policy,
+		EffectHandlers: NewEffectHandlers(EffectDeps{}, blueruntime.Preview),
 	})
 	if err != nil {
 		return asRuntimeError(err)
 	}
 
-	if err := rt.Stop(instance, "validate: ephemeral instance discarded"); err != nil {
-		return asRuntimeError(err)
-	}
+	// defer, panic included (Bastion veto): Release/Stop must run on every
+	// exit path from here, not only the straight-line one. Stop's own error
+	// only overrides verdict when the admission itself already succeeded
+	// (verdict == nil) — a real CAPABILITY_* refusal from Start always wins,
+	// it is the more specific and more useful diagnosis.
+	defer func() {
+		if stopErr := rt.Stop(instance, "validate: ephemeral instance discarded"); stopErr != nil && verdict == nil {
+			verdict = asRuntimeError(stopErr)
+		}
+	}()
 	return nil
 }
 
