@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/ZabLaboratory/Orion/internal/auth"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 )
 
@@ -60,6 +61,50 @@ type validateProgramResponse struct {
 	Target   map[string]string `json:"target,omitempty"`
 }
 
+// requireServiceScopeOrOperator gates a handler on EITHER an authenticated
+// operator/admin principal OR the exact-scope service-token contract
+// (requireServiceScope's own rule, validate_simulate.go) — additive, not a
+// third authz mechanism: it composes the two gates this package already has
+// (operatorGate's role check, hasExactScope's set-membership check) instead
+// of inventing a new one.
+//
+// Widening THIS ONE route to operator/admin is not a privilege escalation —
+// an operator can already make Orion admit and run an arbitrary program for
+// real, live, via POST /api/v1/host/scene-intent (requireOperator, this
+// package's public.go). A sandboxed, no-egress, step/time-bounded verdict
+// against a throwaway runtime instance that never touches deps.Host's
+// preview/on-air slots (postValidateProgram's own doc above) is strictly
+// LESS powerful than that route already grants the same principal — so this
+// is a credential-surface CONTRACTION, not an expansion. It replaces the
+// alternative ZabCanvas was blocked from taking: holding its own static
+// bearer, or a service token minted through ZabAuth's require_operator
+// POST /auth/api/v1/service-tokens — both of which are exactly the
+// "permanent bearer / minted credential in an application .env" class ADR-
+// BLUE-012 R6 §4.7 forbids. ZabCanvas instead forwards the calling
+// operator's own Authorization; this gate is what makes that forwarded
+// identity actually admissible here. The exact-scope path is untouched and
+// still serves machine callers (bluemcp) that hold no operator session at
+// all.
+//
+// Reads the package-level authSource (public.go, ADR 016 §3.2) rather than
+// auth.FromHeaders directly, so the operator half of this gate resolves
+// through the same pluggable identity source every other operator route
+// uses (antenne: ZabGate headers; embedded-local: loopback handshake).
+func requireServiceScopeOrOperator(scope string, handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := authSource.FromHeaders(r.Header)
+		if id.IsAuthenticated() && (id.Role == auth.RoleOperator || id.Role == auth.RoleAdmin) {
+			handler(w, r)
+			return
+		}
+		if id.Role == auth.RoleService && hasExactScope(id, scope) {
+			handler(w, r)
+			return
+		}
+		writeJSON(w, http.StatusForbidden, map[string]string{"code": "FORBIDDEN"})
+	}
+}
+
 // postValidateProgram handles POST /api/v1/validate/program. Never touches
 // deps.Host's preview/on-air slots: bluehost.ValidateProgram builds and
 // discards its own throwaway runtime instance, bounded by
@@ -68,7 +113,7 @@ type validateProgramResponse struct {
 // Stateless — nothing here is persisted, cached, or registered across
 // requests.
 func postValidateProgram(deps SceneIntentDeps) http.HandlerFunc {
-	return requireServiceScope(validateProgramScope, func(w http.ResponseWriter, r *http.Request) {
+	return requireServiceScopeOrOperator(validateProgramScope, func(w http.ResponseWriter, r *http.Request) {
 		raw, err := readBounded(r.Body, maxValidateProgramBody)
 		if errors.Is(err, errBodyTooLarge) {
 			writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"code": "BODY_TOO_LARGE"})
