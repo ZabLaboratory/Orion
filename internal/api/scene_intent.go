@@ -64,6 +64,17 @@ type SceneIntentDeps struct {
 	// own default-allow posture applies to every declared provider.
 	Policy blueruntime.CapabilityPolicy
 
+	// ValidationMaxSteps / ValidationMaxWall bound POST /validate/program's
+	// Step loop (bluehost.ValidateProgram) — the SAME config-driven budget
+	// Engine A's /validate/simulate harness already uses
+	// (cfg.ValidationMaxSteps/cfg.ValidationMaxWall,
+	// ORION_VALIDATION_MAX_STEPS/ORION_VALIDATION_MAX_WALL_S,
+	// internal/runtime/validation_harness.go's DefaultValidationBudget), not
+	// a second, invented number. Zero values fall back to
+	// ValidateProgram's own defaults (1_000_000 steps / 5s).
+	ValidationMaxSteps uint64
+	ValidationMaxWall  time.Duration
+
 	// Effects binds the direct EffectHandlers (ENGINE-B-PARITY-ORION,
 	// bluehost.NewEffectHandlers) and carries the Runner/Egress fields used by
 	// the Host's generic core.effect.invoke@1 adapter. The bundle is the SAME
