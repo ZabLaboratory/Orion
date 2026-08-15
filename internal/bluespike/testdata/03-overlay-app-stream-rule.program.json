@@ -1,0 +1,159 @@
+{
+  "budgets": {
+    "max_effects_per_dispatch": 0,
+    "max_execution_ms": 1000,
+    "max_pending_effects": 0,
+    "max_queue_depth": 16,
+    "max_steps_per_dispatch": 16,
+    "max_timers": 0
+  },
+  "compiler_version": "0.1.0",
+  "data_edges": [],
+  "data_literals": [],
+  "determinism": {
+    "clock": "injected",
+    "entropy": "injected",
+    "map_iteration": "canonical",
+    "scheduler": "injected"
+  },
+  "effects": [],
+  "entrypoints": [
+    {
+      "id": "start",
+      "kind": "start",
+      "node_id": "start-node",
+      "port": "then"
+    }
+  ],
+  "errors": {
+    "profile": "blue.runtime.error.v1",
+    "unhandled": "halt"
+  },
+  "exec_edges": [
+    {
+      "from_node": "start-node",
+      "from_port": "then",
+      "sequence": 0,
+      "to_node": "overlay-set",
+      "to_port": "in"
+    }
+  ],
+  "nodes": [
+    {
+      "config": {
+        "app_id": "stream-rule-overlay",
+        "on_air": true,
+        "running": true
+      },
+      "id": "overlay-set",
+      "opcode": "core.overlay-app.set@1"
+    },
+    {
+      "config": {},
+      "id": "start-node",
+      "opcode": "core.event.on-start@1"
+    }
+  ],
+  "opcodes": [
+    {
+      "config": [],
+      "id": "core.event.on-start@1",
+      "inputs": [],
+      "kind": "entrypoint",
+      "outputs": [
+        {
+          "kind": "exec",
+          "name": "then",
+          "required": true,
+          "type": "core.exec"
+        }
+      ]
+    },
+    {
+      "config": [
+        {
+          "kind": "data",
+          "name": "app_id",
+          "required": false,
+          "type": "core.string"
+        },
+        {
+          "kind": "data",
+          "name": "on_air",
+          "required": false,
+          "type": "core.json"
+        },
+        {
+          "kind": "data",
+          "name": "running",
+          "required": false,
+          "type": "core.json"
+        }
+      ],
+      "id": "core.overlay-app.set@1",
+      "inputs": [
+        {
+          "kind": "exec",
+          "name": "in",
+          "required": true,
+          "type": "core.exec"
+        }
+      ],
+      "kind": "control",
+      "outputs": [
+        {
+          "kind": "exec",
+          "name": "then",
+          "required": true,
+          "type": "core.exec"
+        }
+      ]
+    }
+  ],
+  "ordering": {
+    "duplicate_event": "idempotent_same_digest",
+    "effect_completion": "explicit_fifo_event",
+    "event_inbox": "fifo_by_runtime_sequence",
+    "event_sequence_scope": "instance_per_origin",
+    "exec_fanout": "ascending_edge_sequence",
+    "sequence_gap": "reject",
+    "timer_tie_break": "due_at_then_timer_id"
+  },
+  "program_digest": "sha256:e4ccc6dc3752f0461456cd94c8727281f7bd3c84c1edca1a22653efe44a68699",
+  "program_id": "fixture-stream-rule-overlay-app",
+  "requires": [],
+  "runtime_abi": "blue-runtime-abi.v1",
+  "runtime_module": {
+    "name": "blue-runtime-go",
+    "version": "0.1.0"
+  },
+  "schema_version": "blue.program.v1",
+  "source_revision": {
+    "digest": "sha256:3aa201ed0203ce41437936bc3d4de2f6b7f3689117eec787ad0a4b5a7eb64158",
+    "id": "fixture-stream-rule-overlay-app",
+    "kind": "blueprint-version",
+    "revision": 1
+  },
+  "state": {
+    "outputs": [],
+    "variables": []
+  },
+  "timers": [],
+  "topics": [],
+  "types": [
+    {
+      "id": "core.json",
+      "kind": "primitive",
+      "spec": {
+        "base": "json"
+      }
+    },
+    {
+      "id": "core.string",
+      "kind": "primitive",
+      "spec": {
+        "base": "string"
+      }
+    }
+  ]
+}

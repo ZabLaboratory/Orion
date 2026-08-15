@@ -234,6 +234,14 @@ func run() error {
 	// blueprint/_query surface) and is never logged. Antenne wire only —
 	// preview keeps the Prism global.
 	if antenneWire != nil {
+		// core.overlay-app.set@1's real effector for Engine B
+		// (ENGINE-B-PARITY-ORION, internal/bluehost/effect_overlay.go):
+		// the SAME show-level wire Engine A's show.SetMirrors(wire) above
+		// already drives. Assigned only inside this guard — antenneWire is
+		// a *lsdp.Wire and assigning a nil one to the OverlayAppMirror
+		// interface field would store a non-nil interface wrapping a nil
+		// pointer, defeating dispatchOverlayAppSet's nil check.
+		effectDeps.OverlayMirror = antenneWire
 		credsFetcher := lsdp.NewZabCamCredsFetcher(cfg.ZabGateURL, nil, logger)
 		antenneWire.EnableViewerCreds(ctx,
 			credsFetcher, time.Duration(cfg.ViewerCredsRefreshS)*time.Second)

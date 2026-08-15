@@ -92,6 +92,10 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost
 	// the same bundle when Prepare/Take runs.
 	host := bluehost.NewHost()
 	host.SetHTTPEffects(effectDeps, logger)
+	// core.overlay-app.set@1's real effector (ENGINE-B-PARITY-ORION,
+	// internal/bluehost/effect_overlay.go) — nil-safe when effectDeps.
+	// OverlayMirror was never set (bespoke mode / no antenne LSDP wire).
+	host.SetOverlayMirror(effectDeps.OverlayMirror)
 
 	return &api.SceneIntentDeps{
 		Trust:         trust,

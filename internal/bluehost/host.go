@@ -46,6 +46,15 @@ type entry struct {
 	digest     string            // scene_digest / program identity this slot is serving
 	bundle     []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
 	awaitTypes map[string]string // compiler-declared operator.await value types
+
+	// overlaySeen dedupes core.overlay-app.set@1 dispatch (effect_overlay.go)
+	// against StepResult.Variables' cumulative bag: keyed by node id, valued
+	// by a digest of the last (app_id, running, on_air) actually forwarded
+	// to overlayMirror. Scoped to the entry (not the Host or the Slot) so a
+	// fresh instance from Prepare/Take starts with a clean slate for free —
+	// the old entry, and its stale seen-set, is simply discarded, never
+	// explicitly invalidated.
+	overlaySeen map[string]string
 }
 
 // Host owns exactly one preview and one on-air instance at a time, per
@@ -76,6 +85,13 @@ type Host struct {
 	httpEgress *effects.EgressPolicy
 	httpRunner *effects.Runner
 	logger     *slog.Logger
+
+	// overlayMirror is the real core.overlay-app.set@1 effector
+	// (effect_overlay.go), set once via SetOverlayMirror. nil by default:
+	// every firing still lands in the reserved ctx.variables bag (walker.go),
+	// but dispatchOverlayAppSet drops it instead of reaching the wire — the
+	// same unwired-seam posture httpEgress/httpRunner apply above.
+	overlayMirror OverlayAppMirror
 }
 
 // NewHost builds an empty Host. One Host per Orion process — it is the
@@ -212,6 +228,7 @@ func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
 		return result, err
 	}
 	h.dispatchInvocations(slot, instance, result.Invocations)
+	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
 }
 
@@ -303,6 +320,7 @@ func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, er
 		return result, err
 	}
 	h.dispatchInvocations(slot, instance, result.Invocations)
+	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
 }
 
@@ -328,6 +346,7 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 		return result, err
 	}
 	h.dispatchInvocations(slot, instance, result.Invocations)
+	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
 }
 
@@ -355,6 +374,7 @@ func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (bluerunt
 		return result, err
 	}
 	h.dispatchInvocations(slot, instance, result.Invocations)
+	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
 }
 
@@ -392,6 +412,7 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 		return result, err
 	}
 	h.dispatchInvocations(slot, instance, result.Invocations)
+	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
 }
 
