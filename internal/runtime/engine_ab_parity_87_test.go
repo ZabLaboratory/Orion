@@ -881,7 +881,7 @@ func parity87RunHTTPAlias(t *testing.T) {
 	}
 	h := bluehost.NewHost()
 	t.Cleanup(func() { _ = h.Release(bluehost.SlotOnAir, "test-cleanup") })
-	if err := h.Prepare(bluehost.SlotOnAir, "ab-87-http-alias-b", "sha256:ab-87-http-alias-b", alias, nil, nil,
+	if err := h.Prepare(bluehost.SlotOnAir, "ab-87-http-alias-b", "scene-ab-87-http-alias-b", "sha256:ab-87-http-alias-b", alias, nil, nil,
 		bluehost.NewEffectHandlers(bluehost.EffectDeps{Egress: egress}, blueruntime.Execute)); err != nil {
 		t.Fatalf("primitive=core.http-request@1 Engine B Prepare: %v", err)
 	}

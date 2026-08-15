@@ -43,7 +43,7 @@ func TestIsolation_OnAirOnlyProviderNeverArmedInPreview(t *testing.T) {
 	provider := []map[string]any{isolationProvider()}
 
 	h := bluehost.NewHost()
-	if err := h.Prepare(bluehost.SlotPreview, "preview-1", "sha256:aaa", program, provider, nil, nil); err == nil {
+	if err := h.Prepare(bluehost.SlotPreview, "preview-1", "scene-1", "sha256:aaa", program, provider, nil, nil); err == nil {
 		t.Fatal("expected Prepare (preview mode) to be refused for a preview-unsupported provider")
 	}
 	if h.Digest(bluehost.SlotPreview) != "" {

@@ -221,7 +221,7 @@ func TestInjectActive_IsActiveOnly(t *testing.T) {
 	const leaf = "__inputs.platform.twitch.channel_1.last_chat"
 	host := bluehost.NewHost()
 	program := platformIngressProgram(t, leaf)
-	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "sha256:preview", program, nil, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "scene-1", "sha256:preview", program, nil, nil, nil); err != nil {
 		t.Fatalf("Host.Prepare(preview): %v", err)
 	}
 	t.Cleanup(func() { _ = host.Release(bluehost.SlotPreview, "test-cleanup") })

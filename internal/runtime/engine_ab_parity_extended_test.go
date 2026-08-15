@@ -264,7 +264,7 @@ func parityPrepareBHost(t *testing.T, slot bluehost.Slot, id string, program []b
 	t.Helper()
 	h := bluehost.NewHost()
 	t.Cleanup(func() { _ = h.Release(slot, "test-cleanup") })
-	if err := h.Prepare(slot, id, "sha256:"+id, program, nil, nil, nil); err != nil {
+	if err := h.Prepare(slot, id, "scene-"+id, "sha256:"+id, program, nil, nil, nil); err != nil {
 		t.Fatalf("primitive=bluehost.prepare scenario=%s Engine B Host.Prepare: %v", id, err)
 	}
 	if _, err := h.Step(slot); err != nil {
@@ -606,7 +606,7 @@ func TestEngineABParity_ActiveOnlyPlatformEventUsesHostSlots(t *testing.T) {
 		{name: "preview", slot: bluehost.SlotPreview},
 		{name: "on-air", slot: bluehost.SlotOnAir},
 	} {
-		if err := h.Prepare(slot.slot, "platform-"+slot.name+"-b", "sha256:platform-"+slot.name, program, nil, nil, nil); err != nil {
+		if err := h.Prepare(slot.slot, "platform-"+slot.name+"-b", "scene-platform-"+slot.name, "sha256:platform-"+slot.name, program, nil, nil, nil); err != nil {
 			t.Fatalf("primitive=core.event.on-platform-event@1 scenario=active-only Engine B Host.Prepare %s: %v", slot.name, err)
 		}
 		if _, err := h.Step(slot.slot); err != nil {
@@ -708,7 +708,7 @@ func TestEngineABParity_DBQueryObservableAndPreviewNoQuery(t *testing.T) {
 
 	preview := bluehost.NewHost()
 	t.Cleanup(func() { _ = preview.Release(bluehost.SlotPreview, "test-cleanup") })
-	if err := preview.Prepare(bluehost.SlotPreview, "db-preview", "sha256:db-preview", program, nil, nil,
+	if err := preview.Prepare(bluehost.SlotPreview, "db-preview", "scene-db-preview", "sha256:db-preview", program, nil, nil,
 		bluehost.NewEffectHandlers(bluehost.EffectDeps{DB: db, DataSources: ds}, blueruntime.Preview)); err != nil {
 		t.Fatalf("primitive=core.db.query@1 scenario=preview-prepare Engine B bluehost.Host.Prepare: %v", err)
 	}
@@ -722,7 +722,7 @@ func TestEngineABParity_DBQueryObservableAndPreviewNoQuery(t *testing.T) {
 
 	onAir := bluehost.NewHost()
 	t.Cleanup(func() { _ = onAir.Release(bluehost.SlotOnAir, "test-cleanup") })
-	if err := onAir.Prepare(bluehost.SlotOnAir, "db-on-air", "sha256:db-on-air", program, nil, nil,
+	if err := onAir.Prepare(bluehost.SlotOnAir, "db-on-air", "scene-db-on-air", "sha256:db-on-air", program, nil, nil,
 		bluehost.NewEffectHandlers(bluehost.EffectDeps{DB: db, DataSources: ds}, blueruntime.Execute)); err != nil {
 		t.Fatalf("primitive=core.db.query@1 scenario=on-air-prepare Engine B bluehost.Host.Prepare: %v", err)
 	}
@@ -796,7 +796,7 @@ func TestEngineABParity_HostEntrypointMatrix(t *testing.T) {
 
 			h := bluehost.NewHost()
 			t.Cleanup(func() { _ = h.Release(bluehost.SlotOnAir, "test-cleanup") })
-			if err := h.Prepare(bluehost.SlotOnAir, "entry-"+tc.kind, "sha256:entry-"+tc.kind, parityBuildBEntrypointProgram(t, tc.kind, leaf), nil, nil, nil); err != nil {
+			if err := h.Prepare(bluehost.SlotOnAir, "entry-"+tc.kind, "scene-entry-"+tc.kind, "sha256:entry-"+tc.kind, parityBuildBEntrypointProgram(t, tc.kind, leaf), nil, nil, nil); err != nil {
 				t.Fatalf("primitive=core.event.%s scenario=matrix-prepare Engine B bluehost.Host: %v", tc.kind, err)
 			}
 			if _, err := h.Step(bluehost.SlotOnAir); err != nil {

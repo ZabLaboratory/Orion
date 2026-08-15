@@ -23,7 +23,7 @@ func TestGetRenderBundle_NoHostWiredIs404(t *testing.T) {
 func TestGetRenderBundle_ServesOnAirOverPreview(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "sha256:preview", program, nil, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "scene-1", "sha256:preview", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare preview: %v", err)
 	}
 	host.SetBundle(bluehost.SlotPreview, []byte(`"preview-bundle"`))
@@ -52,7 +52,7 @@ func TestGetRenderBundle_ServesOnAirOverPreview(t *testing.T) {
 func TestGetRenderBundle_VersionPinSelectsMatchingSlot(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "sha256:preview", program, nil, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "scene-1", "sha256:preview", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare preview: %v", err)
 	}
 	host.SetBundle(bluehost.SlotPreview, []byte(`"preview-bundle"`))
@@ -74,7 +74,7 @@ func TestGetRenderBundle_VersionPinSelectsMatchingSlot(t *testing.T) {
 func TestGetRenderBundle_UnknownVersionIs404(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "sha256:preview", program, nil, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "scene-1", "sha256:preview", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	host.SetBundle(bluehost.SlotPreview, []byte(`"preview-bundle"`))
@@ -92,7 +92,7 @@ func TestGetRenderBundle_UnknownVersionIs404(t *testing.T) {
 func TestGetOperatorInputs_ExtractsKeyWhenPresent(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "sha256:preview", program, nil, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "scene-1", "sha256:preview", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	host.SetBundle(bluehost.SlotPreview, []byte(`{"operator_inputs":[{"path":"score.home"}]}`))
@@ -124,7 +124,7 @@ func TestGetOperatorInputs_ExtractsKeyWhenPresent(t *testing.T) {
 func TestGetOperatorInputs_AbsentKeyYieldsEmptyArray(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "sha256:preview", program, nil, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "scene-1", "sha256:preview", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	host.SetBundle(bluehost.SlotPreview, []byte(`{"root":{}}`))

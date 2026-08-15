@@ -192,7 +192,7 @@ func canvasEnvelopeWithBundle(program, bundle []byte) (json.RawMessage, string) 
 	return body, digest
 }
 
-func signedRef(t *testing.T, priv ed25519.PrivateKey, kid string, _ attestation.Action, now time.Time, blueProgramDigest string) string {
+func signedRef(t *testing.T, priv ed25519.PrivateKey, kid string, _ attestation.Action, now time.Time, sceneID, blueProgramDigest string) string {
 	t.Helper()
 	header := map[string]any{"alg": "EdDSA", "kid": kid, "typ": "zabcanvas-resolved-scene-ref+jws"}
 	payload := map[string]any{
@@ -206,7 +206,7 @@ func signedRef(t *testing.T, priv ed25519.PrivateKey, kid string, _ attestation.
 		"tenant_id":                "tenant-1",
 		"stream_id":                "stream-1",
 		"allowed_actions":          []string{"prepare-preview", "take-on-air"},
-		"scene_id":                 "scene-1",
+		"scene_id":                 sceneID,
 		"revision_id":              "rev-1",
 		"scene_digest":             "sha256:" + strings.Repeat("a", 64),
 		"artifact_set_digest":      "sha256:" + strings.Repeat("b", 64),
@@ -233,7 +233,7 @@ func TestPostSceneIntent_PreparePreview_Success(t *testing.T) {
 	program := minimalProgram(t)
 	envelope, digest := canvasEnvelope(program)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
@@ -272,13 +272,151 @@ func TestPostSceneIntent_PreparePreview_Success(t *testing.T) {
 	}
 }
 
+// TestPostSceneIntent_PreparePreview_SameSceneSameDigestIsIdempotent is the
+// "must still short-circuit" direction of the ADR-BLUE-012 §4.4 slot-identity
+// fix: a genuine repeat — same scene_id, same digest — must keep succeeding.
+// Host.Prepare unconditionally refuses (ErrAlreadyLoaded) any second call on
+// an occupied slot BEFORE it ever touches the runtime (host.go's existence
+// check is the first statement in Prepare, ahead of runtime.Load/Start) — so
+// a second response of "prepared" here is only reachable via the caller's
+// Host.Serving short-circuit swallowing that refusal, which is itself proof
+// no re-Load happened for the repeat.
+func TestPostSceneIntent_PreparePreview_SameSceneSameDigestIsIdempotent(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	envelope, digest := canvasEnvelope(program)
+	now := time.Now()
+
+	deps := SceneIntentDeps{
+		Trust:         attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix: "scenes/",
+		OwnerID:       "owner-1",
+		TenantID:      "tenant-1",
+		Workload:      &fakeWorkload{body: envelope},
+		Host:          bluehost.NewHost(),
+	}
+
+	send := func() *httptest.ResponseRecorder {
+		ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
+		body, _ := json.Marshal(sceneIntentRequest{
+			IntentID:         "intent-1",
+			StreamID:         "stream-1",
+			Target:           "preview",
+			Action:           string(attestation.ActionPreparePreview),
+			ResolvedSceneRef: ref,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+		req.Header.Set("X-Authenticated-User", "operator-1")
+		req.Header.Set("X-Authenticated-Role", "operator")
+		req.Header.Set(authContextHeader, "opaque-ticket")
+		rec := httptest.NewRecorder()
+		postSceneIntent(deps)(rec, req)
+		return rec
+	}
+
+	if first := send(); first.Code != http.StatusOK {
+		t.Fatalf("first prepare: expected 200, got %d: %s", first.Code, first.Body.String())
+	}
+
+	second := send()
+	if second.Code != http.StatusOK {
+		t.Fatalf("idempotent re-prepare (same scene, same digest): expected 200, got %d: %s", second.Code, second.Body.String())
+	}
+	var resp sceneIntentResponse
+	if err := json.Unmarshal(second.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "prepared" {
+		t.Fatalf("expected the idempotent repeat to still report \"prepared\" (no tear-down for a no-op push), got %+v", resp)
+	}
+	// signedRef's scene_digest claim (distinct from blueProgramDigest/digest
+	// above) is the fixed "sha256:aaa...a" every call in this file carries.
+	sceneDigest := "sha256:" + strings.Repeat("a", 64)
+	if !deps.Host.Serving(bluehost.SlotPreview, "scene-1", sceneDigest) {
+		t.Fatal("expected the preview slot to still be serving (scene-1, scene_digest) after the idempotent repeat")
+	}
+}
+
+// TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestIsRejected is
+// the direction that actually matters: two DIFFERENT scenes sharing a
+// scene_digest — plausible today (pre-C3, scene_digest is version-derived,
+// not content-bound) and still possible once ZabCanvas PR#340 lands (two
+// distinct scenes can compile to byte-identical programs) — must never let
+// the second scene's prepare-preview silently reuse the first scene's
+// already-running instance. Before the fix, Host.Digest(slot) ==
+// claims.SceneDigest alone read this as idempotent and dropped scene B's
+// program on the floor; scene A's instance (and its accumulated state) kept
+// serving under scene B's intent with a 200 response. Now sceneID must also
+// match, so scene B is refused with a named error instead.
+func TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestIsRejected(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	envelope, digest := canvasEnvelope(program)
+	now := time.Now()
+
+	deps := SceneIntentDeps{
+		Trust:         attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix: "scenes/",
+		OwnerID:       "owner-1",
+		TenantID:      "tenant-1",
+		Workload:      &fakeWorkload{body: envelope},
+		Host:          bluehost.NewHost(),
+	}
+
+	send := func(sceneID, intentID string) *httptest.ResponseRecorder {
+		// signedRef's scene_digest claim is a fixed "sha256:aaa...a" for
+		// every call regardless of sceneID/blueProgramDigest — exactly the
+		// pre-C3 shape this test targets: two scenes sharing one digest.
+		ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, sceneID, digest)
+		body, _ := json.Marshal(sceneIntentRequest{
+			IntentID:         intentID,
+			StreamID:         "stream-1",
+			Target:           "preview",
+			Action:           string(attestation.ActionPreparePreview),
+			ResolvedSceneRef: ref,
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+		req.Header.Set("X-Authenticated-User", "operator-1")
+		req.Header.Set("X-Authenticated-Role", "operator")
+		req.Header.Set(authContextHeader, "opaque-ticket")
+		rec := httptest.NewRecorder()
+		postSceneIntent(deps)(rec, req)
+		return rec
+	}
+
+	sceneA := send("scene-A", "intent-a")
+	if sceneA.Code != http.StatusOK {
+		t.Fatalf("scene A prepare: expected 200, got %d: %s", sceneA.Code, sceneA.Body.String())
+	}
+
+	sceneB := send("scene-B", "intent-b")
+	if sceneB.Code != http.StatusInternalServerError {
+		t.Fatalf("expected scene B's prepare-preview to be rejected (500 HOST_PREPARE_FAILED) instead of silently reusing scene A's instance, got %d: %s", sceneB.Code, sceneB.Body.String())
+	}
+	var resp sceneIntentResponse
+	if err := json.Unmarshal(sceneB.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != "failed" || resp.Reason != "HOST_PREPARE_FAILED" {
+		t.Fatalf("expected a named HOST_PREPARE_FAILED rejection, not a silent ok, got %+v", resp)
+	}
+	// Scene A's intent must be untouched by scene B's refused one.
+	// signedRef's scene_digest claim (distinct from blueProgramDigest/digest
+	// above) is the fixed "sha256:aaa...a" both scene A and scene B carry —
+	// exactly the collision this test forces.
+	sceneDigest := "sha256:" + strings.Repeat("a", 64)
+	if !deps.Host.Serving(bluehost.SlotPreview, "scene-A", sceneDigest) {
+		t.Fatal("expected scene A's instance to remain the preview slot's occupant after scene B's rejected intent")
+	}
+}
+
 func TestPostSceneIntent_TakeOnAirOwnsBundleAndBridgeOnAir(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	program := minimalProgram(t)
 	bundle := []byte(`{"scene":"on-air"}`)
 	envelope, digest := canvasEnvelopeWithBundle(program, bundle)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
 	host := bluehost.NewHost()
 	bridges := bluewire.NewRegistry()
 	t.Cleanup(func() {
@@ -358,7 +496,7 @@ func TestPostSceneIntent_TakeOnAirFailurePreservesCommittedGeneration(t *testing
 	invalidProgram := []byte(`{"not":"a blue program"}`)
 	envelope, digest := canvasEnvelope(invalidProgram)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionTakeOnAir, now, digest)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionTakeOnAir, now, "scene-1", digest)
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
 		LocatorPrefix: "scenes/",
@@ -413,7 +551,7 @@ func TestPostSceneIntent_RejectsBadAttestation(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(nil) // key not in trust set
 	otherPub, _, _ := ed25519.GenerateKey(nil)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "sha256:"+strings.Repeat("c", 64))
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", "sha256:"+strings.Repeat("c", 64))
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": otherPub},
@@ -441,7 +579,7 @@ func TestPostSceneIntent_RejectsBadAttestation(t *testing.T) {
 func TestPostSceneIntent_WorkloadRefusalPropagates(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "sha256:"+strings.Repeat("c", 64))
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", "sha256:"+strings.Repeat("c", 64))
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
@@ -471,7 +609,7 @@ func TestPostSceneIntent_RejectsArtifactDigestMismatch(t *testing.T) {
 	program := minimalProgram(t)
 	_, digest := canvasEnvelope(program)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
@@ -522,7 +660,7 @@ func TestPostSceneIntent_BridgeFullLifecycle(t *testing.T) {
 	program := minimalProgram(t)
 	envelope, digest := canvasEnvelope(program)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
 
 	mirror := &recordingMirror{}
 	deps := SceneIntentDeps{
@@ -584,7 +722,7 @@ func TestPostSceneIntent_IdempotentReplaySkipsReExecution(t *testing.T) {
 	program := minimalProgram(t)
 	envelope, digest := canvasEnvelope(program)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
 
 	wl := &fakeWorkload{body: envelope}
 	deps := SceneIntentDeps{
@@ -637,7 +775,7 @@ func TestPostSceneIntent_NoIdempotencyKeyNeverDedupes(t *testing.T) {
 	program := minimalProgram(t)
 	envelope, digest := canvasEnvelope(program)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
 
 	wl := &fakeWorkload{body: envelope}
 	deps := SceneIntentDeps{
@@ -705,7 +843,7 @@ func TestGetHostStatus_EmptyHost(t *testing.T) {
 func TestGetHostStatus_ReflectsPreparedSlot(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "scene-1", "sha256:abc", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	deps := SceneIntentDeps{Host: host}
@@ -786,7 +924,7 @@ func TestDecodeAndVerifyBundle_MissingDigestRejected(t *testing.T) {
 func TestGetHostRenderBundle_ServesPreparedBundle(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "sha256:abc", program, nil, nil, nil); err != nil {
+	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "scene-1", "sha256:abc", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
 	host.SetBundle(bluehost.SlotPreview, []byte(`{"root":{}}`))

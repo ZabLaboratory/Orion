@@ -38,7 +38,7 @@ func TestPostSceneIntent_PreparePreview_CapabilityUnavailableWithoutProviders(t 
 	program := httpRequiresProgram(t)
 	envelope, digest := canvasEnvelope(program)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
@@ -79,7 +79,7 @@ func TestPostSceneIntent_PreparePreview_SucceedsWithProviders(t *testing.T) {
 	program := httpRequiresProgram(t)
 	envelope, digest := canvasEnvelope(program)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
@@ -129,7 +129,7 @@ func TestPostSceneIntent_PreparePreview_DeniedWhenHTTPEgressPolicyClosed(t *test
 	program := httpRequiresProgram(t)
 	envelope, digest := canvasEnvelope(program)
 	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, digest)
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
