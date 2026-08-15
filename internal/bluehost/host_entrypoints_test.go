@@ -129,13 +129,14 @@ func buildDirectHTTPEntrypointProgram(t *testing.T, kind, targetURL, leaf string
 	}
 	var entryOpcode string
 	entrypoint := map[string]any{"id": "trigger", "kind": kind, "node_id": "trigger-node", "port": "then"}
-	if kind == "tick" {
+	switch kind {
+	case "tick":
 		entryOpcode = "core.event.on-tick@1"
 		entrypoint["id"] = "tick"
-	} else if kind == "call" {
+	case "call":
 		entryOpcode = "core.operator.on-call@1"
 		entrypoint["id"] = "arm"
-	} else {
+	default:
 		entryOpcode = "core.event.on-platform-event@1"
 		entrypoint["id"] = "platform"
 		entrypoint["leaf"] = leaf

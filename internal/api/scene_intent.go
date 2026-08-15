@@ -290,7 +290,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			providers.ResetActiveIngress(deps.Host)
 		}
 
-		startBridge(deps, slot, action, claims, req.IntentID)
+		startBridge(deps, slot, claims, req.IntentID)
 
 		resp := sceneIntentResponse{
 			Status:     actionResultStatus(action),
@@ -419,7 +419,7 @@ const defaultProjectionInterval = 100 * time.Millisecond
 // deps.Bridges.Start stops whatever bridge previously owned slot before
 // starting this one, so a Take superseding the on-air instance never
 // leaves a goroutine stepping an instance bluehost.Host has released.
-func startBridge(deps SceneIntentDeps, slot bluehost.Slot, action attestation.Action, claims *attestation.Claims, intentID string) {
+func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.Claims, intentID string) {
 	if deps.MirrorFor == nil || deps.Bridges == nil {
 		return
 	}

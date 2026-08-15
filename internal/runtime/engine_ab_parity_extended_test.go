@@ -96,14 +96,15 @@ func parityBuildBEntrypointProgram(t *testing.T, kind string, leaf string) []byt
 	t.Helper()
 	opcode := map[string]any{"id": "core.event.on-" + kind + "@1", "kind": "entrypoint", "config": []any{}, "inputs": []any{}, "outputs": []any{parityDataPort("payload", "core.json", false), parityExecPort("then")}}
 	entry := map[string]any{"id": "trigger", "kind": kind, "node_id": "trigger-node", "port": "then"}
-	if kind == "tick" {
+	switch kind {
+	case "tick":
 		opcode["id"] = "core.event.on-tick@1"
 		opcode["outputs"] = []any{parityDataPort("delta_seconds", "core.json", false), parityExecPort("then")}
 		entry["id"] = "tick"
 		entry["node_id"] = "trigger-node"
-	} else if kind == "call" {
+	case "call":
 		opcode["id"] = "core.operator.on-call@1"
-	} else {
+	default:
 		opcode["id"] = "core.event.on-platform-event@1"
 		entry["leaf"] = leaf
 	}
