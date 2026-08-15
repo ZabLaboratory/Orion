@@ -28,6 +28,8 @@ services:
     depends_on:
       orion-db:
         condition: service_healthy
+      orion-workload-identity-agent:
+        condition: service_started
     # Liveness probe. The runtime image is distroless/static:nonroot — no
     # shell, no curl/wget — so the probe self-execs the dedicated static
     # /healthcheck binary (cmd/healthcheck), which GETs the bare `/health`
@@ -108,6 +110,42 @@ services:
         aliases:
           - orion
           - orion-api
+
+  # Dedicated workload identity agent for Orion. It is deliberately separate
+  # from ZabGate's agent: the same node proof key is used, but the challenge
+  # binding and issued certificate are for the Orion workload SAN.
+  orion-workload-identity-agent:
+    image: zabgate-workload-identity-agent
+    container_name: orion-workload-identity-agent
+    restart: unless-stopped
+    user: "1000:1000"
+    command: ["uvicorn", "zabgate.identity_agent.server:app", "--uds", "/run/zab/workload-agent.sock"]
+    environment:
+      AUTH_URL: https://zabauth-workload.internal:4401
+      AUTH_CA_CERTIFICATE: /etc/zab/workload/ca.pem
+      NODE_CERTIFICATE: /etc/zab/workload/node-cert.pem
+      NODE_KEY_REFERENCE: /etc/zab/workload/node-key.pem
+      NODE_SAN: spiffe://zab/node/production/node-1
+      GATE_CERTIFICATE: /etc/zab/workload/gate-cert.pem
+      GATE_KEY_REFERENCE: /etc/zab/workload/gate-mtls-key.pem
+      GATE_SAN: spiffe://zab/workload/zabgate/production/gate-1
+      GATE_SIGNING_KEY_ID: gate-software-p256-2026-01
+      GATE_SIGNING_KEY_REFERENCE: /etc/zab/workload/gate-signing-key.pem
+      SOFTWARE_P256_KEY_REFERENCE: /etc/zab/workload/node-key.pem
+      WORKLOAD_KEY_BACKEND: software-p256
+      NODE_ID: node-1
+      AGENT_ID: identity-agent-1
+      WORKLOAD_ENVIRONMENT: production
+      WORKLOAD_INSTANCE_ID: orion-1
+      WORKLOAD_NAME: orion
+      WORKLOAD_IDENTITY_AGENT_SOCKET: /run/zab/workload-agent.sock
+    volumes:
+      - /var/lib/zab/workload:/etc/zab/workload:ro
+      - /var/lib/zab/workload-orion-agent:/run/zab
+    networks:
+      zab-internal:
+        aliases:
+          - orion-workload-identity-agent
 
   orion-db:
     # Digest verified against Docker Hub on 2026-08-14; update only through a

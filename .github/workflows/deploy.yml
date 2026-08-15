@@ -104,6 +104,26 @@ jobs:
             -e "ssh $SSH_OPTS" \
             ./ "$TARGET/"
 
+      - name: Install workload identity rotation substrate
+        env:
+          SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
+          APP_PATH: ${{ secrets.VPS_APP_PATH }}
+        run: |
+          $SSH_CMD "APP_PATH='$APP_PATH' bash -s" << 'ROTATION_INSTALL'
+          set -euo pipefail
+          sudo install -d -o root -g root -m 0755 /var/lib/zab/workload-orion
+          sudo install -d -o root -g root -m 0755 /var/lib/zab/workload-orion-agent
+          sudo install -o root -g root -m 0755 "$APP_PATH/scripts/orion_workload_identity_rotate.py" /usr/local/sbin/orion-workload-identity-rotate
+          sudo install -o root -g root -m 0644 "$APP_PATH/scripts/orion-workload-identity-rotation.service" /etc/systemd/system/orion-workload-identity-rotation.service
+          sudo install -o root -g root -m 0644 "$APP_PATH/scripts/orion-workload-identity-rotation.timer" /etc/systemd/system/orion-workload-identity-rotation.timer
+          if ! docker image inspect zabgate-workload-identity-agent >/dev/null 2>&1; then
+            echo "::error::zabgate-workload-identity-agent image is missing on the VPS"
+            exit 1
+          fi
+          sudo systemctl daemon-reload
+          sudo systemctl enable orion-workload-identity-rotation.timer
+          ROTATION_INSTALL
+
       - name: Install Solar bundles
         env:
           SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
@@ -325,6 +345,8 @@ jobs:
             exit 1
           fi
           echo "Orion healthy"
+          sudo systemctl restart orion-workload-identity-rotation.timer
+          echo "Orion workload identity rotation timer enabled"
           DEPLOY_SCRIPT
 
       - name: Smoke test via gateway

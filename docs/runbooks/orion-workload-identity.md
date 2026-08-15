@@ -79,13 +79,17 @@ policy caps workload certificates at 600 seconds. This means the first
 provisioned certificate is a bootstrap artifact, not a complete production
 rotation solution.
 
-Before expiry, a dedicated Orion identity-agent must obtain the next
-certificate through the same challenge/certificate flow, write the key and
-certificate to a new directory, validate the key pair and SAN locally, then
-atomically switch the VPS path and recreate Orion. Keep the old material until
-the new container is healthy, then remove only the expired certificate/key
-pair. Never log certificate bodies, private keys, challenge responses or
-secret values.
+The production compose now includes a dedicated `orion-workload-identity-agent`
+whose challenge binding is `orion/production/orion-1`. It is separate from the
+Gate agent even though both use the node's provisioned software-P256 proof key.
+The host installs `orion-workload-identity-rotation.timer`, which runs the
+rotation coordinator every two minutes. When less than four minutes remain, the
+coordinator creates a fresh P-256 key, obtains the Auth challenge and
+certificate through the Unix-socket agent, validates the exact SAN, clientAuth
+EKU and key/certificate match, replaces the material, restarts Orion, and
+restores the previous pair if the container does not become healthy. The old
+pair is kept until the health check succeeds. Never log certificate bodies,
+private keys, challenge responses or secret values.
 
 ## Qualification checklist
 
