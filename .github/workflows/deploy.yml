@@ -164,6 +164,15 @@ jobs:
           ORION_SERVICE_PATHS: ${{ vars.ORION_SERVICE_PATHS }}
           ORION_DATASOURCES: ${{ vars.ORION_DATASOURCES }}
           ORION_ZABGATE_URL: ${{ vars.ORION_ZABGATE_URL }}
+          ORION_WORKLOAD_ZABGATE_URL: ${{ vars.ORION_WORKLOAD_ZABGATE_URL }}
+          ORION_WORKLOAD_CLIENT_CERT_PATH: ${{ vars.ORION_WORKLOAD_CLIENT_CERT_PATH }}
+          ORION_WORKLOAD_CLIENT_KEY_PATH: ${{ vars.ORION_WORKLOAD_CLIENT_KEY_PATH }}
+          ORION_WORKLOAD_CA_PATH: ${{ vars.ORION_WORKLOAD_CA_PATH }}
+          ORION_WORKLOAD_SAN: ${{ vars.ORION_WORKLOAD_SAN }}
+          ORION_CANVAS_TRUST_PATH: ${{ vars.ORION_CANVAS_TRUST_PATH }}
+          ORION_CANVAS_LOCATOR_PREFIX: ${{ vars.ORION_CANVAS_LOCATOR_PREFIX }}
+          ORION_OWNER_ID: ${{ vars.ORION_OWNER_ID }}
+          ORION_TENANT_ID: ${{ vars.ORION_TENANT_ID }}
         run: |
           $SSH_CMD "cat > $APP_PATH/.env && chmod 600 $APP_PATH/.env" << EOF
           # Public surface
@@ -203,6 +212,19 @@ jobs:
           # db.query topology A — empty unless the repo variables are set.
           ORION_DATASOURCES=${ORION_DATASOURCES:-}
           ORION_ZABGATE_URL=${ORION_ZABGATE_URL:-}
+
+          # Software-P256 workload identity. The key, certificate and
+          # Canvas trust file stay on the VPS; these values only point Orion
+          # at the mounted material and bind it to the observed identity.
+          ORION_WORKLOAD_ZABGATE_URL=${ORION_WORKLOAD_ZABGATE_URL:-}
+          ORION_WORKLOAD_CLIENT_CERT_PATH=${ORION_WORKLOAD_CLIENT_CERT_PATH:-}
+          ORION_WORKLOAD_CLIENT_KEY_PATH=${ORION_WORKLOAD_CLIENT_KEY_PATH:-}
+          ORION_WORKLOAD_CA_PATH=${ORION_WORKLOAD_CA_PATH:-}
+          ORION_WORKLOAD_SAN=${ORION_WORKLOAD_SAN:-}
+          ORION_CANVAS_TRUST_PATH=${ORION_CANVAS_TRUST_PATH:-}
+          ORION_CANVAS_LOCATOR_PREFIX=${ORION_CANVAS_LOCATOR_PREFIX:-scenes/}
+          ORION_OWNER_ID=${ORION_OWNER_ID:-}
+          ORION_TENANT_ID=${ORION_TENANT_ID:-}
 
           # Upstream services (compile-time fetch through the gateway)
           ORION_CANVAS_BASE_URL=http://zabgate:4000/canvas
