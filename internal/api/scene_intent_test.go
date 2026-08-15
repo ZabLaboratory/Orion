@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +24,107 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
+
+// fakeIdempotencyMetrics records IdempotencyCache evictions for assertion.
+type fakeIdempotencyMetrics struct {
+	mu       sync.Mutex
+	ttl      int
+	capacity int
+}
+
+func (f *fakeIdempotencyMetrics) IdempotencyEvicted(reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	switch reason {
+	case "ttl":
+		f.ttl++
+	case "capacity":
+		f.capacity++
+	}
+}
+
+// TestIdempotencyCache_TTLWindowExpiresAndIsCounted is the nominal
+// replay/dedup-window proof (ADR-BLUE-012 §6.4/§12, B3-R6-OPS-ORION): a
+// tuple stored at t0 is served from cache within the TTL, and treated as a
+// fresh miss (not returned stale) once the TTL has elapsed — the eviction
+// is counted with reason "ttl".
+func TestIdempotencyCache_TTLWindowExpiresAndIsCounted(t *testing.T) {
+	metrics := &fakeIdempotencyMetrics{}
+	c := NewIdempotencyCacheWithLimits(10*time.Second, 100, metrics)
+	now := time.Unix(1_700_000_000, 0)
+	c.setNowForTest(func() time.Time { return now })
+
+	c.store("k1", sceneIntentResponse{})
+	if _, ok := c.lookup("k1"); !ok {
+		t.Fatal("expected a hit immediately after store, within the TTL window")
+	}
+
+	// Still within the window (9s < 10s TTL): still a hit.
+	now = now.Add(9 * time.Second)
+	if _, ok := c.lookup("k1"); !ok {
+		t.Fatal("expected a hit at 9s into a 10s TTL window")
+	}
+
+	// Past the window: a miss, counted as a "ttl" eviction — never a stale
+	// replay returned past its window.
+	now = now.Add(2 * time.Second) // t0+11s > 10s TTL
+	if _, ok := c.lookup("k1"); ok {
+		t.Fatal("expected a miss past the TTL window (replay window must expire, not persist forever)")
+	}
+	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
+	if metrics.ttl != 1 {
+		t.Fatalf("expected 1 counted ttl eviction, got %d", metrics.ttl)
+	}
+}
+
+// TestIdempotencyCache_SaturationBoundsMemoryAndIsCounted is the
+// saturation proof for the cache's OTHER axis (ADR-BLUE-012 §12/B8 —
+// "surcharge non bornée" is the principal named risk): storing far more
+// distinct tuples than maxEntries never grows the map past the cap, and
+// the eviction that keeps it bounded is counted with reason "capacity".
+// Fail-closed behavior: an evicted tuple's replay is processed FRESH
+// (a miss), never denied outright — bounding memory never blocks traffic.
+func TestIdempotencyCache_SaturationBoundsMemoryAndIsCounted(t *testing.T) {
+	metrics := &fakeIdempotencyMetrics{}
+	const maxEntries = 8
+	// A TTL long enough that capacity, not staleness, is what triggers
+	// eviction — isolates the axis under test from TestIdempotencyCache_
+	// TTLWindowExpiresAndIsCounted above.
+	c := NewIdempotencyCacheWithLimits(time.Hour, maxEntries, metrics)
+	now := time.Unix(1_700_000_000, 0)
+	c.setNowForTest(func() time.Time { return now })
+
+	const totalKeys = 64 // far beyond maxEntries: guarantees saturation
+	for i := 0; i < totalKeys; i++ {
+		now = now.Add(time.Millisecond) // strict insertion order for the oldest-evict check
+		c.store(fmt.Sprintf("k%d", i), sceneIntentResponse{})
+	}
+
+	c.mu.Lock()
+	size := len(c.cache)
+	c.mu.Unlock()
+	if size > maxEntries {
+		t.Fatalf("cache grew to %d entries, want <= %d (maxEntries bound violated — unbounded memory)", size, maxEntries)
+	}
+
+	metrics.mu.Lock()
+	capacityEvictions := metrics.capacity
+	metrics.mu.Unlock()
+	if capacityEvictions == 0 {
+		t.Fatalf("expected counted capacity evictions storing %d keys into a %d-entry cache, got 0", totalKeys, maxEntries)
+	}
+
+	// Fail-closed-but-not-fail-shut: an evicted (oldest) tuple is a MISS on
+	// replay, never an error — the caller re-executes fresh.
+	if _, ok := c.lookup("k0"); ok {
+		t.Fatal("expected the oldest key to have been evicted under capacity pressure")
+	}
+	// The most recently stored key must still be resident.
+	if _, ok := c.lookup(fmt.Sprintf("k%d", totalKeys-1)); !ok {
+		t.Fatal("expected the most recently stored key to survive capacity eviction")
+	}
+}
 
 type fakeWorkload struct {
 	admitErr   error

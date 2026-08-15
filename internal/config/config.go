@@ -167,6 +167,21 @@ type Config struct {
 	EgressBudgetPerStream int
 	EgressBudgetWindowS   int
 
+	// IdempotencyTTLS / IdempotencyMaxEntries bound the scene-intent
+	// replay/dedup cache (ADR-BLUE-012 §6.4/§12, B3-R6-OPS-ORION —
+	// "fenêtres de replay/déduplication"). A replayed intent scoped to the
+	// same (principal, owner, tenant, stream, action, scene_digest, ref_id,
+	// idempotency_key) tuple within IdempotencyTTLS seconds of the first
+	// answer gets the cached typed result; outside the window it is
+	// processed fresh (fail-open on window expiry, matching Gate B's
+	// "no crash-safe durability promised" replay posture, §12 line 167).
+	// IdempotencyMaxEntries additionally bounds the cache's memory
+	// footprint regardless of TTL — an unbounded map is the "surcharge
+	// non bornée" risk §12/B8 names explicitly. ORION_IDEMPOTENCY_TTL_S
+	// (default 60) and ORION_IDEMPOTENCY_MAX_ENTRIES (default 4096).
+	IdempotencyTTLS       int
+	IdempotencyMaxEntries int
+
 	// ViewerCredsRefreshS is the rotation interval for the stream-level Meet
 	// viewer-credentials arming on the LSDP wire (ADR Blue 009 §3.2, issue
 	// #261 — R1). Every ViewerCredsRefreshS seconds Orion re-fetches the
@@ -426,6 +441,30 @@ func Load() (Config, error) {
 		problems = append(problems, "ORION_EGRESS_BUDGET_WINDOW_S must be > 0")
 	} else {
 		cfg.EgressBudgetWindowS = v
+	}
+
+	// Scene-intent idempotency window/cap (ADR-BLUE-012 §6.4/§12). Both
+	// must be > 0 — unlike the egress budget, the dedup cache has no
+	// documented opt-out: §6.4 requires the tuple to be scoped, and an
+	// unbounded/disabled cache reintroduces the "surcharge non bornée"
+	// risk. Defaults chosen from the scene-intent path's own latency
+	// budget (§ Resolution criteria: scene switch ≤ 100ms, poll cadence
+	// 5Hz) — 60s covers many retry cycles of a flaky Prism/Canvas caller
+	// without holding results indefinitely; 4096 entries bounds worst-case
+	// memory to a few MB of small typed responses.
+	if v, err := getInt("ORION_IDEMPOTENCY_TTL_S", 60); err != nil {
+		problems = append(problems, err.Error())
+	} else if v <= 0 {
+		problems = append(problems, "ORION_IDEMPOTENCY_TTL_S must be > 0")
+	} else {
+		cfg.IdempotencyTTLS = v
+	}
+	if v, err := getInt("ORION_IDEMPOTENCY_MAX_ENTRIES", 4096); err != nil {
+		problems = append(problems, err.Error())
+	} else if v <= 0 {
+		problems = append(problems, "ORION_IDEMPOTENCY_MAX_ENTRIES must be > 0")
+	} else {
+		cfg.IdempotencyMaxEntries = v
 	}
 
 	// Viewer-credentials rotation interval (ADR Blue 009 §3.2 / R1). 0

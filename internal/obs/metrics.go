@@ -10,9 +10,16 @@ import (
 type Metrics struct {
 	Registry *prometheus.Registry
 
-	WSConnections  *prometheus.GaugeVec
-	WSMessagesIn   *prometheus.CounterVec
-	WSMessagesOut  *prometheus.CounterVec
+	WSConnections *prometheus.GaugeVec
+	WSMessagesIn  *prometheus.CounterVec
+	WSMessagesOut *prometheus.CounterVec
+	// WSDropped (`orion_ws_dropped_total{scene_id,reason}`) counts a live-
+	// show WS fanout that hit a full subscriber queue (ADR-BLUE-012
+	// §12/B8, B3-R6-OPS-ORION / Orion#274): "collapse" (the subscriber was
+	// answered with a fresh-snapshot reset instead of a silent drop) or
+	// "stuck_timeout" (the subscriber stayed full through the collapse's
+	// own drain-and-seed deadline and was force-closed — the WS layer
+	// reconnects it). Wired from internal/runtime's WSMetrics seam.
 	WSDropped      *prometheus.CounterVec
 	SceneRecompute *prometheus.CounterVec
 	SceneSwitch    prometheus.Counter
@@ -77,6 +84,14 @@ type Metrics struct {
 	// report-vs-fallback race) from the runtime's resume gate. Stale
 	// version/epoch drops stay on `orion_exec_resume_stale_total`.
 	ComplRejected *prometheus.CounterVec
+
+	// IdempotencyEvict (`orion_idempotency_evicted_total{reason}`) counts
+	// scene-intent replay/dedup cache evictions by reason: "ttl" (entry
+	// aged past the replay window) or "capacity" (cache at its entry cap,
+	// oldest evicted) — ADR-BLUE-012 §12/B8, B3-R6-OPS-ORION. A sustained
+	// "capacity" rate signals the window/cap pair is undersized for the
+	// deployment's actual scene-intent traffic — the alert condition.
+	IdempotencyEvict *prometheus.CounterVec
 }
 
 // CompletionRejected counts an endpoint-level completion drop (#86).
@@ -146,6 +161,21 @@ func (m *Metrics) ExecResumeStale(sceneID string) {
 	m.ResumeStale.WithLabelValues(sceneID).Inc()
 }
 
+// IdempotencyEvicted implements the api package's IdempotencyMetrics seam.
+func (m *Metrics) IdempotencyEvicted(reason string) {
+	m.IdempotencyEvict.WithLabelValues(reason).Inc()
+}
+
+// WSCollapsed implements the runtime's WSMetrics seam (Orion#274).
+func (m *Metrics) WSCollapsed(sceneID string) {
+	m.WSDropped.WithLabelValues(sceneID, "collapse").Inc()
+}
+
+// WSStuckClosed implements the runtime's WSMetrics seam (Orion#274).
+func (m *Metrics) WSStuckClosed(sceneID string) {
+	m.WSDropped.WithLabelValues(sceneID, "stuck_timeout").Inc()
+}
+
 // NewMetrics builds a fresh registry with Orion's metric set.
 func NewMetrics() *Metrics {
 	r := prometheus.NewRegistry()
@@ -165,7 +195,7 @@ func NewMetrics() *Metrics {
 		),
 		WSDropped: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "ws", Name: "dropped_total"},
-			[]string{"reason"},
+			[]string{"scene_id", "reason"},
 		),
 		SceneRecompute: prometheus.NewCounterVec(
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "scene", Name: "recompute_total"},
@@ -237,6 +267,10 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "exec", Name: "completion_rejected_total"},
 			[]string{"scene_id", "reason"},
 		),
+		IdempotencyEvict: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "idempotency", Name: "evicted_total"},
+			[]string{"reason"},
+		),
 	}
 
 	r.MustRegister(
@@ -261,6 +295,7 @@ func NewMetrics() *Metrics {
 		m.EffectComplDrop,
 		m.EgressBudgetExc,
 		m.ComplRejected,
+		m.IdempotencyEvict,
 	)
 	return m
 }

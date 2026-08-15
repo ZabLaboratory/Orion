@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -474,4 +475,100 @@ func TestScene_ConcurrentCloseDuringFanoutNeverPanics(t *testing.T) {
 
 	<-done
 	wg.Wait()
+}
+
+// fakeWSMetrics records WSMetrics calls for assertion — the saturation test
+// below proves the collapse is COUNTED, not just structurally correct.
+type fakeWSMetrics struct {
+	mu           sync.Mutex
+	collapsed    int
+	stuckClosed  int
+	collapsedIDs []string
+}
+
+func (f *fakeWSMetrics) WSCollapsed(sceneID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.collapsed++
+	f.collapsedIDs = append(f.collapsedIDs, sceneID)
+}
+
+func (f *fakeWSMetrics) WSStuckClosed(string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.stuckClosed++
+}
+
+// TestScene_FanoutSaturationCollapsesToLatestSnapshotAndCounts is the OPS-
+// ORION / Orion#274 saturation proof (ADR-BLUE-012 §12/B8): once a
+// subscriber's bounded queue is full, fanout must not drop the event
+// silently — it collapses the subscriber onto a FRESH snapshot carrying the
+// scene's LATEST state (never a stale or empty one), and the collapse is
+// counted on the WSMetrics seam. This is the resolution criterion #274
+// itself asks for: "buffer saturé → le consommateur reçoit toujours le
+// dernier état de scène" + "aucun drop silencieux : un collapse est
+// compté/loggé".
+func TestScene_FanoutSaturationCollapsesToLatestSnapshotAndCounts(t *testing.T) {
+	scene := passthroughScene(t, "scene-saturation")
+	metrics := &fakeWSMetrics{}
+	scene.SetWSMetrics(metrics)
+
+	// A subscriber that NEVER drains — the deliberate saturation condition.
+	// Subscribe enforces a 16-message floor regardless of the requested
+	// size (scene.go Subscribe), so 1 is the minimum-buffer case.
+	sub, _ := scene.Subscribe(1)
+	t.Cleanup(sub.Close)
+
+	const totalEmits = 64 // far beyond the 16-slot floor: guarantees overflow
+	var lastValue string
+	for i := 0; i < totalEmits; i++ {
+		lastValue = fmt.Sprintf(`%d`, i)
+		scene.state.Set("score.team_a", json.RawMessage(lastValue))
+		seq, state := scene.state.Snapshot()
+		scene.fanout(&protocol.Snapshot{
+			SceneID:      scene.id,
+			SceneVersion: scene.graph.SceneVersion,
+			Sequence:     seq,
+			State:        state,
+		})
+	}
+
+	metrics.mu.Lock()
+	collapsed := metrics.collapsed
+	stuck := metrics.stuckClosed
+	metrics.mu.Unlock()
+
+	if collapsed == 0 {
+		t.Fatalf("expected at least one counted collapse over %d emits into a saturated queue, got 0 (collapse is silently unobserved)", totalEmits)
+	}
+	if stuck != 0 {
+		// drainAndSeed always finds room in an unread queue (it drains
+		// first) — a stuck-close here means drainAndSeed itself regressed,
+		// not saturation.
+		t.Fatalf("expected 0 stuck-closes on an otherwise-healthy (never Close'd) subscriber, got %d", stuck)
+	}
+
+	// The subscriber must still be able to observe the LATEST state, not a
+	// stale/empty one — drain everything queued and check the final
+	// message's state.
+	var final *protocol.Snapshot
+	drained := 0
+drain:
+	for {
+		select {
+		case msg := <-sub.Out:
+			drained++
+			if snap, ok := msg.(*protocol.Snapshot); ok {
+				final = snap
+			}
+		default:
+			break drain
+		}
+	}
+	if final == nil {
+		t.Fatalf("no snapshot observed after saturation+collapse (drained %d messages) — consumer lost the scene state entirely", drained)
+	}
+	if got := string(final.State["score.team_a"]); got != lastValue {
+		t.Fatalf("consumer's final observed state = %q, want latest %q (collapse must carry the LATEST state, not a stale one)", got, lastValue)
+	}
 }

@@ -107,6 +107,9 @@ func run() error {
 	// orion_event_shed_total / orion_task_preempt_total /
 	// orion_parked_tasks land on the internal scrape endpoint.
 	show.SetExecMetrics(metrics)
+	// WS fanout back-pressure observability (Orion#274, ADR-BLUE-012
+	// §12/B8): orion_ws_dropped_total{reason="collapse"|"stuck_timeout"}.
+	show.SetWSMetrics(metrics)
 	defer show.Stop()
 
 	// LSDP/1.1 wire (ADR 007 §C.3b) — built and installed on the show
@@ -325,7 +328,11 @@ func run() error {
 		// same dedup tuple + idempotency_key returns the prior typed result
 		// instead of re-running Prepare/Take and restarting the bridge.
 		// Unconditional — applies whether or not a bridge is wired below.
-		sceneIntent.Idempotency = api.NewIdempotencyCache()
+		sceneIntent.Idempotency = api.NewIdempotencyCacheWithLimits(
+			time.Duration(cfg.IdempotencyTTLS)*time.Second,
+			cfg.IdempotencyMaxEntries,
+			metrics,
+		)
 		// Pair the bluehost instance with the SAME lsdp.Wire scene the
 		// legacy Show-backed path already drives (B3-R6-12-ORION-PROJECTION,
 		// Conduit's verdict on #331: internal/lsdp is the sole Solar
