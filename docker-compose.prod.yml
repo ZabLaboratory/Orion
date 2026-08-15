@@ -120,6 +120,12 @@ services:
     restart: unless-stopped
     user: "1000:1000"
     command: ["uvicorn", "zabgate.identity_agent.server:app", "--uds", "/run/zab/workload-agent.sock"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,stat; raise SystemExit(0 if stat.S_ISSOCK(os.stat('/run/zab/workload-agent.sock').st_mode) else 1)"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
     environment:
       AUTH_URL: https://zabauth-workload.internal:4401
       AUTH_CA_CERTIFICATE: /etc/zab/workload/ca.pem
