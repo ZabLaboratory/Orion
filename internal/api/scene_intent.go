@@ -547,11 +547,12 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 		target = blueproject.TargetProgram
 	}
 	bridge := bluewire.NewBridge(deps.Host, slot, mirror, claims.SceneID, claims.SceneDigest, claims.RefID, target, claims.RevisionID, intentID)
+	logger := deps.Logger
+	bridge.SetLogger(logger)
 	interval := deps.ProjectionInterval
 	if interval <= 0 {
 		interval = defaultProjectionInterval
 	}
-	logger := deps.Logger
 	deps.Bridges.Start(slot, bridge, interval, func(err error) {
 		if logger != nil {
 			logger.Warn("bluewire bridge step failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
@@ -589,6 +590,27 @@ type hostStatusResponse struct {
 type hostSlotStatus struct {
 	SceneDigest string `json:"scene_digest,omitempty"`
 	Loaded      bool   `json:"loaded"`
+
+	// Projection is the identity of the most recently forwarded LSDP
+	// delta for this slot's bridge, if any has forwarded yet — the SAME
+	// correlation_id/render_revision stamped on the wire (bluewire.Bridge.
+	// LastForwarded). Read-only, stateless (in-memory only, never
+	// persisted, lost on restart like every other field here), and purely
+	// a polling convenience: an external observer (Refs B3-R6-17-PULSAR)
+	// can already read this identity off a live LSDP WS subscription
+	// today without this field existing at all. Orion never waits on
+	// anyone reading it, and this field never reflects anything about
+	// whether the projection actually reached the antenna — that
+	// confirmation is PGM, observed later and elsewhere (ADR-BLUE-012
+	// §4.4/B17). Omitted entirely when no bridge is running or none has
+	// forwarded yet.
+	Projection *hostSlotProjection `json:"projection,omitempty"`
+}
+
+type hostSlotProjection struct {
+	Sequence       uint64 `json:"sequence"`
+	RenderRevision string `json:"render_revision,omitempty"`
+	CorrelationID  string `json:"correlation_id,omitempty"`
 }
 
 func getHostStatus(deps SceneIntentDeps) http.HandlerFunc {
@@ -596,10 +618,39 @@ func getHostStatus(deps SceneIntentDeps) http.HandlerFunc {
 		previewDigest := deps.Host.Digest(bluehost.SlotPreview)
 		onAirDigest := deps.Host.Digest(bluehost.SlotOnAir)
 		writeJSON(w, http.StatusOK, hostStatusResponse{
-			Preview: hostSlotStatus{SceneDigest: previewDigest, Loaded: previewDigest != ""},
-			OnAir:   hostSlotStatus{SceneDigest: onAirDigest, Loaded: onAirDigest != ""},
+			Preview: hostSlotStatus{
+				SceneDigest: previewDigest, Loaded: previewDigest != "",
+				Projection: lastProjection(deps.Bridges, bluehost.SlotPreview),
+			},
+			OnAir: hostSlotStatus{
+				SceneDigest: onAirDigest, Loaded: onAirDigest != "",
+				Projection: lastProjection(deps.Bridges, bluehost.SlotOnAir),
+			},
 		})
 	})
+}
+
+// lastProjection reads slot's running bridge (if any) for its most recently
+// forwarded identity. A nil registry, no running bridge, or a bridge that
+// has never forwarded all return nil — never a zero-value/invented
+// identity standing in for "unknown".
+func lastProjection(bridges *bluewire.Registry, slot bluehost.Slot) *hostSlotProjection {
+	if bridges == nil {
+		return nil
+	}
+	bridge := bridges.Current(slot)
+	if bridge == nil {
+		return nil
+	}
+	identity, ok := bridge.LastForwarded()
+	if !ok {
+		return nil
+	}
+	return &hostSlotProjection{
+		Sequence:       identity.Sequence,
+		RenderRevision: identity.RenderRevision,
+		CorrelationID:  identity.CorrelationID,
+	}
 }
 
 func actionResultStatus(a attestation.Action) string {

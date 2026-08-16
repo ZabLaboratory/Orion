@@ -76,7 +76,36 @@ type Wire struct {
 	// mode, or no CredsFetcher wired). Set once at boot by EnableViewerCreds,
 	// before any scene goroutine runs; read-only thereafter. See viewer_arm.go.
 	viewer *viewerArmer
+
+	// snapshotMetrics observes the LSDP Snapshot frame's structural inability
+	// to carry projection identity (ADR-BLUE-012 §16.1, B3-R6-16-ORION-PGM) —
+	// never a fix (the wire type has no metadata field, both Orion's own and
+	// the pinned Lumencast/lumencast-go@v0.3.1 kit's), only an honest count of
+	// the gap. nil = disabled (SetSnapshotMetrics never called), same nil-safe
+	// posture as every other optional sink in this codebase. Set once at boot,
+	// before any scene goroutine runs; read-only thereafter.
+	snapshotMetrics SnapshotMetrics
 }
+
+// SnapshotMetrics is the LSDP Snapshot-reseed identity-gap observability
+// seam. A Snapshot frame (bootstrap, scene switch — never the kit's own
+// per-subscriber backpressure collapse, which is internal to the pinned kit
+// and exposes no hook at all) structurally cannot carry
+// correlation_id/render_revision: SnapshotIdentityGap counts the moment
+// Orion forwards one for a scene that DOES have a known current projection
+// identity — the identity is real, known, and simply does not ride this
+// frame type. A scene with no known identity yet (nothing has forwarded a
+// Delta for it) is not a gap and is not counted here.
+type SnapshotMetrics interface {
+	SnapshotIdentityGap(sceneID string)
+}
+
+// SetSnapshotMetrics installs the Snapshot identity-gap metrics sink.
+// nil-safe: a nil sink (never called) disables counting; the Snapshot
+// forward itself is unaffected either way — same posture as
+// SetWSMetrics/SetExecMetrics. Call once at boot, before any scene is
+// loaded.
+func (w *Wire) SetSnapshotMetrics(m SnapshotMetrics) { w.snapshotMetrics = m }
 
 // EnableViewerCreds turns on stream-level Meet viewer-credentials arming on
 // this wire (ADR Blue 009 §3.2, issue #261). Called once at boot, before any

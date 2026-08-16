@@ -3,6 +3,7 @@ package lsdp
 import (
 	"bytes"
 	"encoding/json"
+	"sync"
 
 	lproto "github.com/Lumencast/lumencast-go/protocol"
 	lserver "github.com/Lumencast/lumencast-go/server"
@@ -34,6 +35,15 @@ type sceneMirror struct {
 	// isLSDPScalar shape filter alone backstops the wire — never an
 	// all-drop black screen.
 	bound boundLeafSet
+
+	// identMu guards lastIdentity/hasIdentity — the sceneMirror's own
+	// best-effort memory of the most recent projection identity a Delta
+	// carried, kept ONLY so a later Snapshot forward can report whether it
+	// is dropping a known identity or has none to drop. Never itself sent
+	// on any wire; never load-bearing.
+	identMu      sync.Mutex
+	lastIdentity lproto.ProjectionMetadata
+	hasIdentity  bool
 }
 
 var _ runtime.SceneMirror = (*sceneMirror)(nil)
@@ -43,6 +53,7 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 	switch v := msg.(type) {
 	case *protocol.Snapshot:
 		m.scene.SetVersion(v.SceneVersion)
+		m.observeSnapshotIdentityGap()
 		if len(v.State) == 0 {
 			return
 		}
@@ -80,15 +91,70 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 			// Nothing wire-legal to emit; Emit rejects empty maps anyway.
 			return
 		}
+		metadata := mapProjectionMetadata(v)
+		m.recordIdentity(metadata)
 		_ = m.scene.EmitWithCauseAndMetadata(
 			patches,
 			mapCause(v.Cause),
-			mapProjectionMetadata(v),
+			metadata,
 		)
 	case *protocol.SceneChanged:
 		// The scene switch is driven authoritatively from the Show via
 		// Wire.SetActive (kit Server.SetActive migrates live subs with
 		// its own scene_changed + snapshot). Nothing to do per-scene.
+	}
+}
+
+// recordIdentity remembers the projection identity of the most recent Delta
+// this mirror forwarded — metadata may be nil (a Delta with no projection
+// fields at all, e.g. a legacy-engine-driven scene that never had one), in
+// which case any PRIOR known identity is deliberately kept, not cleared: a
+// later Snapshot on the SAME scene should still report the last real
+// identity it dropped, not "none" just because the most recent Delta
+// happened to carry no metadata.
+func (m *sceneMirror) recordIdentity(metadata *lproto.ProjectionMetadata) {
+	if metadata == nil {
+		return
+	}
+	m.identMu.Lock()
+	m.lastIdentity = *metadata
+	m.hasIdentity = true
+	m.identMu.Unlock()
+}
+
+// observeSnapshotIdentityGap makes explicit, at every Snapshot forward,
+// whether a known projection identity exists for this scene that the
+// Snapshot frame is about to (silently, by wire-schema construction) drop.
+// It NEVER attaches the identity to the frame — protocol.Snapshot (both
+// Orion's own type and the pinned Lumencast/lumencast-go@v0.3.1 kit's own
+// type) has no metadata field to attach it to; that limitation is not
+// fixable from this package. This only reports the gap: Warn + a counted
+// metric when a real identity is being dropped, Info when none is known
+// yet (not a loss — nothing to drop). A nil wire logger/metrics sink makes
+// this a no-op either way, matching every other optional sink here.
+func (m *sceneMirror) observeSnapshotIdentityGap() {
+	m.identMu.Lock()
+	identity, known := m.lastIdentity, m.hasIdentity
+	m.identMu.Unlock()
+
+	if !known {
+		if m.wire.logger != nil {
+			m.wire.logger.Info("lsdp snapshot reseed: no projection identity known yet", "scene_id", m.sceneID)
+		}
+		return
+	}
+	if m.wire.logger != nil {
+		m.wire.logger.Warn("lsdp snapshot reseed drops known projection identity: Snapshot frame has no metadata field (wire-schema limitation, not a fixable bug)",
+			"scene_id", m.sceneID,
+			"target", identity.Target,
+			"scene_digest", identity.SceneDigest,
+			"runtime_instance_id", identity.RuntimeInstanceID,
+			"render_revision", identity.RenderRevision,
+			"correlation_id", identity.CorrelationID,
+		)
+	}
+	if m.wire.snapshotMetrics != nil {
+		m.wire.snapshotMetrics.SnapshotIdentityGap(m.sceneID)
 	}
 }
 
