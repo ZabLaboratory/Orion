@@ -40,6 +40,7 @@ type Registry struct {
 type bridgeRun struct {
 	cancel context.CancelFunc
 	done   chan struct{}
+	bridge *Bridge
 }
 
 // NewRegistry builds an empty Registry.
@@ -78,7 +79,7 @@ func (r *Registry) Start(slot bluehost.Slot, bridge *Bridge, interval time.Durat
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &bridgeRun{cancel: cancel, done: make(chan struct{})}
+	run := &bridgeRun{cancel: cancel, done: make(chan struct{}), bridge: bridge}
 	r.mu.Lock()
 	r.running[slot] = run
 	r.mu.Unlock()
@@ -115,6 +116,20 @@ func (r *Registry) Running(slot bluehost.Slot) bool {
 	defer r.mu.Unlock()
 	_, ok := r.running[slot]
 	return ok
+}
+
+// Current returns the Bridge currently running for slot, or nil if none is.
+// Read-only introspection seam for a status route (GET /api/v1/host/status)
+// — a caller polling this never blocks Start/Stop and never mutates the
+// returned Bridge; it only calls LastForwarded on it.
+func (r *Registry) Current(slot bluehost.Slot) *Bridge {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	run, ok := r.running[slot]
+	if !ok {
+		return nil
+	}
+	return run.bridge
 }
 
 // StopAll stops every running bridge. Intended for process shutdown.

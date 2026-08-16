@@ -1,9 +1,12 @@
 package bluewire
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,6 +98,124 @@ func TestBridge_StepOnce_ForwardsDelta(t *testing.T) {
 	}
 	if delta.SceneID != "scene-1" || delta.Sequence != 3 || len(delta.Patches) != 1 {
 		t.Fatalf("unexpected delta: %+v", delta)
+	}
+}
+
+// TestBridge_StepOnce_LogsSuccessfulForward proves the ADR-BLUE-012 §16.1
+// out-of-wire trace actually fires with the full projection identity on a
+// real forward — the gap this test closes is that bridge.go previously had
+// no log path at all for a successful step (only StepOnce's own error
+// return was observable), so nothing outside a live WS subscriber could
+// learn "this correlation_id was just projected to this slot at sequence N"
+// (Refs B3-R6-16-ORION-PGM, B3-R6-17-PULSAR).
+func TestBridge_StepOnce_LogsSuccessfulForward(t *testing.T) {
+	steps := &fakeSteps{results: []StepResult{
+		{RuntimeSequence: 5, Outputs: map[string]any{"title.text": "hello"}},
+	}}
+	mirror := &fakeMirror{}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	b := &Bridge{
+		steps: steps, slot: bluehost.SlotOnAir, mirror: mirror,
+		sceneID: "scene-1", sceneDigest: "sha256:abc", instanceID: "inst-1",
+		target: blueproject.TargetProgram, renderRevision: "rev-1", correlationID: "corr-1",
+	}
+	b.SetLogger(logger)
+
+	if err := b.StepOnce(); err != nil {
+		t.Fatalf("StepOnce: %v", err)
+	}
+
+	out := buf.String()
+	for _, want := range []string{
+		"bluewire projection forwarded",
+		"scene_id=scene-1",
+		"target=program",
+		"scene_digest=sha256:abc",
+		"runtime_instance_id=inst-1",
+		"render_revision=rev-1",
+		"correlation_id=corr-1",
+		"sequence=5",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected log line to contain %q, got: %s", want, out)
+		}
+	}
+}
+
+// TestBridge_StepOnce_NoLogWithoutLogger proves SetLogger is genuinely
+// optional (nil-safe, matching SetWSMetrics/SetExecMetrics elsewhere) — a
+// bridge that never had SetLogger called behaves exactly as before this
+// change: no panic, no log, forward unaffected.
+func TestBridge_StepOnce_NoLogWithoutLogger(t *testing.T) {
+	steps := &fakeSteps{results: []StepResult{
+		{RuntimeSequence: 1, Outputs: map[string]any{"a": "1"}},
+	}}
+	mirror := &fakeMirror{}
+	b := &Bridge{steps: steps, slot: bluehost.SlotPreview, mirror: mirror, target: blueproject.TargetPreview}
+
+	if err := b.StepOnce(); err != nil {
+		t.Fatalf("StepOnce: %v", err)
+	}
+	if len(mirror.forwarded) != 1 {
+		t.Fatalf("expected the forward to still happen with no logger installed, got %d", len(mirror.forwarded))
+	}
+}
+
+// TestBridge_StepOnce_NoLogOnEmptyOrDuplicateProjection proves the trace is
+// scoped to genuine forwards only: an empty-projection step (nothing to
+// mirror) and an identical-projection replay (deduplicated at the wire,
+// TestBridge_TickOnce_UsesInjectedClockAndDeterministicProjection already
+// covers the dedup mechanism itself) must not manufacture a false forward
+// trace for either case.
+func TestBridge_StepOnce_NoLogOnEmptyOrDuplicateProjection(t *testing.T) {
+	steps := &fakeSteps{results: []StepResult{
+		{RuntimeSequence: 1, Outputs: nil}, // empty projection: recordRuntimeSequence path, no forward
+	}}
+	mirror := &fakeMirror{}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	b := &Bridge{steps: steps, slot: bluehost.SlotOnAir, mirror: mirror, target: blueproject.TargetProgram}
+	b.SetLogger(logger)
+
+	if err := b.StepOnce(); err != nil {
+		t.Fatalf("StepOnce: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("expected no forward trace for an empty projection, got: %s", buf.String())
+	}
+}
+
+// TestBridge_TickOnce_NoLogOnDeduplicatedReplay proves a replayed identical
+// projection — deduplicated before ever reaching mirror.Forward — does not
+// manufacture a second forward trace. Same fixture as
+// TestBridge_TickOnce_UsesInjectedClockAndDeterministicProjection, with a
+// logger attached to assert on the trace count directly.
+func TestBridge_TickOnce_NoLogOnDeduplicatedReplay(t *testing.T) {
+	ticks := &fakeSteps{results: []StepResult{
+		{Outputs: map[string]any{"a": "first"}},
+		{Outputs: map[string]any{"a": "first"}},
+	}}
+	mirror := &fakeMirror{}
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&buf, nil))
+	b := &Bridge{
+		ticks: ticks, slot: bluehost.SlotOnAir, mirror: mirror,
+		sceneID: "scene-1", target: blueproject.TargetProgram,
+	}
+	b.SetLogger(logger)
+
+	if err := b.TickOnce(0.1); err != nil {
+		t.Fatalf("first TickOnce: %v", err)
+	}
+	if err := b.TickOnce(0.1); err != nil {
+		t.Fatalf("duplicate TickOnce: %v", err)
+	}
+	if len(mirror.forwarded) != 1 {
+		t.Fatalf("expected the replay to be deduplicated at the wire, got %d forwards", len(mirror.forwarded))
+	}
+	if got := strings.Count(buf.String(), "bluewire projection forwarded"); got != 1 {
+		t.Fatalf("expected exactly 1 forward trace (not one per TickOnce call), got %d in: %s", got, buf.String())
 	}
 }
 

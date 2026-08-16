@@ -21,6 +21,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/blueproject"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
+	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
@@ -862,6 +863,82 @@ func TestGetHostStatus_ReflectsPreparedSlot(t *testing.T) {
 	}
 	if resp.OnAir.Loaded {
 		t.Fatalf("expected on_air empty, got %+v", resp.OnAir)
+	}
+}
+
+// TestGetHostStatus_ReflectsLastForwardedProjection proves the priority-3
+// extension end to end: once a slot's bridge has forwarded at least one
+// projection, GET /api/v1/host/status surfaces the SAME correlation_id/
+// render_revision that rode the LSDP delta (bluewire.Bridge.LastForwarded),
+// as a stateless polling convenience — never anything Orion waited on to
+// answer this request (Refs B3-R6-16-ORION-PGM).
+func TestGetHostStatus_ReflectsLastForwardedProjection(t *testing.T) {
+	host := bluehost.NewHost()
+	// chatDrivenProgram (not minimalProgram, which is display-only with no
+	// entrypoint output) is the same fixture
+	// TestChatDrivenScene_InjectionOrderingIdempotenceProjection already
+	// proves emits a real baseline projection on the very first tick, with
+	// zero events injected — exactly the deterministic, non-empty forward
+	// this test needs.
+	leaf, err := providers.CanonicalPlatformLeaf("twitch", "zablab_chat", "chat_message")
+	if err != nil {
+		t.Fatalf("CanonicalPlatformLeaf: %v", err)
+	}
+	program := chatDrivenProgram(t, leaf)
+	if err := host.Prepare(bluehost.SlotOnAir, "instance-1", "scene-1", "sha256:abc", program, nil, nil, nil); err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Release(bluehost.SlotOnAir, "test-cleanup") })
+
+	bridge := bluewire.NewBridge(host, bluehost.SlotOnAir, &recordingMirror{}, "scene-1", "sha256:abc", "instance-1", blueproject.TargetProgram, "rev-1", "corr-1")
+	if err := bridge.TickOnce(0.1); err != nil {
+		t.Fatalf("bridge.TickOnce: %v", err)
+	}
+
+	bridges := bluewire.NewRegistry()
+	bridges.Start(bluehost.SlotOnAir, bridge, time.Hour, nil)
+	t.Cleanup(bridges.StopAll)
+
+	deps := SceneIntentDeps{Host: host, Bridges: bridges}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/host/status", nil)
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+
+	rec := httptest.NewRecorder()
+	getHostStatus(deps)(rec, req)
+	var resp hostStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.OnAir.Projection == nil {
+		t.Fatalf("expected on_air projection to be populated, got %+v", resp.OnAir)
+	}
+	if resp.OnAir.Projection.CorrelationID != "corr-1" || resp.OnAir.Projection.RenderRevision != "rev-1" {
+		t.Fatalf("unexpected projection identity: %+v", resp.OnAir.Projection)
+	}
+	if resp.Preview.Projection != nil {
+		t.Fatalf("expected preview projection to stay nil (no bridge running there), got %+v", resp.Preview.Projection)
+	}
+}
+
+// TestGetHostStatus_NilBridgesOmitsProjection proves the field degrades to
+// absent (never a zero-value/invented identity) when deps.Bridges is nil —
+// the same dark-by-default posture MirrorFor/Idempotency already have
+// (scene_intent.go's SceneIntentDeps doc comments).
+func TestGetHostStatus_NilBridgesOmitsProjection(t *testing.T) {
+	deps := SceneIntentDeps{Host: bluehost.NewHost()}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/host/status", nil)
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+
+	rec := httptest.NewRecorder()
+	getHostStatus(deps)(rec, req)
+	var resp hostStatusResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Preview.Projection != nil || resp.OnAir.Projection != nil {
+		t.Fatalf("expected no projection with a nil Bridges registry, got %+v", resp)
 	}
 }
 

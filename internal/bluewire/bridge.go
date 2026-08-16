@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -91,6 +92,7 @@ type Bridge struct {
 	target         blueproject.Target
 	renderRevision string
 	correlationID  string
+	logger         *slog.Logger
 
 	mu                   sync.Mutex
 	lastRuntimeSequence  uint64
@@ -122,6 +124,15 @@ func NewBridge(host *bluehost.Host, slot bluehost.Slot, mirror runtime.SceneMirr
 		correlationID:  correlationID,
 	}
 }
+
+// SetLogger installs the structured-trace sink for successful, non-duplicate
+// forwards (ADR-BLUE-012 §16.1 — "les traces corrèlent Prism, Canvas/Gate,
+// Blue, Orion, Solar et Pulsar"). nil-safe: a nil logger (SetLogger never
+// called) disables tracing; the forward itself is unaffected either way —
+// same posture as SetWSMetrics/SetExecMetrics elsewhere in this codebase.
+// Call before Run/StepOnce/TickOnce; not safe to change concurrently with a
+// running bridge.
+func (b *Bridge) SetLogger(logger *slog.Logger) { b.logger = logger }
 
 // StepOnce steps the underlying instance once and forwards the result.
 // An empty projection (no wire-legal outputs this step) is a no-op —
@@ -187,7 +198,69 @@ func (b *Bridge) step(deltaSeconds float64) error {
 		CorrelationID:     proj.CorrelationID,
 		Patches:           patches,
 	})
+	b.logForward(sequence, proj)
 	return nil
+}
+
+// logForward emits the out-of-wire trace an external PGM observer (Refs
+// B3-R6-17-PULSAR) correlates by TIME against its own frame-level
+// observation — never a substitute for that observation, and never
+// anything Orion waits on (ADR-BLUE-012 §4.4/B17: PGM is truth observed
+// later, not an Orion transaction). A nil logger (SetLogger never called)
+// makes this a no-op, matching every other optional sink in this codebase.
+func (b *Bridge) logForward(sequence uint64, proj blueproject.Projection) {
+	if b.logger == nil {
+		return
+	}
+	b.logger.Info("bluewire projection forwarded",
+		"scene_id", b.sceneID,
+		"slot", b.slot,
+		"sequence", sequence,
+		"target", proj.Target,
+		"scene_digest", proj.SceneDigest,
+		"runtime_instance_id", proj.RuntimeInstanceID,
+		"render_revision", proj.RenderRevision,
+		"correlation_id", proj.CorrelationID,
+	)
+}
+
+// ForwardedIdentity is the projection identity of the most recent
+// successful forward this Bridge made — the same fields stamped on every
+// protocol.Delta it produces (blueproject.Project's Target/SceneDigest/
+// RuntimeInstanceID/RenderRevision/CorrelationID), plus the wire Sequence
+// they rode on. Read-only snapshot; never mutated by a caller.
+type ForwardedIdentity struct {
+	Sequence          uint64
+	SceneDigest       string
+	RuntimeInstanceID string
+	Target            string
+	RenderRevision    string
+	CorrelationID     string
+}
+
+// LastForwarded reports the identity of the most recent successful,
+// non-duplicate forward, and whether one has happened yet. This is a
+// stateless, in-memory snapshot — nothing here is persisted, and nothing
+// about it makes Orion wait on anything: a caller (e.g. a read-only status
+// route) polls it opportunistically, the Bridge itself never blocks or
+// changes behavior because it was read. Sequence starts at 0 and only ever
+// becomes positive via sequenceFor, so ok reports the same thing sequence>0
+// would — kept explicit so a caller never has to know that invariant.
+func (b *Bridge) LastForwarded() (identity ForwardedIdentity, ok bool) {
+	b.mu.Lock()
+	sequence := b.lastOutputSequence
+	b.mu.Unlock()
+	if sequence == 0 {
+		return ForwardedIdentity{}, false
+	}
+	return ForwardedIdentity{
+		Sequence:          sequence,
+		SceneDigest:       b.sceneDigest,
+		RuntimeInstanceID: b.instanceID,
+		Target:            string(b.target),
+		RenderRevision:    b.renderRevision,
+		CorrelationID:     b.correlationID,
+	}, true
 }
 
 func (b *Bridge) advance(deltaSeconds float64) (StepResult, error) {
