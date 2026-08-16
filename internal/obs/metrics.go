@@ -95,13 +95,17 @@ type Metrics struct {
 
 	// LSDPSnapshotIdentityGap (`orion_lsdp_snapshot_identity_gap_total{scene_id}`)
 	// counts an LSDP Snapshot reseed (bootstrap or scene switch, driven by
-	// internal/lsdp.sceneMirror — NOT the kit's own per-subscriber
-	// backpressure collapse, which is internal to the pinned
-	// Lumencast/lumencast-go@v0.3.1 kit and exposes no hook) that dropped a
-	// KNOWN projection identity because protocol.Snapshot has no metadata
-	// field, on either side of the wire (ADR-BLUE-012 §16.1,
-	// B3-R6-16-ORION-PGM). Never incremented when no identity was known yet
-	// — that is not a gap.
+	// internal/lsdp.sceneMirror) that dropped a KNOWN projection identity
+	// (ADR-BLUE-012 §16.1, B3-R6-16-ORION-PGM). Never incremented when no
+	// identity was known yet — that is not a gap.
+	//
+	// Since lumencast-go 0c7cfc6 (#22, pin bumped alongside this comment),
+	// protocol.Snapshot gained the same projection fields as Delta, and the
+	// kit's Scene now stamps its last known metadata onto every Snapshot it
+	// constructs — so a known identity is structurally guaranteed to ride
+	// the frame (internal/lsdp/mirror.go::observeSnapshotIdentityGap). This
+	// counter is expected to report zero under current code; it is kept as
+	// a regression guard against a future desync, not deleted.
 	LSDPSnapshotIdentityGap *prometheus.CounterVec
 }
 

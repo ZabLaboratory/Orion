@@ -38,9 +38,12 @@ type sceneMirror struct {
 
 	// identMu guards lastIdentity/hasIdentity — the sceneMirror's own
 	// best-effort memory of the most recent projection identity a Delta
-	// carried, kept ONLY so a later Snapshot forward can report whether it
-	// is dropping a known identity or has none to drop. Never itself sent
-	// on any wire; never load-bearing.
+	// carried, kept so a later Snapshot forward can report whether an
+	// identity is known, and (as a regression check, see
+	// observeSnapshotIdentityGap) confirm it is expected to ride the
+	// outgoing Snapshot frame via the kit's own stamping. Never itself sent
+	// on any wire; never load-bearing — the kit's *lserver.Scene carries its
+	// own independent copy (lastMetadata) that actually gets stamped.
 	identMu      sync.Mutex
 	lastIdentity lproto.ProjectionMetadata
 	hasIdentity  bool
@@ -123,15 +126,33 @@ func (m *sceneMirror) recordIdentity(metadata *lproto.ProjectionMetadata) {
 }
 
 // observeSnapshotIdentityGap makes explicit, at every Snapshot forward,
-// whether a known projection identity exists for this scene that the
-// Snapshot frame is about to (silently, by wire-schema construction) drop.
-// It NEVER attaches the identity to the frame — protocol.Snapshot (both
-// Orion's own type and the pinned Lumencast/lumencast-go@v0.3.1 kit's own
-// type) has no metadata field to attach it to; that limitation is not
-// fixable from this package. This only reports the gap: Warn + a counted
-// metric when a real identity is being dropped, Info when none is known
-// yet (not a loss — nothing to drop). A nil wire logger/metrics sink makes
-// this a no-op either way, matching every other optional sink here.
+// whether a known projection identity exists for this scene, and whether
+// the upcoming Snapshot frame (m.scene.Set, below in Forward) is expected to
+// carry it.
+//
+// Before lumencast-go 0c7cfc6 (#22), protocol.Snapshot (the kit's wire type)
+// had no metadata field at all — a known identity was unconditionally
+// dropped on every Snapshot forward, and this function counted that as a
+// real, unavoidable loss (Warn + metric). Since 0c7cfc6, m.scene
+// (*lserver.Scene) remembers the metadata of the most recent
+// EmitWithCauseAndMetadata call as its own lastMetadata and stamps it onto
+// every Snapshot it later constructs. recordIdentity (below) updates
+// m.lastIdentity/m.hasIdentity on that exact same call, against that exact
+// same *lserver.Scene — so known==true here structurally guarantees the
+// frame the kit is about to build for this scene will carry the identity.
+// This is no longer a gap: log at Info for visibility, and do NOT count it —
+// counting it would be a permanent false positive (a metric that cries wolf
+// after the underlying bug is fixed is worse than no metric).
+// SnapshotIdentityGap is kept wired (see wire.go's snapshotMetrics doc) as a
+// regression guard, not deleted — it would need a NEW divergence between
+// this bookkeeping and the kit's own state to ever have something real to
+// count again, which nothing in this package currently causes.
+//
+// The !known branch is unaffected by the bump: the kit legitimately omits
+// the metadata fields when nothing was ever learned for this scene — that
+// is not a loss, only Info-logged, never counted. A nil wire logger/metrics
+// sink makes this a no-op either way, matching every other optional sink
+// here.
 func (m *sceneMirror) observeSnapshotIdentityGap() {
 	m.identMu.Lock()
 	identity, known := m.lastIdentity, m.hasIdentity
@@ -144,7 +165,7 @@ func (m *sceneMirror) observeSnapshotIdentityGap() {
 		return
 	}
 	if m.wire.logger != nil {
-		m.wire.logger.Warn("lsdp snapshot reseed drops known projection identity: Snapshot frame has no metadata field (wire-schema limitation, not a fixable bug)",
+		m.wire.logger.Info("lsdp snapshot reseed carries known projection identity (lumencast-go stamps Scene.lastMetadata onto the Snapshot frame)",
 			"scene_id", m.sceneID,
 			"target", identity.Target,
 			"scene_digest", identity.SceneDigest,
@@ -152,9 +173,6 @@ func (m *sceneMirror) observeSnapshotIdentityGap() {
 			"render_revision", identity.RenderRevision,
 			"correlation_id", identity.CorrelationID,
 		)
-	}
-	if m.wire.snapshotMetrics != nil {
-		m.wire.snapshotMetrics.SnapshotIdentityGap(m.sceneID)
 	}
 }
 
