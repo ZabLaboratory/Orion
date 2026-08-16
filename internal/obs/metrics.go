@@ -92,6 +92,17 @@ type Metrics struct {
 	// "capacity" rate signals the window/cap pair is undersized for the
 	// deployment's actual scene-intent traffic — the alert condition.
 	IdempotencyEvict *prometheus.CounterVec
+
+	// LSDPSnapshotIdentityGap (`orion_lsdp_snapshot_identity_gap_total{scene_id}`)
+	// counts an LSDP Snapshot reseed (bootstrap or scene switch, driven by
+	// internal/lsdp.sceneMirror — NOT the kit's own per-subscriber
+	// backpressure collapse, which is internal to the pinned
+	// Lumencast/lumencast-go@v0.3.1 kit and exposes no hook) that dropped a
+	// KNOWN projection identity because protocol.Snapshot has no metadata
+	// field, on either side of the wire (ADR-BLUE-012 §16.1,
+	// B3-R6-16-ORION-PGM). Never incremented when no identity was known yet
+	// — that is not a gap.
+	LSDPSnapshotIdentityGap *prometheus.CounterVec
 }
 
 // CompletionRejected counts an endpoint-level completion drop (#86).
@@ -164,6 +175,11 @@ func (m *Metrics) ExecResumeStale(sceneID string) {
 // IdempotencyEvicted implements the api package's IdempotencyMetrics seam.
 func (m *Metrics) IdempotencyEvicted(reason string) {
 	m.IdempotencyEvict.WithLabelValues(reason).Inc()
+}
+
+// SnapshotIdentityGap implements the lsdp package's SnapshotMetrics seam.
+func (m *Metrics) SnapshotIdentityGap(sceneID string) {
+	m.LSDPSnapshotIdentityGap.WithLabelValues(sceneID).Inc()
 }
 
 // WSCollapsed implements the runtime's WSMetrics seam (Orion#274).
@@ -271,6 +287,10 @@ func NewMetrics() *Metrics {
 			prometheus.CounterOpts{Namespace: "orion", Subsystem: "idempotency", Name: "evicted_total"},
 			[]string{"reason"},
 		),
+		LSDPSnapshotIdentityGap: prometheus.NewCounterVec(
+			prometheus.CounterOpts{Namespace: "orion", Subsystem: "lsdp", Name: "snapshot_identity_gap_total"},
+			[]string{"scene_id"},
+		),
 	}
 
 	r.MustRegister(
@@ -296,6 +316,7 @@ func NewMetrics() *Metrics {
 		m.EgressBudgetExc,
 		m.ComplRejected,
 		m.IdempotencyEvict,
+		m.LSDPSnapshotIdentityGap,
 	)
 	return m
 }

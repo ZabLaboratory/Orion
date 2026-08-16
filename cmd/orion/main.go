@@ -130,6 +130,12 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		// LSDP Snapshot identity-gap observability (ADR-BLUE-012 §16.1,
+		// B3-R6-16-ORION-PGM): orion_lsdp_snapshot_identity_gap_total{scene_id}
+		// counts a reseed that drops a KNOWN projection identity because the
+		// Snapshot frame has no metadata field — never a fix, just makes the
+		// wire-schema limitation observable instead of silent.
+		wire.SetSnapshotMetrics(metrics)
 		show.SetMirrors(wire)
 		antenneWire = wire
 		lsdpHandler = wire.Handler()
@@ -150,6 +156,7 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		previewWire.SetSnapshotMetrics(metrics)
 		previewLSDPHandler = previewWire.Handler()
 		previewSlot = runtime.NewPreviewSlot(ctx, registry, previewWire, logger)
 		defer previewSlot.Close()
