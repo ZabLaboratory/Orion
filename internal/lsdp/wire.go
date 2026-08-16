@@ -77,25 +77,41 @@ type Wire struct {
 	// before any scene goroutine runs; read-only thereafter. See viewer_arm.go.
 	viewer *viewerArmer
 
-	// snapshotMetrics observes the LSDP Snapshot frame's structural inability
-	// to carry projection identity (ADR-BLUE-012 §16.1, B3-R6-16-ORION-PGM) —
-	// never a fix (the wire type has no metadata field, both Orion's own and
-	// the pinned Lumencast/lumencast-go@v0.3.1 kit's), only an honest count of
-	// the gap. nil = disabled (SetSnapshotMetrics never called), same nil-safe
-	// posture as every other optional sink in this codebase. Set once at boot,
-	// before any scene goroutine runs; read-only thereafter.
+	// snapshotMetrics is the regression guard for the LSDP Snapshot-reseed
+	// identity gap (ADR-BLUE-012 §16.1, B3-R6-16-ORION-PGM). Before
+	// lumencast-go 0c7cfc6 (#22), protocol.Snapshot (kit type) had no
+	// metadata field at all, so a scene's known projection identity was
+	// UNCONDITIONALLY dropped on every bootstrap/scene-switch reseed —
+	// SnapshotIdentityGap counted that real loss on every occurrence. Since
+	// 0c7cfc6, Scene.emitWithCause records the metadata of every
+	// EmitWithCauseAndMetadata call and stamps it onto every Snapshot the
+	// kit later constructs (Set/refreshAll, join, backpressure collapse,
+	// live migration) — the same call, on the same *lserver.Scene, that
+	// also updates sceneMirror's own lastIdentity/hasIdentity (see
+	// mirror.go recordIdentity/observeSnapshotIdentityGap), so the two are
+	// structurally synchronized and a known identity is now guaranteed to
+	// ride the Snapshot frame. SnapshotIdentityGap is therefore expected to
+	// report zero under current code; it is kept wired (not deleted) as a
+	// regression guard — a future change that desynchronizes the mirror's
+	// memory from the kit scene's (e.g. a mirror rebound to a scene without
+	// replaying its Delta history) is exactly the kind of bug this seam
+	// exists to catch. nil = disabled (SetSnapshotMetrics never called),
+	// same nil-safe posture as every other optional sink in this codebase.
+	// Set once at boot, before any scene goroutine runs; read-only
+	// thereafter.
 	snapshotMetrics SnapshotMetrics
 }
 
 // SnapshotMetrics is the LSDP Snapshot-reseed identity-gap observability
-// seam. A Snapshot frame (bootstrap, scene switch — never the kit's own
-// per-subscriber backpressure collapse, which is internal to the pinned kit
-// and exposes no hook at all) structurally cannot carry
-// correlation_id/render_revision: SnapshotIdentityGap counts the moment
-// Orion forwards one for a scene that DOES have a known current projection
-// identity — the identity is real, known, and simply does not ride this
-// frame type. A scene with no known identity yet (nothing has forwarded a
-// Delta for it) is not a gap and is not counted here.
+// seam. SnapshotIdentityGap counts a Snapshot forward for a scene that has a
+// known current projection identity WHICH THE FRAME ACTUALLY FAILED TO
+// CARRY — a genuine loss. Since lumencast-go 0c7cfc6 (#22) stamps a scene's
+// last known metadata onto every Snapshot it constructs, this can no longer
+// happen through the normal EmitWithCauseAndMetadata path (see the
+// snapshotMetrics field doc above) — the seam is kept as a regression guard,
+// not deleted, so a future desync would still be caught. A scene with no
+// known identity yet (nothing has forwarded a Delta for it) is not a gap and
+// is not counted here — the kit legitimately omits fields it never learned.
 type SnapshotMetrics interface {
 	SnapshotIdentityGap(sceneID string)
 }
