@@ -21,7 +21,6 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/blueproject"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
-	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
@@ -880,11 +879,7 @@ func TestGetHostStatus_ReflectsLastForwardedProjection(t *testing.T) {
 	// proves emits a real baseline projection on the very first tick, with
 	// zero events injected — exactly the deterministic, non-empty forward
 	// this test needs.
-	leaf, err := providers.CanonicalPlatformLeaf("twitch", "zablab_chat", "chat_message")
-	if err != nil {
-		t.Fatalf("CanonicalPlatformLeaf: %v", err)
-	}
-	program := chatDrivenProgram(t, leaf)
+	program := chatOverlayProgramFixture(t)
 	if err := host.Prepare(bluehost.SlotOnAir, "instance-1", "scene-1", "sha256:abc", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
