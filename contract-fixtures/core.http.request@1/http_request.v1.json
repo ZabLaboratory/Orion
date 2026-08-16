@@ -1,0 +1,55 @@
+{
+  "schema_version": "blue.contract-fixture.v1",
+  "contract": "core.http.request@1",
+  "authority": {
+    "statement": "Pour les payloads core.*@1, Blue est l'autorité normative et l'implémenteur conforme (ADR 013 §3.6, R6 §6.6).",
+    "source": "src/blue_engine/http_contract.py"
+  },
+  "fields": {
+    "url": {
+      "type": "string",
+      "required": true
+    },
+    "method": {
+      "type": "string",
+      "default": "GET",
+      "normalization": [
+        "uppercase the input",
+        "an empty string becomes GET",
+        "no whitespace trim — a padded value uppercases to something containing a space, which the token grammar below then rejects, exactly like the Orion transport it mirrors"
+      ],
+      "token_grammar": "RFC 7230 §3.2.6 tchar — no verb allowlist: any non-standard-but-token-shaped method (e.g. PURGE, PROPFIND) is valid and must pass",
+      "invalid_error_code": "HTTP_REQUEST_INVALID_METHOD",
+      "cases": [
+        {"input": "get", "expected": "GET"},
+        {"input": "", "expected": "GET"},
+        {"input": "POST", "expected": "POST"},
+        {"input": "PURGE", "expected": "PURGE"},
+        {"input": "PROPFIND", "expected": "PROPFIND"},
+        {"input": " get ", "expect_error": "HTTP_REQUEST_INVALID_METHOD"}
+      ]
+    },
+    "query": {
+      "type": "object | null",
+      "required": false
+    },
+    "headers": {
+      "type": "object<string,string> | null",
+      "required": false
+    },
+    "body": {
+      "type": "object | array | string | null",
+      "required": false,
+      "bound": "the contract fixes the accepted SHAPE of body (object, array, string, or absent) — it does not fix an effective byte-size cap. The numeric cap, like the rest of egress policy, is the host's (see non_objective below)."
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "default": 10000
+    }
+  },
+  "non_objective": {
+    "statement_fr": "La conformité à la fixture ne vaut jamais autorisation.",
+    "scope": "This contract fixes the FORM and NORMALIZATION of a request, never the egress policy. SSRF, egress allowlisting, redirects, DNS rebinding, the effective body-size bound, and the choice of HTTP client remain entirely the host's responsibility (ADR 013 §3.6).",
+    "orion_ownership": "internal/effects (*effects.EgressPolicy, wired at deploy by SetHTTPEffects); internal/bluehost/http_transport.go is only the call site, and the path is fail-closed when the policy isn't wired (internal/bluehost/effect_http.go:57-59, tested by internal/bluehost/effect_http_integration_test.go:313)."
+  }
+}

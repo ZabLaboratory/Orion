@@ -1,0 +1,11 @@
+{
+  "schema_version": "blue.s3-contract-inventory-extract.v1",
+  "entries": [
+    {
+      "contract": "core.http.request@1",
+      "state": "open_gap",
+      "consomme_module_go": true,
+      "test_path": "internal/bluehost/http_transport_test.go"
+    }
+  ]
+}
