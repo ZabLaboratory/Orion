@@ -3,7 +3,7 @@
   "entries": [
     {
       "contract": "core.http.request@1",
-      "state": "open_gap",
+      "state": "verified",
       "consomme_module_go": true,
       "test_path": "internal/bluehost/http_transport_test.go"
     }
