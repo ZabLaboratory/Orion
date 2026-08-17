@@ -63,6 +63,18 @@ import (
 // and logged rather than served with fabricated value_type. See
 // engineBArmedAwaits's doc.
 //
+// UNKNOWN TARGET (Prism#740, ORION-UNKNOWN-TARGET-CONTRACT): a ?target=
+// value that is neither absent nor the literal "preview" used to fall open
+// to the antenna — harmless while preview read a dead Engine A slot, newly
+// dangerous once preview became a real, populated one (a malformed client
+// query string would fire on the live antenna instead of erroring or
+// landing on preview). resolveTargetKind rejects it with 400
+// UNKNOWN_TARGET instead, and is the SINGLE place every ?target=-reading
+// route (these three, plus GET /cockpit/contracts) validates the raw query
+// value — see that function's doc for why it replaced two independently-
+// written, silently-diverging checks. `target` absent is unaffected: it is
+// still, and only ever was, the antenna.
+//
 // LIMITS: request bodies are bounded (maxOperatorBody); the path params are
 // taken verbatim as the scene-local blueprint key / entrypoint id / await
 // name (no interpolation, no SQL, no shell — they only key in-memory maps).
@@ -178,17 +190,73 @@ func isEngineBRouted(r *http.Request) bool {
 	return r.URL.Query().Get("rule") == ""
 }
 
-// engineBSlot picks the bluehost.Host slot an Engine-B-routed request
-// addresses: ?target=preview drives the cockpit preview clone
-// (bluehost.SlotPreview, populated by POST /host/scene-intent's
-// prepare-preview action — scene_intent.go), every other value drives the
-// antenna (bluehost.SlotOnAir, populated by its take-on-air action). Mirrors
-// operatorTarget's Engine A branch one-for-one, against the other engine —
-// this is the ONLY place that decides which slot, so a preview gesture can
-// never reach SlotOnAir or vice versa (isolation invariant the bail
-// requires: preparing a scene in preview must never fire on the antenna).
-func engineBSlot(r *http.Request) bluehost.Slot {
-	if r.URL.Query().Get("target") == "preview" {
+// targetKind is the two literals ?target= recognizes across every route that
+// reads it — the vocabulary resolveTargetKind validates against. Recognizing
+// a third literal is a decision for that function alone; nothing else in
+// this package re-parses the raw query value.
+type targetKind int
+
+const (
+	targetAntenna targetKind = iota
+	targetPreview
+)
+
+// resolveTargetKind is the SINGLE place that interprets and validates the
+// raw ?target= query value (Prism#740, ORION-UNKNOWN-TARGET-CONTRACT):
+// absent means the antenna, the exact literal "preview" means the cockpit
+// preview clone, and — this is the change — anything else is rejected with
+// 400 UNKNOWN_TARGET rather than silently treated as the antenna.
+//
+// Before this function existed, two call sites each re-read
+// r.URL.Query().Get("target") independently and disagreed only by omission:
+// engineBSlot (below) fell open to the antenna on any unrecognized value,
+// and getCockpitContracts (cockpit.go) had its own literal `== "preview"`
+// check with the identical fall-open shape, hardcoding bluehost.SlotOnAir in
+// its else branch — never calling engineBSlot at all. Both are pinned by
+// git history as independently-written, not a refactor of one another. A
+// third literal typed into either check would have silently diverged from
+// the other. Now both call resolveTargetKind and neither re-parses the
+// query string itself — the SELECTOR_CONFLICT/RULE_NOT_ACTIVE convention
+// error family this mirrors, UNKNOWN_TARGET, is nameable exactly once.
+//
+// ok=false means the 400 is already written; the caller returns immediately
+// (same contract as resolveOperatorScene). The kind returned alongside
+// ok=false is targetAntenna and MUST NOT be used — Go has no null enum, this
+// is the zero value, not a meaningful default.
+//
+// This function only recognizes the two kinds; it does not decide which
+// engine or slot serves them — engineBSlot maps a validated kind to the
+// bluehost.Host slot for the three Engine-B routes (call/resolve/pending);
+// getCockpitContracts maps the same kind to its own two engines (its
+// ?target=preview leg is still Engine A, deps.Preview — see that function's
+// doc for why that is dead code in production today and deliberately out of
+// this work unit's scope to re-route).
+func resolveTargetKind(w http.ResponseWriter, r *http.Request) (targetKind, bool) {
+	switch r.URL.Query().Get("target") {
+	case "":
+		return targetAntenna, true
+	case "preview":
+		return targetPreview, true
+	default:
+		writeOperatorError(w, http.StatusBadRequest, "UNKNOWN_TARGET",
+			`target must be absent or "preview"`)
+		return targetAntenna, false
+	}
+}
+
+// engineBSlot maps an already-validated targetKind (resolveTargetKind) to
+// the bluehost.Host slot it addresses: preview drives the cockpit preview
+// clone (bluehost.SlotPreview, populated by POST /host/scene-intent's
+// prepare-preview action — scene_intent.go), antenna drives the live show
+// (bluehost.SlotOnAir, populated by its take-on-air action). Mirrors
+// operatorTarget's Engine A branch one-for-one, against the other engine.
+// Every caller of this function has already rejected an unrecognized target
+// via resolveTargetKind — this is the ONLY place that maps a valid kind to a
+// slot, so a preview gesture can never reach SlotOnAir or vice versa
+// (isolation invariant the bail requires: preparing a scene in preview must
+// never fire on the antenna).
+func engineBSlot(kind targetKind) bluehost.Slot {
+	if kind == targetPreview {
 		return bluehost.SlotPreview
 	}
 	return bluehost.SlotOnAir
@@ -388,7 +456,11 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 		entrypointID := r.PathValue("entrypoint_id")
 
 		if isEngineBRouted(r) {
-			postOperatorCallEngineB(w, r, deps, engineBSlot(r), entrypointID)
+			kind, ok := resolveTargetKind(w, r)
+			if !ok {
+				return
+			}
+			postOperatorCallEngineB(w, r, deps, engineBSlot(kind), entrypointID)
 			return
 		}
 
@@ -439,9 +511,13 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 func getRuntimePending(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
 		if isEngineBRouted(r) {
+			kind, ok := resolveTargetKind(w, r)
+			if !ok {
+				return
+			}
 			pending := []runtime.PendingAwait{}
 			if host := engineBHost(deps); host != nil {
-				if joined := engineBArmedAwaits(host, engineBSlot(r), deps.Logger); joined != nil {
+				if joined := engineBArmedAwaits(host, engineBSlot(kind), deps.Logger); joined != nil {
 					pending = joined
 				}
 			}
@@ -484,7 +560,11 @@ func postOperatorResolve(deps PublicDeps) http.HandlerFunc {
 		}
 
 		if isEngineBRouted(r) {
-			postOperatorResolveEngineB(w, deps, engineBSlot(r), awaitName, body.Value)
+			kind, ok := resolveTargetKind(w, r)
+			if !ok {
+				return
+			}
+			postOperatorResolveEngineB(w, deps, engineBSlot(kind), awaitName, body.Value)
 			return
 		}
 

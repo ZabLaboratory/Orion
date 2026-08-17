@@ -42,6 +42,12 @@ import (
 // doc for the join and its one accepted gap (an armed await absent from the
 // declared set — never producible via the compiler on a single program, see
 // that doc — is omitted, not fabricated).
+//
+// UNKNOWN TARGET (Prism#740, ORION-UNKNOWN-TARGET-CONTRACT): ?target= is now
+// validated by operator.go's resolveTargetKind before either branch below
+// runs — an unrecognized value is 400 UNKNOWN_TARGET, not a silent fall
+// through to the antenna branch. See getCockpitContracts's inline comment
+// for why the preview leg stays on Engine A regardless.
 
 // cockpitContractItem<T> is a facet item wrapped with its scope. Because Go
 // has no generics-in-JSON-shape ergonomics here, each facet has its own typed
@@ -112,18 +118,36 @@ func getCockpitContracts(deps PublicDeps) http.HandlerFunc {
 		}
 
 		// Scene-scope contract → the operator surface the rail drives. Mode-aware
-		// (preview/antenne split): ``?target=preview`` derives it from the PREVIEW
-		// slot's live clone (Engine A, unchanged — operatorTarget), else the
-		// ANTENNA now derives from Engine B's on-air instance
-		// (ORION-OPERATOR-RAIL-ENGINE-B, #335) — Show.Active() has had no
-		// production populator since #331 and is structurally empty. Vanishes on
-		// a flip/take of whichever side it reads.
-		if r.URL.Query().Get("target") == "preview" {
+		// (preview/antenne split), validated by the same single point every
+		// ?target=-reading route shares (resolveTargetKind, operator.go —
+		// Prism#740, ORION-UNKNOWN-TARGET-CONTRACT): an unrecognized value is now
+		// 400 UNKNOWN_TARGET rather than silently falling open to the antenna.
+		// ``target=preview`` derives it from the PREVIEW slot's live clone
+		// (Engine A, unchanged — operatorTarget); ``target`` absent derives from
+		// the ANTENNA's Engine B on-air instance (ORION-OPERATOR-RAIL-ENGINE-B,
+		// #335) — Show.Active() has had no production populator since #331 and is
+		// structurally empty. Vanishes on a flip/take of whichever side it reads.
+		//
+		// The preview leg here is STILL Engine A (deps.Preview), unlike
+		// call/resolve/pending's engineBSlot — deliberately not re-routed by this
+		// work unit (its only populator, POST /show/preview-active-scene, was
+		// retired the same way Show's was, so this leg is dead in production
+		// today; re-pointing it at Engine B's SlotPreview is a real fix but a
+		// different, undecided chantier, not a side effect of hardening the
+		// unknown-target reject).
+		kind, ok := resolveTargetKind(w, r)
+		if !ok {
+			return
+		}
+		switch kind {
+		case targetPreview:
 			if active := operatorTarget(deps, r); active != nil {
 				appendScene(&out, active, scopeScene, "")
 			}
-		} else if host := engineBHost(deps); host != nil {
-			appendEngineBScene(&out, host, bluehost.SlotOnAir, deps.Logger)
+		case targetAntenna:
+			if host := engineBHost(deps); host != nil {
+				appendEngineBScene(&out, host, bluehost.SlotOnAir, deps.Logger)
+			}
 		}
 		// Promoted stream-level rules → scope `stream` (permanent). Each item is
 		// stamped with rule_id = the scene's id, which IS the stable rule key in
