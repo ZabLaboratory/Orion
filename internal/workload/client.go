@@ -1,11 +1,14 @@
 // Package workload is Orion's client for the ZabGate workload surface
-// (ADR-BLUE-012 §4.7): admitting the opaque `zabgate-auth-context.v1`
-// ticket Prism relayed, minting a short-lived Canvas delegation, proxying
-// exactly one Canvas fetch through it, and reconciling an ambiguous mint
-// after a timeout/crash. Orion never talks to ZabAuth directly and never
-// re-asserts the client context — every call rides the mTLS workload
-// identity the deployment substrate issues (Amendment 2: short-lived
-// rotated mTLS, no TPM node identity in Orion's own code path).
+// (ADR-BLUE-012 §4.7): minting a short-lived Canvas delegation from the
+// opaque `zabgate-auth-context.v1` ticket Prism relayed, proxying exactly
+// one Canvas fetch through it, and reconciling an ambiguous mint after a
+// timeout/crash. Orion never calls admit — the ticket IS the operator's
+// consent, obtained by Prism with the operator's own JWT (Bastion,
+// WORKLOAD-PROTOCOL-ALIGN-M3: an Orion-side admit was a confused deputy).
+// Orion never talks to ZabAuth directly and never re-asserts the client
+// context — every call rides the mTLS workload identity the deployment
+// substrate issues (Amendment 2: short-lived rotated mTLS, no TPM node
+// identity in Orion's own code path).
 package workload
 
 import (
@@ -128,45 +131,43 @@ func NewClient(baseURL string, identity Identity, httpClient *http.Client) (*Cli
 	}, nil
 }
 
-// AuthContextAdmission is Gate's confirmation that it holds a valid,
-// unconsumed `zabgate-auth-context.v1` ticket matching the caller's
-// bindings (§6.11) — the handle MintDelegation is scoped to.
-type AuthContextAdmission struct {
-	AdmissionID string `json:"admission_id"`
-	IntentID    string `json:"intent_id"`
-}
-
-// AdmitAuthContext submits the opaque ticket Prism relayed (via
-// prepare-preview/take-on-air) to Gate for admission. Orion never parses
-// or verifies this ticket itself — it is Gate's own signed, opaque
-// artifact (§4.7: "Gate transmet uniquement ce ticket opaque à Orion").
-func (c *Client) AdmitAuthContext(ctx context.Context, ticket string) (*AuthContextAdmission, error) {
-	var out AuthContextAdmission
-	if err := c.post(ctx, "/internal/v1/workload/auth-contexts/admit",
-		map[string]string{"ticket": ticket}, &out); err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// Delegation is the ephemeral `orion-canvas-delegation.v1` handle (§6.10)
-// — mono-intention, mono-action, TTL ≤ 60s, never refreshed or
-// transferred. Orion holds it in memory only, until a terminal result or
-// deadline (§4.7).
+// Delegation is Gate's `DelegationIssueResponse` — the ephemeral Canvas
+// delegation handle (§6.10), mono-intention, mono-action, never refreshed
+// or transferred. Orion holds it in memory only, until a terminal result
+// or deadline (§4.7). AccessToken is a secret: it is never logged.
 type Delegation struct {
-	JTI           string `json:"jti"`
-	ScopedLocator string `json:"canvas_locator"`
-	ExpiresAt     int64  `json:"exp"`
+	AccessToken      string `json:"access_token"`
+	TokenType        string `json:"token_type"`
+	JTI              string `json:"jti"`
+	Status           string `json:"status"`
+	ExpiresAt        string `json:"expires_at"`
+	CanvasRequestKey string `json:"canvas_request_key"`
+	RetrySequence    int    `json:"retry_sequence"`
+	GateRequestID    string `json:"gate_request_id"`
 }
 
-// MintDelegation requests the short-lived Canvas delegation bound to the
-// admitted auth context. A non-2xx response is decoded into one of the
-// ten §4.7 refusal codes and returned as *Error — never as a usable
-// Delegation.
-func (c *Client) MintDelegation(ctx context.Context, admission *AuthContextAdmission) (*Delegation, error) {
+// mintRequest is Gate's `DelegationMintRequest`: the opaque ticket plus
+// the FULL intent, relayed VERBATIM as the raw bytes Prism posted. Gate
+// re-validates the intent against the ticket bindings
+// (`_assert_ticket_matches` — `deadline` among them), so any
+// reconstruction or re-serialization of the intent on Orion's side is an
+// AUTH_CONTEXT_MISMATCH waiting to fire. json.RawMessage embeds the
+// caller's bytes untouched at the value level.
+type mintRequest struct {
+	Ticket string          `json:"ticket"`
+	Intent json.RawMessage `json:"intent"`
+}
+
+// MintDelegation requests the short-lived Canvas delegation from the
+// opaque ticket Prism relayed and the intent bytes it relayed with it —
+// Orion never parses or verifies the ticket itself (§4.7: "Gate transmet
+// uniquement ce ticket opaque à Orion") and treats the intent as an
+// opaque blob. A non-2xx response is decoded into one of the ten §4.7
+// refusal codes and returned as *Error — never as a usable Delegation.
+func (c *Client) MintDelegation(ctx context.Context, ticket string, intent json.RawMessage) (*Delegation, error) {
 	var out Delegation
 	if err := c.post(ctx, "/internal/v1/workload/delegations/mint",
-		map[string]string{"admission_id": admission.AdmissionID, "intent_id": admission.IntentID}, &out); err != nil {
+		mintRequest{Ticket: ticket, Intent: intent}, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -278,15 +279,27 @@ func (c *Client) post(ctx context.Context, path string, payload any, out any) er
 }
 
 func decodeError(status int, raw []byte) error {
+	// Gate/Auth render refusals as `{"detail": {"code", "message"}}`
+	// (`routes.py::workload_error_handler` — "the same stable typed shape
+	// as ZabAuth"). The bare `{"error": ...}` spelling is kept as a
+	// fallback so an intermediary error page still fails closed with its
+	// raw string preserved.
 	var body struct {
+		Detail struct {
+			Code string `json:"code"`
+		} `json:"detail"`
 		Error string `json:"error"`
 	}
 	_ = json.Unmarshal(raw, &body)
-	code, known := knownCodes[body.Error]
-	if !known {
-		return &Error{Raw: strings.TrimSpace(body.Error), HTTPStatus: status}
+	observed := body.Detail.Code
+	if observed == "" {
+		observed = body.Error
 	}
-	return &Error{Code: code, Raw: body.Error, HTTPStatus: status}
+	code, known := knownCodes[observed]
+	if !known {
+		return &Error{Raw: strings.TrimSpace(observed), HTTPStatus: status}
+	}
+	return &Error{Code: code, Raw: observed, HTTPStatus: status}
 }
 
 // NewMTLSHTTPClient builds an *http.Client whose transport presents cert
