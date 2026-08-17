@@ -175,16 +175,87 @@ func TestMintDelegation_UnknownCodeFailsClosed(t *testing.T) {
 	}
 }
 
+func testDelegation() *Delegation {
+	return &Delegation{
+		JTI:              "jti-1",
+		AccessToken:      "opaque-delegation",
+		TokenType:        "bearer",
+		Status:           "issued",
+		CanvasRequestKey: strings.Repeat("c", 64),
+		GateRequestID:    "3f2c8f0e-2f65-4e11-8a63-0123456789ab." + strings.Repeat("d", 64),
+	}
+}
+
+// verbatimIntent carries a max-safe-integer deadline so a float64
+// round-trip anywhere in the relay would be caught by the json.Number
+// comparison.
+var verbatimIntent = json.RawMessage(`{"schema_version":"orion.scene-intent.v1","intent_id":"intent-1","sequence":7,"deadline":9007199254740991,"correlation_id":"corr-1"}`)
+
+func consumedProxyResponse(result map[string]any) map[string]any {
+	return map[string]any{
+		"jti":                "jti-1",
+		"status":             "consumed",
+		"canvas_request_key": strings.Repeat("c", 64),
+		"result":             result,
+	}
+}
+
+func TestFetchCanvas_PostsDelegationProxyRequestVerbatim(t *testing.T) {
+	var got struct {
+		AccessToken   string          `json:"access_token"`
+		Ticket        string          `json:"ticket"`
+		Intent        json.RawMessage `json:"intent"`
+		GateRequestID string          `json:"gate_request_id"`
+	}
+	client, srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/workload/delegations/jti-1/canvas" {
+			t.Fatalf("unexpected path %q", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode proxy request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(consumedProxyResponse(map[string]any{
+			"status_code":  200,
+			"content_type": "application/json",
+			"body":         map[string]any{"blue_program": "AAAA"},
+		}))
+	})
+	defer srv.Close()
+
+	artifact, err := client.FetchCanvas(context.Background(), testDelegation(), "opaque-ticket", verbatimIntent)
+	if err != nil {
+		t.Fatalf("FetchCanvas: %v", err)
+	}
+	// Field provenance: access_token/gate_request_id from the mint's
+	// delegation, ticket/intent from the Prism relay — none invented.
+	if got.AccessToken != "opaque-delegation" || got.Ticket != "opaque-ticket" || got.GateRequestID != testDelegation().GateRequestID {
+		t.Fatalf("proxy request fields wrong: %+v", got)
+	}
+	if !reflect.DeepEqual(
+		decodeNumberPreserving(t, got.Intent),
+		decodeNumberPreserving(t, verbatimIntent),
+	) {
+		t.Fatalf("intent mutated in transit:\nsent     %s\nreceived %s", verbatimIntent, got.Intent)
+	}
+	// The artifact is the CANVAS outcome (result.status_code/result.body),
+	// not the Gate transport status.
+	if artifact.Status != 200 || string(artifact.Body) != `{"blue_program":"AAAA"}` {
+		t.Fatalf("unexpected artifact: status=%d body=%s", artifact.Status, artifact.Body)
+	}
+}
+
 func TestFetchCanvas_NeverRetriedOnPending(t *testing.T) {
 	calls := 0
 	client, srv := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": string(CodeDelegationReconciliationPending)})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"detail": map[string]string{"code": string(CodeDelegationReconciliationPending), "message": "pending"},
+		})
 	})
 	defer srv.Close()
 
-	_, err := client.FetchCanvas(context.Background(), "jti-1")
+	_, err := client.FetchCanvas(context.Background(), testDelegation(), "opaque-ticket", verbatimIntent)
 	var werr *Error
 	if !asError(err, &werr) || werr.Code != CodeDelegationReconciliationPending {
 		t.Fatalf("expected CodeDelegationReconciliationPending, got %v", err)
@@ -194,21 +265,73 @@ func TestFetchCanvas_NeverRetriedOnPending(t *testing.T) {
 	}
 }
 
+func TestFetchCanvas_UnexpectedSuccessStatusFailsClosed(t *testing.T) {
+	client, srv := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jti": "jti-1", "status": "reserved",
+			"canvas_request_key": strings.Repeat("c", 64),
+			"result":             map[string]any{},
+		})
+	})
+	defer srv.Close()
+
+	_, err := client.FetchCanvas(context.Background(), testDelegation(), "opaque-ticket", verbatimIntent)
+	var werr *Error
+	if !asError(err, &werr) || werr.Code != "" {
+		t.Fatalf("expected a fail-closed generic *Error for a non-consumed 200, got %v", err)
+	}
+}
+
+func TestFetchCanvas_RequiresMintedDelegationFields(t *testing.T) {
+	calls := 0
+	client, srv := newTestServer(t, func(http.ResponseWriter, *http.Request) { calls++ })
+	defer srv.Close()
+
+	for _, d := range []*Delegation{
+		nil,
+		{JTI: "jti-1"}, // no access_token / gate_request_id
+		{JTI: "jti-1", AccessToken: "opaque-delegation"}, // no gate_request_id
+	} {
+		if _, err := client.FetchCanvas(context.Background(), d, "opaque-ticket", verbatimIntent); err == nil {
+			t.Fatalf("expected an error for incomplete delegation %+v", d)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("an incomplete delegation must never reach the wire, got %d calls", calls)
+	}
+}
+
 func TestReconcile_Success(t *testing.T) {
+	var got struct {
+		AccessToken   string          `json:"access_token"`
+		Ticket        string          `json:"ticket"`
+		Intent        json.RawMessage `json:"intent"`
+		GateRequestID string          `json:"gate_request_id"`
+	}
 	client, srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/internal/v1/workload/delegations/jti-1/reconcile" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"state": "consumed"})
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode reconcile request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(consumedProxyResponse(map[string]any{
+			"status_code":  200,
+			"content_type": "application/json",
+			"body":         map[string]any{"observed": true},
+		}))
 	})
 	defer srv.Close()
 
-	res, err := client.Reconcile(context.Background(), "jti-1")
+	res, err := client.Reconcile(context.Background(), testDelegation(), "opaque-ticket", verbatimIntent)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	if res.State != "consumed" {
-		t.Fatalf("unexpected state: %q", res.State)
+	if got.AccessToken != "opaque-delegation" || got.Ticket != "opaque-ticket" || got.GateRequestID != testDelegation().GateRequestID {
+		t.Fatalf("reconcile request fields wrong: %+v", got)
+	}
+	if res.JTI != "jti-1" || res.CanvasRequestKey != strings.Repeat("c", 64) || string(res.Result) != `{"observed":true}` {
+		t.Fatalf("unexpected reconcile result: %+v", res)
 	}
 }
 
