@@ -169,12 +169,24 @@ func TestOperator_CallEngineB_RealBlueprintIDIsAcceptedButIgnored(t *testing.T) 
 	}
 }
 
-func TestOperator_PendingListsArmedAwait(t *testing.T) {
+// TestOperator_PendingRuleSelectorListsArmedAwait (ORION-OPERATOR-PREVIEW-
+// ENGINE-B): pending's only remaining path to a genuinely live-armed await
+// is ?rule={rule_id} — the plain antenna/preview legs now route through
+// Engine B, which structurally cannot report a live-armed list (see
+// operator.go's "ENGINE B PENDING GAP" doc; TestOperator_PendingEngineB
+// _AlwaysEmpty proves that leg's honest degrade). Before this migration
+// this same assertion held for the plain antenna path via
+// Show.Active() — that path is dead in production (#331) and is now
+// Engine-B-routed like call/resolve, so the still-live Engine-A mechanism
+// (Show.StreamRuleScene) is exercised through the one selector that still
+// reaches it.
+func TestOperator_PendingRuleSelectorListsArmedAwait(t *testing.T) {
 	f := newOperatorFixture(t)
+	ruleID := promoteOpRuleWithAwait(t, f)
 	// The on-start arm parks the await; poll the pending route until listed.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
-		w := opRequest(t, f.mux, "GET", "/api/v1/runtime/bp/pending", "operator", nil)
+		w := opRequest(t, f.mux, "GET", "/api/v1/runtime/rule/pending?rule="+ruleID, "operator", nil)
 		if w.Code != http.StatusOK {
 			t.Fatalf("pending: got %d, want 200", w.Code)
 		}
@@ -270,6 +282,45 @@ func promoteOpRule(t *testing.T, f *operatorFixture) string {
 		},
 	}
 	if err := f.show.PromoteStreamRule(opRuleID, ruleGraph, &compiler.RenderBundle{SceneVersion: "sha256:rule"}, ruleProg); err != nil {
+		t.Fatalf("PromoteStreamRule: %v", err)
+	}
+	return opRuleID
+}
+
+// promoteOpRuleWithAwait mirrors promoteOpRule but adds an await-value node
+// ("pick", armed on-start, same shape as the bp fixture's) to the promoted
+// rule's blueprint — used by TestOperator_PendingRuleSelectorListsArmedAwait,
+// the one remaining live path for pending's armed-await listing.
+func promoteOpRuleWithAwait(t *testing.T, f *operatorFixture) string {
+	t.Helper()
+	ruleGraph := &compiler.Graph{
+		SceneID: opRuleID, SceneVersion: "sha256:rule-await",
+		Defaults: map[string]json.RawMessage{
+			"__vars.rule.hit":    json.RawMessage(`null`),
+			"__vars.rule.picked": json.RawMessage(`null`),
+		},
+	}
+	ruleProg := &runtime.ExecProgram{
+		BlueprintKey: "rule",
+		Nodes: map[string]*runtime.ExecNode{
+			"set.hit": {ID: "set.hit", Op: runtime.OpVariableSet,
+				Config: map[string]json.RawMessage{"variable": json.RawMessage(`"hit"`)},
+				Data:   []runtime.ExecDataInput{{Port: "value", From: "toggle", FromPort: "payload"}}},
+			"pick": {ID: "pick", Op: runtime.OpOperatorAwait,
+				Config: map[string]json.RawMessage{
+					"await_name": json.RawMessage(`"pick"`),
+					"value_type": json.RawMessage(`"core.primitive.integer"`)},
+				Next: map[string]runtime.ExecTarget{"then": {Node: "set.picked"}}},
+			"set.picked": {ID: "set.picked", Op: runtime.OpVariableSet,
+				Config: map[string]json.RawMessage{"variable": json.RawMessage(`"picked"`)},
+				Data:   []runtime.ExecDataInput{{Port: "value", From: "pick", FromPort: "value"}}},
+		},
+		Entrypoints: map[string]runtime.ExecEntry{
+			"toggle": {Kind: runtime.EntryOnCall, Node: "toggle", Target: runtime.ExecTarget{Node: "set.hit"}},
+			"arm":    {Kind: runtime.EntryOnStart, Target: runtime.ExecTarget{Node: "pick"}},
+		},
+	}
+	if err := f.show.PromoteStreamRule(opRuleID, ruleGraph, &compiler.RenderBundle{SceneVersion: "sha256:rule-await"}, ruleProg); err != nil {
 		t.Fatalf("PromoteStreamRule: %v", err)
 	}
 	return opRuleID

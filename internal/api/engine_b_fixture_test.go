@@ -295,6 +295,69 @@ func newEngineBOperatorFixture(t *testing.T, program []byte) *engineBFixture {
 	return &engineBFixture{mux: mux, host: host}
 }
 
+// newEngineBOperatorFixtureOnSlot mirrors newEngineBOperatorFixture but
+// loads program onto slot (bluehost.SlotOnAir via Take, bluehost.SlotPreview
+// via Prepare — the same two entry points production uses, take-on-air vs
+// prepare-preview, scene_intent.go) instead of hardcoding SlotOnAir. Used by
+// the ?target=preview leg of the operator tests
+// (ORION-OPERATOR-PREVIEW-ENGINE-B).
+func newEngineBOperatorFixtureOnSlot(t *testing.T, slot bluehost.Slot, program []byte) *engineBFixture {
+	t.Helper()
+	host := bluehost.NewHost()
+	if err := loadEngineBSlot(host, slot, program); err != nil {
+		t.Fatalf("load %s: %v", slot, err)
+	}
+	if _, err := host.Step(slot); err != nil {
+		t.Fatalf("Step (on-start) %s: %v", slot, err)
+	}
+	m := obs.NewMetrics()
+	show := runtime.NewShow(runtime.NewComputeRegistry(), testLogger())
+	t.Cleanup(show.Stop)
+	mux := http.NewServeMux()
+	RegisterPublic(mux, PublicDeps{
+		Logger: testLogger(), Metrics: m, Show: show,
+		SceneIntent: &SceneIntentDeps{Host: host},
+	})
+	return &engineBFixture{mux: mux, host: host}
+}
+
+// takeSlot additionally loads program onto slot on an already-built
+// fixture — used to populate BOTH bluehost.Host slots with distinguishable
+// programs for the operator rail's isolation proofs (a program prepared in
+// SlotPreview must never be reachable without ?target=preview, and a
+// program on SlotOnAir must never be reachable WITH it).
+func (f *engineBFixture) takeSlot(t *testing.T, slot bluehost.Slot, program []byte) {
+	t.Helper()
+	if err := loadEngineBSlot(f.host, slot, program); err != nil {
+		t.Fatalf("load %s: %v", slot, err)
+	}
+	if _, err := f.host.Step(slot); err != nil {
+		t.Fatalf("Step (on-start) %s: %v", slot, err)
+	}
+}
+
+// loadEngineBSlot is the slot-dispatch Take/Prepare share: SlotOnAir always
+// goes through Take (atomic swap semantics, matching the take-on-air
+// action), every other slot through Prepare (matching prepare-preview).
+func loadEngineBSlot(host *bluehost.Host, slot bluehost.Slot, program []byte) error {
+	if slot == bluehost.SlotOnAir {
+		return host.Take("engine-b-fixture-onair", "sha256:engine-b-fixture-onair", program, nil, nil, nil)
+	}
+	return host.Prepare(slot, "engine-b-fixture-preview", "engine-b-fixture-preview-scene",
+		"sha256:engine-b-fixture-preview", program, nil, nil, nil)
+}
+
+// peekVarSlot is peekVar generalised to an arbitrary slot (peekVar itself is
+// left untouched — SlotOnAir-only, matching every existing caller).
+func (f *engineBFixture) peekVarSlot(t *testing.T, slot bluehost.Slot, name string) any {
+	t.Helper()
+	result, err := f.host.Tick(slot, 0)
+	if err != nil {
+		t.Fatalf("Tick(0) peek %s: %v", slot, err)
+	}
+	return result.Outputs[name]
+}
+
 // peekVar reads back a declared state output of the on-air instance via a
 // harmless Tick(0) (no on-tick entrypoint is declared in
 // buildEngineBOperatorProgram's fixtures, so this fires nothing — it only
