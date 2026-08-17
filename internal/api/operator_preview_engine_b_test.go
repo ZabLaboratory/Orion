@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
@@ -186,32 +187,36 @@ func TestOperator_ResolveAntennaUnaffectedByPreviewMigration(t *testing.T) {
 	}
 }
 
-// --- pending: Engine B leg is honestly, deliberately always empty ----------
+// --- pending: Engine B leg joins the live registry against the declared ---
+// --- metadata (blueruntime #344 closed the accessor gap) ------------------
 
-// TestOperator_PendingEngineBAlwaysEmptyByDesign pins operator.go's "ENGINE
-// B PENDING GAP": blueruntime exposes no live-armed-awaits accessor
-// (bluehost.AwaitDecl is the DECLARED set only), so pending's Engine B leg
-// cannot honestly report a populated list — not for the antenna, not for
-// preview — whether or not the slot is hosted. This is not a regression
-// versus the old behaviour (also always empty in production, since
-// Show.Active() has had no populator since #331): it is the same observable
-// result reached through the correct selector instead of a dead one, with
-// the gap now documented instead of accidental.
-func TestOperator_PendingEngineBAlwaysEmptyByDesign(t *testing.T) {
-	program := buildEngineBOperatorProgram(t, "call", "called", "pick", "core.primitive.integer", "picked")
-
+// TestOperator_PendingEngineBJoinsDeclaredMetadataAndClearsOnResolve
+// REPLACES TestOperator_PendingEngineBAlwaysEmptyByDesign: that test pinned
+// operator.go's "ENGINE B PENDING GAP" (blueruntime exposed no live-armed-
+// awaits accessor, so the Engine B leg could only ever answer empty,
+// honestly). blueruntime now exposes Runtime.PendingAwaitNames (#344);
+// engineBArmedAwaits (operator.go) joins it against bluehost.AwaitDecl's
+// declared metadata by await_name, so the leg can — and must — report a
+// populated list once something is actually armed. This proves the new
+// property, on BOTH Engine-B-routed legs (antenna, ?target=preview): an
+// armed await surfaces with its declared value_type, and disappears from
+// the next poll once resolved.
+func TestOperator_PendingEngineBJoinsDeclaredMetadataAndClearsOnResolve(t *testing.T) {
 	cases := []struct {
-		name string
-		path string
+		name       string
+		slot       bluehost.Slot
+		pendingURL string
+		resolveURL string
 	}{
-		{"antenna, hosted", "/api/v1/runtime/_/pending"},
-		{"preview, hosted", "/api/v1/runtime/_/pending?target=preview"},
+		{"antenna", bluehost.SlotOnAir, "/api/v1/runtime/_/pending", "/api/v1/operator/resolve/_/pick"},
+		{"preview", bluehost.SlotPreview, "/api/v1/runtime/_/pending?target=preview", "/api/v1/operator/resolve/_/pick?target=preview"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			f := newEngineBOperatorFixtureOnSlot(t, bluehost.SlotOnAir, program)
-			f.takeSlot(t, bluehost.SlotPreview, program)
-			w := opRequest(t, f.mux, "GET", c.path, "operator", nil)
+			program := buildEngineBOperatorProgram(t, "call", "called", "pick", "core.primitive.integer", "picked")
+			f := newEngineBOperatorFixtureOnSlot(t, c.slot, program)
+
+			w := opRequest(t, f.mux, "GET", c.pendingURL, "operator", nil)
 			if w.Code != http.StatusOK {
 				t.Fatalf("pending: got %d, want 200 (body=%s)", w.Code, w.Body.String())
 			}
@@ -221,10 +226,70 @@ func TestOperator_PendingEngineBAlwaysEmptyByDesign(t *testing.T) {
 			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 				t.Fatal(err)
 			}
-			if len(resp.Pending) != 0 {
-				t.Fatalf("pending = %#v, want empty (Engine B has no live-armed accessor)", resp.Pending)
+			if len(resp.Pending) != 1 {
+				t.Fatalf("pending = %#v, want exactly one armed", resp.Pending)
+			}
+			p := resp.Pending[0]
+			if p.BlueprintKey != defaultBlueprintToken || p.AwaitName != "pick" {
+				t.Fatalf("pending[0] = %+v, want %s/pick", p, defaultBlueprintToken)
+			}
+			if p.ValueType != "core.primitive.integer" {
+				t.Fatalf("pending[0].value_type = %q, want the declared one", p.ValueType)
+			}
+
+			wr := opRequest(t, f.mux, "POST", c.resolveURL, "operator", map[string]any{"value": 42})
+			if wr.Code != http.StatusOK {
+				t.Fatalf("resolve: got %d, want 200 (body=%s)", wr.Code, wr.Body.String())
+			}
+
+			w2 := opRequest(t, f.mux, "GET", c.pendingURL, "operator", nil)
+			var resp2 struct {
+				Pending []runtime.PendingAwait `json:"pending"`
+			}
+			if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+				t.Fatal(err)
+			}
+			if len(resp2.Pending) != 0 {
+				t.Fatalf("resolved await still pending: %+v", resp2.Pending)
 			}
 		})
+	}
+}
+
+// TestOperator_PendingEngineBDeclaredAwaitNeverArmedIsExcluded proves the
+// other half of the join: an await-value node the program declares but
+// on-start never reaches is DeclaredContracts-visible yet never in the live
+// registry, so it must never surface on the poll — a declared-but-unarmed
+// await is not a live prompt, on either leg.
+func TestOperator_PendingEngineBDeclaredAwaitNeverArmedIsExcluded(t *testing.T) {
+	program := buildEngineBOperatorProgram(t, "call", "called", "pick", "core.primitive.integer", "picked")
+	host := bluehost.NewHost()
+	if err := host.Take("engine-b-unarmed", "sha256:engine-b-unarmed", program, nil, nil, nil); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	// Deliberately no Step: on-start never runs, so "pick" is declared but
+	// never parked.
+	m := obs.NewMetrics()
+	show := runtime.NewShow(runtime.NewComputeRegistry(), testLogger())
+	t.Cleanup(show.Stop)
+	mux := http.NewServeMux()
+	RegisterPublic(mux, PublicDeps{
+		Logger: testLogger(), Metrics: m, Show: show,
+		SceneIntent: &SceneIntentDeps{Host: host},
+	})
+
+	w := opRequest(t, mux, "GET", "/api/v1/runtime/_/pending", "operator", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("pending: got %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Pending []runtime.PendingAwait `json:"pending"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Pending) != 0 {
+		t.Fatalf("never-armed declared await leaked into pending: %+v", resp.Pending)
 	}
 }
 

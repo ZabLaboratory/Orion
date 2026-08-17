@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
@@ -50,17 +51,17 @@ import (
 // dead-wire cleanup on the LSDP side, /show/preview.lsdp, is a separate,
 // undecided chantier).
 //
-// ENGINE B PENDING GAP: getRuntimePending's Engine B leg always answers an
-// empty pending list, by design, whether or not the target slot is hosted —
-// blueruntime keeps its live pendingAwaits registry unexported (only its own
-// Resolve reads it; bluehost.AwaitDecl only carries the DECLARED,
-// compile-time set). Emitting the declared set as if it were live would
-// mislabel an already-resolved or never-armed await as a current prompt —
-// the exact trade-off cockpit.go's appendEngineBScene already documents and
-// declines for the same reason (§ its doc, "AWAITS ARE DELIBERATELY NOT
-// EMITTED"). This is a real upstream blueruntime gap (a
-// PendingAwaits()-style accessor is the fix), not something closeable
-// inside Orion alone.
+// ENGINE B PENDING (closed, blueruntime #344): getRuntimePending's Engine B
+// leg now joins bluehost.Host's live armed-await registry
+// (Host.PendingAwaitNames) against its declared metadata
+// (Host.DeclaredContracts' AwaitDecl) by await_name — engineBArmedAwaits,
+// the same join cockpit.go's appendEngineBScene uses for the `awaits` facet
+// of GET /cockpit/contracts. A declared-but-never-armed await is never
+// iterated (only live names drive the join), so it never surfaces as a
+// prompt; an armed name absent from the declared set — not producible from
+// a single valid program, both read the same static config — is omitted
+// and logged rather than served with fabricated value_type. See
+// engineBArmedAwaits's doc.
 //
 // LIMITS: request bodies are bounded (maxOperatorBody); the path params are
 // taken verbatim as the scene-local blueprint key / entrypoint id / await
@@ -202,6 +203,56 @@ func engineBHost(deps PublicDeps) *bluehost.Host {
 		return nil
 	}
 	return deps.SceneIntent.Host
+}
+
+// engineBArmedAwaits joins bluehost.Host's live armed-await registry
+// (Host.PendingAwaitNames, wrapping blueruntime.Runtime.PendingAwaitNames
+// #344) against its declared metadata (Host.DeclaredContracts' AwaitDecl)
+// for slot, by await_name — the single join both getRuntimePending and
+// cockpit.go's appendEngineBScene serve their awaits facet from. Every item
+// is addressed under defaultBlueprintToken (Engine B hosts no named
+// blueprint dimension — see postOperatorCallEngineB's doc). Nil when
+// nothing is armed.
+//
+// A declared-but-unarmed await is never iterated — only armed names drive
+// the loop — which IS the live-vs-declared distinction this join exists to
+// draw (an idle await must never read as a live prompt, same posture as
+// Engine A's listPendingAwaits "membership ⇒ armed"). An armed name absent
+// from the declared set has no known producer: DeclaredContracts and the
+// live registry both read the same static await_name off the same loaded
+// program's await-value node config, so they cannot name-diverge from one
+// program alone. Handled defensively anyway, never assumed away: neither
+// runtime.PendingAwait nor cockpitAwait has room for a fabricated
+// value_type (never invent metadata), so that name is omitted and logged
+// — nameable, not hidden — rather than served or silently dropped.
+func engineBArmedAwaits(host *bluehost.Host, slot bluehost.Slot, logger *slog.Logger) []runtime.PendingAwait {
+	armed := host.PendingAwaitNames(slot)
+	if len(armed) == 0 {
+		return nil
+	}
+	_, declaredAwaits := host.DeclaredContracts(slot)
+	declByName := make(map[string]bluehost.AwaitDecl, len(declaredAwaits))
+	for _, a := range declaredAwaits {
+		declByName[a.AwaitName] = a
+	}
+	out := make([]runtime.PendingAwait, 0, len(armed))
+	for _, name := range armed {
+		decl, ok := declByName[name]
+		if !ok {
+			if logger != nil {
+				logger.Warn("engine b: armed await has no declared metadata, omitted from pending list",
+					"await_name", name)
+			}
+			continue
+		}
+		out = append(out, runtime.PendingAwait{
+			BlueprintKey: defaultBlueprintToken,
+			AwaitName:    decl.AwaitName,
+			ValueType:    decl.ValueType,
+			UI:           decl.UI,
+		})
+	}
+	return out
 }
 
 // decodeOperatorPayload decodes a raw JSON call/resolve body into the `any`
@@ -374,10 +425,13 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 // Lists the live operator awaits of the target scene's blueprint. An
 // inactive blueprint has no awaits (empty list — ADR 008 active-only).
 //
-// Engine B routed (no ?rule=, both antenna and ?target=preview): always an
-// empty list — see the file header's "ENGINE B PENDING GAP" note for why
-// this cannot yet reflect live-armed awaits (blueruntime exposes no live
-// registry accessor). blueprint_id plays no role on this leg, matching
+// Engine B routed (no ?rule=, both antenna and ?target=preview): joins the
+// live armed registry against the declared metadata (engineBArmedAwaits,
+// see the file header's "ENGINE B PENDING" note and that function's doc for
+// the join and its one accepted gap). An unhosted slot (nil host or empty
+// digest) answers the same empty list as no awaits armed — no separate
+// dormant branch needed, PendingAwaitNames already reports nil on an
+// unloaded slot. blueprint_id plays no role on this leg, matching
 // call/resolve's "accepted but not routed on" stance.
 //
 // ?rule={rule_id}: unchanged, resolves through Engine A's promoted-rule
@@ -385,7 +439,13 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 func getRuntimePending(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
 		if isEngineBRouted(r) {
-			writeJSON(w, http.StatusOK, map[string]any{"pending": []runtime.PendingAwait{}})
+			pending := []runtime.PendingAwait{}
+			if host := engineBHost(deps); host != nil {
+				if joined := engineBArmedAwaits(host, engineBSlot(r), deps.Logger); joined != nil {
+					pending = joined
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"pending": pending})
 			return
 		}
 

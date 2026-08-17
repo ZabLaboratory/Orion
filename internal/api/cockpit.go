@@ -195,22 +195,12 @@ func addressBlueprintKey(key string) string {
 // since Engine B hosts no named blueprint dimension today (see
 // postOperatorCallEngineB's doc).
 //
-// Awaits now join two bluehost sources by AwaitName: PendingAwaitNames (the
-// LIVE registry, blueruntime.Runtime.PendingAwaitNames — #344) says WHICH
-// awaits are currently parked; DeclaredContracts' AwaitDecl carries the
-// value_type/UI a control needs to render. A declared-but-unarmed await is
-// never in the live set, so it is never iterated — that IS the live-vs-
-// declared distinction this facet exists to draw (an idle await must not
-// read as a live prompt, same posture as Engine A's listPendingAwaits).
-//
-// The reverse — an armed name absent from the declared set — has no known
-// producer: DeclaredContracts and the live registry are both read off the
-// SAME static await_name each await-value node's config carries, on the
-// SAME loaded program, so they cannot name-diverge from one program alone.
-// Still handled defensively rather than assumed away: ContractAwait has no
-// room for a fabricated value_type (never invent metadata), so that name is
-// omitted from the facet and logged instead of silently dropped — the
-// omission is nameable, not hidden.
+// Awaits are the cockpit's view of engineBArmedAwaits (operator.go) — the
+// same live-registry × declared-metadata join getRuntimePending serves the
+// polling route from, by await_name. See that function's doc for the join
+// semantics and its one accepted, unproducible-from-a-single-program gap
+// (an armed name absent from the declared set, omitted and logged rather
+// than served with fabricated value_type).
 func appendEngineBScene(out *cockpitContracts, host *bluehost.Host, slot bluehost.Slot, logger *slog.Logger) {
 	if host.Digest(slot) == "" {
 		return
@@ -218,7 +208,7 @@ func appendEngineBScene(out *cockpitContracts, host *bluehost.Host, slot bluehos
 	for _, p := range bundleOperatorInputs(host.Bundle(slot)) {
 		out.Params = append(out.Params, cockpitParam{ContractParam: p, Scope: scopeScene})
 	}
-	triggers, declaredAwaits := host.DeclaredContracts(slot)
+	triggers, _ := host.DeclaredContracts(slot)
 	for _, t := range triggers {
 		out.Triggers = append(out.Triggers, cockpitTrigger{
 			ContractTrigger: runtime.ContractTrigger{
@@ -231,32 +221,14 @@ func appendEngineBScene(out *cockpitContracts, host *bluehost.Host, slot bluehos
 		})
 	}
 
-	armed := host.PendingAwaitNames(slot)
-	if len(armed) == 0 {
-		return
-	}
-	declByName := make(map[string]bluehost.AwaitDecl, len(declaredAwaits))
-	for _, a := range declaredAwaits {
-		declByName[a.AwaitName] = a
-	}
-	for _, name := range armed {
-		decl, ok := declByName[name]
-		if !ok {
-			// See the doc above: not reachable from a single valid program,
-			// but never fabricate value_type to paper over it if it ever is.
-			if logger != nil {
-				logger.Warn("engine b: armed await has no declared metadata, omitted from cockpit contract",
-					"await_name", name)
-			}
-			continue
-		}
+	for _, a := range engineBArmedAwaits(host, slot, logger) {
 		out.Awaits = append(out.Awaits, cockpitAwait{
 			ContractAwait: runtime.ContractAwait{
-				BlueprintKey: defaultBlueprintToken,
-				AwaitName:    decl.AwaitName,
-				ValueType:    decl.ValueType,
+				BlueprintKey: a.BlueprintKey,
+				AwaitName:    a.AwaitName,
+				ValueType:    a.ValueType,
 				State:        "armed",
-				UI:           decl.UI,
+				UI:           a.UI,
 			},
 			Scope: scopeScene,
 		})
