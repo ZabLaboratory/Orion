@@ -125,6 +125,7 @@ func run() error {
 	var previewLSDPHandler http.Handler
 	var previewSlot *runtime.PreviewSlot
 	var antenneWire *lsdp.Wire
+	var previewWire *lsdp.Wire
 	if cfg.LSDPMode == config.LSDPModeDual || cfg.LSDPMode == config.LSDPModeLSDP {
 		wire, err := lsdp.NewWire(logger, authSource)
 		if err != nil {
@@ -152,9 +153,10 @@ func run() error {
 		// previewWire.SetActive (scene_changed + snapshot over the existing
 		// socket, no reload). The antenne wire above is never touched, so a
 		// preview switch can never flip the live antenne.
-		previewWire, err := lsdp.NewWire(logger, authSource)
-		if err != nil {
-			return err
+		var pwErr error
+		previewWire, pwErr = lsdp.NewWire(logger, authSource)
+		if pwErr != nil {
+			return pwErr
 		}
 		previewWire.SetSnapshotMetrics(metrics)
 		previewLSDPHandler = previewWire.Handler()
@@ -357,15 +359,34 @@ func run() error {
 		// MirrorFor nil, so startBridge stays a no-op — Prepare/Take still
 		// run and answer, nothing reaches Solar over this path yet.
 		if antenneWire != nil {
-			// sceneVersion is now the real digest startBridge passes
+			// sceneVersion is the real digest startBridge passes
 			// (ORION-TAKE-SLOT-IDENTITY, Blue#345), not a hardcoded "" —
-			// the LSDP kit tells Solar its scene_version is whatever
-			// value lands here, and Solar echoes that back as ?v= on
-			// GET .../render-bundle. A hardcoded "" told every client
-			// the wrong value to send, independent of #401's own fix.
-			sceneIntent.MirrorFor = func(sceneID, sceneVersion string) runtime.SceneMirror {
-				return antenneWire.MirrorFor(sceneID, sceneVersion, nil)
-			}
+			// the LSDP kit tells Solar its scene_version is whatever value
+			// lands here, and Solar echoes that back as ?v= on GET
+			// .../render-bundle. A hardcoded "" told every client the wrong
+			// value to send, independent of #401's own fix. sceneIntentMirrorFor
+			// now threads it straight through to whichever wire it picks,
+			// instead of hardcoding "" itself.
+			//
+			// The FLUX is a required parameter of the resolution itself
+			// (#398), not an argument a call site can forget to consult:
+			// sceneIntentMirrorFor closes over BOTH wires and the returned
+			// function's own signature carries bluehost.Slot, so
+			// startBridge's slot (already computed from the attestation
+			// action) determines which wire gets the mirror — a
+			// prepare-preview can never again land on the antenne wire the
+			// way the prior 1-wire, sceneID-only signature allowed.
+			// previewWire is guaranteed non-nil here: it is constructed in
+			// the SAME cfg.LSDPMode dual/lsdp guard as antenneWire, above.
+			//
+			// bundle is the slot's LSML render-bundle bytes (deps.Host.
+			// Bundle(slot), threaded by startBridge) — the only render-
+			// bundle artefact this path ever holds. MirrorForLSML derives
+			// the bound-leaf gate from it directly (#396): a hardcoded nil
+			// here left boundLeafSet permanently disabled on the stateless
+			// path even though the SAME mechanism is already proven safe on
+			// the legacy Show-backed path.
+			sceneIntent.MirrorFor = sceneIntentMirrorFor(lsdpWires{preview: previewWire, antenne: antenneWire})
 			sceneIntent.Bridges = bluewire.NewRegistry()
 			sceneIntent.Logger = logger
 		}
