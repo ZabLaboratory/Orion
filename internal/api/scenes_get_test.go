@@ -64,19 +64,21 @@ func TestGetRenderBundle_SceneIDMismatchIs404(t *testing.T) {
 	}
 }
 
-// TestGetRenderBundle_OnAirNeverResolvesThroughThisRoute pins the KNOWN,
-// documented gap (clause 5, Amendment 3 territory, bluehost/host.go —
-// Host.Take never records a sceneID): no {id}/?v= combination can ever
-// resolve the on-air slot through this resolver, even with the exactly
-// correct digest. This is not a regression this fix introduces — no
-// legitimate render succeeded through this route before it either (the
-// client-side version check independently refuses every response this
-// branch could produce) — it is the honest consequence of keying by
-// (scene_id, digest) against a slot whose scene_id is never set.
-func TestGetRenderBundle_OnAirNeverResolvesThroughThisRoute(t *testing.T) {
+// TestGetRenderBundle_TakenSceneResolvesThroughThisRoute is the FULL
+// on-air path proof (ORION-TAKE-SLOT-IDENTITY, Blue#345): a scene taken
+// to the antenna is subsequently resolvable through the exact public
+// resolver a real client hits — not merely that host.Serving reports
+// true in isolation. Before this fix, Host.Take never recorded a
+// sceneID (only Prepare did), so no {id}/?v= combination could ever
+// resolve the on-air slot here — every stateless on-air occupation was
+// unservable through this route, unconditionally, program or not. This
+// test used to pin that gap as an accepted, documented limitation
+// (TestGetRenderBundle_OnAirNeverResolvesThroughThisRoute); it now pins
+// the closure instead.
+func TestGetRenderBundle_TakenSceneResolvesThroughThisRoute(t *testing.T) {
 	host := bluehost.NewHost()
 	program := minimalProgram(t)
-	if err := host.Take("onair-1", "sha256:onair", program, nil, nil, nil); err != nil {
+	if err := host.Take("onair-1", "scene-1", "sha256:onair", program, nil, nil, nil); err != nil {
 		t.Fatalf("Take on-air: %v", err)
 	}
 	host.SetBundle(bluehost.SlotOnAir, []byte(`"onair-bundle"`))
@@ -86,8 +88,69 @@ func TestGetRenderBundle_OnAirNeverResolvesThroughThisRoute(t *testing.T) {
 	req.SetPathValue("id", "scene-1")
 	rec := httptest.NewRecorder()
 	getRenderBundle(deps)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 — a scene Taken to the antenna must resolve through resolveHostBundle, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != `"onair-bundle"` {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+// TestGetRenderBundle_TakenSceneWrongIDStillRejected is the negative
+// symmetric check: fixing Take's sceneID must not turn resolveHostBundle
+// into a "any id resolves the antenna" oracle again — the WRONG id
+// still 404s even against a correctly-recorded on-air occupation.
+func TestGetRenderBundle_TakenSceneWrongIDStillRejected(t *testing.T) {
+	host := bluehost.NewHost()
+	program := minimalProgram(t)
+	if err := host.Take("onair-1", "scene-1", "sha256:onair", program, nil, nil, nil); err != nil {
+		t.Fatalf("Take on-air: %v", err)
+	}
+	host.SetBundle(bluehost.SlotOnAir, []byte(`"onair-bundle"`))
+
+	deps := PublicDeps{SceneIntent: &SceneIntentDeps{Host: host}}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/scenes/wrong-scene/render-bundle?v=sha256:onair", nil)
+	req.SetPathValue("id", "wrong-scene")
+	rec := httptest.NewRecorder()
+	getRenderBundle(deps)(rec, req)
 	if rec.Code != http.StatusNotFound {
-		t.Fatalf("expected 404 (Take never records a sceneID for host.Serving to match), got %d: %s", rec.Code, rec.Body.String())
+		t.Fatalf("expected 404 on wrong scene_id even with the correct digest, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestGetRenderBundle_PreviewSymmetryUnaffected is the symmetry check
+// (F1's own point dur): the preview path, which already worked (Prepare
+// always set sceneID), must keep working exactly as before, and remain
+// scoped to preview only — it must NOT resolve as if it were on-air.
+func TestGetRenderBundle_PreviewSymmetryUnaffected(t *testing.T) {
+	host := bluehost.NewHost()
+	program := minimalProgram(t)
+	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "scene-1", "sha256:preview", program, nil, nil, nil); err != nil {
+		t.Fatalf("Prepare preview: %v", err)
+	}
+	host.SetBundle(bluehost.SlotPreview, []byte(`"preview-bundle"`))
+
+	deps := PublicDeps{SceneIntent: &SceneIntentDeps{Host: host}}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/scenes/scene-1/render-bundle?v=sha256:preview", nil)
+	req.SetPathValue("id", "scene-1")
+	rec := httptest.NewRecorder()
+	getRenderBundle(deps)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected preview to keep resolving, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Body.String() != `"preview-bundle"` {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+
+	// The SAME (id, v) must not accidentally resolve on-air too — the
+	// on-air slot is empty here, so a request pinned to the on-air digest
+	// must still 404.
+	onAirReq := httptest.NewRequest(http.MethodGet, "/api/v1/scenes/scene-1/render-bundle?v=sha256:onair-never-taken", nil)
+	onAirReq.SetPathValue("id", "scene-1")
+	onAirRec := httptest.NewRecorder()
+	getRenderBundle(deps)(onAirRec, onAirReq)
+	if onAirRec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for a digest no slot is serving, got %d", onAirRec.Code)
 	}
 }
 

@@ -357,8 +357,14 @@ func run() error {
 		// MirrorFor nil, so startBridge stays a no-op — Prepare/Take still
 		// run and answer, nothing reaches Solar over this path yet.
 		if antenneWire != nil {
-			sceneIntent.MirrorFor = func(sceneID string) runtime.SceneMirror {
-				return antenneWire.MirrorFor(sceneID, "", nil)
+			// sceneVersion is now the real digest startBridge passes
+			// (ORION-TAKE-SLOT-IDENTITY, Blue#345), not a hardcoded "" —
+			// the LSDP kit tells Solar its scene_version is whatever
+			// value lands here, and Solar echoes that back as ?v= on
+			// GET .../render-bundle. A hardcoded "" told every client
+			// the wrong value to send, independent of #401's own fix.
+			sceneIntent.MirrorFor = func(sceneID, sceneVersion string) runtime.SceneMirror {
+				return antenneWire.MirrorFor(sceneID, sceneVersion, nil)
 			}
 			sceneIntent.Bridges = bluewire.NewRegistry()
 			sceneIntent.Logger = logger

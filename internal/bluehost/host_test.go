@@ -21,7 +21,7 @@ func TestHost_PreparePreviewAndOnAirAreIsolated(t *testing.T) {
 	if err := h.Prepare(SlotPreview, "preview-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare preview: %v", err)
 	}
-	if err := h.Take("onair-1", "sha256:aaa", program, nil, nil, nil); err != nil {
+	if err := h.Take("onair-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 
@@ -56,10 +56,10 @@ func TestHost_TakeSupersedesPreviousOnAirWithoutStateTransfer(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
 
-	if err := h.Take("onair-1", "sha256:aaa", program, nil, nil, nil); err != nil {
+	if err := h.Take("onair-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("first Take: %v", err)
 	}
-	if err := h.Take("onair-2", "sha256:bbb", program, nil, nil, nil); err != nil {
+	if err := h.Take("onair-2", "scene-1", "sha256:bbb", program, nil, nil, nil); err != nil {
 		t.Fatalf("second Take: %v", err)
 	}
 	if h.Digest(SlotOnAir) != "sha256:bbb" {
@@ -77,11 +77,11 @@ func TestHost_TakeFailureLeavesPreviousOnAirUntouched(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
 
-	if err := h.Take("onair-1", "sha256:aaa", program, nil, nil, nil); err != nil {
+	if err := h.Take("onair-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
 		t.Fatalf("first Take: %v", err)
 	}
 
-	if err := h.Take("onair-2", "sha256:bbb", []byte(`not-json`), nil, nil, nil); err == nil {
+	if err := h.Take("onair-2", "scene-1", "sha256:bbb", []byte(`not-json`), nil, nil, nil); err == nil {
 		t.Fatal("expected failure loading malformed program")
 	}
 

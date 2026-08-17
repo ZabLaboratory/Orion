@@ -278,7 +278,7 @@ type engineBFixture struct {
 func newEngineBOperatorFixture(t *testing.T, program []byte) *engineBFixture {
 	t.Helper()
 	host := bluehost.NewHost()
-	if err := host.Take("engine-b-fixture", "sha256:engine-b-fixture", program, nil, nil, nil); err != nil {
+	if err := host.Take("engine-b-fixture", "scene-1", "sha256:engine-b-fixture", program, nil, nil, nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 	if _, err := host.Step(bluehost.SlotOnAir); err != nil {
@@ -341,7 +341,7 @@ func (f *engineBFixture) takeSlot(t *testing.T, slot bluehost.Slot, program []by
 // action), every other slot through Prepare (matching prepare-preview).
 func loadEngineBSlot(host *bluehost.Host, slot bluehost.Slot, program []byte) error {
 	if slot == bluehost.SlotOnAir {
-		return host.Take("engine-b-fixture-onair", "sha256:engine-b-fixture-onair", program, nil, nil, nil)
+		return host.Take("engine-b-fixture-onair", "scene-1", "sha256:engine-b-fixture-onair", program, nil, nil, nil)
 	}
 	return host.Prepare(slot, "engine-b-fixture-preview", "engine-b-fixture-preview-scene",
 		"sha256:engine-b-fixture-preview", program, nil, nil, nil)

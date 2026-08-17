@@ -65,7 +65,7 @@ func newCockpitFixture(t *testing.T) *cockpitFixture {
 	// --- antenna (Engine B): param + on-call trigger, scope scene --------
 	program := buildEngineBOperatorProgram(t, "fire", "x", "", "", "")
 	host := bluehost.NewHost()
-	if err := host.Take("cockpit-fixture", "sha256:cockpit-fixture", program, nil, nil, nil); err != nil {
+	if err := host.Take("cockpit-fixture", "scene-1", "sha256:cockpit-fixture", program, nil, nil, nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 	if _, err := host.Step(bluehost.SlotOnAir); err != nil {
@@ -380,7 +380,7 @@ func TestCockpit_EngineBArmedAwaitJoinsDeclaredMetadataAndClearsOnResolve(t *tes
 func TestCockpit_EngineBDeclaredAwaitNeverArmedIsExcluded(t *testing.T) {
 	program := buildEngineBOperatorProgram(t, "call", "called", "pick", "core.primitive.integer", "picked")
 	host := bluehost.NewHost()
-	if err := host.Take("engine-b-unarmed", "sha256:engine-b-unarmed", program, nil, nil, nil); err != nil {
+	if err := host.Take("engine-b-unarmed", "scene-1", "sha256:engine-b-unarmed", program, nil, nil, nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 	// Deliberately no Step: on-start never runs, so "pick" is declared
@@ -423,7 +423,7 @@ func TestCockpit_EngineBPreviewArmedAwaitDoesNotLeakToAntenna(t *testing.T) {
 	if names := host.PendingAwaitNames(bluehost.SlotPreview); len(names) != 1 || names[0] != "hidden" {
 		t.Fatalf("preview await not armed as expected: %#v", names)
 	}
-	if err := host.Take("on-air-1", "sha256:on-air", onAirProgram, nil, nil, nil); err != nil {
+	if err := host.Take("on-air-1", "scene-1", "sha256:on-air", onAirProgram, nil, nil, nil); err != nil {
 		t.Fatalf("Take on-air: %v", err)
 	}
 	if _, err := host.Step(bluehost.SlotOnAir); err != nil {
