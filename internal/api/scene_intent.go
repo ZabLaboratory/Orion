@@ -85,11 +85,21 @@ type SceneIntentDeps struct {
 	Effects bluehost.EffectDeps
 
 	// MirrorFor resolves the LSDP scene pairing a bluewire.Bridge forwards
-	// onto, for a given scene_id — normally lsdp.Wire.MirrorFor. Nil ⇒ no
-	// bridge is ever started: Prepare/Take still run, the handler still
+	// onto, for a given scene_id — normally lsdp.Wire.MirrorForLSML. Nil ⇒
+	// no bridge is ever started: Prepare/Take still run, the handler still
 	// returns its typed result, but nothing reaches Solar over this path
 	// yet (the pre-B3-R6-12-ORION-PROJECTION posture).
-	MirrorFor func(sceneID string) runtime.SceneMirror
+	//
+	// The bundle parameter is the slot's LSML render-bundle bytes
+	// (deps.Host.Bundle(slot), the value SetBundle stored for the
+	// Prepare/Take that is starting this bridge) — the ONLY render-bundle
+	// artefact this path ever holds; startBridge passes it through so the
+	// bound-leaf gate (internal/lsdp.boundLeafSet, #396) actually executes
+	// on the stateless path instead of running permanently disabled on a
+	// hardcoded nil. May be nil (no lsml_bundle in the envelope), which
+	// correctly disables the gate — same fail-open posture as the legacy
+	// path's binding-less bundle.
+	MirrorFor func(sceneID string, bundle []byte) runtime.SceneMirror
 	// Bridges tracks the running bridge per bluehost.Slot so a superseding
 	// Take (or a re-Prepare) stops the previous one instead of leaking a
 	// goroutine stepping an instance the Host has already released.
@@ -538,7 +548,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	if deps.MirrorFor == nil || deps.Bridges == nil {
 		return
 	}
-	mirror := deps.MirrorFor(claims.SceneID)
+	mirror := deps.MirrorFor(claims.SceneID, deps.Host.Bundle(slot))
 	if mirror == nil {
 		return
 	}

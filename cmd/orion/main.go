@@ -357,8 +357,17 @@ func run() error {
 		// MirrorFor nil, so startBridge stays a no-op — Prepare/Take still
 		// run and answer, nothing reaches Solar over this path yet.
 		if antenneWire != nil {
-			sceneIntent.MirrorFor = func(sceneID string) runtime.SceneMirror {
-				return antenneWire.MirrorFor(sceneID, "", nil)
+			// The bundle argument is the slot's LSML render-bundle bytes
+			// (deps.Host.Bundle(slot), threaded by startBridge) — the only
+			// render-bundle artefact this path ever holds. MirrorForLSML
+			// derives the bound-leaf gate from it directly (#396): the
+			// hardcoded nil here left boundLeafSet permanently disabled on
+			// the stateless path even though the SAME mechanism is already
+			// proven safe on the legacy Show-backed path. sceneVersion stays
+			// "" unchanged — the stateless route/keying gap (Conduit's C1)
+			// is out of this fix's scope.
+			sceneIntent.MirrorFor = func(sceneID string, bundle []byte) runtime.SceneMirror {
+				return antenneWire.MirrorForLSML(sceneID, "", bundle)
 			}
 			sceneIntent.Bridges = bluewire.NewRegistry()
 			sceneIntent.Logger = logger
