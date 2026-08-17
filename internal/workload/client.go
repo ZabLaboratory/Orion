@@ -173,45 +173,110 @@ func (c *Client) MintDelegation(ctx context.Context, ticket string, intent json.
 	return &out, nil
 }
 
+// proxyRequest is Gate's `DelegationProxyRequest` (`schemas.py:299-303`)
+// — the body BOTH /canvas and /reconcile require. Provenance of every
+// field is fixed by the flow, never invented here: AccessToken and
+// GateRequestID come from the mint's DelegationIssueResponse; Ticket and
+// Intent are the same opaque ticket and raw intent bytes Prism relayed
+// (the ones the mint itself was scoped to). Gate re-validates the intent
+// against the ticket bindings on each call, so the intent stays a
+// verbatim blob — same M3 invariant as the mint.
+type proxyRequest struct {
+	AccessToken   string          `json:"access_token"`
+	Ticket        string          `json:"ticket"`
+	Intent        json.RawMessage `json:"intent"`
+	GateRequestID string          `json:"gate_request_id"`
+}
+
+// canvasResult is `_bounded_canvas_result`'s shape inside the proxy and
+// reconciliation responses: the Canvas HTTP outcome Gate observed,
+// bounded and JSON-parsed on the Gate side.
+type canvasResult struct {
+	StatusCode  int             `json:"status_code"`
+	ContentType string          `json:"content_type"`
+	Body        json.RawMessage `json:"body"`
+}
+
+// proxyResponse is Gate's `DelegationProxyResponse`/`ReconciliationResponse`
+// (identical fields; result is optional on reconciliation): a 200 is
+// always `status: "consumed"` — every other delegation state surfaces as
+// a typed 409 refusal, never a 200.
+type proxyResponse struct {
+	JTI              string       `json:"jti"`
+	Status           string       `json:"status"`
+	CanvasRequestKey string       `json:"canvas_request_key"`
+	Result           canvasResult `json:"result"`
+}
+
 // CanvasArtifact is the single Canvas response Gate proxied under the
 // delegation's `canvas_request_key` (§4.7) — exact bytes, unmodified.
+// Status/Body are the CANVAS outcome (`result.status_code`/`result.body`
+// of the proxy response), not the Gate transport status.
 type CanvasArtifact struct {
 	Status int             `json:"status"`
 	Body   json.RawMessage `json:"body"`
 }
 
 // FetchCanvas proxies exactly one Canvas request through the reserved
-// delegation. Per §4.7, Orion never remints or retries from this call on
-// an ambiguous outcome — a CodeDelegationReconciliationPending or
+// delegation, posting the full DelegationProxyRequest Gate requires.
+// Per §4.7, Orion never remints or retries from this call on an
+// ambiguous outcome — a CodeDelegationReconciliationPending or
 // CodeDelegationRetryRequiresReadmission error must route to Reconcile or
 // back to a fresh admission respectively, never to a second FetchCanvas
 // on the same jti.
-func (c *Client) FetchCanvas(ctx context.Context, jti string) (*CanvasArtifact, error) {
-	var out CanvasArtifact
-	if err := c.post(ctx, "/internal/v1/workload/delegations/"+pathEscape(jti)+"/canvas",
-		nil, &out); err != nil {
+func (c *Client) FetchCanvas(ctx context.Context, delegation *Delegation, ticket string, intent json.RawMessage) (*CanvasArtifact, error) {
+	out, err := c.postProxy(ctx, "canvas", delegation, ticket, intent)
+	if err != nil {
 		return nil, err
 	}
-	return &out, nil
+	return &CanvasArtifact{Status: out.Result.StatusCode, Body: out.Result.Body}, nil
 }
 
-// ReconcileResult reports the terminal (or still-pending) state of a
-// delegation whose FetchCanvas outcome was ambiguous (timeout or crash
-// after reservation, §4.7).
+// ReconcileResult reports the terminal state of a delegation whose
+// FetchCanvas outcome was ambiguous (timeout or crash after reservation,
+// §4.7). A non-error result is always terminal-consumed; `reserved` and
+// `revoked` states surface as typed refusals from Gate, never here.
 type ReconcileResult struct {
-	State string          `json:"state"` // "consumed" | "revoked" | "reserved"
-	Body  json.RawMessage `json:"body,omitempty"`
+	JTI              string
+	CanvasRequestKey string
+	// Result is the observed Canvas outcome; may be empty when Gate's
+	// reconciliation response carried no result payload.
+	Result json.RawMessage
 }
 
-// Reconcile looks up the delegation's terminal state by
-// `canvas_request_key` without minting a new delegation. Orion calls this
-// — never a fresh mint — whenever a predecessor is `reserved` or
-// indeterminate (§4.7).
-func (c *Client) Reconcile(ctx context.Context, jti string) (*ReconcileResult, error) {
-	var out ReconcileResult
-	if err := c.post(ctx, "/internal/v1/workload/delegations/"+pathEscape(jti)+"/reconcile",
-		nil, &out); err != nil {
+// Reconcile observes the delegation's terminal state through Gate's
+// Canvas global lookup without a second Canvas effect. Same body and
+// provenance as FetchCanvas. Orion calls this — never a fresh mint —
+// whenever a predecessor is `reserved` or indeterminate (§4.7).
+func (c *Client) Reconcile(ctx context.Context, delegation *Delegation, ticket string, intent json.RawMessage) (*ReconcileResult, error) {
+	out, err := c.postProxy(ctx, "reconcile", delegation, ticket, intent)
+	if err != nil {
 		return nil, err
+	}
+	return &ReconcileResult{JTI: out.JTI, CanvasRequestKey: out.CanvasRequestKey, Result: out.Result.Body}, nil
+}
+
+// postProxy posts the shared DelegationProxyRequest to /canvas or
+// /reconcile and fails closed on any 200 whose status is not the
+// contract's only success state ("consumed").
+func (c *Client) postProxy(ctx context.Context, leg string, delegation *Delegation, ticket string, intent json.RawMessage) (*proxyResponse, error) {
+	if delegation == nil || delegation.JTI == "" || delegation.AccessToken == "" || delegation.GateRequestID == "" {
+		return nil, errors.New("workload: delegation with jti, access_token and gate_request_id is required")
+	}
+	var out proxyResponse
+	if err := c.post(ctx, "/internal/v1/workload/delegations/"+pathEscape(delegation.JTI)+"/"+leg,
+		proxyRequest{
+			AccessToken:   delegation.AccessToken,
+			Ticket:        ticket,
+			Intent:        intent,
+			GateRequestID: delegation.GateRequestID,
+		}, &out); err != nil {
+		return nil, err
+	}
+	if out.Status != "consumed" {
+		// Never trust an unexpected 200 as success — same fail-closed
+		// posture as an unknown refusal code.
+		return nil, &Error{Raw: "unexpected delegation status " + out.Status, HTTPStatus: http.StatusOK}
 	}
 	return &out, nil
 }
