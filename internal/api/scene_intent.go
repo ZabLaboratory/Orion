@@ -44,7 +44,11 @@ import (
 // Prism relayed.
 type WorkloadPortal interface {
 	MintDelegation(ctx context.Context, ticket string, intent json.RawMessage) (*workload.Delegation, error)
-	FetchCanvas(ctx context.Context, jti string) (*workload.CanvasArtifact, error)
+	// FetchCanvas needs the whole minted delegation (access_token +
+	// gate_request_id ride the DelegationProxyRequest body) plus the SAME
+	// ticket and raw intent bytes the mint was scoped to — Gate
+	// re-validates them against the ticket bindings on the proxy call too.
+	FetchCanvas(ctx context.Context, delegation *workload.Delegation, ticket string, intent json.RawMessage) (*workload.CanvasArtifact, error)
 }
 
 // SceneIntentDeps groups the new stateless-path dependencies. A nil
@@ -409,7 +413,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 
-		artifact, err := deps.Workload.FetchCanvas(ctx, delegation.JTI)
+		artifact, err := deps.Workload.FetchCanvas(ctx, delegation, ticket, json.RawMessage(raw))
 		if err != nil {
 			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "compensating", IntentID: req.IntentID, Reason: workloadReason(err)})
 			return

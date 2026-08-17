@@ -134,6 +134,11 @@ type fakeWorkload struct {
 	mintCalls  int
 	mintTicket string
 	mintIntent json.RawMessage
+
+	fetchCalls      int
+	fetchDelegation *workload.Delegation
+	fetchTicket     string
+	fetchIntent     json.RawMessage
 }
 
 func (f *fakeWorkload) MintDelegation(_ context.Context, ticket string, intent json.RawMessage) (*workload.Delegation, error) {
@@ -143,10 +148,17 @@ func (f *fakeWorkload) MintDelegation(_ context.Context, ticket string, intent j
 	if f.mintErr != nil {
 		return nil, f.mintErr
 	}
-	return &workload.Delegation{JTI: "jti-1", AccessToken: "opaque-delegation", TokenType: "bearer", Status: "issued"}, nil
+	return &workload.Delegation{
+		JTI: "jti-1", AccessToken: "opaque-delegation", TokenType: "bearer", Status: "issued",
+		GateRequestID: "3f2c8f0e-2f65-4e11-8a63-0123456789ab." + strings.Repeat("d", 64),
+	}, nil
 }
 
-func (f *fakeWorkload) FetchCanvas(_ context.Context, _ string) (*workload.CanvasArtifact, error) {
+func (f *fakeWorkload) FetchCanvas(_ context.Context, delegation *workload.Delegation, ticket string, intent json.RawMessage) (*workload.CanvasArtifact, error) {
+	f.fetchCalls++
+	f.fetchDelegation = delegation
+	f.fetchTicket = ticket
+	f.fetchIntent = append(json.RawMessage(nil), intent...)
 	if f.fetchErr != nil {
 		return nil, f.fetchErr
 	}
@@ -669,6 +681,21 @@ func TestPostSceneIntent_RelaysTicketAndRawIntentVerbatim(t *testing.T) {
 	}
 	if !bytes.Equal(wl.mintIntent, body) {
 		t.Fatalf("intent must reach mint byte-for-byte:\nsent  %s\nminted %s", body, wl.mintIntent)
+	}
+	// The fetch leg (WORKLOAD-FETCH-CANVAS-ALIGN) rides the SAME ticket
+	// and the SAME raw intent bytes, plus the delegation the mint just
+	// returned — Gate re-validates all of it on the proxy call too.
+	if wl.fetchCalls != 1 {
+		t.Fatalf("expected exactly one canvas fetch, got %d", wl.fetchCalls)
+	}
+	if wl.fetchDelegation == nil || wl.fetchDelegation.JTI != "jti-1" || wl.fetchDelegation.AccessToken == "" || wl.fetchDelegation.GateRequestID == "" {
+		t.Fatalf("fetch must receive the minted delegation (jti + access_token + gate_request_id), got %+v", wl.fetchDelegation)
+	}
+	if wl.fetchTicket != "opaque-ticket" {
+		t.Fatalf("fetch must receive the relayed ticket, got %q", wl.fetchTicket)
+	}
+	if !bytes.Equal(wl.fetchIntent, body) {
+		t.Fatalf("intent must reach the canvas fetch byte-for-byte:\nsent    %s\nfetched %s", body, wl.fetchIntent)
 	}
 }
 
