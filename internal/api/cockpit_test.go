@@ -446,6 +446,44 @@ func TestCockpit_EngineBPreviewArmedAwaitDoesNotLeakToAntenna(t *testing.T) {
 	}
 }
 
+// TestCockpit_AntennaContractIsolatesArmedAwaitsPerSlot restores a proof the
+// bail owner had removed to avoid an early collision with this work unit's
+// unification (Prism#740 addendum, ORION-UNKNOWN-TARGET-CONTRACT): the
+// antenna leg of GET /cockpit/contracts must report only the on-air
+// program's armed await when BOTH slots are populated and armed
+// simultaneously with DIFFERENTLY NAMED awaits — the same "a distinct name,
+// not just non-empty vs. empty" shape as
+// TestOperator_PendingIsolatesArmedAwaitsPerSlot
+// (operator_dual_slot_isolation_test.go, PR#393), applied to the fourth
+// route that reads ?target=.
+//
+// Before this unification, isolation on this leg rested on a hardcoded
+// argument at the appendEngineBScene call site (cockpit.go), never on a
+// branch reachable through ?target= — a mutation swapping that literal from
+// SlotOnAir to SlotPreview would leak the preview await's exact name into
+// the antenna contract, and an ambiguous mutation (empty-list-only
+// assertions elsewhere) would not have caught it. This test re-proves that
+// isolation against the now-unified resolveTargetKind/targetKind
+// vocabulary — the antenna/preview split for THIS route is still that same
+// SlotOnAir literal (the preview leg stays on Engine A, deliberately out of
+// scope — see getCockpitContracts's doc), reached through the shared
+// decision point rather than a private re-parse of the query string.
+func TestCockpit_AntennaContractIsolatesArmedAwaitsPerSlot(t *testing.T) {
+	onAirProgram := buildEngineBOperatorProgram(t, "call-onair", "called-onair",
+		"pick-onair", "core.primitive.integer", "picked-onair")
+	previewProgram := buildEngineBOperatorProgram(t, "call-preview", "called-preview",
+		"pick-preview", "core.primitive.integer", "picked-preview")
+
+	ef := newEngineBOperatorFixtureOnSlot(t, bluehost.SlotOnAir, onAirProgram)
+	ef.takeSlot(t, bluehost.SlotPreview, previewProgram)
+	f := &cockpitFixture{mux: ef.mux}
+
+	_, body := getContracts(t, f, "operator", "?stream_id=s1")
+	if len(body.Awaits) != 1 || body.Awaits[0].AwaitName != "pick-onair" {
+		t.Fatalf("antenna contract awaits = %+v, want exactly one named pick-onair", body.Awaits)
+	}
+}
+
 // TestCockpit_UnknownTargetRejected (ORION-UNKNOWN-TARGET-CONTRACT, Prism#740)
 // proves the SECOND ?target= decision point (getCockpitContracts, cockpit.go)
 // shares the same reject as the three operator.go routes
