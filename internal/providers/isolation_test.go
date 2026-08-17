@@ -50,7 +50,7 @@ func TestIsolation_OnAirOnlyProviderNeverArmedInPreview(t *testing.T) {
 		t.Fatal("a refused Prepare must not leave a loaded preview instance")
 	}
 
-	if err := h.Take("onair-1", "sha256:aaa", program, provider, nil, nil); err != nil {
+	if err := h.Take("onair-1", "scene-1", "sha256:aaa", program, provider, nil, nil); err != nil {
 		t.Fatalf("expected Take (on-air/execute mode) to succeed for the same provider: %v", err)
 	}
 	if h.Digest(bluehost.SlotOnAir) != "sha256:aaa" {

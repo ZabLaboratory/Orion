@@ -46,8 +46,12 @@ type entry struct {
 	instance *blueruntime.InstanceHandle
 
 	// sceneID and digest together are the slot's identity — see Serving.
-	// sceneID is populated by Prepare only; Take leaves it "" (Take never
-	// short-circuits, see Take's own doc, so nothing reads it on that path).
+	// Populated by BOTH Prepare and Take (ORION-TAKE-SLOT-IDENTITY, Blue#345):
+	// an on-air occupation is resolvable by resolveHostBundle's (scene_id, v)
+	// match exactly like a preview one — before this fix Take left it "",
+	// so no {scene_id} could ever match the on-air slot post-#401, which
+	// silently made every on-air stateless occupation unservable through
+	// that resolver, program or not.
 	sceneID    string
 	digest     string            // scene_digest / program identity this slot is serving
 	bundle     []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
@@ -367,6 +371,12 @@ func (h *Host) Digest(slot Slot) string {
 // loaded" just because the new intent's digest happens to match too
 // (see Digest's doc for why digest alone is not a safe identity check).
 // False on an empty slot.
+//
+// Second consumer since #401: internal/api.resolveHostBundle uses this
+// SAME check to key the public render-bundle resolver — a caller must
+// know both the exact scene_id and digest a slot is serving, on BOTH
+// slots. Take now populates sceneID (ORION-TAKE-SLOT-IDENTITY) so that
+// consumer works identically for preview and on-air.
 func (h *Host) Serving(slot Slot, sceneID, digest string) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -475,7 +485,14 @@ func (h *Host) Release(slot Slot, reason string) error {
 // A failure before the new instance starts leaves the previous on-air
 // instance (if any) completely untouched — the atomicity boundary §4.4
 // promises ("un échec avant commit ne modifie pas l'active").
-func (h *Host) Take(instanceID, digest string, program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy, effectHandlers map[string]blueruntime.EffectFunc) error {
+//
+// sceneID is now recorded on the committed entry, the same contract
+// Prepare already holds (ORION-TAKE-SLOT-IDENTITY, Blue#345): before this,
+// Take was the one caller of the two that left the slot's sceneID empty,
+// so no {scene_id} could ever satisfy resolveHostBundle's (scene_id, v)
+// match (#401) for the on-air slot — every stateless on-air occupation
+// was unservable through that resolver, unconditionally.
+func (h *Host) Take(instanceID, sceneID, digest string, program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy, effectHandlers map[string]blueruntime.EffectFunc) error {
 	h.mu.Lock()
 	handle, err := h.runtime.Load(program)
 	if err != nil {
@@ -496,7 +513,7 @@ func (h *Host) Take(instanceID, digest string, program []byte, providers []map[s
 
 	triggers, awaits := declaredContracts(program)
 	previous := h.slots[SlotOnAir]
-	h.slots[SlotOnAir] = &entry{instance: instance, digest: digest, awaitTypes: awaitTypesInProgram(program), triggers: triggers, awaits: awaits}
+	h.slots[SlotOnAir] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: awaitTypesInProgram(program), triggers: triggers, awaits: awaits}
 	h.mu.Unlock()
 
 	if previous != nil {

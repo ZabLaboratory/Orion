@@ -89,7 +89,17 @@ type SceneIntentDeps struct {
 	// bridge is ever started: Prepare/Take still run, the handler still
 	// returns its typed result, but nothing reaches Solar over this path
 	// yet (the pre-B3-R6-12-ORION-PROJECTION posture).
-	MirrorFor func(sceneID string) runtime.SceneMirror
+	//
+	// sceneVersion is now required too (ORION-TAKE-SLOT-IDENTITY, Blue#345):
+	// startBridge passes claims.SceneDigest, the SAME digest Prepare/Take
+	// committed on the slot. Before this, the call site hardcoded "" here,
+	// so whatever the LSDP kit told the client its scene_version was (""),
+	// the client would echo back as ?v= on GET .../render-bundle — a value
+	// that, post-#401, can never match host.Digest(slot). Keying the
+	// resolver correctly (#401, this unit's Take fix) is necessary but not
+	// sufficient on its own: the client also has to be TOLD the value that
+	// will actually match.
+	MirrorFor func(sceneID, sceneVersion string) runtime.SceneMirror
 	// Bridges tracks the running bridge per bluehost.Slot so a superseding
 	// Take (or a re-Prepare) stops the previous one instead of leaking a
 	// goroutine stepping an instance the Host has already released.
@@ -389,7 +399,11 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 				}
 			}
 		case attestation.ActionTakeOnAir:
-			opErr = deps.Host.Take(claims.RefID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Execute))
+			// claims.SceneID now threaded through (ORION-TAKE-SLOT-IDENTITY,
+			// Blue#345) — Take used to be the one caller of the two that left
+			// the on-air slot's sceneID empty, silently making it unmatchable
+			// by resolveHostBundle's (scene_id, v) check (#401).
+			opErr = deps.Host.Take(claims.RefID, claims.SceneID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Execute))
 		}
 		if opErr != nil {
 			writeJSON(w, http.StatusInternalServerError, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "HOST_PREPARE_FAILED"})
@@ -538,7 +552,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	if deps.MirrorFor == nil || deps.Bridges == nil {
 		return
 	}
-	mirror := deps.MirrorFor(claims.SceneID)
+	mirror := deps.MirrorFor(claims.SceneID, claims.SceneDigest)
 	if mirror == nil {
 		return
 	}

@@ -431,7 +431,7 @@ func TestPostSceneIntent_TakeOnAirOwnsBundleAndBridgeOnAir(t *testing.T) {
 		TenantID:           "tenant-1",
 		Workload:           &fakeWorkload{body: envelope},
 		Host:               host,
-		MirrorFor:          func(string) runtime.SceneMirror { return &recordingMirror{} },
+		MirrorFor:          func(string, string) runtime.SceneMirror { return &recordingMirror{} },
 		Bridges:            bridges,
 		ProjectionInterval: time.Hour,
 	}
@@ -481,7 +481,7 @@ func TestPostSceneIntent_TakeOnAirFailurePreservesCommittedGeneration(t *testing
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	program := minimalProgram(t)
 	host := bluehost.NewHost()
-	if err := host.Take("old-instance", "sha256:old", program, nil, nil, nil); err != nil {
+	if err := host.Take("old-instance", "scene-1", "sha256:old", program, nil, nil, nil); err != nil {
 		t.Fatalf("seed Host.Take: %v", err)
 	}
 	oldBundle := []byte(`{"scene":"old"}`)
@@ -670,7 +670,7 @@ func TestPostSceneIntent_BridgeFullLifecycle(t *testing.T) {
 		TenantID:           "tenant-1",
 		Workload:           &fakeWorkload{body: envelope},
 		Host:               bluehost.NewHost(),
-		MirrorFor:          func(string) runtime.SceneMirror { return mirror },
+		MirrorFor:          func(string, string) runtime.SceneMirror { return mirror },
 		Bridges:            bluewire.NewRegistry(),
 		ProjectionInterval: 5 * time.Millisecond,
 	}
@@ -714,6 +714,77 @@ func TestPostSceneIntent_BridgeFullLifecycle(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if mirror.count() != countAtRelease {
 		t.Fatalf("expected no further forwards after release, count went from %d to %d", countAtRelease, mirror.count())
+	}
+}
+
+// TestPostSceneIntent_MirrorForReceivesRealSceneDigest is the sceneVersion
+// coherence half of ORION-TAKE-SLOT-IDENTITY (Blue#345): startBridge must
+// pass claims.SceneDigest — the SAME digest Prepare/Take committed on the
+// slot — as MirrorFor's sceneVersion argument, never a hardcoded "".
+// Before this fix, cmd/orion/main.go's MirrorFor closure hardcoded "" for
+// every call, so whatever value the LSDP kit told Solar its scene_version
+// was, Solar could never echo back a ?v= that resolveHostBundle (#401)
+// would accept — Take's own sceneID fix alone is not sufficient for a real
+// client to ever reach the resolver with a matching pair.
+func TestPostSceneIntent_MirrorForReceivesRealSceneDigest(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	envelope, digest := canvasEnvelope(program)
+	now := time.Now()
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
+
+	var gotSceneID, gotSceneVersion string
+	var calls int
+	deps := SceneIntentDeps{
+		Trust:         attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix: "scenes/",
+		OwnerID:       "owner-1",
+		TenantID:      "tenant-1",
+		Workload:      &fakeWorkload{body: envelope},
+		Host:          bluehost.NewHost(),
+		MirrorFor: func(sceneID, sceneVersion string) runtime.SceneMirror {
+			gotSceneID = sceneID
+			gotSceneVersion = sceneVersion
+			calls++
+			return &recordingMirror{}
+		},
+		Bridges:            bluewire.NewRegistry(),
+		ProjectionInterval: time.Hour,
+	}
+
+	body, _ := json.Marshal(sceneIntentRequest{
+		IntentID: "intent-1", StreamID: "stream-1", Target: "preview",
+		Action: string(attestation.ActionPreparePreview), ResolvedSceneRef: ref,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+	req.Header.Set(authContextHeader, "opaque-ticket")
+
+	rec := httptest.NewRecorder()
+	postSceneIntent(deps)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	if calls != 1 {
+		t.Fatalf("expected MirrorFor called exactly once, got %d", calls)
+	}
+	if gotSceneID != "scene-1" {
+		t.Fatalf("expected sceneID %q, got %q", "scene-1", gotSceneID)
+	}
+	if gotSceneVersion == "" {
+		t.Fatal("MirrorFor received an empty sceneVersion — the #398-class defect: a client can never learn a ?v= that resolveHostBundle would accept")
+	}
+	// scene_digest (claims.SceneDigest) is the fixture's fixed "aaa..."
+	// literal in signedRef — distinct from blue_program_digest (the
+	// canvasEnvelope-returned `digest` used for the program cross-check).
+	// It is the SAME value deps.Host.Prepare/Take are already called with
+	// (scene_intent.go:385/392) — the value host.Digest(slot) will hold,
+	// so it is what a matching ?v= must equal.
+	wantSceneVersion := "sha256:" + strings.Repeat("a", 64)
+	if gotSceneVersion != wantSceneVersion {
+		t.Fatalf("expected sceneVersion to equal claims.SceneDigest %q, got %q", wantSceneVersion, gotSceneVersion)
 	}
 }
 

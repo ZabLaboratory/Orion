@@ -45,7 +45,7 @@ func TestDispatchOverlayAppSet_OnAirReachesMirror(t *testing.T) {
 	mirror := &fakeOverlayMirror{}
 	h.SetOverlayMirror(mirror)
 
-	if err := h.Take("stream-rule-1", "sha256:stream-rule", streamRuleOverlayFixture(t), nil, nil, nil); err != nil {
+	if err := h.Take("stream-rule-1", "scene-1", "sha256:stream-rule", streamRuleOverlayFixture(t), nil, nil, nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 	if _, err := h.Step(SlotOnAir); err != nil { // fires on-start
@@ -79,7 +79,7 @@ func TestDispatchOverlayAppSet_UnchangedRecordNotReDispatched(t *testing.T) {
 	mirror := &fakeOverlayMirror{}
 	h.SetOverlayMirror(mirror)
 
-	if err := h.Take("stream-rule-1", "sha256:stream-rule", streamRuleOverlayFixture(t), nil, nil, nil); err != nil {
+	if err := h.Take("stream-rule-1", "scene-1", "sha256:stream-rule", streamRuleOverlayFixture(t), nil, nil, nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 	if _, err := h.Step(SlotOnAir); err != nil {

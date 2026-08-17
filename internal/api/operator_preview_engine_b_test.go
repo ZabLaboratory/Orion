@@ -264,7 +264,7 @@ func TestOperator_PendingEngineBJoinsDeclaredMetadataAndClearsOnResolve(t *testi
 func TestOperator_PendingEngineBDeclaredAwaitNeverArmedIsExcluded(t *testing.T) {
 	program := buildEngineBOperatorProgram(t, "call", "called", "pick", "core.primitive.integer", "picked")
 	host := bluehost.NewHost()
-	if err := host.Take("engine-b-unarmed", "sha256:engine-b-unarmed", program, nil, nil, nil); err != nil {
+	if err := host.Take("engine-b-unarmed", "scene-1", "sha256:engine-b-unarmed", program, nil, nil, nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 	// Deliberately no Step: on-start never runs, so "pick" is declared but

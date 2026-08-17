@@ -155,7 +155,7 @@ func TestInjectActivePlatform_UsesCanonicalLeafAndOrdering(t *testing.T) {
 	const leaf = "__inputs.platform.twitch.channel_1.last_chat"
 	host := bluehost.NewHost()
 	program := platformIngressProgram(t, leaf)
-	if err := host.Take("instance-1", "sha256:scene-1", program, nil, nil, nil); err != nil {
+	if err := host.Take("instance-1", "scene-1", "sha256:scene-1", program, nil, nil, nil); err != nil {
 		t.Fatalf("Host.Take: %v", err)
 	}
 	t.Cleanup(func() { _ = host.Release(bluehost.SlotOnAir, "test-cleanup") })

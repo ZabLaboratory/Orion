@@ -57,7 +57,7 @@ func TestStreamRule_OverlayAppSetReachesRealWire(t *testing.T) {
 	}
 
 	program := streamRuleFixture(t)
-	if err := h.Take("stream-rule-1", "sha256:stream-rule", program, nil, nil, nil); err != nil {
+	if err := h.Take("stream-rule-1", "scene-1", "sha256:stream-rule", program, nil, nil, nil); err != nil {
 		t.Fatalf("Host.Take: %v", err)
 	}
 	if _, err := h.Step(bluehost.SlotOnAir); err != nil { // fires the on-start entrypoint

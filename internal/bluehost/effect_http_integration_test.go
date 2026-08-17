@@ -182,7 +182,7 @@ func TestHost_HTTPEffectFullCycle(t *testing.T) {
 	h.SetHTTPEffects(bluehost.EffectDeps{Egress: egress, Runner: runner}, slog.Default())
 
 	program := buildHTTPEffectProgram(t, server.URL)
-	if err := h.Take("http-effect-cycle", "sha256:http-effect-cycle", program, providers.Registry(), providers.Policy(true), nil); err != nil {
+	if err := h.Take("http-effect-cycle", "scene-1", "sha256:http-effect-cycle", program, providers.Registry(), providers.Policy(true), nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestHost_HTTPEffectStaleCompletionIsDroppedAfterTake(t *testing.T) {
 	h.SetHTTPEffects(bluehost.EffectDeps{Egress: egress, Runner: runner}, slog.Default())
 	firstURL := server.URL + "/first"
 	secondURL := server.URL + "/second"
-	if err := h.Take("stale-first", "sha256:stale-first", buildHTTPEffectProgram(t, firstURL), providers.Registry(), providers.Policy(true), nil); err != nil {
+	if err := h.Take("stale-first", "scene-1", "sha256:stale-first", buildHTTPEffectProgram(t, firstURL), providers.Registry(), providers.Policy(true), nil); err != nil {
 		t.Fatalf("Take first: %v", err)
 	}
 	if _, err := h.Step(bluehost.SlotOnAir); err != nil {
@@ -264,7 +264,7 @@ func TestHost_HTTPEffectStaleCompletionIsDroppedAfterTake(t *testing.T) {
 		t.Fatal("timed out waiting for outgoing instance request")
 	}
 
-	if err := h.Take("stale-second", "sha256:stale-second", buildHTTPEffectProgram(t, secondURL), providers.Registry(), providers.Policy(true), nil); err != nil {
+	if err := h.Take("stale-second", "scene-1", "sha256:stale-second", buildHTTPEffectProgram(t, secondURL), providers.Registry(), providers.Policy(true), nil); err != nil {
 		t.Fatalf("Take replacement: %v", err)
 	}
 	if _, err := h.Step(bluehost.SlotOnAir); err != nil {
@@ -427,7 +427,7 @@ func TestHost_HTTPEffectQueueFullOnAntennaAfterPreviewGate(t *testing.T) {
 	h := bluehost.NewHost()
 	h.SetHTTPEffects(bluehost.EffectDeps{Egress: egress, Runner: runner}, slog.Default())
 	program := buildHTTPEffectProgram(t, "https://unreachable.invalid/effect")
-	if err := h.Take("antenna-queue-full", "sha256:antenna-queue-full", program, providers.Registry(), providers.Policy(true), nil); err != nil {
+	if err := h.Take("antenna-queue-full", "scene-1", "sha256:antenna-queue-full", program, providers.Registry(), providers.Policy(true), nil); err != nil {
 		t.Fatalf("Take: %v", err)
 	}
 
@@ -490,7 +490,7 @@ func TestHost_HTTPEffectMissingDependenciesCompletesFailure(t *testing.T) {
 				tc.configure(h, t)
 			}
 			program := buildHTTPEffectProgram(t, "https://unreachable.invalid/effect")
-			if err := h.Take("missing-http-deps", "sha256:missing-http-deps", program, providers.Registry(), providers.Policy(true), nil); err != nil {
+			if err := h.Take("missing-http-deps", "scene-1", "sha256:missing-http-deps", program, providers.Registry(), providers.Policy(true), nil); err != nil {
 				t.Fatalf("Take: %v", err)
 			}
 
