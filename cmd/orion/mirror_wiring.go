@@ -13,14 +13,30 @@ type lsdpMirrorRegistry interface {
 	MirrorForLSML(sceneID, sceneVersion string, lsmlBundle []byte) runtime.SceneMirror
 }
 
+// lsdpWires names the preview and antenne wires BY FIELD, not position
+// (#398 F1, Vigil review on d448def). sceneIntentMirrorFor's prior shape
+// — two positional, identically-typed *lsdp.Wire arguments — compiled
+// cleanly if silently swapped at the call site (`sceneIntentMirrorFor(a,
+// b)` vs `sceneIntentMirrorFor(b, a)`), and no test could have caught it:
+// a test that builds its own call always writes its own arguments in
+// "the right order" by construction, so it never independently observes
+// a reorder at the REAL call site. Named fields remove the "order"
+// dimension entirely — main.go and every test construct the identical
+// `lsdpWires{preview: ..., antenne: ...}` literal, so the only way to
+// misroute is to write the wrong FIELD NAME, a visible, deliberate edit
+// rather than an invisible transposition.
+type lsdpWires struct {
+	preview lsdpMirrorRegistry
+	antenne lsdpMirrorRegistry
+}
+
 // sceneIntentMirrorFor resolves scene-intent's LSDP projection target BY
-// FLUX (#398), closing over both the preview and antenne wires so the
-// flux the caller is bridging (bluehost.Slot — already computed by
-// startBridge from the attestation action, SlotPreview for
+// FLUX (#398): the flux the caller is bridging (bluehost.Slot — already
+// computed by startBridge from the attestation action, SlotPreview for
 // prepare-preview / SlotOnAir for take) is a required parameter of the
 // resolution itself, never information the closure can be built without.
 //
-// Before this fix, cmd/orion wired scene-intent's MirrorFor directly onto
+// Before #398, cmd/orion wired scene-intent's MirrorFor directly onto
 // antenneWire.MirrorForLSML regardless of slot — the ONLY LSDP artefact a
 // prepare-preview ever reached was the live antenne wire, because the
 // function's own signature had no parameter through which "which wire"
@@ -33,11 +49,27 @@ type lsdpMirrorRegistry interface {
 // digest Prepare/Take committed on the slot; this function never hardcodes
 // its own "" (the pre-#401 posture, when #398's own scope didn't yet know
 // about the resolver-keying fix).
-func sceneIntentMirrorFor(previewWire, antenneWire lsdpMirrorRegistry) func(sceneID, sceneVersion string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
+//
+// F2 (Vigil): bluehost.Slot is `type Slot string` (host.go:31-35), not a
+// closed enum — the prior `if slot == SlotPreview { preview } else {
+// antenne }` sent EVERY non-preview value, including one that is neither
+// SlotPreview nor SlotOnAir, to the live antenne wire: "unknown → live"
+// is exactly the fail-open shape #398 exists to remove (the same shape
+// as the cockpit's unfiltered-`target` finding). No slot value other than
+// the two bluehost constants reaches this function today — slot is
+// derived strictly binary from the attested action in startBridge — so
+// this is not a live path, but the explicit switch with a nil default
+// makes an unrecognised slot fail CLOSED (no mirror, no bridge) instead
+// of silently landing on the antenne.
+func sceneIntentMirrorFor(wires lsdpWires) func(sceneID, sceneVersion string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
 	return func(sceneID, sceneVersion string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
-		if slot == bluehost.SlotPreview {
-			return previewWire.MirrorForLSML(sceneID, sceneVersion, bundle)
+		switch slot {
+		case bluehost.SlotPreview:
+			return wires.preview.MirrorForLSML(sceneID, sceneVersion, bundle)
+		case bluehost.SlotOnAir:
+			return wires.antenne.MirrorForLSML(sceneID, sceneVersion, bundle)
+		default:
+			return nil
 		}
-		return antenneWire.MirrorForLSML(sceneID, sceneVersion, bundle)
 	}
 }

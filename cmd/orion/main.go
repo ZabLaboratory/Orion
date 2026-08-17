@@ -386,7 +386,7 @@ func run() error {
 			// here left boundLeafSet permanently disabled on the stateless
 			// path even though the SAME mechanism is already proven safe on
 			// the legacy Show-backed path.
-			sceneIntent.MirrorFor = sceneIntentMirrorFor(previewWire, antenneWire)
+			sceneIntent.MirrorFor = sceneIntentMirrorFor(lsdpWires{preview: previewWire, antenne: antenneWire})
 			sceneIntent.Bridges = bluewire.NewRegistry()
 			sceneIntent.Logger = logger
 		}
