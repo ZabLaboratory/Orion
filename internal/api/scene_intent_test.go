@@ -329,11 +329,11 @@ func TestPostSceneIntent_PreparePreview_SameSceneSameDigestIsIdempotent(t *testi
 	if resp.Status != "prepared" {
 		t.Fatalf("expected the idempotent repeat to still report \"prepared\" (no tear-down for a no-op push), got %+v", resp)
 	}
-	// signedRef's scene_digest claim (distinct from blueProgramDigest/digest
-	// above) is the fixed "sha256:aaa...a" every call in this file carries.
-	sceneDigest := "sha256:" + strings.Repeat("a", 64)
-	if !deps.Host.Serving(bluehost.SlotPreview, "scene-1", sceneDigest) {
-		t.Fatal("expected the preview slot to still be serving (scene-1, scene_digest) after the idempotent repeat")
+	// The slot's serving version is the aligned claims.ArtifactSetDigest
+	// (M6, #398) — signedRef's fixed "sha256:bbb...b" claim.
+	version := "sha256:" + strings.Repeat("b", 64)
+	if !deps.Host.Serving(bluehost.SlotPreview, "scene-1", version) {
+		t.Fatal("expected the preview slot to still be serving (scene-1, artifact_set_digest) after the idempotent repeat")
 	}
 }
 
@@ -401,11 +401,11 @@ func TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestIsRejected(t *te
 		t.Fatalf("expected a named HOST_PREPARE_FAILED rejection, not a silent ok, got %+v", resp)
 	}
 	// Scene A's intent must be untouched by scene B's refused one.
-	// signedRef's scene_digest claim (distinct from blueProgramDigest/digest
-	// above) is the fixed "sha256:aaa...a" both scene A and scene B carry —
-	// exactly the collision this test forces.
-	sceneDigest := "sha256:" + strings.Repeat("a", 64)
-	if !deps.Host.Serving(bluehost.SlotPreview, "scene-A", sceneDigest) {
+	// signedRef's artifact_set_digest claim (the aligned serving version,
+	// M6/#398) is the fixed "sha256:bbb...b" both scene A and scene B
+	// carry — exactly the collision this test forces.
+	version := "sha256:" + strings.Repeat("b", 64)
+	if !deps.Host.Serving(bluehost.SlotPreview, "scene-A", version) {
 		t.Fatal("expected scene A's instance to remain the preview slot's occupant after scene B's rejected intent")
 	}
 }
@@ -726,7 +726,7 @@ func TestPostSceneIntent_BridgeFullLifecycle(t *testing.T) {
 // was, Solar could never echo back a ?v= that resolveHostBundle (#401)
 // would accept — Take's own sceneID fix alone is not sufficient for a real
 // client to ever reach the resolver with a matching pair.
-func TestPostSceneIntent_MirrorForReceivesRealSceneDigest(t *testing.T) {
+func TestPostSceneIntent_MirrorForReceivesAlignedVersion(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	program := minimalProgram(t)
 	envelope, digest := canvasEnvelope(program)
@@ -776,15 +776,16 @@ func TestPostSceneIntent_MirrorForReceivesRealSceneDigest(t *testing.T) {
 	if gotSceneVersion == "" {
 		t.Fatal("MirrorFor received an empty sceneVersion — the #398-class defect: a client can never learn a ?v= that resolveHostBundle would accept")
 	}
-	// scene_digest (claims.SceneDigest) is the fixture's fixed "aaa..."
-	// literal in signedRef — distinct from blue_program_digest (the
-	// canvasEnvelope-returned `digest` used for the program cross-check).
-	// It is the SAME value deps.Host.Prepare/Take are already called with
-	// (scene_intent.go:385/392) — the value host.Digest(slot) will hold,
-	// so it is what a matching ?v= must equal.
-	wantSceneVersion := "sha256:" + strings.Repeat("a", 64)
+	// claims.ArtifactSetDigest is the fixture's fixed "bbb..." literal in
+	// signedRef — the aligned serving version (M6, #398), distinct from
+	// both scene_digest ("aaa...") and blue_program_digest. It is the SAME
+	// value deps.Host.Prepare/Take are called with — the value
+	// host.Digest(slot) will hold, so it is what a matching ?v= must
+	// equal, and the value ZabCanvas stamps as the bundle's own
+	// scene_version (the client-side lumencast check).
+	wantSceneVersion := "sha256:" + strings.Repeat("b", 64)
 	if gotSceneVersion != wantSceneVersion {
-		t.Fatalf("expected sceneVersion to equal claims.SceneDigest %q, got %q", wantSceneVersion, gotSceneVersion)
+		t.Fatalf("expected sceneVersion to equal claims.ArtifactSetDigest %q, got %q", wantSceneVersion, gotSceneVersion)
 	}
 }
 

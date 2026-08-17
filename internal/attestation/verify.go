@@ -284,6 +284,14 @@ func rejectDuplicateKeys(raw []byte) error {
 }
 
 func validateClaims(c *Claims) error {
+	// blue_program_digest is deliberately NOT in this required set
+	// (ORION-NOBLUE-AND-VERSION-ALIGN, #398): a scene without a Blue
+	// program is signed and airable — ZabCanvas mints such a ref with an
+	// EMPTY blue_program_digest (and scene_digest == artifact_set_digest ==
+	// sha256 of the LSML bundle). This is the ONLY relaxation: a non-empty
+	// blue_program_digest must still be a well-formed digest (checked
+	// below, all-or-nothing), and scene_digest / artifact_set_digest stay
+	// required and well-formed in both cases.
 	required := map[string]string{
 		"schema_version":           c.SchemaVersion,
 		"ref_id":                   c.RefID,
@@ -298,7 +306,6 @@ func validateClaims(c *Claims) error {
 		"revision_id":              c.RevisionID,
 		"scene_digest":             c.SceneDigest,
 		"artifact_set_digest":      c.ArtifactSetDigest,
-		"blue_program_digest":      c.BlueProgramDigest,
 		"readiness_attestation_id": c.ReadinessAttestationID,
 		"readiness_digest":         c.ReadinessDigest,
 		"canvas_locator":           c.CanvasLocator,
@@ -330,10 +337,16 @@ func validateClaims(c *Claims) error {
 		}
 	}
 
-	for _, d := range []string{c.SceneDigest, c.ArtifactSetDigest, c.BlueProgramDigest, c.ReadinessDigest} {
+	for _, d := range []string{c.SceneDigest, c.ArtifactSetDigest, c.ReadinessDigest} {
 		if !digestPattern.MatchString(d) {
 			return fmt.Errorf("%w: invalid digest %q", ErrPayload, d)
 		}
+	}
+	// All-or-nothing: empty means "no program" (accepted); anything
+	// non-empty must be a well-formed digest — a malformed program digest
+	// is never silently read as "no program".
+	if c.BlueProgramDigest != "" && !digestPattern.MatchString(c.BlueProgramDigest) {
+		return fmt.Errorf("%w: invalid digest %q", ErrPayload, c.BlueProgramDigest)
 	}
 
 	if len(c.AllowedActions) == 0 {

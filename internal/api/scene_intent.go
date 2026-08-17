@@ -91,14 +91,20 @@ type SceneIntentDeps struct {
 	// yet (the pre-B3-R6-12-ORION-PROJECTION posture).
 	//
 	// sceneVersion is now required too (ORION-TAKE-SLOT-IDENTITY, Blue#345):
-	// startBridge passes claims.SceneDigest, the SAME digest Prepare/Take
-	// committed on the slot. Before this, the call site hardcoded "" here,
-	// so whatever the LSDP kit told the client its scene_version was (""),
-	// the client would echo back as ?v= on GET .../render-bundle — a value
-	// that, post-#401, can never match host.Digest(slot). Keying the
-	// resolver correctly (#401, this unit's Take fix) is necessary but not
-	// sufficient on its own: the client also has to be TOLD the value that
-	// will actually match.
+	// startBridge passes the SAME serving version Prepare/Take committed
+	// on the slot — claims.ArtifactSetDigest since M6 (#398), no longer
+	// claims.SceneDigest: the bundle ZabCanvas serves stamps its own
+	// scene_version with the artifact-set hash, and @lumencast/runtime
+	// refuses any bundle whose scene_version differs from the ?v= the
+	// client fetched — announcing the program-family SceneDigest put two
+	// hash families on the two sides of that check, failing every
+	// authenticated fetch. Before Blue#345, the call site hardcoded ""
+	// here, so whatever the LSDP kit told the client its scene_version
+	// was (""), the client would echo back as ?v= on GET
+	// .../render-bundle — a value that, post-#401, can never match
+	// host.Digest(slot). Keying the resolver correctly is necessary but
+	// not sufficient on its own: the client also has to be TOLD the value
+	// that will actually match.
 	MirrorFor func(sceneID, sceneVersion string) runtime.SceneMirror
 	// Bridges tracks the running bridge per bluehost.Slot so a superseding
 	// Take (or a re-Prepare) stops the previous one instead of leaking a
@@ -374,10 +380,27 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		// rests on envelope self-consistency plus the mTLS/delegation
 		// chain that fetched it, not a second signed digest. Documented
 		// gap, not silently assumed equal to the program's guarantee.
-		program, err := decodeAndVerifyProgram(artifact.Body, claims.BlueProgramDigest)
-		if err != nil {
-			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
-			return
+		//
+		// A ref whose SIGNED claims declare NO program (empty
+		// blue_program_digest, ORION-NOBLUE-AND-VERSION-ALIGN #398) skips
+		// program decode/verify and never Loads anything — but an envelope
+		// that then DOES carry program bytes is refused: unattested program
+		// bytes never ride into Orion, even unexecuted. The bundle path is
+		// identical in both cases (fetch, self-integrity, SetBundle).
+		noProgram := claims.BlueProgramDigest == ""
+		var program []byte
+		if noProgram {
+			if err := verifyNoProgramEnvelope(artifact.Body); err != nil {
+				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
+				return
+			}
+		} else {
+			var err error
+			program, err = decodeAndVerifyProgram(artifact.Body, claims.BlueProgramDigest)
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
+				return
+			}
 		}
 		bundle, bundleErr := decodeAndVerifyBundle(artifact.Body)
 		if bundleErr != nil {
@@ -385,6 +408,18 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 
+		// version is the ONE value threaded end-to-end (M6, #398):
+		// stored as the slot's serving identity (Host entry digest),
+		// announced to Solar as the LSDP scene_version (startBridge →
+		// MirrorFor), and matched by the public resolver
+		// (resolveHostBundle → Host.Serving). claims.ArtifactSetDigest is
+		// signed and present for refs with and without a program, and is
+		// the value ZabCanvas stamps as the bundle's own scene_version —
+		// the value @lumencast/runtime compares ?v= against. Announcing
+		// claims.SceneDigest here (the pre-M6 shape) put two different
+		// hash families on the two sides of that client-side check, so
+		// every authenticated fetch still failed.
+		version := claims.ArtifactSetDigest
 		slot := bluehost.SlotPreview
 		if action == attestation.ActionTakeOnAir {
 			slot = bluehost.SlotOnAir
@@ -392,10 +427,14 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		var opErr error
 		switch action {
 		case attestation.ActionPreparePreview:
-			opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Preview))
+			if noProgram {
+				opErr = deps.Host.PrepareStatic(slot, claims.SceneID, version)
+			} else {
+				opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneID, version, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Preview))
+			}
 			if errors.Is(opErr, bluehost.ErrAlreadyLoaded) {
-				if deps.Host.Serving(slot, claims.SceneID, claims.SceneDigest) {
-					opErr = nil // idempotent re-prepare: same scene, same digest already running
+				if deps.Host.Serving(slot, claims.SceneID, version) {
+					opErr = nil // idempotent re-prepare: same scene, same artifact set already occupying
 				}
 			}
 		case attestation.ActionTakeOnAir:
@@ -403,7 +442,11 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			// Blue#345) — Take used to be the one caller of the two that left
 			// the on-air slot's sceneID empty, silently making it unmatchable
 			// by resolveHostBundle's (scene_id, v) check (#401).
-			opErr = deps.Host.Take(claims.RefID, claims.SceneID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Execute))
+			if noProgram {
+				opErr = deps.Host.TakeStatic(claims.SceneID, version)
+			} else {
+				opErr = deps.Host.Take(claims.RefID, claims.SceneID, version, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Execute))
+			}
 		}
 		if opErr != nil {
 			writeJSON(w, http.StatusInternalServerError, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "HOST_PREPARE_FAILED"})
@@ -419,7 +462,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			providers.ResetActiveIngress(deps.Host)
 		}
 
-		startBridge(deps, slot, claims, req.IntentID)
+		startBridge(deps, slot, claims, req.IntentID, version, !noProgram)
 
 		resp := sceneIntentResponse{
 			Status:     actionResultStatus(action),
@@ -515,6 +558,24 @@ func decodeAndVerifyBundle(body json.RawMessage) ([]byte, error) {
 	return bundle, nil
 }
 
+// verifyNoProgramEnvelope enforces the no-program contract on the fetched
+// envelope (ORION-NOBLUE-AND-VERSION-ALIGN, #398): a ref whose SIGNED
+// claims carry an empty blue_program_digest must fetch an envelope with
+// NO program fields at all. An envelope that carries blue_program (or
+// declares a blue_program_digest) the attestation never signed is refused
+// fail-closed — those bytes are unattested and must not enter Orion, even
+// though the static path would never Load them.
+func verifyNoProgramEnvelope(body json.RawMessage) error {
+	var envelope resolvedSceneEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return err
+	}
+	if envelope.BlueProgram != "" || envelope.BlueProgramDigest != "" {
+		return errors.New("scene-intent: envelope carries a program the attestation did not sign")
+	}
+	return nil
+}
+
 // getHostRenderBundle serves the LSML render-bundle bytes attached to a
 // slot by the most recent Prepare/Take (§15 read-route migration: the
 // new-path equivalent of legacy's GET /scenes/{id}/render-bundle,
@@ -548,12 +609,29 @@ const defaultProjectionInterval = 100 * time.Millisecond
 // deps.Bridges.Start stops whatever bridge previously owned slot before
 // starting this one, so a Take superseding the on-air instance never
 // leaves a goroutine stepping an instance bluehost.Host has released.
-func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.Claims, intentID string) {
+//
+// version is the aligned serving version (M6, #398 —
+// claims.ArtifactSetDigest, the SAME value the Host entry stores and
+// resolveHostBundle matches): MirrorFor registers it as the LSDP
+// scene_version, which is exactly what Solar echoes back as ?v= and what
+// @lumencast/runtime compares the bundle's own scene_version against.
+//
+// hasProgram=false (a static occupation, #398) still REGISTERS the scene
+// on the wire — Solar must learn (sceneID, version) to know what to
+// fetch — but starts no bridge (there is no instance to step). Any bridge
+// previously owning the slot is stopped: a static occupation superseding
+// a programmed one must not leave a goroutine stepping an instance the
+// Host has already released.
+func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.Claims, intentID, version string, hasProgram bool) {
 	if deps.MirrorFor == nil || deps.Bridges == nil {
 		return
 	}
-	mirror := deps.MirrorFor(claims.SceneID, claims.SceneDigest)
+	mirror := deps.MirrorFor(claims.SceneID, version)
 	if mirror == nil {
+		return
+	}
+	if !hasProgram {
+		deps.Bridges.Stop(slot)
 		return
 	}
 	target := blueproject.TargetPreview

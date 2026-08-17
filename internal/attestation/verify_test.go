@@ -308,3 +308,64 @@ func itoa(v int64) string {
 	b, _ := json.Marshal(v)
 	return string(b)
 }
+
+// TestVerify_AcceptsEmptyBlueProgramDigest — a scene without a Blue
+// program is signed and airable (ORION-NOBLUE-AND-VERSION-ALIGN, #398):
+// ZabCanvas mints its ref with an EMPTY blue_program_digest. This is the
+// only relaxation — every other digest stays required and well-formed.
+func TestVerify_AcceptsEmptyBlueProgramDigest(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	c := baseClaims(now)
+	c["blue_program_digest"] = ""
+	jws := sign(t, priv, validHeader(), c)
+
+	claims, err := Verify(jws, testTrust(t, pub), validOptions(now))
+	if err != nil {
+		t.Fatalf("Verify must accept an empty blue_program_digest (no-program scene): %v", err)
+	}
+	if claims.BlueProgramDigest != "" {
+		t.Fatalf("expected empty BlueProgramDigest, got %q", claims.BlueProgramDigest)
+	}
+}
+
+// TestVerify_RejectsMalformedBlueProgramDigest — all-or-nothing: a
+// NON-empty malformed program digest is still refused, never silently
+// read as "no program".
+func TestVerify_RejectsMalformedBlueProgramDigest(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	c := baseClaims(now)
+	c["blue_program_digest"] = "sha256:not-hex"
+	jws := sign(t, priv, validHeader(), c)
+
+	if _, err := Verify(jws, testTrust(t, pub), validOptions(now)); !errors.Is(err, ErrPayload) {
+		t.Fatalf("expected ErrPayload for a malformed non-empty blue_program_digest, got %v", err)
+	}
+}
+
+// TestVerify_StillRequiresSceneAndArtifactDigests — the no-program
+// relaxation must not leak to the other digests: empty scene_digest or
+// artifact_set_digest stays refused.
+func TestVerify_StillRequiresSceneAndArtifactDigests(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	for _, field := range []string{"scene_digest", "artifact_set_digest"} {
+		c := baseClaims(now)
+		c["blue_program_digest"] = ""
+		c[field] = ""
+		jws := sign(t, priv, validHeader(), c)
+		if _, err := Verify(jws, testTrust(t, pub), validOptions(now)); !errors.Is(err, ErrPayload) {
+			t.Fatalf("expected ErrPayload for empty %s, got %v", field, err)
+		}
+	}
+}
