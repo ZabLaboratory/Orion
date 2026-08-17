@@ -83,14 +83,14 @@ type TriggerDecl struct {
 // AwaitDecl is one declared `core.operator.await-value@1` suspend point —
 // name, value type and UI hint, read statically from the program at
 // Prepare/Take time (same technique as awaitTypesInProgram). This is the
-// DECLARED set, not the currently-ARMED one: unlike Engine A's
-// listPendingAwaits (internal/runtime/exec_operator.go), blueruntime keeps
-// its live pendingAwaits registry unexported (runtime.go's own Resolve
-// reads instance.pendingAwaits directly) and exposes no public accessor for
-// it — there is no Engine B source for "is this specific await currently
-// parked right now". Callers must not present this list as a live-prompt
-// feed without accounting for that gap (see cockpit.go's appendEngineBScene
-// doc, which deliberately does NOT emit this facet for that reason).
+// DECLARED set, not the currently-ARMED one: it says nothing about whether
+// this specific await is parked right now. blueruntime/go now exposes the
+// live registry too (Runtime.PendingAwaitNames, #344 — names only, no
+// value_type/UI), surfaced here as Host.PendingAwaitNames; a caller joins
+// the two BY AwaitName (see cockpit.go's appendEngineBScene, which does
+// exactly that). Never present a declared entry as a live prompt on its
+// own — an unarmed one is exactly the case that must NOT reach the
+// operator (see PendingAwaitNames's doc).
 type AwaitDecl struct {
 	AwaitName string
 	ValueType string
@@ -126,6 +126,32 @@ func (h *Host) HasTrigger(slot Slot, callID string) bool {
 		}
 	}
 	return false
+}
+
+// PendingAwaitNames reports the await_name of every `core.operator.
+// await-value@1` suspend point currently ARMED on slot's instance — the
+// LIVE registry (blueruntime.Runtime.PendingAwaitNames, #344), sorted, not
+// the DECLARED set DeclaredContracts returns (a declared-but-unreached
+// await never appears here). Nil when the slot holds no instance or
+// nothing is armed.
+//
+// Routed through runtimeMu, not mu: it reads the same instance state
+// Call/Resolve/Step mutate, and must observe a consistent snapshot rather
+// than racing a concurrent transition (a name reported here could
+// otherwise already be resolved by the time a caller acts on it — an
+// unavoidable TOCTOU the caller must still tolerate, but this at least
+// avoids a torn read of the registry itself).
+func (h *Host) PendingAwaitNames(slot Slot) []string {
+	h.mu.Lock()
+	e, ok := h.slots[slot]
+	h.mu.Unlock()
+	if !ok {
+		return nil
+	}
+
+	h.runtimeMu.Lock()
+	defer h.runtimeMu.Unlock()
+	return h.runtime.PendingAwaitNames(e.instance)
 }
 
 // declaredContracts parses a blue.program.v1 document for its declared
