@@ -79,6 +79,21 @@ type ServiceRouteResolver func(service, routeID string) (ServiceCallRoute, bool)
 // Engine A's PreviewSlot applies the same stateless policy to its private
 // effect bundle, so both host implementations expose the same synthetic
 // preview observation before transport admission.
+//
+// THIS IS ONE OF THREE PATHS an instance can reach the network/DB/wire
+// through, and this doc covers only this one — a reader relying on it alone
+// to conclude "preview never dials" would be trusting an incomplete claim.
+// The other two, each independently gated by mode/slot:
+//   - core.overlay-app.set@1 → dispatchOverlayAppSet (effect_overlay.go),
+//     gated on modeFor(slot) != Execute.
+//   - core.effect.invoke@1's StepResult.Invocations (the async admission
+//     protocol; core.http.request is the only capability currently wired) →
+//     Host.dispatchInvocations (effect_http.go), gated on
+//     modeFor(slot) != Execute (ORION-PREVIEW-EFFECT-GATE — this gate did
+//     NOT exist before that work unit, so the claim below was false for any
+//     preview instance whose provider didn't itself declare
+//     "preview":"noop" for the operation; it is enforced by construction
+//     now, not by that upstream declaration).
 func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueruntime.EffectFunc {
 	http := func(_, inputs map[string]any) (map[string]any, error) {
 		if mode != blueruntime.Execute {

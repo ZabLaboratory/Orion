@@ -7,6 +7,7 @@ package bluehost_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -400,6 +401,61 @@ func TestHost_PreviewHTTPEffectGateBlocksRealDispatch(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&hits); got != 0 {
 		t.Fatalf("preview instance's core.http.request invocation reached the real server: %d hit(s)", got)
+	}
+}
+
+// TestHost_HTTPEffectQueueFullOnAntennaAfterPreviewGate proves the antenna's
+// back-pressure path (EFFECT_QUEUE_FULL, effect_http.go:104) still fires
+// after ORION-PREVIEW-EFFECT-GATE — the actual risk Bastion named for this
+// change is not preview leaking onto the network, it is a misplaced
+// modeFor(slot) check silently starving the antenna (e.g. gating too much,
+// or gating after the wrong return). The queue's one slot is pre-filled
+// directly (never Start()ed, so nothing drains it) before Take/Step, forcing
+// dispatchInvocations' Submit to fail deterministically — no network, no
+// timing race.
+func TestHost_HTTPEffectQueueFullOnAntennaAfterPreviewGate(t *testing.T) {
+	egress := effects.NewEgressPolicy([]string{"example.invalid"}, true).InsecureAllowPrivateForTest()
+	runner := effects.NewRunner(1, 1, slog.Default())
+	filled := runner.Submit(effects.Job{
+		Run:     func(context.Context) effects.Result { return effects.Result{} },
+		Deliver: func(effects.Result) {},
+	})
+	if !filled {
+		t.Fatal("failed to pre-fill the runner's sole queue slot")
+	}
+
+	h := bluehost.NewHost()
+	h.SetHTTPEffects(bluehost.EffectDeps{Egress: egress, Runner: runner}, slog.Default())
+	program := buildHTTPEffectProgram(t, "https://unreachable.invalid/effect")
+	if err := h.Take("antenna-queue-full", "sha256:antenna-queue-full", program, providers.Registry(), providers.Policy(true), nil); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	var result map[string]any
+	for time.Now().Before(deadline) {
+		step, err := h.Step(bluehost.SlotOnAir)
+		if err != nil {
+			t.Fatalf("Step: %v", err)
+		}
+		if value, ok := step.Variables["result"].(map[string]any); ok {
+			result = value
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if result == nil {
+		t.Fatal("timed out waiting for the queue-full completion")
+	}
+	if status, _ := result["status"].(string); status != "failed" {
+		t.Fatalf("unexpected completion status: %#v", result["status"])
+	}
+	failure, ok := result["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing completion error: %#v", result["error"])
+	}
+	if message, _ := failure["message"].(string); message != "EFFECT_QUEUE_FULL" {
+		t.Fatalf("unexpected completion error message: %#v", failure["message"])
 	}
 }
 
