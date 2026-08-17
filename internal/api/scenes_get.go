@@ -9,17 +9,18 @@ import (
 
 // getRenderBundle serves /api/v1/scenes/{id}/render-bundle?v={hash}.
 //
-// Migrated off Store (#15, #331): the {id} path segment is now VESTIGIAL
-// (kept for URL-shape compatibility with Solar/Prism, which hardcode
-// this path — porteur decision) and is not resolved against anything;
-// the ?v= hash is the real lookup key, matched against whichever
-// bluehost.Host slot (on-air first, then preview) currently carries it.
-// Porteur's accepted narrowing: unlike the legacy Store-backed archive
+// Migrated off Store (#15, #331): unlike the legacy Store-backed archive
 // of every pushed version ever, bluehost only holds what's CURRENTLY
 // loaded — no historical/rolled-back version is servable. Accepted
 // because a live scene never changes version without a fresh ZabCanvas
 // push, and Prism always sends the current scene on every switch, so
 // there is no real path that needs an old version.
+//
+// {id} is NO LONGER vestigial (F1, Blue#345 / R13): it is required and
+// matched, together with ?v=, against whichever bluehost.Host slot
+// (on-air first, then preview) is serving that exact (scene_id, digest)
+// pair — see resolveHostBundle's doc for the harvest this closes and the
+// known gap it does not.
 func getRenderBundle(deps PublicDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		serveHostBundle(w, r, deps)
@@ -84,30 +85,61 @@ func serveHostBundle(w http.ResponseWriter, r *http.Request, deps PublicDeps) {
 	_, _ = w.Write(bundle)
 }
 
-// resolveHostBundle finds the bundle bytes matching ?v= (if provided)
+// resolveHostBundle finds the bundle bytes matching BOTH {id} and ?v=
 // across both bluehost slots, on-air first — the on-air instance is the
 // one actually airing, so it wins a tie when both slots happen to share
-// the same digest. Without ?v=, the first non-empty slot (same order)
-// answers, matching legacy's "no ?v= ⇒ latest" default.
+// the same digest.
+//
+// F1 (Blue#345 / R13 VETO 1, Bastion): both keys are now REQUIRED, and
+// there is no fallback. Before this, an absent or empty ?v= fell back to
+// "the first non-empty slot, on-air first" — an unauthenticated caller
+// who knew nothing but a syntactically valid {id} got the live antenna
+// bundle back verbatim (ZabGate's `/lsdp/v1/scenes/{anything}/bundle`
+// public prefix reaches this resolver with no auth at all). The door is
+// now capability-by-address only: a caller must already know the exact
+// digest this slot is serving AND the scene_id it was prepared/taken
+// for — "give me what's live" is no longer a request this resolver
+// answers.
+//
+// host.Serving(slot, id, v) is the SAME (sceneID, digest) identity check
+// bluehost.Host already uses for its own idempotent-Prepare admission
+// (host.go) — no new identity concept invented here. Serves all three
+// consumers of this resolver identically (render-bundle, lsml-bundle,
+// operator-inputs — getOperatorInputs calls it directly), so none of the
+// three keeps the wider door open behind the other two.
+//
+// KNOWN GAP, NOT CLOSED HERE (clause 5, Amendment 3 territory,
+// bluehost/host.go:478-499): Host.Take never records a sceneID — only
+// Prepare does — so host.Serving(SlotOnAir, id, v) can only ever be true
+// for id=="". No legitimate on-air fetch through THIS route currently
+// succeeds anyway regardless of {id}/?v= — see the PR: the client-side
+// version check in @lumencast/runtime independently refuses every
+// response this branch could produce, because no occupation carries a
+// non-empty scene_version (clause 11's second half, also not closed
+// here). This fix closes the harvest (the ONLY consumer that extracted a
+// usable result from the prior fallback); it does not — and cannot,
+// without touching the reserved slot-identity surface — make an on-air
+// fetch through this resolver succeed. Diagnostic gain (silent client
+// failure → explicit 404), not a rendering fix.
 func resolveHostBundle(deps PublicDeps, r *http.Request) (digest string, bundle []byte, ok bool) {
 	if deps.SceneIntent == nil || deps.SceneIntent.Host == nil {
 		return "", nil, false
 	}
 	host := deps.SceneIntent.Host
+	sceneID := r.PathValue("id")
 	v := r.URL.Query().Get("v")
+	if sceneID == "" || v == "" {
+		return "", nil, false
+	}
 	for _, slot := range []bluehost.Slot{bluehost.SlotOnAir, bluehost.SlotPreview} {
-		d := host.Digest(slot)
-		if d == "" {
-			continue
-		}
-		if v != "" && v != d {
+		if !host.Serving(slot, sceneID, v) {
 			continue
 		}
 		b := host.Bundle(slot)
 		if b == nil {
 			continue
 		}
-		return d, b, true
+		return v, b, true
 	}
 	return "", nil, false
 }
