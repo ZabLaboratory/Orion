@@ -13,9 +13,10 @@ import (
 // to bluehost.SlotOnAir — the live antenna — same as no selector at all.
 // This is PRE-EXISTING behaviour, unchanged by the preview-Engine-B
 // migration (55062a1f) or the mode gate (1a35f9f4), but newly material now
-// that preview is a real, populated slot: a typo in a client's query string
-// (?target=preveiw, ?target=Preview, any other value) silently fires on the
-// antenna instead of erroring or landing on preview.
+// that preview is a real, populated slot: a malformed client query string —
+// wrong casing, a stray character, any value other than the exact literal
+// "preview" — silently fires on the antenna instead of erroring or landing
+// on preview.
 //
 // This test does NOT endorse the behaviour — hardening it into a 400
 // UNKNOWN_TARGET is a contract decision that belongs elsewhere (team-lead's
