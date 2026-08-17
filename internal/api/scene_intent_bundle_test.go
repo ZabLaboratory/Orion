@@ -30,12 +30,20 @@ func (m *recordingBundleMirror) Forward(any) {}
 // cmd/orion/main.go's closure ignored whatever the slot held and always
 // forwarded nil to lsdp.Wire.MirrorFor's bundle argument.
 //
+// It also covers half of #398's plumbing proof: a prepare-preview must
+// reach MirrorFor with slot == bluehost.SlotPreview. The symmetric case
+// (a take reaching MirrorFor with SlotOnAir) is
+// TestStartBridge_ThreadsOnAirSlotIntoMirrorFor below — a test proving
+// only one side would be worthless (#398's own point dur), since a
+// closure that ignores its slot argument entirely could still pass a
+// preview-only assertion.
+//
 // Mutation proof: reverting scene_intent.go's `deps.MirrorFor(claims.SceneID,
-// claims.SceneDigest, deps.Host.Bundle(slot))` back to a call site that drops
-// the bundle argument does not even compile against the widened MirrorFor
-// field — and reverting the field type too (to make it compile again)
-// makes gotBundle below observe nil, failing this test's non-nil/equality
-// assertions.
+// claims.SceneDigest, slot, deps.Host.Bundle(slot))` back to a call site
+// that drops the bundle or slot argument does not even compile against the
+// widened MirrorFor field — and reverting the field type too (to make it
+// compile again) makes gotBundle/gotSlot below unreachable, failing this
+// test's assertions.
 func TestStartBridge_ThreadsHostBundleIntoMirrorFor(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	program := minimalProgram(t)
@@ -46,6 +54,7 @@ func TestStartBridge_ThreadsHostBundleIntoMirrorFor(t *testing.T) {
 
 	mirror := &recordingBundleMirror{}
 	var gotSceneID string
+	var gotSlot bluehost.Slot
 	var gotBundle []byte
 	var calls int
 
@@ -56,8 +65,9 @@ func TestStartBridge_ThreadsHostBundleIntoMirrorFor(t *testing.T) {
 		TenantID:      "tenant-1",
 		Workload:      &fakeWorkload{body: envelope},
 		Host:          bluehost.NewHost(),
-		MirrorFor: func(sceneID, _ string, bundle []byte) runtime.SceneMirror {
+		MirrorFor: func(sceneID, _ string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
 			gotSceneID = sceneID
+			gotSlot = slot
 			gotBundle = bundle
 			calls++
 			return mirror
@@ -87,6 +97,9 @@ func TestStartBridge_ThreadsHostBundleIntoMirrorFor(t *testing.T) {
 	if gotSceneID != "scene-1" {
 		t.Errorf("expected sceneID %q, got %q", "scene-1", gotSceneID)
 	}
+	if gotSlot != bluehost.SlotPreview {
+		t.Fatalf("a prepare-preview must reach MirrorFor with slot=preview (#398) — got %q", gotSlot)
+	}
 	if gotBundle == nil {
 		t.Fatalf("MirrorFor received a nil bundle — the #396 defect: SetBundle stored real LSML bytes but startBridge never forwarded them")
 	}
@@ -99,5 +112,61 @@ func TestStartBridge_ThreadsHostBundleIntoMirrorFor(t *testing.T) {
 	// never a copy or a different artefact.
 	if got := deps.Host.Bundle(bluehost.SlotPreview); string(got) != string(lsmlBundle) {
 		t.Fatalf("Host.Bundle(preview) = %q, want %q", got, lsmlBundle)
+	}
+}
+
+// TestStartBridge_ThreadsOnAirSlotIntoMirrorFor is
+// TestStartBridge_ThreadsHostBundleIntoMirrorFor's symmetric case (#398
+// resolution criterion): a take must reach MirrorFor with
+// slot == bluehost.SlotOnAir. Together the two tests prove the flux
+// (preview vs antenne) is threaded correctly in BOTH directions — the
+// exact guarantee #398 requires and the reason a one-sided test is
+// insufficient.
+func TestStartBridge_ThreadsOnAirSlotIntoMirrorFor(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	envelope, digest := canvasEnvelope(program)
+	now := time.Now()
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionTakeOnAir, now, "scene-1", digest)
+
+	mirror := &recordingBundleMirror{}
+	var gotSlot bluehost.Slot
+	var calls int
+
+	deps := SceneIntentDeps{
+		Trust:         attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix: "scenes/",
+		OwnerID:       "owner-1",
+		TenantID:      "tenant-1",
+		Workload:      &fakeWorkload{body: envelope},
+		Host:          bluehost.NewHost(),
+		MirrorFor: func(sceneID string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
+			gotSlot = slot
+			calls++
+			return mirror
+		},
+		Bridges:            bluewire.NewRegistry(),
+		ProjectionInterval: time.Hour,
+	}
+
+	body, _ := json.Marshal(sceneIntentRequest{
+		IntentID: "intent-take-1", StreamID: "stream-1", Target: "on-air",
+		Action: string(attestation.ActionTakeOnAir), ResolvedSceneRef: ref,
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+	req.Header.Set(authContextHeader, "opaque-ticket")
+
+	rec := httptest.NewRecorder()
+	postSceneIntent(deps)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("expected MirrorFor called exactly once, got %d", calls)
+	}
+	if gotSlot != bluehost.SlotOnAir {
+		t.Fatalf("a take must reach MirrorFor with slot=on-air (#398) — got %q", gotSlot)
 	}
 }
