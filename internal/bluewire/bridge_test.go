@@ -71,11 +71,41 @@ func (f *fakeSteps) tickDeltasSnapshot() ([]bluehost.Slot, []float64) {
 }
 
 type fakeMirror struct {
+	mu        sync.Mutex
 	forwarded []any
 }
 
 func (m *fakeMirror) Forward(msg any) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.forwarded = append(m.forwarded, msg)
+}
+
+// count is the race-safe read TestBridge_Run_StepsUntilCancelled polls: the
+// other tests in this file call StepOnce/TickOnce synchronously (one
+// goroutine, no concurrent Forward), so they keep reading .forwarded
+// directly; only a background b.Run goroutine needs the lock on read too.
+func (m *fakeMirror) count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.forwarded)
+}
+
+// waitFor polls cond every 2ms until it's true or 2s elapse. Same bounded-
+// poll idiom internal/runtime already uses for goroutine-driven timers
+// (internal/runtime/exec_timer_test.go's waitFor) — event-driven, so it
+// never races a fixed wall-clock window against a background ticker the way
+// asserting "N ticks landed inside a T-millisecond budget" does.
+func waitFor(t *testing.T, desc string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("timeout waiting for %s", desc)
 }
 
 func TestBridge_StepOnce_ForwardsDelta(t *testing.T) {
@@ -348,6 +378,14 @@ func TestNewBridge_TickOnceUsesHostScheduler(t *testing.T) {
 	}
 }
 
+// TestBridge_Run_StepsUntilCancelled proves Run loops on its ticker instead
+// of stepping once and returning. It used to assert "at least 2 forwards
+// landed inside a 35ms wall-clock budget" against a 10ms ticker — a 1.5-tick
+// margin, so a single slow tick under go test -race on a shared runner
+// turned it red for a reason unrelated to Bridge (Prism#740,
+// run 32034430842 job 95401413900). The fix is event-driven: run Run in its
+// own goroutine and poll for the effect (2 forwards) rather than racing a
+// fixed window against when the ticker happens to fire.
 func TestBridge_Run_StepsUntilCancelled(t *testing.T) {
 	steps := &fakeSteps{results: []StepResult{
 		{RuntimeSequence: 1, Outputs: map[string]any{"a": "1"}},
@@ -357,26 +395,53 @@ func TestBridge_Run_StepsUntilCancelled(t *testing.T) {
 	mirror := &fakeMirror{}
 	b := &Bridge{steps: steps, slot: bluehost.SlotPreview, mirror: mirror, target: blueproject.TargetPreview}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b.Run(ctx, 10*time.Millisecond, nil)
+	done := make(chan struct{})
+	go func() {
+		b.Run(ctx, 10*time.Millisecond, nil)
+		close(done)
+	}()
 
-	if len(mirror.forwarded) < 2 {
-		t.Fatalf("expected at least 2 steps forwarded, got %d", len(mirror.forwarded))
+	waitFor(t, "at least 2 steps forwarded", func() bool { return mirror.count() >= 2 })
+	cancel()
+	<-done // Run must actually exit once ctx is cancelled, not just stop stepping.
+
+	if got := mirror.count(); got < 2 {
+		t.Fatalf("expected at least 2 steps forwarded, got %d", got)
 	}
 }
 
+// TestBridge_Run_ReportsErrorsButKeepsGoing is the same family/cause as
+// TestBridge_Run_StepsUntilCancelled above (25ms budget / 10ms ticker — a
+// 2.5-tick margin, same class of flake) and gets the same event-driven fix.
 func TestBridge_Run_ReportsErrorsButKeepsGoing(t *testing.T) {
 	steps := &fakeSteps{errs: []error{bluehost.ErrNotLoaded, nil, nil}}
 	mirror := &fakeMirror{}
 	b := &Bridge{steps: steps, slot: bluehost.SlotPreview, mirror: mirror, target: blueproject.TargetPreview}
 
+	var mu sync.Mutex
 	var gotErrs int
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	b.Run(ctx, 10*time.Millisecond, func(error) { gotErrs++ })
+	done := make(chan struct{})
+	go func() {
+		b.Run(ctx, 10*time.Millisecond, func(error) {
+			mu.Lock()
+			gotErrs++
+			mu.Unlock()
+		})
+		close(done)
+	}()
 
-	if gotErrs == 0 {
+	waitFor(t, "the loop to keep stepping after an error", func() bool { return steps.callCount() >= 2 })
+	cancel()
+	<-done
+
+	mu.Lock()
+	errs := gotErrs
+	mu.Unlock()
+	if errs == 0 {
 		t.Fatal("expected onError to be called at least once")
 	}
 	if steps.callCount() < 2 {
