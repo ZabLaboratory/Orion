@@ -102,20 +102,19 @@ type SceneIntentDeps struct {
 	// antenne, silently.
 	//
 	// sceneVersion is required too (ORION-TAKE-SLOT-IDENTITY, Blue#345):
-	// startBridge passes the SAME serving version Prepare/Take committed
-	// on the slot — claims.ArtifactSetDigest since M6 (#398), no longer
-	// claims.SceneDigest: the bundle ZabCanvas serves stamps its own
-	// scene_version with the artifact-set hash, and @lumencast/runtime
-	// refuses any bundle whose scene_version differs from the ?v= the
-	// client fetched — announcing the program-family SceneDigest put two
-	// hash families on the two sides of that check, failing every
-	// authenticated fetch. Before Blue#345, the call site hardcoded ""
-	// here, so whatever the LSDP kit told the client its scene_version
-	// was (""), the client would echo back as ?v= on GET
-	// .../render-bundle — a value that, post-#401, can never match
-	// host.Digest(slot). Keying the resolver correctly is necessary but
-	// not sufficient on its own: the client also has to be TOLD the value
-	// that will actually match.
+	// startBridge passes claims.SceneDigest, the SAME digest Prepare/Take
+	// committed on the slot. Before this, the call site hardcoded "" here,
+	// so whatever the LSDP kit told the client its scene_version was (""),
+	// the client would echo back as ?v= on GET .../render-bundle — a value
+	// that, post-#401, can never match host.Digest(slot). Keying the
+	// resolver correctly (#401, this unit's Take fix) is necessary but not
+	// sufficient on its own: the client also has to be TOLD the value that
+	// will actually match. For a NO-PROGRAM ref (#398, Decision A) this
+	// value is the bundle hash (scene_digest == artifact_set_digest), so
+	// it also equals the scene_version the bundle itself carries — the
+	// client-side lumencast check passes by construction. For a
+	// with-program ref the bundle-side mismatch remains, out of this
+	// unit's scope (separate chantier).
 	//
 	// bundle is the slot's LSML render-bundle bytes (deps.Host.Bundle(slot),
 	// the value SetBundle stored for the Prepare/Take that is starting this
@@ -429,18 +428,18 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 
-		// version is the ONE value threaded end-to-end (M6, #398):
-		// stored as the slot's serving identity (Host entry digest),
-		// announced to Solar as the LSDP scene_version (startBridge →
-		// MirrorFor), and matched by the public resolver
-		// (resolveHostBundle → Host.Serving). claims.ArtifactSetDigest is
-		// signed and present for refs with and without a program, and is
-		// the value ZabCanvas stamps as the bundle's own scene_version —
-		// the value @lumencast/runtime compares ?v= against. Announcing
-		// claims.SceneDigest here (the pre-M6 shape) put two different
-		// hash families on the two sides of that client-side check, so
-		// every authenticated fetch still failed.
-		version := claims.ArtifactSetDigest
+		// The serving identity stays claims.SceneDigest for BOTH shapes —
+		// the with-program path is byte-identical to before this unit.
+		// M6 note (#398, porteur's Decision A): for a NO-PROGRAM ref,
+		// ZabCanvas mints scene_digest == artifact_set_digest == the hash
+		// of the bundle, and stamps that same value as the bundle's own
+		// scene_version — so the version announced to Solar (startBridge →
+		// MirrorFor), matched by resolveHostBundle and returned as ETag
+		// equals the value @lumencast/runtime compares ?v= against, BY
+		// CONSTRUCTION, with no re-keying here. The with-program
+		// misalignment (scene_digest is a program-family hash, not the
+		// bundle's own scene_version) is real and intentionally NOT
+		// touched by this unit — separate chantier.
 		slot := bluehost.SlotPreview
 		if action == attestation.ActionTakeOnAir {
 			slot = bluehost.SlotOnAir
@@ -449,13 +448,13 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		switch action {
 		case attestation.ActionPreparePreview:
 			if noProgram {
-				opErr = deps.Host.PrepareStatic(slot, claims.SceneID, version)
+				opErr = deps.Host.PrepareStatic(slot, claims.SceneID, claims.SceneDigest)
 			} else {
-				opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneID, version, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Preview))
+				opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Preview))
 			}
 			if errors.Is(opErr, bluehost.ErrAlreadyLoaded) {
-				if deps.Host.Serving(slot, claims.SceneID, version) {
-					opErr = nil // idempotent re-prepare: same scene, same artifact set already occupying
+				if deps.Host.Serving(slot, claims.SceneID, claims.SceneDigest) {
+					opErr = nil // idempotent re-prepare: same scene, same digest already running
 				}
 			}
 		case attestation.ActionTakeOnAir:
@@ -464,9 +463,9 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			// the on-air slot's sceneID empty, silently making it unmatchable
 			// by resolveHostBundle's (scene_id, v) check (#401).
 			if noProgram {
-				opErr = deps.Host.TakeStatic(claims.SceneID, version)
+				opErr = deps.Host.TakeStatic(claims.SceneID, claims.SceneDigest)
 			} else {
-				opErr = deps.Host.Take(claims.RefID, claims.SceneID, version, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Execute))
+				opErr = deps.Host.Take(claims.RefID, claims.SceneID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Execute))
 			}
 		}
 		if opErr != nil {
@@ -483,7 +482,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			providers.ResetActiveIngress(deps.Host)
 		}
 
-		startBridge(deps, slot, claims, req.IntentID, version, !noProgram)
+		startBridge(deps, slot, claims, req.IntentID, !noProgram)
 
 		resp := sceneIntentResponse{
 			Status:     actionResultStatus(action),
@@ -631,23 +630,21 @@ const defaultProjectionInterval = 100 * time.Millisecond
 // starting this one, so a Take superseding the on-air instance never
 // leaves a goroutine stepping an instance bluehost.Host has released.
 //
-// version is the aligned serving version (M6, #398 —
-// claims.ArtifactSetDigest, the SAME value the Host entry stores and
-// resolveHostBundle matches): MirrorFor registers it as the LSDP
-// scene_version, which is exactly what Solar echoes back as ?v= and what
-// @lumencast/runtime compares the bundle's own scene_version against.
-//
 // hasProgram=false (a static occupation, #398) still REGISTERS the scene
-// on the wire — Solar must learn (sceneID, version) to know what to
+// on the wire — Solar must learn (sceneID, scene_version) to know what to
 // fetch — but starts no bridge (there is no instance to step). Any bridge
 // previously owning the slot is stopped: a static occupation superseding
 // a programmed one must not leave a goroutine stepping an instance the
-// Host has already released.
-func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.Claims, intentID, version string, hasProgram bool) {
+// Host has already released. The announced scene_version stays
+// claims.SceneDigest in both cases; for a no-program ref that value IS
+// the bundle hash (== artifact_set_digest, porteur's Decision A), so the
+// ?v= Solar derives matches both the resolver and the bundle's own
+// scene_version by construction.
+func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.Claims, intentID string, hasProgram bool) {
 	if deps.MirrorFor == nil || deps.Bridges == nil {
 		return
 	}
-	mirror := deps.MirrorFor(claims.SceneID, version, slot, deps.Host.Bundle(slot))
+	mirror := deps.MirrorFor(claims.SceneID, claims.SceneDigest, slot, deps.Host.Bundle(slot))
 	if mirror == nil {
 		return
 	}

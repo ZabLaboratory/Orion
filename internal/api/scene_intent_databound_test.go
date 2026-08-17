@@ -181,12 +181,12 @@ func TestChatDrivenScene_InjectionOrderingIdempotenceProjection(t *testing.T) {
 	if rec := send("idem-181"); rec.Code != http.StatusOK {
 		t.Fatalf("take-on-air: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	// Host.Take stores the aligned serving version (M6, #398):
-	// claims.ArtifactSetDigest — signedRef's fixed "bbb..." placeholder,
-	// not claims.SceneDigest and not the program's own digest.
-	wantVersion := "sha256:" + strings.Repeat("b", 64)
-	if got := host.Digest(bluehost.SlotOnAir); got != wantVersion {
-		t.Fatalf("expected on-air serving version %q, got %q", wantVersion, got)
+	// Host.Take stores claims.SceneDigest (the attestation's scene_digest,
+	// a distinct concept from blue_program_digest) — signedRef's fixed
+	// placeholder, not the program's own digest computed above.
+	wantSceneDigest := "sha256:" + strings.Repeat("a", 64)
+	if got := host.Digest(bluehost.SlotOnAir); got != wantSceneDigest {
+		t.Fatalf("expected on-air scene digest %q, got %q", wantSceneDigest, got)
 	}
 
 	// A bridge built directly (bluewire.NewBridge), stepped synchronously —

@@ -288,10 +288,17 @@ func validateClaims(c *Claims) error {
 	// (ORION-NOBLUE-AND-VERSION-ALIGN, #398): a scene without a Blue
 	// program is signed and airable — ZabCanvas mints such a ref with an
 	// EMPTY blue_program_digest (and scene_digest == artifact_set_digest ==
-	// sha256 of the LSML bundle). This is the ONLY relaxation: a non-empty
-	// blue_program_digest must still be a well-formed digest (checked
-	// below, all-or-nothing), and scene_digest / artifact_set_digest stay
-	// required and well-formed in both cases.
+	// the hash of the LSML bundle, porteur's Decision A). This is the ONLY
+	// relaxation: a non-empty blue_program_digest must still be a
+	// well-formed digest (checked below, all-or-nothing), and scene_digest
+	// / artifact_set_digest stay required and well-formed in both cases.
+	//
+	// Assumed contract infidelity (Bastion spec, #398): Go's zero value
+	// makes an ABSENT blue_program_digest key indistinguishable from an
+	// explicit "" (Claims is a plain struct decode) — so "relaxed when
+	// empty" is also "relaxed when absent". Accepted deliberately, not
+	// discovered: the payload is signature-verified before reaching here,
+	// so absence cannot be injected by an untrusted party.
 	required := map[string]string{
 		"schema_version":           c.SchemaVersion,
 		"ref_id":                   c.RefID,

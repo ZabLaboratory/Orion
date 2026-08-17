@@ -59,7 +59,7 @@ type entry struct {
 	// silently made every on-air stateless occupation unservable through
 	// that resolver, program or not.
 	sceneID    string
-	digest     string            // serving version — claims.ArtifactSetDigest since M6 (#398); see Serving
+	digest     string            // scene_digest this slot is serving (for a no-program ref: the bundle hash, #398 Decision A); see Serving
 	bundle     []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
 	awaitTypes map[string]string // compiler-declared operator.await value types
 
