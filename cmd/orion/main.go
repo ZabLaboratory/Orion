@@ -357,14 +357,22 @@ func run() error {
 		// MirrorFor nil, so startBridge stays a no-op — Prepare/Take still
 		// run and answer, nothing reaches Solar over this path yet.
 		if antenneWire != nil {
-			// sceneVersion is now the real digest startBridge passes
+			// sceneVersion is the real digest startBridge passes
 			// (ORION-TAKE-SLOT-IDENTITY, Blue#345), not a hardcoded "" —
-			// the LSDP kit tells Solar its scene_version is whatever
-			// value lands here, and Solar echoes that back as ?v= on
-			// GET .../render-bundle. A hardcoded "" told every client
-			// the wrong value to send, independent of #401's own fix.
-			sceneIntent.MirrorFor = func(sceneID, sceneVersion string) runtime.SceneMirror {
-				return antenneWire.MirrorFor(sceneID, sceneVersion, nil)
+			// the LSDP kit tells Solar its scene_version is whatever value
+			// lands here, and Solar echoes that back as ?v= on GET
+			// .../render-bundle. A hardcoded "" told every client the wrong
+			// value to send, independent of #401's own fix.
+			//
+			// bundle is the slot's LSML render-bundle bytes (deps.Host.
+			// Bundle(slot), threaded by startBridge) — the only render-
+			// bundle artefact this path ever holds. MirrorForLSML derives
+			// the bound-leaf gate from it directly (#396): a hardcoded nil
+			// here left boundLeafSet permanently disabled on the stateless
+			// path even though the SAME mechanism is already proven safe on
+			// the legacy Show-backed path.
+			sceneIntent.MirrorFor = func(sceneID, sceneVersion string, bundle []byte) runtime.SceneMirror {
+				return antenneWire.MirrorForLSML(sceneID, sceneVersion, bundle)
 			}
 			sceneIntent.Bridges = bluewire.NewRegistry()
 			sceneIntent.Logger = logger
