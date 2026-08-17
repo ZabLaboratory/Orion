@@ -140,7 +140,7 @@ func TestStartBridge_ThreadsOnAirSlotIntoMirrorFor(t *testing.T) {
 		TenantID:      "tenant-1",
 		Workload:      &fakeWorkload{body: envelope},
 		Host:          bluehost.NewHost(),
-		MirrorFor: func(sceneID string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
+		MirrorFor: func(sceneID, _ string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
 			gotSlot = slot
 			calls++
 			return mirror

@@ -77,7 +77,7 @@ func TestSceneIntentMirrorFor_UnknownSlotFailsClosed(t *testing.T) {
 	antenne := &recordingLsdpRegistry{}
 	mirrorFor := sceneIntentMirrorFor(lsdpWires{preview: preview, antenne: antenne})
 
-	got := mirrorFor("scene-1", bluehost.Slot("unknown"), nil)
+	got := mirrorFor("scene-1", "sha256:test-1", bluehost.Slot("unknown"), nil)
 
 	if got != nil {
 		t.Fatalf("an unrecognised slot must return a nil mirror, got %v", got)
