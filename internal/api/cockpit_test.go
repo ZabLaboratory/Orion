@@ -446,6 +446,32 @@ func TestCockpit_EngineBPreviewArmedAwaitDoesNotLeakToAntenna(t *testing.T) {
 	}
 }
 
+// TestCockpit_UnknownTargetRejected (ORION-UNKNOWN-TARGET-CONTRACT, Prism#740)
+// proves the SECOND ?target= decision point (getCockpitContracts, cockpit.go)
+// shares the same reject as the three operator.go routes
+// (operator_target_unknown_test.go) — before this work unit the two were
+// independently-written checks that agreed only by omission (cockpit.go had
+// its own literal `== "preview"` comparison, never calling engineBSlot at
+// all); now both call resolveTargetKind, so a route that forgot to would be
+// the only way to silently diverge.
+func TestCockpit_UnknownTargetRejected(t *testing.T) {
+	program := buildEngineBOperatorProgram(t, "call", "called", "", "", "")
+	ef := newEngineBOperatorFixture(t, program)
+	f := &cockpitFixture{mux: ef.mux}
+
+	w, _ := getContracts(t, f, "operator", "?stream_id=s1&target=bogus")
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown target: got %d, want 400 (body=%s)", w.Code, w.Body.String())
+	}
+	var errBody map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &errBody); err != nil {
+		t.Fatalf("decode error body: %v (raw=%s)", err, w.Body.String())
+	}
+	if errBody["error"] != "UNKNOWN_TARGET" {
+		t.Fatalf("error code = %q, want UNKNOWN_TARGET (body=%s)", errBody["error"], w.Body.String())
+	}
+}
+
 // TestCockpit_OverlayAppTriggerStreamScoped (ADR 016 Prism §3.2, issue #283,
 // RC3): an overlay-app is driven from a STREAM-LEVEL rule whose on-call spine
 // runs `core.overlay-app.set@1`. The cockpit contract must surface that on-call
