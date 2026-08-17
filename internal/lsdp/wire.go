@@ -205,7 +205,7 @@ func (w *Wire) MirrorFor(sceneID, sceneVersion string, bundle *compiler.RenderBu
 // identical to MirrorFor (same kit scene get-or-create, same mirror
 // shape) — only the bound-set source differs.
 func (w *Wire) MirrorForLSML(sceneID, sceneVersion string, lsmlBundle []byte) runtime.SceneMirror {
-	return w.mirrorFor(sceneID, sceneVersion, boundLeavesFromLSML(lsmlBundle))
+	return w.mirrorFor(sceneID, sceneVersion, boundLeavesFromLSML(sceneID, lsmlBundle, w.logger))
 }
 
 // mirrorFor is the shared scene get-or-create body both MirrorFor and
