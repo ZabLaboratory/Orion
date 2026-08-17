@@ -847,9 +847,9 @@ func TestPostSceneIntent_MirrorForReceivesRealSceneDigest(t *testing.T) {
 	// scene_digest (claims.SceneDigest) is the fixture's fixed "aaa..."
 	// literal in signedRef — distinct from blue_program_digest (the
 	// canvasEnvelope-returned `digest` used for the program cross-check).
-	// It is the SAME value deps.Host.Prepare/Take are already called with
-	// (scene_intent.go:385/392) — the value host.Digest(slot) will hold,
-	// so it is what a matching ?v= must equal.
+	// It is the SAME value deps.Host.Prepare/Take are already called with —
+	// the value host.Digest(slot) will hold, so it is what a matching ?v=
+	// must equal.
 	wantSceneVersion := "sha256:" + strings.Repeat("a", 64)
 	if gotSceneVersion != wantSceneVersion {
 		t.Fatalf("expected sceneVersion to equal claims.SceneDigest %q, got %q", wantSceneVersion, gotSceneVersion)
