@@ -296,8 +296,8 @@ func TestChatDrivenScene_InjectionOrderingIdempotenceProjection(t *testing.T) {
 	if rec := send("idem-181"); rec.Code != http.StatusOK {
 		t.Fatalf("replayed take-on-air: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if wl.admitCalls != 1 {
-		t.Fatalf("expected the scene-intent replay to skip re-execution (still 1 workload admission), got %d", wl.admitCalls)
+	if wl.mintCalls != 1 {
+		t.Fatalf("expected the scene-intent replay to skip re-execution (still 1 workload mint), got %d", wl.mintCalls)
 	}
 	thirdReceipt, err := providers.InjectActivePlatform(host, leaf, chatMessageEvent(t, "evt-3", 3, "still going"))
 	if err != nil {

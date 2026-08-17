@@ -127,26 +127,23 @@ func TestIdempotencyCache_SaturationBoundsMemoryAndIsCounted(t *testing.T) {
 }
 
 type fakeWorkload struct {
-	admitErr   error
-	mintErr    error
-	fetchErr   error
-	body       json.RawMessage
-	admitCalls int
+	mintErr  error
+	fetchErr error
+	body     json.RawMessage
+
+	mintCalls  int
+	mintTicket string
+	mintIntent json.RawMessage
 }
 
-func (f *fakeWorkload) AdmitAuthContext(_ context.Context, _ string) (*workload.AuthContextAdmission, error) {
-	f.admitCalls++
-	if f.admitErr != nil {
-		return nil, f.admitErr
-	}
-	return &workload.AuthContextAdmission{AdmissionID: "adm-1", IntentID: "intent-1"}, nil
-}
-
-func (f *fakeWorkload) MintDelegation(_ context.Context, _ *workload.AuthContextAdmission) (*workload.Delegation, error) {
+func (f *fakeWorkload) MintDelegation(_ context.Context, ticket string, intent json.RawMessage) (*workload.Delegation, error) {
+	f.mintCalls++
+	f.mintTicket = ticket
+	f.mintIntent = append(json.RawMessage(nil), intent...)
 	if f.mintErr != nil {
 		return nil, f.mintErr
 	}
-	return &workload.Delegation{JTI: "jti-1"}, nil
+	return &workload.Delegation{JTI: "jti-1", AccessToken: "opaque-delegation", TokenType: "bearer", Status: "issued"}, nil
 }
 
 func (f *fakeWorkload) FetchCanvas(_ context.Context, _ string) (*workload.CanvasArtifact, error) {
@@ -586,7 +583,7 @@ func TestPostSceneIntent_WorkloadRefusalPropagates(t *testing.T) {
 		LocatorPrefix: "scenes/",
 		OwnerID:       "owner-1",
 		TenantID:      "tenant-1",
-		Workload:      &fakeWorkload{admitErr: &workload.Error{Code: workload.CodeAuthContextExpired}},
+		Workload:      &fakeWorkload{mintErr: &workload.Error{Code: workload.CodeAuthContextExpired}},
 		Host:          bluehost.NewHost(),
 	}
 	body, _ := json.Marshal(sceneIntentRequest{
@@ -601,6 +598,77 @@ func TestPostSceneIntent_WorkloadRefusalPropagates(t *testing.T) {
 	postSceneIntent(deps)(rec, req)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	// The reason must be the BARE §4.7 code — Prism's failure vocabulary
+	// matches on it exactly; the old err.Error() spelling ("workload:
+	// CODE (http n)") collapsed every typed refusal into
+	// UNKNOWN_RESPONSE on the operator's screen.
+	var resp sceneIntentResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Reason != string(workload.CodeAuthContextExpired) {
+		t.Fatalf("expected bare code %q, got %q", workload.CodeAuthContextExpired, resp.Reason)
+	}
+}
+
+// TestPostSceneIntent_RelaysTicketAndRawIntentVerbatim is the M3
+// point of vigilance: the intent must travel BYTE-FOR-BYTE from the
+// request body into MintDelegation — Gate binds its values (deadline
+// among them) into the ticket, so any reconstruction or
+// re-serialization on Orion's side is an AUTH_CONTEXT_MISMATCH. The
+// posted body carries fields Orion's own sceneIntentRequest does not
+// model (sequence, issued_at, deadline, correlation_id) plus a
+// max-safe-integer deadline; byte equality at the portal proves none
+// of it was dropped or mutated.
+func TestPostSceneIntent_RelaysTicketAndRawIntentVerbatim(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	envelope, digest := canvasEnvelope(program)
+	now := time.Now()
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
+
+	wl := &fakeWorkload{body: envelope}
+	deps := SceneIntentDeps{
+		Trust:         attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix: "scenes/",
+		OwnerID:       "owner-1",
+		TenantID:      "tenant-1",
+		Workload:      wl,
+		Host:          bluehost.NewHost(),
+	}
+
+	body, _ := json.Marshal(map[string]any{
+		"schema_version":     "orion.scene-intent.v1",
+		"intent_id":          "intent-1",
+		"idempotency_key":    "idem-1",
+		"sequence":           7,
+		"stream_id":          "stream-1",
+		"target":             "preview",
+		"action":             string(attestation.ActionPreparePreview),
+		"resolved_scene_ref": ref,
+		"issued_at":          1800000000,
+		"deadline":           json.Number("9007199254740991"),
+		"correlation_id":     "corr-1",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+	req.Header.Set(authContextHeader, "opaque-ticket")
+
+	rec := httptest.NewRecorder()
+	postSceneIntent(deps)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if wl.mintCalls != 1 {
+		t.Fatalf("expected exactly one mint, got %d", wl.mintCalls)
+	}
+	if wl.mintTicket != "opaque-ticket" {
+		t.Fatalf("mint must receive the relayed ticket, got %q", wl.mintTicket)
+	}
+	if !bytes.Equal(wl.mintIntent, body) {
+		t.Fatalf("intent must reach mint byte-for-byte:\nsent  %s\nminted %s", body, wl.mintIntent)
 	}
 }
 
@@ -825,16 +893,16 @@ func TestPostSceneIntent_IdempotentReplaySkipsReExecution(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("first request: expected 200, got %d: %s", first.Code, first.Body.String())
 	}
-	if wl.admitCalls != 1 {
-		t.Fatalf("expected 1 workload admission on first request, got %d", wl.admitCalls)
+	if wl.mintCalls != 1 {
+		t.Fatalf("expected 1 workload mint on first request, got %d", wl.mintCalls)
 	}
 
 	second := send()
 	if second.Code != http.StatusOK {
 		t.Fatalf("second request: expected 200, got %d: %s", second.Code, second.Body.String())
 	}
-	if wl.admitCalls != 1 {
-		t.Fatalf("expected the replay to skip re-execution (still 1 workload admission), got %d", wl.admitCalls)
+	if wl.mintCalls != 1 {
+		t.Fatalf("expected the replay to skip re-execution (still 1 workload mint), got %d", wl.mintCalls)
 	}
 	if first.Body.String() != second.Body.String() {
 		t.Fatalf("expected the replay to return the identical cached result, got %q vs %q", first.Body.String(), second.Body.String())
@@ -875,8 +943,8 @@ func TestPostSceneIntent_NoIdempotencyKeyNeverDedupes(t *testing.T) {
 			t.Fatalf("request %d: expected 200, got %d: %s", i, rec.Code, rec.Body.String())
 		}
 	}
-	if wl.admitCalls != 2 {
-		t.Fatalf("expected every request without an idempotency_key to re-execute, got %d admissions", wl.admitCalls)
+	if wl.mintCalls != 2 {
+		t.Fatalf("expected every request without an idempotency_key to re-execute, got %d mints", wl.mintCalls)
 	}
 }
 

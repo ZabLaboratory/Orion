@@ -1,11 +1,14 @@
 package workload
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -42,35 +45,91 @@ func newTestServer(t *testing.T, handler http.HandlerFunc) (*Client, *httptest.S
 	return client, srv
 }
 
-func TestAdmitAuthContext_Success(t *testing.T) {
+// decodeNumberPreserving parses raw JSON with json.Number so a float64
+// round-trip cannot silently mask a large-integer mutation (deadline is
+// bounded by 2^53-1 on the Gate schema).
+func decodeNumberPreserving(t *testing.T, raw []byte) any {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return v
+}
+
+func TestMintDelegation_PostsTicketAndVerbatimIntent(t *testing.T) {
+	// The intent carries a max-safe-integer deadline plus fields the Go
+	// side has no model for — value-identical arrival at the Gate proves
+	// the relay embeds the caller's bytes instead of reconstructing them.
+	intent := json.RawMessage(`{"schema_version":"orion.scene-intent.v1","intent_id":"intent-1","idempotency_key":"idem-1","sequence":7,"stream_id":"stream-1","target":"preview","action":"prepare-preview","resolved_scene_ref":"opaque-jws","issued_at":1800000000,"deadline":9007199254740991,"correlation_id":"corr-1"}`)
+
+	var got struct {
+		Ticket string          `json:"ticket"`
+		Intent json.RawMessage `json:"intent"`
+	}
 	client, srv := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/internal/v1/workload/auth-contexts/admit" {
+		if r.URL.Path != "/internal/v1/workload/delegations/mint" {
 			t.Fatalf("unexpected path %q", r.URL.Path)
 		}
 		if r.Header.Get("x-workload-san") != testIdentity().San {
 			t.Fatalf("missing x-workload-san header")
 		}
-		_ = json.NewEncoder(w).Encode(map[string]string{"admission_id": "adm-1", "intent_id": "intent-1"})
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode mint request: %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":       "opaque-delegation",
+			"token_type":         "bearer",
+			"jti":                "jti-1",
+			"status":             "issued",
+			"expires_at":         "2026-08-17T21:00:00Z",
+			"canvas_request_key": strings.Repeat("c", 64),
+			"retry_sequence":     0,
+			"gate_request_id":    "3f2c8f0e-2f65-4e11-8a63-0123456789ab." + strings.Repeat("d", 64),
+		})
 	})
 	defer srv.Close()
 
-	adm, err := client.AdmitAuthContext(context.Background(), "opaque-ticket")
+	out, err := client.MintDelegation(context.Background(), "opaque-ticket", intent)
 	if err != nil {
-		t.Fatalf("AdmitAuthContext: %v", err)
+		t.Fatalf("MintDelegation: %v", err)
 	}
-	if adm.AdmissionID != "adm-1" {
-		t.Fatalf("unexpected admission_id: %q", adm.AdmissionID)
+	if got.Ticket != "opaque-ticket" {
+		t.Fatalf("mint must post the ticket field, got %q", got.Ticket)
+	}
+	// Value-exact intent, big integers included — the ticket binds these
+	// values (`_assert_ticket_matches`), a mutation here is a live
+	// AUTH_CONTEXT_MISMATCH.
+	if !reflect.DeepEqual(
+		decodeNumberPreserving(t, got.Intent),
+		decodeNumberPreserving(t, intent),
+	) {
+		t.Fatalf("intent mutated in transit:\nsent     %s\nreceived %s", intent, got.Intent)
+	}
+	if out.JTI != "jti-1" || out.AccessToken != "opaque-delegation" || out.RetrySequence != 0 {
+		t.Fatalf("unexpected delegation decode: %+v", out)
 	}
 }
 
-func TestMintDelegation_KnownCode(t *testing.T) {
+func TestMintDelegation_KnownCode_GateDetailEnvelope(t *testing.T) {
+	// ZabGate renders refusals as {"detail": {"code", "message"}}
+	// (routes.py::workload_error_handler) — the ten §4.7 codes must be
+	// recognized in THAT envelope, not only the bare {"error"} spelling.
 	client, srv := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusConflict)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": string(CodeDelegationAlreadyUsed)})
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"detail": map[string]string{
+				"code":    string(CodeDelegationAlreadyUsed),
+				"message": "delegation already used",
+			},
+		})
 	})
 	defer srv.Close()
 
-	_, err := client.MintDelegation(context.Background(), &AuthContextAdmission{AdmissionID: "adm-1", IntentID: "intent-1"})
+	_, err := client.MintDelegation(context.Background(), "opaque-ticket", json.RawMessage(`{}`))
 	var werr *Error
 	if err == nil {
 		t.Fatal("expected error")
@@ -83,14 +142,30 @@ func TestMintDelegation_KnownCode(t *testing.T) {
 	}
 }
 
-func TestMintDelegation_UnknownCodeFailsClosed(t *testing.T) {
+func TestMintDelegation_KnownCode_LegacyErrorEnvelope(t *testing.T) {
 	client, srv := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "SOMETHING_NEW"})
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": string(CodeDelegationAlreadyUsed)})
 	})
 	defer srv.Close()
 
-	_, err := client.MintDelegation(context.Background(), &AuthContextAdmission{AdmissionID: "adm-1", IntentID: "intent-1"})
+	_, err := client.MintDelegation(context.Background(), "opaque-ticket", json.RawMessage(`{}`))
+	var werr *Error
+	if !asError(err, &werr) || werr.Code != CodeDelegationAlreadyUsed {
+		t.Fatalf("expected CodeDelegationAlreadyUsed from the legacy envelope, got %v", err)
+	}
+}
+
+func TestMintDelegation_UnknownCodeFailsClosed(t *testing.T) {
+	client, srv := newTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"detail": map[string]string{"code": "SOMETHING_NEW", "message": "?"},
+		})
+	})
+	defer srv.Close()
+
+	_, err := client.MintDelegation(context.Background(), "opaque-ticket", json.RawMessage(`{}`))
 	var werr *Error
 	if !asError(err, &werr) {
 		t.Fatalf("expected *Error, got %T: %v", err, err)

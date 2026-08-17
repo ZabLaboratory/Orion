@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -35,9 +36,14 @@ import (
 // WorkloadPortal is the slice of *workload.Client the intent handler
 // needs — an interface so tests substitute a fake instead of standing up
 // a real ZabGate mTLS listener. *workload.Client satisfies this directly.
+//
+// There is deliberately no AdmitAuthContext here: admit is an
+// operator-JWT route Prism calls itself — the ticket IS the operator's
+// consent, and an Orion-side admit was a confused deputy (Bastion,
+// WORKLOAD-PROTOCOL-ALIGN-M3). Orion only ever mints against the ticket
+// Prism relayed.
 type WorkloadPortal interface {
-	AdmitAuthContext(ctx context.Context, ticket string) (*workload.AuthContextAdmission, error)
-	MintDelegation(ctx context.Context, admission *workload.AuthContextAdmission) (*workload.Delegation, error)
+	MintDelegation(ctx context.Context, ticket string, intent json.RawMessage) (*workload.Delegation, error)
 	FetchCanvas(ctx context.Context, jti string) (*workload.CanvasArtifact, error)
 }
 
@@ -282,10 +288,16 @@ func idempotencyKey(principal, owner, tenant, stream string, action attestation.
 	return strings.Join([]string{principal, owner, tenant, stream, string(action), sceneDigest, refID, idempotencyKey}, "\x00")
 }
 
-// sceneIntentRequest is `orion.scene-intent.v1` (§6.4). ResolvedSceneRef
-// is the opaque compact JWS ZabCanvas signed and Prism relayed unmutated;
-// StreamID/OperatorContext are non-authoritative requests — Orion trusts
-// only the principal ZabGate injected and the attestation's own claims.
+// sceneIntentRequest is the slice of `orion.scene-intent.v1` (§6.4) this
+// handler reads for its OWN needs. ResolvedSceneRef is the opaque compact
+// JWS ZabCanvas signed and Prism relayed unmutated; StreamID is a
+// non-authoritative request — Orion trusts only the principal ZabGate
+// injected and the attestation's own claims. The full intent Prism posted
+// (including fields Orion has no use for: sequence, issued_at, deadline,
+// correlation_id) is relayed to Gate's mint as the RAW request bytes —
+// this struct is never re-serialized onto the wire, because Gate binds
+// the intent's values (deadline among them) into the ticket and any
+// reconstruction risks AUTH_CONTEXT_MISMATCH.
 type sceneIntentRequest struct {
 	SchemaVersion    string `json:"schema_version"`
 	IntentID         string `json:"intent_id"`
@@ -296,6 +308,11 @@ type sceneIntentRequest struct {
 	ResolvedSceneRef string `json:"resolved_scene_ref"`
 }
 
+// maxSceneIntentBytes bounds the raw intent body kept for the verbatim
+// mint relay — aligned on the workload surface's own 1 MiB response
+// bound; the Gate caps resolved_scene_ref alone at 64 KiB.
+const maxSceneIntentBytes = 1 << 20
+
 type sceneIntentResponse struct {
 	Status     string `json:"status"`
 	IntentID   string `json:"intent_id"`
@@ -305,8 +322,10 @@ type sceneIntentResponse struct {
 }
 
 // authContextHeader carries the opaque `zabgate-auth-context.v1` ticket
-// ZabGate mints at intent admission (§4.7/§6.11). Orion never parses or
-// verifies it — it only relays it, unmodified, to AdmitAuthContext.
+// ZabGate issued to Prism at intent admission (§4.7/§6.11) — Prism admits
+// with its own operator JWT and transports the ticket here. Orion never
+// parses or verifies it — it only relays it, unmodified, to
+// MintDelegation.
 const authContextHeader = "X-ZabGate-Auth-Context"
 
 func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
@@ -317,8 +336,19 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 
+		// Keep the RAW body bytes: they ARE the intent Gate's mint
+		// re-validates against the ticket bindings. Decoding into
+		// sceneIntentRequest serves only Orion's own routing — the wire
+		// artifact relayed to mint is these exact bytes, never a
+		// re-serialization of the struct (which would drop the fields
+		// Orion doesn't model and mutate what the ticket binds).
+		raw, err := io.ReadAll(io.LimitReader(r.Body, maxSceneIntentBytes+1))
+		if err != nil || len(raw) > maxSceneIntentBytes {
+			writeJSON(w, http.StatusBadRequest, sceneIntentResponse{Status: "rejected", Reason: "MALFORMED_INTENT"})
+			return
+		}
 		var req sceneIntentRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(raw, &req); err != nil {
 			writeJSON(w, http.StatusBadRequest, sceneIntentResponse{Status: "rejected", Reason: "MALFORMED_INTENT"})
 			return
 		}
@@ -363,14 +393,12 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			}
 		}
 
+		// Mint directly against the relayed ticket — no admit call: the
+		// ticket already carries the operator's consent, and Orion
+		// admitting it itself was the confused-deputy shape Bastion
+		// closed. The intent travels VERBATIM (raw request bytes).
 		ctx := r.Context()
-		admission, err := deps.Workload.AdmitAuthContext(ctx, ticket)
-		if err != nil {
-			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
-			return
-		}
-
-		delegation, err := deps.Workload.MintDelegation(ctx, admission)
+		delegation, err := deps.Workload.MintDelegation(ctx, ticket, json.RawMessage(raw))
 		if err != nil {
 			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
 			return
@@ -695,9 +723,18 @@ func actionResultStatus(a attestation.Action) string {
 	return "prepared"
 }
 
+// workloadReason surfaces the BARE §4.7 refusal code when the workload
+// client recognized one — Prism's failure vocabulary
+// (SCENE_INTENT_FAILURE_REASONS) matches on the exact code, and the
+// previous err.Error() spelling ("workload: CODE (http n)") collapsed
+// every typed refusal into UNKNOWN_RESPONSE on the operator's screen.
 func workloadReason(err error) string {
 	if err == nil {
 		return ""
+	}
+	var werr *workload.Error
+	if errors.As(err, &werr) && werr.Code != "" {
+		return string(werr.Code)
 	}
 	return err.Error()
 }
