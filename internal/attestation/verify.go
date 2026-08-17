@@ -284,6 +284,21 @@ func rejectDuplicateKeys(raw []byte) error {
 }
 
 func validateClaims(c *Claims) error {
+	// blue_program_digest is deliberately NOT in this required set
+	// (ORION-NOBLUE-AND-VERSION-ALIGN, #398): a scene without a Blue
+	// program is signed and airable — ZabCanvas mints such a ref with an
+	// EMPTY blue_program_digest (and scene_digest == artifact_set_digest ==
+	// the hash of the LSML bundle, porteur's Decision A). This is the ONLY
+	// relaxation: a non-empty blue_program_digest must still be a
+	// well-formed digest (checked below, all-or-nothing), and scene_digest
+	// / artifact_set_digest stay required and well-formed in both cases.
+	//
+	// Assumed contract infidelity (Bastion spec, #398): Go's zero value
+	// makes an ABSENT blue_program_digest key indistinguishable from an
+	// explicit "" (Claims is a plain struct decode) — so "relaxed when
+	// empty" is also "relaxed when absent". Accepted deliberately, not
+	// discovered: the payload is signature-verified before reaching here,
+	// so absence cannot be injected by an untrusted party.
 	required := map[string]string{
 		"schema_version":           c.SchemaVersion,
 		"ref_id":                   c.RefID,
@@ -298,7 +313,6 @@ func validateClaims(c *Claims) error {
 		"revision_id":              c.RevisionID,
 		"scene_digest":             c.SceneDigest,
 		"artifact_set_digest":      c.ArtifactSetDigest,
-		"blue_program_digest":      c.BlueProgramDigest,
 		"readiness_attestation_id": c.ReadinessAttestationID,
 		"readiness_digest":         c.ReadinessDigest,
 		"canvas_locator":           c.CanvasLocator,
@@ -330,10 +344,16 @@ func validateClaims(c *Claims) error {
 		}
 	}
 
-	for _, d := range []string{c.SceneDigest, c.ArtifactSetDigest, c.BlueProgramDigest, c.ReadinessDigest} {
+	for _, d := range []string{c.SceneDigest, c.ArtifactSetDigest, c.ReadinessDigest} {
 		if !digestPattern.MatchString(d) {
 			return fmt.Errorf("%w: invalid digest %q", ErrPayload, d)
 		}
+	}
+	// All-or-nothing: empty means "no program" (accepted); anything
+	// non-empty must be a well-formed digest — a malformed program digest
+	// is never silently read as "no program".
+	if c.BlueProgramDigest != "" && !digestPattern.MatchString(c.BlueProgramDigest) {
+		return fmt.Errorf("%w: invalid digest %q", ErrPayload, c.BlueProgramDigest)
 	}
 
 	if len(c.AllowedActions) == 0 {

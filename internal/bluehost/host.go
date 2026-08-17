@@ -43,6 +43,12 @@ var (
 // entry pairs a running instance with the program handle it was started
 // from, so Step/Stop never need the caller to keep the handle around.
 type entry struct {
+	// instance is nil for a STATIC occupation (PrepareStatic/TakeStatic,
+	// ORION-NOBLUE-AND-VERSION-ALIGN #398): a program-less scene occupies
+	// the slot and serves its bundle, with nothing to step. Every
+	// instance-consuming method treats a nil instance exactly like an
+	// empty slot (ErrNotLoaded / nil), never a silent no-op on the
+	// runtime — bluehost.Runtime is never handed a nil handle.
 	instance *blueruntime.InstanceHandle
 
 	// sceneID and digest together are the slot's identity — see Serving.
@@ -53,7 +59,7 @@ type entry struct {
 	// silently made every on-air stateless occupation unservable through
 	// that resolver, program or not.
 	sceneID    string
-	digest     string            // scene_digest / program identity this slot is serving
+	digest     string            // scene_digest this slot is serving (for a no-program ref: the bundle hash, #398 Decision A); see Serving
 	bundle     []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
 	awaitTypes map[string]string // compiler-declared operator.await value types
 
@@ -149,7 +155,7 @@ func (h *Host) PendingAwaitNames(slot Slot) []string {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
 	h.mu.Unlock()
-	if !ok {
+	if !ok || e.instance == nil { // nil instance: static occupation (#398), no await can arm
 		return nil
 	}
 
@@ -344,6 +350,44 @@ func (h *Host) Prepare(slot Slot, instanceID, sceneID, digest string, program []
 	return nil
 }
 
+// PrepareStatic occupies slot for a scene that carries NO Blue program
+// (ORION-NOBLUE-AND-VERSION-ALIGN, #398): the entry commits the same
+// (sceneID, version) identity Prepare would, with no runtime instance —
+// nothing is Loaded/Started, nothing will ever be stepped. The slot then
+// serves exactly two things: its identity (Serving/Digest, so the public
+// resolver can match a bundle fetch) and whatever bundle SetBundle
+// attaches. Same admission as Prepare: an occupied slot is refused with
+// ErrAlreadyLoaded and the caller runs its own Serving idempotence check.
+func (h *Host) PrepareStatic(slot Slot, sceneID, version string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, exists := h.slots[slot]; exists {
+		return fmt.Errorf("%w: %s", ErrAlreadyLoaded, slot)
+	}
+	h.slots[slot] = &entry{sceneID: sceneID, digest: version}
+	return nil
+}
+
+// TakeStatic is Take's no-program counterpart (#398): it atomically
+// commits a static on-air occupation for (sceneID, version) and stops
+// whatever instance previously held the slot — same supersede semantics
+// as Take, minus the Load/Start (there is nothing to start, so no
+// pre-commit failure mode exists on this path).
+func (h *Host) TakeStatic(sceneID, version string) error {
+	h.mu.Lock()
+	previous := h.slots[SlotOnAir]
+	h.slots[SlotOnAir] = &entry{sceneID: sceneID, digest: version}
+	h.mu.Unlock()
+
+	if previous != nil && previous.instance != nil {
+		h.runtimeMu.Lock()
+		err := h.runtime.Stop(previous.instance, "superseded-by-take")
+		h.runtimeMu.Unlock()
+		return err
+	}
+	return nil
+}
+
 // Digest reports the scene_digest the slot is currently serving, or ""
 // if the slot is empty. Digest equality ALONE is not slot identity and
 // must never be used to decide a redundant re-Prepare is a no-op — see
@@ -417,7 +461,7 @@ func (h *Host) Bundle(slot Slot) []byte {
 func (h *Host) Dispatch(slot Slot, data []byte) (blueruntime.Receipt, error) {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
-	if !ok {
+	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
 		return blueruntime.Receipt{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
@@ -439,7 +483,7 @@ func (h *Host) Dispatch(slot Slot, data []byte) (blueruntime.Receipt, error) {
 func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
-	if !ok {
+	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
@@ -471,6 +515,9 @@ func (h *Host) Release(slot Slot, reason string) error {
 	delete(h.slots, slot)
 	h.mu.Unlock()
 
+	if instance == nil { // static occupation (#398): nothing to stop
+		return nil
+	}
 	h.runtimeMu.Lock()
 	err := h.runtime.Stop(instance, reason)
 	h.runtimeMu.Unlock()
@@ -516,11 +563,12 @@ func (h *Host) Take(instanceID, sceneID, digest string, program []byte, provider
 	h.slots[SlotOnAir] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: awaitTypesInProgram(program), triggers: triggers, awaits: awaits}
 	h.mu.Unlock()
 
-	if previous != nil {
+	if previous != nil && previous.instance != nil {
 		// Compensation for the outgoing instance happens AFTER the new one
 		// is committed — a Stop failure here is logged by the caller, never
 		// allowed to roll back the take that already succeeded (§4.4: "un
 		// échec après commit produit un état typé et une compensation").
+		// A static previous occupation (#398) has no instance to stop.
 		h.runtimeMu.Lock()
 		err := h.runtime.Stop(previous.instance, "superseded-by-take")
 		h.runtimeMu.Unlock()
@@ -539,7 +587,7 @@ func (h *Host) Take(instanceID, sceneID, digest string, program []byte, provider
 func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, error) {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
-	if !ok {
+	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
@@ -565,7 +613,7 @@ func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, er
 func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
-	if !ok {
+	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
@@ -593,7 +641,7 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
-	if !ok {
+	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
@@ -617,7 +665,7 @@ func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (bluerunt
 func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
-	if !ok {
+	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
 		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
@@ -714,7 +762,7 @@ func awaitValueMatchesType(value any, valueType string) bool {
 func (h *Host) Complete(slot Slot, data []byte) (blueruntime.Receipt, error) {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
-	if !ok {
+	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
 		return blueruntime.Receipt{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
