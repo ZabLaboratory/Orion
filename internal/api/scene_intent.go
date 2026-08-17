@@ -85,12 +85,23 @@ type SceneIntentDeps struct {
 	Effects bluehost.EffectDeps
 
 	// MirrorFor resolves the LSDP scene pairing a bluewire.Bridge forwards
-	// onto, for a given scene_id — normally lsdp.Wire.MirrorFor. Nil ⇒ no
-	// bridge is ever started: Prepare/Take still run, the handler still
-	// returns its typed result, but nothing reaches Solar over this path
-	// yet (the pre-B3-R6-12-ORION-PROJECTION posture).
+	// onto, for a given scene_id — normally cmd/orion's sceneIntentMirrorFor
+	// closure over lsdp.Wire.MirrorForLSML. Nil ⇒ no bridge is ever started:
+	// Prepare/Take still run, the handler still returns its typed result,
+	// but nothing reaches Solar over this path yet (the
+	// pre-B3-R6-12-ORION-PROJECTION posture).
 	//
-	// sceneVersion is now required too (ORION-TAKE-SLOT-IDENTITY, Blue#345):
+	// The slot parameter is the FLUX (#398): startBridge passes the SAME
+	// bluehost.Slot it was itself called with (SlotPreview for
+	// prepare-preview, SlotOnAir for take), so the resolution can route a
+	// preview onto the preview wire and a take onto the antenne wire. This
+	// is load-bearing, not advisory — before this parameter existed, no
+	// implementation of MirrorFor could express "which wire" at all, and
+	// cmd/orion wired every call straight onto the live antenne wire
+	// regardless of flux: a prepare-preview projected its deltas onto the
+	// antenne, silently.
+	//
+	// sceneVersion is required too (ORION-TAKE-SLOT-IDENTITY, Blue#345):
 	// startBridge passes the SAME serving version Prepare/Take committed
 	// on the slot — claims.ArtifactSetDigest since M6 (#398), no longer
 	// claims.SceneDigest: the bundle ZabCanvas serves stamps its own
@@ -105,7 +116,17 @@ type SceneIntentDeps struct {
 	// host.Digest(slot). Keying the resolver correctly is necessary but
 	// not sufficient on its own: the client also has to be TOLD the value
 	// that will actually match.
-	MirrorFor func(sceneID, sceneVersion string) runtime.SceneMirror
+	//
+	// bundle is the slot's LSML render-bundle bytes (deps.Host.Bundle(slot),
+	// the value SetBundle stored for the Prepare/Take that is starting this
+	// bridge) — the ONLY render-bundle artefact this path ever holds;
+	// startBridge passes it through so the bound-leaf gate
+	// (internal/lsdp.boundLeafSet, #396) actually executes on the stateless
+	// path instead of running permanently disabled on a hardcoded nil. May
+	// be nil (no lsml_bundle in the envelope), which correctly disables the
+	// gate — same fail-open posture as the legacy path's binding-less
+	// bundle.
+	MirrorFor func(sceneID, sceneVersion string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror
 	// Bridges tracks the running bridge per bluehost.Slot so a superseding
 	// Take (or a re-Prepare) stops the previous one instead of leaking a
 	// goroutine stepping an instance the Host has already released.
@@ -626,7 +647,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	if deps.MirrorFor == nil || deps.Bridges == nil {
 		return
 	}
-	mirror := deps.MirrorFor(claims.SceneID, version)
+	mirror := deps.MirrorFor(claims.SceneID, version, slot, deps.Host.Bundle(slot))
 	if mirror == nil {
 		return
 	}

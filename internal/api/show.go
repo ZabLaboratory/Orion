@@ -30,10 +30,13 @@ func getShow(deps PublicDeps) http.HandlerFunc {
 // initialize/mutate an instance). No equivalent is implemented in Orion: the
 // scene-intent path (attestation-driven, deps.SceneIntent) supersedes it.
 //
-// BREAKS Prism: `Prism/src/main/embedded-boot.ts:172` and
-// `Prism/src/renderer/src/lib/scene-push.ts` call this route as part of the
-// go-live pipeline. Migrating Prism to scene-intent is a separate work
-// stream on the Prism repo, out of scope here — see the #331 final report.
+// Does NOT break Prism (#396): `embedded-boot.ts` and `scene-push.ts` no
+// longer exist under `Prism/src` on `origin/main` (verified 2026-08-17,
+// Prism@984abf7) — neither file is on disk, and the only remaining
+// mentions of either name are historical comments in unrelated files
+// (`broadcast-url.ts`, `push-bundle-shape.test.ts`, `to-lsml.ts`); no
+// caller of this route survives. The prior warning described a casse that
+// no longer has an object.
 
 // postTestSession opens a fresh test session for a given scene.
 // Body: {"scene_id": "..."}

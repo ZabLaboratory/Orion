@@ -77,7 +77,7 @@ func noblueDeps(t *testing.T, pub ed25519.PublicKey, body json.RawMessage) (Scen
 		TenantID:      "tenant-1",
 		Workload:      &fakeWorkload{body: body},
 		Host:          bluehost.NewHost(),
-		MirrorFor: func(_, sceneVersion string) runtime.SceneMirror {
+		MirrorFor: func(_, sceneVersion string, _ bluehost.Slot, _ []byte) runtime.SceneMirror {
 			gotVersion = sceneVersion
 			mirrorCalls++
 			return &recordingMirror{}

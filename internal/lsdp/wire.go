@@ -194,6 +194,24 @@ func (w *Wire) Handler() http.Handler {
 // own NewScene semantics), so a single-scene live show needs no
 // explicit SetActive.
 func (w *Wire) MirrorFor(sceneID, sceneVersion string, bundle *compiler.RenderBundle) runtime.SceneMirror {
+	return w.mirrorFor(sceneID, sceneVersion, boundLeavesFromBundle(bundle))
+}
+
+// MirrorForLSML is MirrorFor's counterpart for the stateless path (#396,
+// ADR-BLUE-012): the bluehost slot only ever holds LSML bytes (see
+// boundLeavesFromLSML's doc), never a *compiler.RenderBundle, so the
+// bound-leaf surface is derived from those bytes directly instead of
+// going through boundLeavesFromBundle. Scene registration is otherwise
+// identical to MirrorFor (same kit scene get-or-create, same mirror
+// shape) — only the bound-set source differs.
+func (w *Wire) MirrorForLSML(sceneID, sceneVersion string, lsmlBundle []byte) runtime.SceneMirror {
+	return w.mirrorFor(sceneID, sceneVersion, boundLeavesFromLSML(sceneID, lsmlBundle, w.logger))
+}
+
+// mirrorFor is the shared scene get-or-create body both MirrorFor and
+// MirrorForLSML drive, parameterised only by the already-computed bound
+// set so neither caller duplicates the kit scene bookkeeping.
+func (w *Wire) mirrorFor(sceneID, sceneVersion string, bound boundLeafSet) runtime.SceneMirror {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	sc, ok := w.scenes[sceneID]
@@ -207,7 +225,7 @@ func (w *Wire) MirrorFor(sceneID, sceneVersion string, bundle *compiler.RenderBu
 		wire:    w,
 		sceneID: sceneID,
 		scene:   sc,
-		bound:   boundLeavesFromBundle(bundle),
+		bound:   bound,
 	}
 }
 

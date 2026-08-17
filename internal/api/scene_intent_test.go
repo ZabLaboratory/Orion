@@ -431,7 +431,7 @@ func TestPostSceneIntent_TakeOnAirOwnsBundleAndBridgeOnAir(t *testing.T) {
 		TenantID:           "tenant-1",
 		Workload:           &fakeWorkload{body: envelope},
 		Host:               host,
-		MirrorFor:          func(string, string) runtime.SceneMirror { return &recordingMirror{} },
+		MirrorFor:          func(string, string, bluehost.Slot, []byte) runtime.SceneMirror { return &recordingMirror{} },
 		Bridges:            bridges,
 		ProjectionInterval: time.Hour,
 	}
@@ -670,7 +670,7 @@ func TestPostSceneIntent_BridgeFullLifecycle(t *testing.T) {
 		TenantID:           "tenant-1",
 		Workload:           &fakeWorkload{body: envelope},
 		Host:               bluehost.NewHost(),
-		MirrorFor:          func(string, string) runtime.SceneMirror { return mirror },
+		MirrorFor:          func(string, string, bluehost.Slot, []byte) runtime.SceneMirror { return mirror },
 		Bridges:            bluewire.NewRegistry(),
 		ProjectionInterval: 5 * time.Millisecond,
 	}
@@ -742,7 +742,7 @@ func TestPostSceneIntent_MirrorForReceivesAlignedVersion(t *testing.T) {
 		TenantID:      "tenant-1",
 		Workload:      &fakeWorkload{body: envelope},
 		Host:          bluehost.NewHost(),
-		MirrorFor: func(sceneID, sceneVersion string) runtime.SceneMirror {
+		MirrorFor: func(sceneID, sceneVersion string, _ bluehost.Slot, _ []byte) runtime.SceneMirror {
 			gotSceneID = sceneID
 			gotSceneVersion = sceneVersion
 			calls++
