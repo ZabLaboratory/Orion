@@ -20,11 +20,16 @@ type lsdpMirrorRegistry interface {
 // b)` vs `sceneIntentMirrorFor(b, a)`), and no test could have caught it:
 // a test that builds its own call always writes its own arguments in
 // "the right order" by construction, so it never independently observes
-// a reorder at the REAL call site. Named fields remove the "order"
-// dimension entirely — main.go and every test construct the identical
-// `lsdpWires{preview: ..., antenne: ...}` literal, so the only way to
-// misroute is to write the wrong FIELD NAME, a visible, deliberate edit
-// rather than an invisible transposition.
+// a reorder at the REAL call site. Named fields do not make a reorder
+// impossible — Go still accepts the unkeyed positional literal
+// `lsdpWires{previewWire, antenneWire}`, `go vet`'s composites check
+// only flags that for structs imported from another package, and
+// lsdpWires is declared in main — so the guarantee below is
+// CONVENTIONAL, held by both call sites writing the keyed
+// `lsdpWires{preview: ..., antenne: ...}` form, not enforced by the
+// compiler. Under that convention, the only way to misroute is to write
+// the wrong FIELD NAME, a visible, deliberate edit rather than an
+// invisible transposition.
 type lsdpWires struct {
 	preview lsdpMirrorRegistry
 	antenne lsdpMirrorRegistry
