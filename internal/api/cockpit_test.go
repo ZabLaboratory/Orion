@@ -29,10 +29,11 @@ const (
 //   - the ANTENNA (Engine B, bluehost.Host/SlotOnAir — ORION-OPERATOR-RAIL-
 //     ENGINE-B, #335) with a declared operator input (param) and an on-call
 //     entrypoint (trigger), addressed under the default blueprint token — scope
-//     `scene`. Engine B has no live pending-await introspection (see
-//     appendEngineBScene's doc), so the fixture carries no await; await
-//     coverage lives in TestCockpit_PendingAwaitPresentAndScoped, which
-//     targets the (still Engine A) PREVIEW leg instead;
+//     `scene`. This fixture's program declares no await-value node at all, so
+//     it carries no await either; Engine B's live-await join (armed ×
+//     declared, appendEngineBScene) has its own dedicated fixtures/tests below
+//     (TestCockpit_EngineB*), and TestCockpit_PendingAwaitPresentAndScoped
+//     still covers the (Engine A) PREVIEW leg separately;
 //   - a Show with a promoted STREAM-LEVEL rule scene (blueprint "rule") with
 //     its own on-call entrypoint — scope `stream`;
 //   - a DORMANT roster scene (blueprint "ghost") that is neither active nor a
@@ -277,11 +278,10 @@ func TestCockpit_SceneItemShapeByteStable(t *testing.T) {
 // TestCockpit_PendingAwaitPresentAndScoped proves the pending-await facet
 // (contractAwaits, the LIVE #209 registry) still surfaces over HTTP — via
 // the PREVIEW leg (?target=preview), which stays Engine A/runtime.Scene
-// unchanged by ORION-OPERATOR-RAIL-ENGINE-B (#335). This is deliberate, not
-// a workaround: Engine B's antenna contract does not emit an awaits facet at
-// all (appendEngineBScene's doc) because blueruntime exposes no public
-// introspection of its live pendingAwaits registry — there is no Engine B
-// source to prove this against today.
+// unchanged by ORION-OPERATOR-RAIL-ENGINE-B (#335). Engine B's own live
+// awaits facet (armed × declared join, appendEngineBScene) is covered
+// separately below (TestCockpit_EngineB*), now that blueruntime exposes a
+// live registry accessor (#344) for that side too.
 func TestCockpit_PendingAwaitPresentAndScoped(t *testing.T) {
 	m := obs.NewMetrics()
 	preview := runtime.NewPreviewSlot(context.Background(), runtime.NewComputeRegistry(), noopPreviewWire{}, testLogger())
@@ -332,6 +332,118 @@ func TestCockpit_PendingAwaitPresentAndScoped(t *testing.T) {
 		time.Sleep(3 * time.Millisecond)
 	}
 	t.Fatal("pending await never surfaced in cockpit contract")
+}
+
+// TestCockpit_EngineBArmedAwaitJoinsDeclaredMetadataAndClearsOnResolve proves
+// the live×declared join (appendEngineBScene, #344): an await armed by
+// on-start surfaces with the value_type/UI DeclaredContracts carries (the
+// live registry alone has none), and resolving it makes it disappear from
+// the next contract read — the "membership ⇒ armed" invariant the facet
+// promises (same posture as Engine A's).
+func TestCockpit_EngineBArmedAwaitJoinsDeclaredMetadataAndClearsOnResolve(t *testing.T) {
+	program := buildEngineBOperatorProgram(t, "call", "called", "pick", "core.primitive.integer", "picked")
+	ef := newEngineBOperatorFixture(t, program) // Take + on-start Step: arms "pick".
+	f := &cockpitFixture{mux: ef.mux}
+
+	_, body := getContracts(t, f, "operator", "?stream_id=s1")
+	if len(body.Awaits) != 1 {
+		t.Fatalf("awaits = %+v, want exactly one armed", body.Awaits)
+	}
+	a := body.Awaits[0]
+	if a.BlueprintKey != defaultBlueprintToken || a.AwaitName != "pick" {
+		t.Fatalf("await = %+v, want %s/pick", a, defaultBlueprintToken)
+	}
+	if a.ValueType != "core.primitive.integer" {
+		t.Fatalf("await value_type = %q, want the DeclaredContracts one", a.ValueType)
+	}
+	if a.State != "armed" || a.Scope != scopeScene {
+		t.Fatalf("await state/scope = %q/%q, want armed/scene", a.State, a.Scope)
+	}
+
+	w := opRequest(t, f.mux, "POST", "/api/v1/operator/resolve/_/pick", "operator",
+		map[string]any{"value": 42})
+	if w.Code != http.StatusOK {
+		t.Fatalf("resolve: got %d, want 200 (body=%s)", w.Code, w.Body.String())
+	}
+
+	_, body = getContracts(t, f, "operator", "?stream_id=s1")
+	if len(body.Awaits) != 0 {
+		t.Fatalf("resolved await still present: %+v", body.Awaits)
+	}
+}
+
+// TestCockpit_EngineBDeclaredAwaitNeverArmedIsExcluded proves the other half
+// of the join: an await-value node the program declares but on-start never
+// reaches is DeclaredContracts-visible yet never in the live registry, so it
+// must never surface as a prompt (that IS the point of joining against the
+// live set rather than emitting DeclaredContracts verbatim).
+func TestCockpit_EngineBDeclaredAwaitNeverArmedIsExcluded(t *testing.T) {
+	program := buildEngineBOperatorProgram(t, "call", "called", "pick", "core.primitive.integer", "picked")
+	host := bluehost.NewHost()
+	if err := host.Take("engine-b-unarmed", "sha256:engine-b-unarmed", program, nil, nil, nil); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+	// Deliberately no Step: on-start never runs, so "pick" is declared
+	// (DeclaredContracts sees the node) but never parked.
+	if decl := host.PendingAwaitNames(bluehost.SlotOnAir); decl != nil {
+		t.Fatalf("PendingAwaitNames before any Step = %#v, want nil", decl)
+	}
+
+	m := obs.NewMetrics()
+	show := runtime.NewShow(runtime.NewComputeRegistry(), testLogger())
+	t.Cleanup(show.Stop)
+	mux := http.NewServeMux()
+	RegisterPublic(mux, PublicDeps{
+		Logger: testLogger(), Metrics: m, Show: show,
+		SceneIntent: &SceneIntentDeps{Host: host},
+	})
+	f := &cockpitFixture{mux: mux}
+
+	_, body := getContracts(t, f, "operator", "?stream_id=s1")
+	if len(body.Awaits) != 0 {
+		t.Fatalf("never-armed declared await leaked into contract: %+v", body.Awaits)
+	}
+}
+
+// TestCockpit_EngineBPreviewArmedAwaitDoesNotLeakToAntenna proves slot
+// isolation: an await armed on bluehost.Host's PREVIEW slot must not appear
+// in the antenna's cockpit contract, which reads SlotOnAir exclusively
+// (appendEngineBScene's only call site, getCockpitContracts).
+func TestCockpit_EngineBPreviewArmedAwaitDoesNotLeakToAntenna(t *testing.T) {
+	previewProgram := buildEngineBOperatorProgram(t, "call", "called", "hidden", "core.primitive.integer", "picked")
+	onAirProgram := buildEngineBOperatorProgram(t, "call", "called", "", "", "")
+
+	host := bluehost.NewHost()
+	if err := host.Prepare(bluehost.SlotPreview, "preview-1", "scene-1", "sha256:preview", previewProgram, nil, nil, nil); err != nil {
+		t.Fatalf("Prepare preview: %v", err)
+	}
+	if _, err := host.Step(bluehost.SlotPreview); err != nil {
+		t.Fatalf("Step preview (on-start): %v", err)
+	}
+	if names := host.PendingAwaitNames(bluehost.SlotPreview); len(names) != 1 || names[0] != "hidden" {
+		t.Fatalf("preview await not armed as expected: %#v", names)
+	}
+	if err := host.Take("on-air-1", "sha256:on-air", onAirProgram, nil, nil, nil); err != nil {
+		t.Fatalf("Take on-air: %v", err)
+	}
+	if _, err := host.Step(bluehost.SlotOnAir); err != nil {
+		t.Fatalf("Step on-air (on-start): %v", err)
+	}
+
+	m := obs.NewMetrics()
+	show := runtime.NewShow(runtime.NewComputeRegistry(), testLogger())
+	t.Cleanup(show.Stop)
+	mux := http.NewServeMux()
+	RegisterPublic(mux, PublicDeps{
+		Logger: testLogger(), Metrics: m, Show: show,
+		SceneIntent: &SceneIntentDeps{Host: host},
+	})
+	f := &cockpitFixture{mux: mux}
+
+	_, body := getContracts(t, f, "operator", "?stream_id=s1")
+	if len(body.Awaits) != 0 {
+		t.Fatalf("preview-armed await leaked into the antenna contract: %+v", body.Awaits)
+	}
 }
 
 // TestCockpit_OverlayAppTriggerStreamScoped (ADR 016 Prism §3.2, issue #283,
