@@ -9,6 +9,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -28,6 +29,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/blueproject"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
+	"github.com/ZabLaboratory/Orion/internal/canonical"
 	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
@@ -570,11 +572,47 @@ func decodeAndVerifyProgram(body json.RawMessage, expectedDigest string) ([]byte
 	if err != nil {
 		return nil, err
 	}
-	sum := sha256.Sum256(program)
-	if "sha256:"+hex.EncodeToString(sum[:]) != expectedDigest {
-		return nil, errors.New("scene-intent: computed program digest does not match the attested claim")
+	computedDigest, err := blueProgramDigest(program)
+	if err != nil {
+		return nil, err
+	}
+	if computedDigest != expectedDigest {
+		return nil, errors.New("scene-intent: computed canonical program digest does not match the attested claim")
 	}
 	return program, nil
+}
+
+// blueProgramDigest verifies Blue's self-excluding program_digest contract.
+// The digest is over the canonical JSON document with only program_digest
+// removed, not over the raw JSON bytes that carry the self-referential field.
+// Blue, ZabCanvas and the portable runtime all use this domain.
+func blueProgramDigest(program []byte) (string, error) {
+	decoder := json.NewDecoder(bytes.NewReader(program))
+	decoder.UseNumber()
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil {
+		return "", err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return "", errors.New("scene-intent: program contains multiple JSON values")
+		}
+		return "", err
+	}
+	claimedDigest, ok := document["program_digest"].(string)
+	if !ok || claimedDigest == "" {
+		return "", errors.New("scene-intent: program is missing program_digest")
+	}
+	delete(document, "program_digest")
+	computedDigest, err := canonical.Digest(document)
+	if err != nil {
+		return "", err
+	}
+	if computedDigest != claimedDigest {
+		return "", errors.New("scene-intent: program_digest does not match canonical program content")
+	}
+	return computedDigest, nil
 }
 
 // decodeAndVerifyBundle extracts the OPTIONAL LSML render-bundle from
