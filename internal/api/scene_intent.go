@@ -471,7 +471,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		}
 		mirrorBundle := []byte(nil)
 		var staticState map[string]json.RawMessage
-		if noProgram && bundle != nil && deps.StaticBundleCompiler != nil {
+		if bundle != nil && deps.StaticBundleCompiler != nil {
 			mirrorBundle = append([]byte(nil), bundle...)
 			compiledBundle, defaults, err := deps.StaticBundleCompiler(bundle, claims.SceneID, claims.SceneDigest)
 			if err != nil {
@@ -482,7 +482,9 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 				return
 			}
 			bundle = compiledBundle
-			staticState = defaults
+			if noProgram {
+				staticState = defaults
+			}
 		}
 
 		// The serving identity stays claims.SceneDigest for BOTH shapes —
