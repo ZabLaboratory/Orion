@@ -191,7 +191,7 @@ jobs:
           ORION_WORKLOAD_CA_PATH: ${{ vars.ORION_WORKLOAD_CA_PATH }}
           ORION_WORKLOAD_SAN: ${{ vars.ORION_WORKLOAD_SAN }}
           ORION_CANVAS_TRUST_PATH: ${{ vars.ORION_CANVAS_TRUST_PATH }}
-          ORION_CANVAS_LOCATOR_PREFIX: ${{ vars.ORION_CANVAS_LOCATOR_PREFIX }}
+          ORION_CANVAS_LOCATOR_PREFIX: /api/v1/scenes/
           ORION_OWNER_ID: ${{ vars.ORION_OWNER_ID }}
           ORION_TENANT_ID: ${{ vars.ORION_TENANT_ID }}
         run: |
@@ -243,7 +243,9 @@ jobs:
           ORION_WORKLOAD_CA_PATH=${ORION_WORKLOAD_CA_PATH:-}
           ORION_WORKLOAD_SAN=${ORION_WORKLOAD_SAN:-}
           ORION_CANVAS_TRUST_PATH=${ORION_CANVAS_TRUST_PATH:-}
-          ORION_CANVAS_LOCATOR_PREFIX=${ORION_CANVAS_LOCATOR_PREFIX:-scenes/}
+          # ZabCanvas emits the resolved-scene-ref locator as this canonical
+          # API path. Keep deployment independent from a stale repository var.
+          ORION_CANVAS_LOCATOR_PREFIX=/api/v1/scenes/
           ORION_OWNER_ID=${ORION_OWNER_ID:-}
           ORION_TENANT_ID=${ORION_TENANT_ID:-}
 

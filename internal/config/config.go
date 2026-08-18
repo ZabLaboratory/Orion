@@ -259,7 +259,7 @@ type Config struct {
 	// URL is ever consulted from inside an attestation.
 	CanvasTrustPath string
 	// CanvasLocatorPrefix confines every accepted canvas_locator
-	// (ORION_CANVAS_LOCATOR_PREFIX, §6.2), e.g. "scenes/".
+	// (ORION_CANVAS_LOCATOR_PREFIX, §6.2), e.g. "/api/v1/scenes/".
 	CanvasLocatorPrefix string
 	// OwnerID / TenantID are the Canvas domain-of-authority this Orion
 	// instance serves (ORION_OWNER_ID / ORION_TENANT_ID, §6.2) — every
@@ -303,7 +303,7 @@ func Load() (Config, error) {
 		WorkloadCAPath:         getenv("ORION_WORKLOAD_CA_PATH", ""),
 		WorkloadSAN:            getenv("ORION_WORKLOAD_SAN", ""),
 		CanvasTrustPath:        getenv("ORION_CANVAS_TRUST_PATH", ""),
-		CanvasLocatorPrefix:    getenv("ORION_CANVAS_LOCATOR_PREFIX", "scenes/"),
+		CanvasLocatorPrefix:    getenv("ORION_CANVAS_LOCATOR_PREFIX", "/api/v1/scenes/"),
 		OwnerID:                getenv("ORION_OWNER_ID", ""),
 		TenantID:               getenv("ORION_TENANT_ID", ""),
 	}
