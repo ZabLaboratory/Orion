@@ -35,7 +35,7 @@ func TestStartBridge_StaticSceneSeedsInitialSnapshot(t *testing.T) {
 
 	deps := SceneIntentDeps{
 		Host: bluehost.NewHost(),
-		MirrorFor: func(sceneID, sceneVersion string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
+		MirrorFor: func(_, _ string, _ bluehost.Slot, _ []byte) runtime.SceneMirror {
 			return mirror
 		},
 		Bridges: bluewire.NewRegistry(),
