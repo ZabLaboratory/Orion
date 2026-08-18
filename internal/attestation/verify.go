@@ -379,9 +379,12 @@ func isNFC(s string) bool {
 	return norm.NFC.IsNormalString(s)
 }
 
-// validateLocator enforces §6.2: a relative, normalized path confined
-// under prefix — no scheme, host, userinfo, fragment, port, backslash,
-// percent-encoding ambiguity or traversal.
+// validateLocator enforces §6.2: a normalized path confined under prefix.
+// The Canvas wire contract uses the absolute API-path form
+// /api/v1/scenes/...; a single leading slash is accepted only when the
+// configured prefix also owns that exact path. Schemes, hosts, userinfo,
+// fragments, backslashes, percent-encoding ambiguity and traversal remain
+// rejected.
 func validateLocator(locator, prefix string) error {
 	if locator == "" {
 		return fmt.Errorf("%w: empty", ErrLocator)
@@ -395,10 +398,9 @@ func validateLocator(locator, prefix string) error {
 	if strings.ContainsAny(locator, "#@") {
 		return fmt.Errorf("%w: fragment/userinfo", ErrLocator)
 	}
-	if strings.HasPrefix(locator, "/") {
-		// A leading slash alone is not a host, but this profile confines
-		// every locator under prefix — reject outright to stay fail-closed
-		// rather than reasoning about host-relative edge cases.
+	if strings.HasPrefix(locator, "/") && !strings.HasPrefix(prefix, "/") {
+		// Absolute API paths are valid only when the configured prefix is
+		// absolute too. A relative configured prefix stays fail-closed.
 		return fmt.Errorf("%w: absolute path", ErrLocator)
 	}
 	if !strings.HasPrefix(locator, prefix) {

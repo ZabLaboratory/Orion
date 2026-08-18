@@ -387,7 +387,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			LocatorPrefix: deps.LocatorPrefix,
 		})
 		if err != nil {
-			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "ATTESTATION_REJECTED"})
+			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "ATTESTATION_REJECTED", Message: err.Error()})
 			return
 		}
 

@@ -274,6 +274,24 @@ func TestVerify_RejectsLocatorAbsoluteURL(t *testing.T) {
 	}
 }
 
+func TestValidateLocator_AcceptsCanonicalCanvasAPIPath(t *testing.T) {
+	if err := validateLocator(
+		"/api/v1/scenes/scene-1/resolved-scene-ref/ref-1",
+		"/api/v1/scenes/",
+	); err != nil {
+		t.Fatalf("canonical Canvas locator must be accepted: %v", err)
+	}
+}
+
+func TestValidateLocator_RejectsCanonicalPathWithWrongPrefix(t *testing.T) {
+	if err := validateLocator(
+		"/api/v1/scenes/scene-1/resolved-scene-ref/ref-1",
+		"/api/v1/admin/",
+	); err == nil {
+		t.Fatal("locator outside configured API prefix must be rejected")
+	}
+}
+
 func TestVerify_RejectsDuplicateKeyRaw(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
