@@ -17,9 +17,8 @@ import (
 // The returned defaults are the initial state for the LSDP scene. Keeping
 // them separate from the render bundle is intentional: Solar resolves
 // bindings from the scene snapshot, while the bundle describes the tree.
-func CompileStaticLSML(raw []byte, sceneID, sceneVersion, assetBaseURL string) ([]byte, map[string]json.RawMessage, error) {
+func CompileStaticLSML(raw []byte, _ string, sceneVersion, assetBaseURL string) ([]byte, map[string]json.RawMessage, error) {
 	var source struct {
-		SceneID          string                     `json:"scene_id"`
 		Layout           json.RawMessage            `json:"layout"`
 		Root             json.RawMessage            `json:"root"`
 		Defaults         map[string]json.RawMessage `json:"defaults"`
@@ -32,10 +31,6 @@ func CompileStaticLSML(raw []byte, sceneID, sceneVersion, assetBaseURL string) (
 	if err := json.Unmarshal(raw, &source); err != nil {
 		return nil, nil, fmt.Errorf("decode static LSML bundle: %w", err)
 	}
-	if source.SceneID != "" && sceneID != "" && source.SceneID != sceneID {
-		return nil, nil, fmt.Errorf("static LSML scene_id %q does not match %q", source.SceneID, sceneID)
-	}
-
 	// Accept an already compiled bundle for forward compatibility. The
 	// current ZabCanvas producer sends layout; this branch avoids a needless
 	// second lowering if a future producer sends root directly.
