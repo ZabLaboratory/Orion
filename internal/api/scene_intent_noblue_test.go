@@ -83,6 +83,7 @@ func signedRefNoProgram(t *testing.T, priv ed25519.PrivateKey, kid string, now t
 		"attestation_id":           "att-1",
 		"issuer":                   "https://zabcanvas.internal",
 		"audience":                 "orion",
+		"kid":                      kid,
 		"subject":                  "operator-1",
 		"owner_id":                 "owner-1",
 		"tenant_id":                "tenant-1",

@@ -26,6 +26,7 @@ func baseClaims(now time.Time) rawClaims {
 		"attestation_id":           "att-abc123",
 		"issuer":                   requiredIssuer,
 		"audience":                 requiredAudience,
+		"kid":                      testKid,
 		"subject":                  "principal-1",
 		"owner_id":                 "owner-1",
 		"tenant_id":                "tenant-1",
@@ -128,6 +129,20 @@ func TestVerify_UnknownKid(t *testing.T) {
 	jws := sign(t, priv, validHeader(), baseClaims(now))
 	if _, err := Verify(jws, TrustSet{}, validOptions(now)); err != ErrUnknownKey {
 		t.Fatalf("expected ErrUnknownKey, got %v", err)
+	}
+}
+
+func TestVerify_RejectsPayloadKidMismatch(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	c := baseClaims(now)
+	c["kid"] = "different-key"
+	jws := sign(t, priv, validHeader(), c)
+	if _, err := Verify(jws, testTrust(t, pub), validOptions(now)); err == nil || !strings.Contains(err.Error(), "payload kid does not match") {
+		t.Fatalf("expected payload/header kid mismatch rejection, got %v", err)
 	}
 }
 

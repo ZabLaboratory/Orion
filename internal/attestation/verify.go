@@ -55,8 +55,10 @@ type Claims struct {
 	IssuedAt               int64    `json:"issued_at"`
 	NotBefore              int64    `json:"not_before"`
 	ExpiresAt              int64    `json:"expires_at"`
-	Kid                    string   `json:"-"`
-	CanvasLocator          string   `json:"canvas_locator"`
+	// ZabCanvas carries the signing key id in both the protected JWS header
+	// and the signed claims object. Verify requires the two copies to match.
+	Kid           string `json:"kid"`
+	CanvasLocator string `json:"canvas_locator"`
 }
 
 // TrustSet resolves a protected-header `kid` to its Ed25519 public key.
@@ -159,7 +161,9 @@ func Verify(jws string, trust TrustSet, opts Options) (*Claims, error) {
 	if err := dec.Decode(&claims); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrPayload, err)
 	}
-	claims.Kid = kid
+	if claims.Kid != kid {
+		return nil, fmt.Errorf("%w: payload kid does not match protected header", ErrPayload)
+	}
 
 	if err := validateClaims(&claims); err != nil {
 		return nil, err
