@@ -30,6 +30,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/blueproject"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
 	"github.com/ZabLaboratory/Orion/internal/canonical"
+	"github.com/ZabLaboratory/Orion/internal/protocol"
 	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
@@ -63,6 +64,12 @@ type SceneIntentDeps struct {
 	TenantID      string
 	Workload      WorkloadPortal
 	Host          *bluehost.Host
+
+	// StaticBundleCompiler converts ZabCanvas authoring LSML into the Solar
+	// RenderBundle and returns its initial literal state. Production wiring
+	// supplies the compiler; nil keeps legacy test doubles and old envelopes
+	// byte-compatible until the stateless surface is enabled there.
+	StaticBundleCompiler func(raw []byte, sceneID, sceneVersion string) ([]byte, map[string]json.RawMessage, error)
 
 	// Providers is the Zab capability-provider catalogue (internal/providers
 	// .Registry()) passed to bluehost.Host.Prepare/Take so a program
@@ -462,6 +469,21 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 			return
 		}
+		mirrorBundle := []byte(nil)
+		var staticState map[string]json.RawMessage
+		if noProgram && bundle != nil && deps.StaticBundleCompiler != nil {
+			mirrorBundle = append([]byte(nil), bundle...)
+			compiledBundle, defaults, err := deps.StaticBundleCompiler(bundle, claims.SceneID, claims.SceneDigest)
+			if err != nil {
+				if deps.Logger != nil {
+					deps.Logger.Error("static scene bundle compilation failed", "scene_id", claims.SceneID, "err", err)
+				}
+				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "STATIC_BUNDLE_COMPILE_FAILED"})
+				return
+			}
+			bundle = compiledBundle
+			staticState = defaults
+		}
 
 		// The serving identity stays claims.SceneDigest for BOTH shapes —
 		// the with-program path is byte-identical to before this unit.
@@ -517,7 +539,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			providers.ResetActiveIngress(deps.Host)
 		}
 
-		startBridge(deps, slot, claims, req.IntentID, !noProgram)
+		startBridge(deps, slot, claims, req.IntentID, !noProgram, mirrorBundle, staticState)
 
 		resp := sceneIntentResponse{
 			Status:     actionResultStatus(action),
@@ -711,16 +733,24 @@ const defaultProjectionInterval = 100 * time.Millisecond
 // the bundle hash (== artifact_set_digest, porteur's Decision A), so the
 // ?v= Solar derives matches both the resolver and the bundle's own
 // scene_version by construction.
-func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.Claims, intentID string, hasProgram bool) {
+func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.Claims, intentID string, hasProgram bool, mirrorBundle []byte, staticState map[string]json.RawMessage) {
 	if deps.MirrorFor == nil || deps.Bridges == nil {
 		return
 	}
-	mirror := deps.MirrorFor(claims.SceneID, claims.SceneDigest, slot, deps.Host.Bundle(slot))
+	if len(mirrorBundle) == 0 {
+		mirrorBundle = deps.Host.Bundle(slot)
+	}
+	mirror := deps.MirrorFor(claims.SceneID, claims.SceneDigest, slot, mirrorBundle)
 	if mirror == nil {
 		return
 	}
 	if !hasProgram {
 		deps.Bridges.Stop(slot)
+		mirror.Forward(&protocol.Snapshot{
+			SceneID:      claims.SceneID,
+			SceneVersion: claims.SceneDigest,
+			State:        staticState,
+		})
 		return
 	}
 	target := blueproject.TargetPreview

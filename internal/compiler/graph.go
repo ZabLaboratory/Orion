@@ -107,6 +107,7 @@ type RenderBundle struct {
 	Root             LayoutNode        `json:"root"`
 	OperatorInputs   []OperatorInput   `json:"operator_inputs"`
 	ExternalAdapters []ExternalAdapter `json:"external_adapters"`
+	Profiles         []string          `json:"profiles,omitempty"`
 	Assets           []AssetRef        `json:"asset_refs,omitempty"`
 
 	// AuthoringRoot is the pre-lowering tree in the AUTHORING vocab

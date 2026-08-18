@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/ZabLaboratory/Orion/internal/api"
 	"github.com/ZabLaboratory/Orion/internal/attestation"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/config"
 	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/workload"
@@ -104,9 +106,13 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost
 		TenantID:      cfg.TenantID,
 		Workload:      wc,
 		Host:          host,
-		Providers:     providers.Registry(),
-		Policy:        providers.Policy(httpEgressAllowed),
-		Effects:       effectDeps,
+		StaticBundleCompiler: func(raw []byte, sceneID, sceneVersion string) ([]byte, map[string]json.RawMessage, error) {
+			assetBaseURL := strings.TrimRight(cfg.CanvasBaseURL, "/") + "/api/v1/scene-assets"
+			return compiler.CompileStaticLSML(raw, sceneID, sceneVersion, assetBaseURL)
+		},
+		Providers: providers.Registry(),
+		Policy:    providers.Policy(httpEgressAllowed),
+		Effects:   effectDeps,
 		// Same budget Engine A's /validate/simulate harness runs under
 		// (runtime.NewHarness / cfg.ValidationMaxSteps/MaxWall below) — one
 		// operator-facing knob pair for "how long may a validation run",
