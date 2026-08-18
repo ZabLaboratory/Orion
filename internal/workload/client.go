@@ -69,12 +69,19 @@ var knownCodes = map[string]Code{
 type Error struct {
 	Code       Code
 	Raw        string
+	Message    string
 	HTTPStatus int
 }
 
 func (e *Error) Error() string {
 	if e.Code != "" {
+		if e.Message != "" {
+			return fmt.Sprintf("workload: %s: %s (http %d)", e.Code, e.Message, e.HTTPStatus)
+		}
 		return fmt.Sprintf("workload: %s (http %d)", e.Code, e.HTTPStatus)
+	}
+	if e.Message != "" {
+		return fmt.Sprintf("workload: unrecognized refusal %q: %s (http %d)", e.Raw, e.Message, e.HTTPStatus)
 	}
 	return fmt.Sprintf("workload: unrecognized refusal %q (http %d)", e.Raw, e.HTTPStatus)
 }

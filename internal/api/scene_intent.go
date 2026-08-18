@@ -328,6 +328,7 @@ type sceneIntentResponse struct {
 	SceneID    string `json:"scene_id,omitempty"`
 	RevisionID string `json:"revision_id,omitempty"`
 	Reason     string `json:"reason,omitempty"`
+	Message    string `json:"message,omitempty"`
 }
 
 // authContextHeader carries the opaque `zabgate-auth-context.v1` ticket
