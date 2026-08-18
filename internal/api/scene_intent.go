@@ -415,7 +415,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 
 		artifact, err := deps.Workload.FetchCanvas(ctx, delegation, ticket, json.RawMessage(raw))
 		if err != nil {
-			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "compensating", IntentID: req.IntentID, Reason: workloadReason(err)})
+			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "compensating", IntentID: req.IntentID, Reason: workloadReason(err), Message: workloadMessage(err)})
 			return
 		}
 		if artifact.Status < 200 || artifact.Status >= 300 {
@@ -814,6 +814,17 @@ func workloadReason(err error) string {
 	var werr *workload.Error
 	if errors.As(err, &werr) && werr.Code != "" {
 		return string(werr.Code)
+	}
+	return err.Error()
+}
+
+func workloadMessage(err error) string {
+	if err == nil {
+		return ""
+	}
+	var workloadErr *workload.Error
+	if errors.As(err, &workloadErr) && workloadErr.Message != "" {
+		return workloadErr.Message
 	}
 	return err.Error()
 }

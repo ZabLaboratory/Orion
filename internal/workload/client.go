@@ -351,20 +351,22 @@ func decodeError(status int, raw []byte) error {
 	// raw string preserved.
 	var body struct {
 		Detail struct {
-			Code string `json:"code"`
+			Code    string `json:"code"`
+			Message string `json:"message"`
 		} `json:"detail"`
 		Error string `json:"error"`
 	}
 	_ = json.Unmarshal(raw, &body)
 	observed := body.Detail.Code
+	message := body.Detail.Message
 	if observed == "" {
 		observed = body.Error
 	}
 	code, known := knownCodes[observed]
 	if !known {
-		return &Error{Raw: strings.TrimSpace(observed), HTTPStatus: status}
+		return &Error{Raw: strings.TrimSpace(observed), Message: message, HTTPStatus: status}
 	}
-	return &Error{Code: code, Raw: observed, HTTPStatus: status}
+	return &Error{Code: code, Raw: observed, Message: message, HTTPStatus: status}
 }
 
 // NewMTLSHTTPClient builds an *http.Client whose transport presents cert
