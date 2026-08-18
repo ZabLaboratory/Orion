@@ -21,6 +21,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/blueproject"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
+	"github.com/ZabLaboratory/Orion/internal/canonical"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
@@ -188,7 +189,24 @@ func canvasEnvelope(program []byte) (json.RawMessage, string) {
 }
 
 func canvasEnvelopeWithBundle(program, bundle []byte) (json.RawMessage, string) {
-	digest := sha256Digest(program)
+	decoder := json.NewDecoder(bytes.NewReader(program))
+	decoder.UseNumber()
+	var document map[string]any
+	if err := decoder.Decode(&document); err != nil {
+		panic(err)
+	}
+	claimedDigest, ok := document["program_digest"].(string)
+	if !ok || claimedDigest == "" {
+		panic("test program is missing program_digest")
+	}
+	delete(document, "program_digest")
+	digest, err := canonical.Digest(document)
+	if err != nil {
+		panic(err)
+	}
+	if digest != claimedDigest {
+		panic(fmt.Sprintf("test program digest mismatch: computed=%s claimed=%s", digest, claimedDigest))
+	}
 	envelope := resolvedSceneEnvelope{
 		BlueProgram:       base64.StdEncoding.EncodeToString(program),
 		BlueProgramDigest: digest,
@@ -502,7 +520,16 @@ func TestPostSceneIntent_TakeOnAirFailurePreservesCommittedGeneration(t *testing
 		_ = host.Release(bluehost.SlotOnAir, "test-cleanup")
 	})
 
-	invalidProgram := []byte(`{"not":"a blue program"}`)
+	invalidDocument := map[string]any{"not": "a blue program"}
+	invalidDigest, err := canonical.Digest(invalidDocument)
+	if err != nil {
+		t.Fatalf("compute invalid program digest: %v", err)
+	}
+	invalidDocument["program_digest"] = invalidDigest
+	invalidProgram, err := json.Marshal(invalidDocument)
+	if err != nil {
+		t.Fatalf("marshal invalid program: %v", err)
+	}
 	envelope, digest := canvasEnvelope(invalidProgram)
 	now := time.Now()
 	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionTakeOnAir, now, "scene-1", digest)
