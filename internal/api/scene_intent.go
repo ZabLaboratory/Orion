@@ -746,13 +746,19 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	if mirror == nil {
 		return
 	}
-	if !hasProgram {
+	if len(staticState) > 0 {
+		// Literal leaves belong to the Canvas layout, not to the Blue
+		// program. Seed them before starting/replacing the bridge so a
+		// programmed scene renders its authored text/images immediately.
 		deps.Bridges.Stop(slot)
 		mirror.Forward(&protocol.Snapshot{
 			SceneID:      claims.SceneID,
 			SceneVersion: claims.SceneDigest,
 			State:        staticState,
 		})
+	}
+	if !hasProgram {
+		deps.Bridges.Stop(slot)
 		return
 	}
 	target := blueproject.TargetPreview

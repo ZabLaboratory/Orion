@@ -98,6 +98,15 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost
 	// internal/bluehost/effect_overlay.go) — nil-safe when effectDeps.
 	// OverlayMirror was never set (bespoke mode / no antenne LSDP wire).
 	host.SetOverlayMirror(effectDeps.OverlayMirror)
+	assetBaseURL := strings.TrimRight(cfg.CanvasBaseURL, "/") + "/api/v1/scene-assets"
+	// CanvasBaseURL is the container-local gateway address in production.
+	// Solar runs in Prism, so content-addressed assets must use the public
+	// gateway origin when one is configured; otherwise the browser cannot
+	// reach the internal Docker hostname and the host allowlist is wrong too.
+	publicBaseURL := strings.TrimRight(cfg.PublicBaseURL, "/")
+	if strings.HasSuffix(publicBaseURL, "/orion") {
+		assetBaseURL = strings.TrimSuffix(publicBaseURL, "/orion") + "/canvas/api/v1/scene-assets"
+	}
 
 	return &api.SceneIntentDeps{
 		Trust:         trust,
@@ -107,7 +116,6 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost
 		Workload:      wc,
 		Host:          host,
 		StaticBundleCompiler: func(raw []byte, sceneID, sceneVersion string) ([]byte, map[string]json.RawMessage, error) {
-			assetBaseURL := strings.TrimRight(cfg.CanvasBaseURL, "/") + "/api/v1/scene-assets"
 			return compiler.CompileStaticLSML(raw, sceneID, sceneVersion, assetBaseURL)
 		},
 		Providers: providers.Registry(),
