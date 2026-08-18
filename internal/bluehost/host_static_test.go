@@ -30,6 +30,22 @@ func TestPrepareStatic_AdmissionAndIdentity(t *testing.T) {
 	}
 }
 
+func TestPreparePreviewStaticReplacesDifferentScene(t *testing.T) {
+	h := NewHost()
+	if err := h.PreparePreviewStatic("scene-1", "sha256:v1"); err != nil {
+		t.Fatalf("first PreparePreviewStatic: %v", err)
+	}
+	if err := h.PreparePreviewStatic("scene-2", "sha256:v2"); err != nil {
+		t.Fatalf("replacement PreparePreviewStatic: %v", err)
+	}
+	if !h.Serving(SlotPreview, "scene-2", "sha256:v2") {
+		t.Fatal("preview slot does not serve the replacement static scene")
+	}
+	if h.Serving(SlotPreview, "scene-1", "sha256:v1") {
+		t.Fatal("preview slot still serves the superseded static scene")
+	}
+}
+
 func TestTakeStatic_SupersedesStaticWithoutError(t *testing.T) {
 	h := NewHost()
 	if err := h.TakeStatic("scene-1", "sha256:v1"); err != nil {

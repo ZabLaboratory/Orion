@@ -350,6 +350,50 @@ func (h *Host) Prepare(slot Slot, instanceID, sceneID, digest string, program []
 	return nil
 }
 
+// PreparePreview admits a new preview scene while preserving the preview
+// slot's single-instance invariant. A repeated admission for the exact same
+// (sceneID, digest) keeps the healthy instance and returns ErrAlreadyLoaded so
+// the caller can treat it as an idempotent success. A different preview scene
+// is started and committed before the previous instance is stopped, mirroring
+// Take's supersede semantics without ever touching the on-air slot.
+func (h *Host) PreparePreview(instanceID, sceneID, digest string, program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy, effectHandlers map[string]blueruntime.EffectFunc) error {
+	h.mu.Lock()
+	previous := h.slots[SlotPreview]
+	if previous != nil && previous.sceneID == sceneID && previous.digest == digest {
+		h.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrAlreadyLoaded, SlotPreview)
+	}
+
+	handle, err := h.runtime.Load(program)
+	if err != nil {
+		h.mu.Unlock()
+		return fmt.Errorf("bluehost: load preview: %w", err)
+	}
+	instance, err := h.runtime.Start(handle, blueruntime.StartOptions{
+		InstanceID:     instanceID,
+		Mode:           blueruntime.Preview,
+		Providers:      providers,
+		Policy:         policy,
+		EffectHandlers: effectHandlers,
+	})
+	if err != nil {
+		h.mu.Unlock()
+		return fmt.Errorf("bluehost: start preview: %w", err)
+	}
+
+	triggers, awaits := declaredContracts(program)
+	h.slots[SlotPreview] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: awaitTypesInProgram(program), triggers: triggers, awaits: awaits}
+	h.mu.Unlock()
+
+	if previous != nil && previous.instance != nil {
+		h.runtimeMu.Lock()
+		err = h.runtime.Stop(previous.instance, "superseded-by-preview")
+		h.runtimeMu.Unlock()
+		return err
+	}
+	return nil
+}
+
 // PrepareStatic occupies slot for a scene that carries NO Blue program
 // (ORION-NOBLUE-AND-VERSION-ALIGN, #398): the entry commits the same
 // (sceneID, version) identity Prepare would, with no runtime instance —
@@ -365,6 +409,29 @@ func (h *Host) PrepareStatic(slot Slot, sceneID, version string) error {
 		return fmt.Errorf("%w: %s", ErrAlreadyLoaded, slot)
 	}
 	h.slots[slot] = &entry{sceneID: sceneID, digest: version}
+	return nil
+}
+
+// PreparePreviewStatic is the no-program counterpart of PreparePreview. It
+// replaces a different scene in the preview slot, but preserves the strict
+// PrepareStatic contract for generic callers that still require an occupied
+// slot to be rejected.
+func (h *Host) PreparePreviewStatic(sceneID, version string) error {
+	h.mu.Lock()
+	previous := h.slots[SlotPreview]
+	if previous != nil && previous.sceneID == sceneID && previous.digest == version {
+		h.mu.Unlock()
+		return fmt.Errorf("%w: %s", ErrAlreadyLoaded, SlotPreview)
+	}
+	h.slots[SlotPreview] = &entry{sceneID: sceneID, digest: version}
+	h.mu.Unlock()
+
+	if previous != nil && previous.instance != nil {
+		h.runtimeMu.Lock()
+		err := h.runtime.Stop(previous.instance, "superseded-by-preview")
+		h.runtimeMu.Unlock()
+		return err
+	}
 	return nil
 }
 

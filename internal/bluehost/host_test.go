@@ -52,6 +52,24 @@ func TestHost_PrepareRefusesDoubleLoad(t *testing.T) {
 	}
 }
 
+func TestHost_PreparePreviewReplacesDifferentScene(t *testing.T) {
+	h := NewHost()
+	program := fixture(t)
+
+	if err := h.PreparePreview("preview-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
+		t.Fatalf("first PreparePreview: %v", err)
+	}
+	if err := h.PreparePreview("preview-2", "scene-2", "sha256:bbb", program, nil, nil, nil); err != nil {
+		t.Fatalf("replacement PreparePreview: %v", err)
+	}
+	if !h.Serving(SlotPreview, "scene-2", "sha256:bbb") {
+		t.Fatal("preview slot does not serve the replacement scene")
+	}
+	if h.Serving(SlotPreview, "scene-1", "sha256:aaa") {
+		t.Fatal("preview slot still serves the superseded scene")
+	}
+}
+
 func TestHost_TakeSupersedesPreviousOnAirWithoutStateTransfer(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)

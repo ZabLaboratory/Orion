@@ -365,18 +365,13 @@ func TestPostSceneIntent_PreparePreview_SameSceneSameDigestIsIdempotent(t *testi
 	}
 }
 
-// TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestIsRejected is
-// the direction that actually matters: two DIFFERENT scenes sharing a
-// scene_digest — plausible today (pre-C3, scene_digest is version-derived,
-// not content-bound) and still possible once ZabCanvas PR#340 lands (two
-// distinct scenes can compile to byte-identical programs) — must never let
-// the second scene's prepare-preview silently reuse the first scene's
-// already-running instance. Before the fix, Host.Digest(slot) ==
-// claims.SceneDigest alone read this as idempotent and dropped scene B's
-// program on the floor; scene A's instance (and its accumulated state) kept
-// serving under scene B's intent with a 200 response. Now sceneID must also
-// match, so scene B is refused with a named error instead.
-func TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestIsRejected(t *testing.T) {
+// TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestReplaces proves
+// that two DIFFERENT scenes sharing a scene_digest can switch the preview
+// slot. The same digest is plausible today (pre-C3, scene_digest is
+// version-derived, not content-bound) and still possible once ZabCanvas PR#340
+// lands (two distinct scenes can compile to byte-identical programs). The
+// second scene must replace the first instance, never reuse its state.
+func TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestReplaces(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	program := minimalProgram(t)
 	envelope, digest := canvasEnvelope(program)
@@ -418,23 +413,25 @@ func TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestIsRejected(t *te
 	}
 
 	sceneB := send("scene-B", "intent-b")
-	if sceneB.Code != http.StatusInternalServerError {
-		t.Fatalf("expected scene B's prepare-preview to be rejected (500 HOST_PREPARE_FAILED) instead of silently reusing scene A's instance, got %d: %s", sceneB.Code, sceneB.Body.String())
+	if sceneB.Code != http.StatusOK {
+		t.Fatalf("scene B prepare replacement: expected 200, got %d: %s", sceneB.Code, sceneB.Body.String())
 	}
 	var resp sceneIntentResponse
 	if err := json.Unmarshal(sceneB.Body.Bytes(), &resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != "failed" || resp.Reason != "HOST_PREPARE_FAILED" {
-		t.Fatalf("expected a named HOST_PREPARE_FAILED rejection, not a silent ok, got %+v", resp)
+	if resp.Status != "prepared" || resp.SceneID != "scene-B" {
+		t.Fatalf("expected scene B to be prepared, got %+v", resp)
 	}
-	// Scene A's intent must be untouched by scene B's refused one.
 	// signedRef's scene_digest claim (distinct from blueProgramDigest/digest
 	// above) is the fixed "sha256:aaa...a" both scene A and scene B carry —
 	// exactly the collision this test forces.
 	sceneDigest := "sha256:" + strings.Repeat("a", 64)
-	if !deps.Host.Serving(bluehost.SlotPreview, "scene-A", sceneDigest) {
-		t.Fatal("expected scene A's instance to remain the preview slot's occupant after scene B's rejected intent")
+	if !deps.Host.Serving(bluehost.SlotPreview, "scene-B", sceneDigest) {
+		t.Fatal("expected scene B to occupy the preview slot after replacement")
+	}
+	if deps.Host.Serving(bluehost.SlotPreview, "scene-A", sceneDigest) {
+		t.Fatal("expected scene A to leave the preview slot after replacement")
 	}
 }
 

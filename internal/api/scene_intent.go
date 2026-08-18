@@ -483,9 +483,9 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		switch action {
 		case attestation.ActionPreparePreview:
 			if noProgram {
-				opErr = deps.Host.PrepareStatic(slot, claims.SceneID, claims.SceneDigest)
+				opErr = deps.Host.PreparePreviewStatic(claims.SceneID, claims.SceneDigest)
 			} else {
-				opErr = deps.Host.Prepare(slot, claims.RefID, claims.SceneID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Preview))
+				opErr = deps.Host.PreparePreview(claims.RefID, claims.SceneID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Preview))
 			}
 			if errors.Is(opErr, bluehost.ErrAlreadyLoaded) {
 				if deps.Host.Serving(slot, claims.SceneID, claims.SceneDigest) {
