@@ -153,6 +153,16 @@ type Delegation struct {
 	GateRequestID    string `json:"gate_request_id"`
 }
 
+type inlineAdmissionRequest struct {
+	Ticket string          `json:"ticket"`
+	Intent json.RawMessage `json:"intent"`
+}
+
+type inlineAdmissionResponse struct {
+	Status   string `json:"status"`
+	IntentID string `json:"intent_id"`
+}
+
 // mintRequest is Gate's `DelegationMintRequest`: the opaque ticket plus
 // the FULL intent, relayed VERBATIM as the raw bytes Prism posted. Gate
 // re-validates the intent against the ticket bindings
@@ -178,6 +188,21 @@ func (c *Client) MintDelegation(ctx context.Context, ticket string, intent json.
 		return nil, err
 	}
 	return &out, nil
+}
+
+// AdmitInline asks Gate to revalidate the mTLS Orion identity, Gate ticket,
+// Canvas reference and inline artifact digests without issuing a consumable
+// Canvas delegation. The scene-intent handler uses this only when no Canvas
+// fetch can occur because the validated capsule is already complete.
+func (c *Client) AdmitInline(ctx context.Context, ticket string, intent json.RawMessage) error {
+	var out inlineAdmissionResponse
+	if err := c.post(ctx, "/internal/v1/workload/delegations/admit-inline", inlineAdmissionRequest{Ticket: ticket, Intent: intent}, &out); err != nil {
+		return err
+	}
+	if out.Status != "admitted" || out.IntentID == "" {
+		return &Error{Raw: "unexpected inline admission status " + out.Status, HTTPStatus: http.StatusOK}
+	}
+	return nil
 }
 
 // proxyRequest is Gate's `DelegationProxyRequest` (`schemas.py:299-303`)

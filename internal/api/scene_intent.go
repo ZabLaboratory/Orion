@@ -54,6 +54,14 @@ type WorkloadPortal interface {
 	FetchCanvas(ctx context.Context, delegation *workload.Delegation, ticket string, intent json.RawMessage) (*workload.CanvasArtifact, error)
 }
 
+// InlineAdmissionPortal is the optimized path for a validated capsule whose
+// artifacts are already in the relayed intent. It keeps the mTLS Gate
+// revalidation boundary without minting a consumable Canvas delegation that
+// this path never uses.
+type InlineAdmissionPortal interface {
+	AdmitInline(ctx context.Context, ticket string, intent json.RawMessage) error
+}
+
 // SceneIntentDeps groups the new stateless-path dependencies. A nil
 // Workload or Host leaves the route unregistered (RegisterPublic skips
 // it) — every field here is additive to PublicDeps, never a replacement.
@@ -418,22 +426,28 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			}
 		}
 
-		// Mint directly against the relayed ticket — no admit call: the
-		// ticket already carries the operator's consent, and Orion
-		// admitting it itself was the confused-deputy shape Bastion
-		// closed. The intent travels VERBATIM (raw request bytes).
 		ctx := r.Context()
-		delegation, err := deps.Workload.MintDelegation(ctx, ticket, json.RawMessage(raw))
-		if err != nil {
-			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
-			return
-		}
-
+		inlineArtifacts := req.BlueProgram != "" || req.BlueProgramDigest != "" || req.LSMLBundle != "" || req.LSMLBundleDigest != "" || req.RenderBundle != "" || req.RenderBundleDigest != ""
 		var envelopeBody []byte
-		if req.BlueProgram != "" || req.BlueProgramDigest != "" || req.LSMLBundle != "" || req.LSMLBundleDigest != "" || req.RenderBundle != "" || req.RenderBundleDigest != "" {
+		var delegation *workload.Delegation
+		if inlineArtifacts {
+			if inlinePortal, ok := deps.Workload.(InlineAdmissionPortal); ok {
+				if err := inlinePortal.AdmitInline(ctx, ticket, json.RawMessage(raw)); err != nil {
+					writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
+					return
+				}
+			} else {
+				// Compatibility for old workload implementations and test
+				// doubles; production Orion implements InlineAdmissionPortal.
+				delegation, err = deps.Workload.MintDelegation(ctx, ticket, json.RawMessage(raw))
+				if err != nil {
+					writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
+					return
+				}
+			}
 			// ZabGate's validated capsule is already the result of Canvas
-			// validation and bundle creation. Keep the raw intent as the mint
-			// binding, but do not dereference Canvas again on activation.
+			// validation and bundle creation. Do not dereference Canvas again
+			// on activation.
 			envelopeBody, err = json.Marshal(resolvedSceneEnvelope{
 				BlueProgram:        req.BlueProgram,
 				BlueProgramDigest:  req.BlueProgramDigest,
@@ -447,6 +461,13 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 				return
 			}
 		} else {
+			// Legacy path: mint and consume a one-shot Canvas delegation before
+			// accepting the fetched artifact envelope.
+			delegation, err = deps.Workload.MintDelegation(ctx, ticket, json.RawMessage(raw))
+			if err != nil {
+				writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
+				return
+			}
 			artifact, fetchErr := deps.Workload.FetchCanvas(ctx, delegation, ticket, json.RawMessage(raw))
 			if fetchErr != nil {
 				writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "compensating", IntentID: req.IntentID, Reason: workloadReason(fetchErr), Message: workloadMessage(fetchErr)})
