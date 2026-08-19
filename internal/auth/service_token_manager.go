@@ -236,12 +236,22 @@ func (m *ServiceTokenManager) Start(ctx context.Context) error {
 			return nil
 		}
 		var record durableServiceTokenRecord
-		if json.Unmarshal(plain, &record) != nil || record.RefreshToken == "" || record.Rotating {
-			m.logError("durable service token disabled: state is malformed or marked rotating", nil)
-			m.setState(ServiceTokenDegraded)
-			return nil
+		if err := json.Unmarshal(plain, &record); err != nil || record.RefreshToken == "" || record.Rotating {
+			// A process crash can leave the write-ahead rotating marker in
+			// durable storage. When the operator-provisioned bootstrap refresh
+			// token is still present, recover by rotating from that seed instead
+			// of permanently disabling every topology-A query after the next
+			// restart. If the seed is absent, preserve the fail-closed posture.
+			if m.seed == "" {
+				m.logError("durable service token disabled: state is malformed or marked rotating", nil)
+				m.setState(ServiceTokenDegraded)
+				return nil
+			}
+			m.logError("durable service token recovering from interrupted rotation with bootstrap seed", nil)
+			refresh = m.seed
+		} else {
+			refresh = record.RefreshToken
 		}
-		refresh = record.RefreshToken
 	}
 	if refresh == "" {
 		m.logError("durable service token disabled: no persisted refresh token or bootstrap seed", nil)

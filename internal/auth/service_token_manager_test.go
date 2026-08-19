@@ -83,6 +83,56 @@ func TestServiceTokenManagerBootRotationPersistsSuccessor(t *testing.T) {
 	}
 }
 
+func TestServiceTokenManagerRecoversInterruptedRotationFromSeed(t *testing.T) {
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x43}, 32))
+	box, err := newServiceTokenBox(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enc, err := box.seal(durableServiceTokenRecord{
+		RefreshToken: "stale-refresh",
+		Rotating:     true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &fakeServiceTokenStore{enc: enc}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]string
+		if err := json.Unmarshal(body, &payload); err != nil || payload["refresh_token"] != "seed-refresh" {
+			t.Fatalf("unexpected recovery refresh payload: %s", body)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"access-recovered","refresh_token":"refresh-recovered","expires_at":"2099-01-01T00:00:00Z","refresh_expires_at":"2099-01-02T00:00:00Z"}`))
+	}))
+	defer srv.Close()
+
+	m, err := newTestServiceTokenManager(store, srv.URL, "seed-refresh", key, srv.Client(), slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer m.Stop()
+	if got := m.Token(); got != "access-recovered" {
+		t.Fatalf("recovered access token = %q, want access-recovered", got)
+	}
+
+	plain, err := box.open(store.enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record durableServiceTokenRecord
+	if err := json.Unmarshal(plain, &record); err != nil {
+		t.Fatal(err)
+	}
+	if record.RefreshToken != "refresh-recovered" || record.Rotating {
+		t.Fatalf("recovered persisted record = %+v, want successor without rotating marker", record)
+	}
+}
+
 func TestServiceTokenRefreshURL(t *testing.T) {
 	got := ServiceTokenRefreshURL("http://zabgate:4000/auth/api/v1/tokens")
 	want := "http://zabgate:4000/auth/api/v1/service-tokens/refresh"
