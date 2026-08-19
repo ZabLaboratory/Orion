@@ -169,6 +169,60 @@ type SceneIntentDeps struct {
 	// lookup). Nil ⇒ every request is processed fresh (dark by default,
 	// same posture as MirrorFor/Bridges).
 	Idempotency *IdempotencyCache
+	// ProgramVerificationCache reuses a completed canonical Blue digest
+	// verification for the same signed digest and exact raw bytes. Nil keeps
+	// tests and minimal embedders on the uncached fail-closed path.
+	ProgramVerificationCache *VerifiedProgramCache
+}
+
+// VerifiedProgramCache is a bounded content-addressed proof cache. It never
+// trusts the signed digest by itself: the raw program hash is part of the key,
+// and an entry is added only after blueProgramDigest has passed.
+type VerifiedProgramCache struct {
+	mu      sync.Mutex
+	entries map[string]struct{}
+	order   []string
+}
+
+const maxVerifiedPrograms = 128
+
+func NewVerifiedProgramCache() *VerifiedProgramCache {
+	return &VerifiedProgramCache{entries: make(map[string]struct{})}
+}
+
+func (c *VerifiedProgramCache) key(expectedDigest string, program []byte) string {
+	rawDigest := sha256.Sum256(program)
+	return expectedDigest + ":" + hex.EncodeToString(rawDigest[:])
+}
+
+func (c *VerifiedProgramCache) contains(expectedDigest string, program []byte) bool {
+	if c == nil {
+		return false
+	}
+	key := c.key(expectedDigest, program)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, ok := c.entries[key]
+	return ok
+}
+
+func (c *VerifiedProgramCache) add(expectedDigest string, program []byte) {
+	if c == nil {
+		return
+	}
+	key := c.key(expectedDigest, program)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, exists := c.entries[key]; exists {
+		return
+	}
+	c.entries[key] = struct{}{}
+	c.order = append(c.order, key)
+	if len(c.order) > maxVerifiedPrograms {
+		oldest := c.order[0]
+		c.order = c.order[1:]
+		delete(c.entries, oldest)
+	}
 }
 
 // IdempotencyCache remembers the typed result of a scoped (principal,
@@ -511,7 +565,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			}
 		} else {
 			var err error
-			program, err = decodeAndVerifyProgramEnvelope(envelope, claims.BlueProgramDigest)
+			program, err = decodeAndVerifyProgramEnvelopeCached(envelope, claims.BlueProgramDigest, deps.ProgramVerificationCache)
 			if err != nil {
 				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 				return
@@ -665,12 +719,19 @@ func decodeAndVerifyProgram(body json.RawMessage, expectedDigest string) ([]byte
 }
 
 func decodeAndVerifyProgramEnvelope(envelope resolvedSceneEnvelope, expectedDigest string) ([]byte, error) {
+	return decodeAndVerifyProgramEnvelopeCached(envelope, expectedDigest, nil)
+}
+
+func decodeAndVerifyProgramEnvelopeCached(envelope resolvedSceneEnvelope, expectedDigest string, cache *VerifiedProgramCache) ([]byte, error) {
 	if envelope.BlueProgramDigest != expectedDigest {
 		return nil, errors.New("scene-intent: envelope blue_program_digest does not match the attested claim")
 	}
 	program, err := base64.StdEncoding.DecodeString(envelope.BlueProgram)
 	if err != nil {
 		return nil, err
+	}
+	if cache.contains(expectedDigest, program) {
+		return program, nil
 	}
 	computedDigest, err := blueProgramDigest(program)
 	if err != nil {
@@ -679,6 +740,7 @@ func decodeAndVerifyProgramEnvelope(envelope resolvedSceneEnvelope, expectedDige
 	if computedDigest != expectedDigest {
 		return nil, errors.New("scene-intent: computed canonical program digest does not match the attested claim")
 	}
+	cache.add(expectedDigest, program)
 	return program, nil
 }
 

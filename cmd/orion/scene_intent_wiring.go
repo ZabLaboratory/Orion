@@ -125,8 +125,9 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost
 		// (runtime.NewHarness / cfg.ValidationMaxSteps/MaxWall below) — one
 		// operator-facing knob pair for "how long may a validation run",
 		// not a second one invented for Engine B.
-		ValidationMaxSteps: cfg.ValidationMaxSteps,
-		ValidationMaxWall:  cfg.ValidationMaxWall,
+		ValidationMaxSteps:       cfg.ValidationMaxSteps,
+		ValidationMaxWall:        cfg.ValidationMaxWall,
+		ProgramVerificationCache: api.NewVerifiedProgramCache(),
 	}, nil
 }
 
