@@ -63,11 +63,12 @@ func TestSceneIntentMirrorFor_RoutesBySlot(t *testing.T) {
 	if antenne.calls != 0 {
 		t.Fatalf("prepare-preview must produce ZERO calls on the antenne wire — got %d (#398 defect)", antenne.calls)
 	}
-	if len(preview.active) != 1 || preview.active[0] != "scene-1" {
-		t.Fatalf("prepare-preview must activate the preview wire after registration, got %#v", preview.active)
+	if len(preview.active) != 0 || len(antenne.active) != 0 {
+		t.Fatalf("registration must not activate either wire before the keyframe is seeded")
 	}
-	if len(antenne.active) != 0 {
-		t.Fatalf("prepare-preview must not activate the antenne wire, got %#v", antenne.active)
+	sceneIntentActivate(lsdpWires{preview: preview, antenne: antenne})("scene-1", bluehost.SlotPreview)
+	if len(preview.active) != 1 || preview.active[0] != "scene-1" {
+		t.Fatalf("prepare-preview activation must target the preview wire, got %#v", preview.active)
 	}
 
 	mirrorFor("scene-1", "sha256:test-1", bluehost.SlotOnAir, nil)
@@ -77,8 +78,9 @@ func TestSceneIntentMirrorFor_RoutesBySlot(t *testing.T) {
 	if preview.calls != 1 {
 		t.Fatalf("take must NOT touch the preview wire — preview calls changed to %d", preview.calls)
 	}
+	sceneIntentActivate(lsdpWires{preview: preview, antenne: antenne})("scene-1", bluehost.SlotOnAir)
 	if len(antenne.active) != 1 || antenne.active[0] != "scene-1" {
-		t.Fatalf("take must activate the antenne wire after registration, got %#v", antenne.active)
+		t.Fatalf("take activation must target the antenne wire, got %#v", antenne.active)
 	}
 }
 

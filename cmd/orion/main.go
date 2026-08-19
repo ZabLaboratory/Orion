@@ -406,6 +406,7 @@ func run() error {
 			// path even though the SAME mechanism is already proven safe on
 			// the legacy Show-backed path.
 			sceneIntent.MirrorFor = sceneIntentMirrorFor(lsdpWires{preview: previewWire, antenne: antenneWire})
+			sceneIntent.Activate = sceneIntentActivate(lsdpWires{preview: previewWire, antenne: antenneWire})
 			sceneIntent.Bridges = bluewire.NewRegistry()
 			sceneIntent.Logger = logger
 		}

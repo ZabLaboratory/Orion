@@ -78,18 +78,20 @@ func sceneIntentMirrorFor(wires lsdpWires) func(sceneID, sceneVersion string, sl
 		default:
 			return nil
 		}
-		if mirror != nil {
-			// MirrorForLSML registers the clone, but registration alone is not
-			// sufficient when the Solar WebSocket connected before the intent.
-			// Explicitly flip the selected wire after registration so an already
-			// connected client receives scene_changed + snapshot immediately.
-			switch slot {
-			case bluehost.SlotPreview:
-				wires.preview.SetActive(sceneID)
-			case bluehost.SlotOnAir:
-				wires.antenne.SetActive(sceneID)
-			}
-		}
 		return mirror
+	}
+}
+
+// sceneIntentActivate changes the selected wire's active scene after the
+// caller has applied the real validated keyframe. SetActive must not publish
+// an empty snapshot before the render bundle state is present.
+func sceneIntentActivate(wires lsdpWires) func(sceneID string, slot bluehost.Slot) {
+	return func(sceneID string, slot bluehost.Slot) {
+		switch slot {
+		case bluehost.SlotPreview:
+			wires.preview.SetActive(sceneID)
+		case bluehost.SlotOnAir:
+			wires.antenne.SetActive(sceneID)
+		}
 	}
 }

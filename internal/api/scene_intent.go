@@ -153,6 +153,11 @@ type SceneIntentDeps struct {
 	// gate — same fail-open posture as the legacy path's binding-less
 	// bundle.
 	MirrorFor func(sceneID, sceneVersion string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror
+	// Activate flips the selected LSDP wire after the first real snapshot has
+	// been applied. Registration and activation stay separate so a connected
+	// client never receives an empty keyframe before the validated bundle is
+	// seeded.
+	Activate func(sceneID string, slot bluehost.Slot)
 	// Bridges tracks the running bridge per bluehost.Slot so a superseding
 	// Take (or a re-Prepare) stops the previous one instead of leaking a
 	// goroutine stepping an instance the Host has already released.
@@ -969,6 +974,9 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 		if initialSnapshot != nil {
 			mirror.Forward(initialSnapshot)
 		}
+		if deps.Activate != nil {
+			deps.Activate(claims.SceneID, slot)
+		}
 		deps.Bridges.Stop(slot)
 		return
 	}
@@ -1009,6 +1017,9 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 		}
 		if startupCtx != nil && startupCtx.Err() != nil {
 			return
+		}
+		if deps.Activate != nil {
+			deps.Activate(claims.SceneID, slot)
 		}
 		if err := bridge.TickOnce(0); err != nil && logger != nil {
 			logger.Warn("bluewire initial projection failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
