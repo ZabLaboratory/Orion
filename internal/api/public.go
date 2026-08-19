@@ -198,6 +198,9 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 		// same Providers/Policy SceneIntentDeps carries for Prepare/Take, so it
 		// is gated here rather than unconditionally beside /validate/simulate.
 		mux.HandleFunc("POST /api/v1/validate/program", postValidateProgram(*deps.SceneIntent))
+		// Compile the Canvas LSML into an immutable Solar-facing runtime
+		// bundle during validation; this never mutates deps.Host.
+		mux.HandleFunc("POST /api/v1/validate/render-bundle", postValidateRenderBundle(*deps.SceneIntent))
 	}
 
 	// WebSocket endpoints. coder/websocket lives behind these handlers.

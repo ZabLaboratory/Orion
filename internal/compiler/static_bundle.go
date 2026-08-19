@@ -81,6 +81,7 @@ func CompileStaticLSML(raw []byte, _ string, sceneVersion, assetBaseURL string) 
 		ExternalAdapters: source.ExternalAdapters,
 		Profiles:         source.Profiles,
 		LSMLAssets:       assets,
+		Defaults:         defaults,
 	}
 	encoded, err := json.Marshal(bundle)
 	if err != nil {

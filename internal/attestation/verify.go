@@ -49,6 +49,7 @@ type Claims struct {
 	SceneDigest            string   `json:"scene_digest"`
 	ArtifactSetDigest      string   `json:"artifact_set_digest"`
 	BlueProgramDigest      string   `json:"blue_program_digest"`
+	RenderBundleDigest     string   `json:"render_bundle_digest,omitempty"`
 	ReadinessAttestationID string   `json:"readiness_attestation_id"`
 	ReadinessDigest        string   `json:"readiness_digest"`
 	ReadinessExpiresAt     int64    `json:"readiness_expires_at"`
@@ -358,6 +359,9 @@ func validateClaims(c *Claims) error {
 	// is never silently read as "no program".
 	if c.BlueProgramDigest != "" && !digestPattern.MatchString(c.BlueProgramDigest) {
 		return fmt.Errorf("%w: invalid digest %q", ErrPayload, c.BlueProgramDigest)
+	}
+	if c.RenderBundleDigest != "" && !digestPattern.MatchString(c.RenderBundleDigest) {
+		return fmt.Errorf("%w: invalid render_bundle_digest %q", ErrPayload, c.RenderBundleDigest)
 	}
 
 	if len(c.AllowedActions) == 0 {

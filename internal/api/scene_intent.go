@@ -471,8 +471,22 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		}
 		mirrorBundle := []byte(nil)
 		var staticState map[string]json.RawMessage
-		if bundle != nil && deps.StaticBundleCompiler != nil {
+		if bundle != nil {
 			mirrorBundle = append([]byte(nil), bundle...)
+		}
+		precompiledBundle, precompiledErr := decodeAndVerifyRenderBundle(artifact.Body, claims.RenderBundleDigest)
+		if precompiledErr != nil {
+			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
+			return
+		}
+		if precompiledBundle != nil {
+			bundle = precompiledBundle
+			staticState, precompiledErr = decodeRenderBundleDefaults(bundle)
+			if precompiledErr != nil {
+				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
+				return
+			}
+		} else if bundle != nil && deps.StaticBundleCompiler != nil {
 			compiledBundle, defaults, err := deps.StaticBundleCompiler(bundle, claims.SceneID, claims.SceneDigest)
 			if err != nil {
 				if deps.Logger != nil {
@@ -482,10 +496,8 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 				return
 			}
 			bundle = compiledBundle
-			// Canvas literal leaves belong to the render bundle for both
-			// static scenes and scenes with a Blue program. The program bridge
-			// only owns dynamic values; dropping these defaults on the
-			// programmed path leaves Solar with an empty, black scene.
+			// Legacy refs compile at click time; validated refs carry the same
+			// defaults inside the precompiled bundle instead.
 			staticState = defaults
 		}
 
@@ -577,6 +589,11 @@ type resolvedSceneEnvelope struct {
 	// carries a bundle with no digest, rather than skip verification.
 	LSMLBundle       string `json:"lsml_bundle,omitempty"`
 	LSMLBundleDigest string `json:"lsml_bundle_digest,omitempty"`
+	// RenderBundle is compiled during Canvas validation. Its digest is also
+	// signed in the Canvas ref claims; when present, scene-intent loads these
+	// bytes verbatim and skips StaticBundleCompiler.
+	RenderBundle       string `json:"render_bundle,omitempty"`
+	RenderBundleDigest string `json:"render_bundle_digest,omitempty"`
 }
 
 // decodeAndVerifyProgram parses the Canvas artifact envelope, decodes
@@ -673,6 +690,45 @@ func decodeAndVerifyBundle(body json.RawMessage) ([]byte, error) {
 		return nil, errors.New("scene-intent: lsml_bundle does not match its own declared digest")
 	}
 	return bundle, nil
+}
+
+// decodeAndVerifyRenderBundle extracts the optional Solar bundle produced by
+// POST /validate/render-bundle. The expected digest comes from the signed
+// Canvas claims, so the response body cannot substitute another artifact.
+func decodeAndVerifyRenderBundle(body json.RawMessage, expectedDigest string) ([]byte, error) {
+	var envelope resolvedSceneEnvelope
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return nil, err
+	}
+	if envelope.RenderBundle == "" {
+		if expectedDigest != "" {
+			return nil, errors.New("scene-intent: signed render_bundle_digest has no render_bundle")
+		}
+		return nil, nil
+	}
+	if expectedDigest == "" || envelope.RenderBundleDigest == "" || envelope.RenderBundleDigest != expectedDigest {
+		return nil, errors.New("scene-intent: render bundle digest is not signed consistently")
+	}
+	bundle, err := base64.StdEncoding.DecodeString(envelope.RenderBundle)
+	if err != nil || len(bundle) == 0 || !json.Valid(bundle) {
+		return nil, errors.New("scene-intent: render bundle is not valid base64 JSON")
+	}
+	sum := sha256.Sum256(bundle)
+	computed := "sha256:" + hex.EncodeToString(sum[:])
+	if computed != envelope.RenderBundleDigest {
+		return nil, errors.New("scene-intent: render bundle digest does not match bytes")
+	}
+	return bundle, nil
+}
+
+func decodeRenderBundleDefaults(bundle []byte) (map[string]json.RawMessage, error) {
+	var payload struct {
+		Defaults map[string]json.RawMessage `json:"defaults"`
+	}
+	if err := json.Unmarshal(bundle, &payload); err != nil {
+		return nil, err
+	}
+	return payload.Defaults, nil
 }
 
 // verifyNoProgramEnvelope enforces the no-program contract on the fetched

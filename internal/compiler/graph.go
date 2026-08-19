@@ -109,6 +109,10 @@ type RenderBundle struct {
 	ExternalAdapters []ExternalAdapter `json:"external_adapters"`
 	Profiles         []string          `json:"profiles,omitempty"`
 	Assets           []AssetRef        `json:"asset_refs,omitempty"`
+	// Defaults are the static literal seeds emitted by CompileStaticLSML.
+	// Keeping them in the immutable Solar bundle lets a validated runtime
+	// capsule carry both the render tree and the initial snapshot.
+	Defaults map[string]json.RawMessage `json:"defaults,omitempty"`
 
 	// AuthoringRoot is the pre-lowering tree in the AUTHORING vocab
 	// (`style.fontSize`/`color`, `size.{w,h}`, `geometry`, `cornerRadius`,
