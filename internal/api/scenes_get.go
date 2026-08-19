@@ -132,7 +132,7 @@ func resolveHostBundle(deps PublicDeps, r *http.Request) (digest string, bundle 
 		return "", nil, false
 	}
 	for _, slot := range []bluehost.Slot{bluehost.SlotOnAir, bluehost.SlotPreview} {
-		if !host.Serving(slot, sceneID, v) {
+		if !host.Serving(slot, sceneID, v) && !host.BundleServing(slot, sceneID, v) {
 			continue
 		}
 		b := host.Bundle(slot)

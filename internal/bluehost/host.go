@@ -12,6 +12,8 @@ package bluehost
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -58,10 +60,11 @@ type entry struct {
 	// so no {scene_id} could ever match the on-air slot post-#401, which
 	// silently made every on-air stateless occupation unservable through
 	// that resolver, program or not.
-	sceneID    string
-	digest     string            // scene_digest this slot is serving (for a no-program ref: the bundle hash, #398 Decision A); see Serving
-	bundle     []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
-	awaitTypes map[string]string // compiler-declared operator.await value types
+	sceneID      string
+	digest       string            // scene_digest this slot is serving (for a no-program ref: the bundle hash, #398 Decision A); see Serving
+	bundle       []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
+	bundleDigest string            // sha256 of bundle, the version Solar requests from the render route
+	awaitTypes   map[string]string // compiler-declared operator.await value types
 
 	// overlaySeen dedupes core.overlay-app.set@1 dispatch (effect_overlay.go)
 	// against StepResult.Variables' cumulative bag: keyed by node id, valued
@@ -498,6 +501,21 @@ func (h *Host) Serving(slot Slot, sceneID, digest string) bool {
 	return e.sceneID == sceneID && e.digest == digest
 }
 
+// BundleServing reports whether slot owns the exact scene and content hash
+// requested by Solar. A programmed scene has two identities: digest is the
+// Blue program identity, while bundleDigest is the LSML render-bundle
+// identity. Keeping the checks separate prevents a valid program digest from
+// making Solar request a bundle version that the resolver cannot serve.
+func (h *Host) BundleServing(slot Slot, sceneID, digest string) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.slots[slot]
+	if !ok {
+		return false
+	}
+	return e.sceneID == sceneID && e.bundleDigest == digest
+}
+
 // SetBundle attaches the content-addressed LSML render-bundle bytes to
 // slot's current entry, so a caller (the GET render-bundle route) can
 // serve back exactly what Prepare/Take last loaded without a second
@@ -509,7 +527,24 @@ func (h *Host) SetBundle(slot Slot, bundle []byte) {
 	defer h.mu.Unlock()
 	if e, ok := h.slots[slot]; ok {
 		e.bundle = bundle
+		if len(bundle) == 0 {
+			e.bundleDigest = ""
+			return
+		}
+		sum := sha256.Sum256(bundle)
+		e.bundleDigest = "sha256:" + hex.EncodeToString(sum[:])
 	}
+}
+
+// BundleDigest returns the content hash of the render bundle attached to the
+// slot, or "" when no bundle is attached.
+func (h *Host) BundleDigest(slot Slot) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if e, ok := h.slots[slot]; ok {
+		return e.bundleDigest
+	}
+	return ""
 }
 
 // Bundle returns the LSML render-bundle bytes SetBundle last attached to
