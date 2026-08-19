@@ -389,6 +389,39 @@ func TestBridge_StepOnce_RejectsStaleNonIdenticalRuntimeSequence(t *testing.T) {
 	}
 }
 
+func TestBridge_ForwardResult_RuntimeSequenceZeroAfterSeedForwardsChangedProjection(t *testing.T) {
+	mirror := &fakeMirror{}
+	b := &Bridge{
+		slot:        bluehost.SlotPreview,
+		mirror:      mirror,
+		sceneID:     "scene-1",
+		sceneDigest: "sha256:scene",
+		instanceID:  "instance-1",
+		target:      blueproject.TargetPreview,
+	}
+
+	if err := b.ForwardResult(StepResult{
+		RuntimeSequence: 0,
+		Outputs:         map[string]any{"pl.L0.champ": "Aatrox"},
+	}); err != nil {
+		t.Fatalf("seed ForwardResult: %v", err)
+	}
+	if err := b.ForwardResult(StepResult{
+		RuntimeSequence: 0,
+		Outputs:         map[string]any{"pl.L0.champ": "Vi"},
+	}); err != nil {
+		t.Fatalf("operator ForwardResult: %v", err)
+	}
+	if len(mirror.forwarded) != 2 {
+		t.Fatalf("expected changed zero-sequence operator output to forward, got %d deltas", len(mirror.forwarded))
+	}
+	first := mirror.forwarded[0].(*protocol.Delta)
+	second := mirror.forwarded[1].(*protocol.Delta)
+	if first.Sequence != 1 || second.Sequence != 2 || string(second.Patches[0].Value) != `"Vi"` {
+		t.Fatalf("expected monotone wire sequence for zero-sequence outputs, got first=%+v second=%+v", first, second)
+	}
+}
+
 func TestNewBridge_TickOnceUsesHostScheduler(t *testing.T) {
 	program, err := os.ReadFile("../bluespike/testdata/01-minimal.program.json")
 	if err != nil {
