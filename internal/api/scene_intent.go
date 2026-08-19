@@ -1004,22 +1004,23 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 			logger.Warn("bluewire bridge step failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
 		}
 	})
-	// The compiled render-bundle snapshot and first Blue runtime projection are
-	// dispatched immediately but outside the HTTP critical path. When a
-	// snapshot exists, the startup gate keeps the periodic loop behind both
-	// operations and Registry can cancel the worker if a newer scene wins.
-	go func() {
-		if startupCtx != nil && startupCtx.Err() != nil {
-			return
-		}
+	// The compiled render-bundle snapshot and wire activation are the visible
+	// scene switch. Dispatch them before answering the intent so a successful
+	// response cannot outrun Solar's first scene snapshot. The first Blue
+	// runtime projection remains outside the HTTP critical path; the startup
+	// gate keeps the periodic loop behind it and Registry can cancel the worker
+	// if a newer scene wins.
+	if startupCtx == nil || startupCtx.Err() == nil {
 		if initialSnapshot != nil {
 			mirror.Forward(initialSnapshot)
 		}
-		if startupCtx != nil && startupCtx.Err() != nil {
-			return
-		}
 		if deps.Activate != nil {
 			deps.Activate(claims.SceneID, slot)
+		}
+	}
+	go func() {
+		if startupCtx != nil && startupCtx.Err() != nil {
+			return
 		}
 		if err := bridge.TickOnce(0); err != nil && logger != nil {
 			logger.Warn("bluewire initial projection failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
