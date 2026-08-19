@@ -170,6 +170,23 @@ func (b *Bridge) ForwardResult(result StepResult) error {
 		b.sceneDigest, b.instanceID, b.renderRevision, b.correlationID, b.target,
 	)
 	if len(proj.Patches) == 0 {
+		if len(result.Outputs) > 0 && b.logger != nil {
+			outputKeys := make([]string, 0, len(result.Outputs))
+			outputKinds := map[string]int{}
+			for path, value := range result.Outputs {
+				outputKeys = append(outputKeys, path)
+				outputKinds[fmt.Sprintf("%T", value)]++
+			}
+			sort.Strings(outputKeys)
+			b.logger.Warn("bluewire projection empty",
+				"scene_id", b.sceneID,
+				"slot", b.slot,
+				"runtime_sequence", result.RuntimeSequence,
+				"output_count", len(result.Outputs),
+				"output_keys", outputKeys,
+				"output_kinds", outputKinds,
+			)
+		}
 		b.recordRuntimeSequence(result.RuntimeSequence)
 		return nil
 	}
