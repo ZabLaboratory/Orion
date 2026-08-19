@@ -13,6 +13,7 @@ import (
 type recordingLsdpRegistry struct {
 	calls  int
 	active []string
+	rosters [][]runtime.RosterEntry
 }
 
 type recordingSceneMirror struct{}
@@ -26,6 +27,10 @@ func (r *recordingLsdpRegistry) MirrorForLSML(string, string, []byte) runtime.Sc
 
 func (r *recordingLsdpRegistry) SetActive(sceneID string) {
 	r.active = append(r.active, sceneID)
+}
+
+func (r *recordingLsdpRegistry) EmitRoster(entries []runtime.RosterEntry) {
+	r.rosters = append(r.rosters, append([]runtime.RosterEntry(nil), entries...))
 }
 
 // TestSceneIntentMirrorFor_RoutesBySlot is the #398 resolution criterion
@@ -81,6 +86,30 @@ func TestSceneIntentMirrorFor_RoutesBySlot(t *testing.T) {
 	sceneIntentActivate(lsdpWires{preview: preview, antenne: antenne})("scene-1", bluehost.SlotOnAir)
 	if len(antenne.active) != 1 || antenne.active[0] != "scene-1" {
 		t.Fatalf("take activation must target the antenne wire, got %#v", antenne.active)
+	}
+}
+
+func TestSceneIntentEmitRoster_RoutesBySlot(t *testing.T) {
+	preview := &recordingLsdpRegistry{}
+	antenne := &recordingLsdpRegistry{}
+	emit := sceneIntentEmitRoster(lsdpWires{preview: preview, antenne: antenne})
+
+	entries := []runtime.RosterEntry{{SceneID: "scene-preview", SceneVersion: "sha256:preview"}}
+	emit(bluehost.SlotPreview, entries)
+	if len(preview.rosters) != 1 || len(antenne.rosters) != 0 {
+		t.Fatalf("preview roster must target only preview: preview=%d antenne=%d", len(preview.rosters), len(antenne.rosters))
+	}
+	if got := preview.rosters[0]; len(got) != 1 || got[0] != entries[0] {
+		t.Fatalf("preview roster mismatch: got %#v want %#v", got, entries)
+	}
+
+	emit(bluehost.SlotOnAir, []runtime.RosterEntry{{SceneID: "scene-air", SceneVersion: "sha256:air"}})
+	if len(antenne.rosters) != 1 {
+		t.Fatalf("on-air roster must target antenne exactly once, got %d", len(antenne.rosters))
+	}
+	emit(bluehost.Slot("unknown"), entries)
+	if len(preview.rosters) != 1 || len(antenne.rosters) != 1 {
+		t.Fatal("unknown slot must not publish a roster")
 	}
 }
 

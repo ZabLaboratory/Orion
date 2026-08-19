@@ -407,6 +407,7 @@ func run() error {
 			// the legacy Show-backed path.
 			sceneIntent.MirrorFor = sceneIntentMirrorFor(lsdpWires{preview: previewWire, antenne: antenneWire})
 			sceneIntent.Activate = sceneIntentActivate(lsdpWires{preview: previewWire, antenne: antenneWire})
+			sceneIntent.EmitRoster = sceneIntentEmitRoster(lsdpWires{preview: previewWire, antenne: antenneWire})
 			sceneIntent.Bridges = bluewire.NewRegistry()
 			sceneIntent.Logger = logger
 		}

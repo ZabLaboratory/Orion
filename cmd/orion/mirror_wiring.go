@@ -14,6 +14,10 @@ type lsdpMirrorRegistry interface {
 	SetActive(sceneID string)
 }
 
+type lsdpRosterEmitter interface {
+	EmitRoster(entries []runtime.RosterEntry)
+}
+
 // lsdpWires names the preview and antenne wires BY FIELD, not position
 // (#398 F1, Vigil review on d448def). sceneIntentMirrorFor's prior shape
 // — two positional, identically-typed *lsdp.Wire arguments — compiled
@@ -92,6 +96,28 @@ func sceneIntentActivate(wires lsdpWires) func(sceneID string, slot bluehost.Slo
 			wires.preview.SetActive(sceneID)
 		case bluehost.SlotOnAir:
 			wires.antenne.SetActive(sceneID)
+		}
+	}
+}
+
+// sceneIntentEmitRoster keeps the preload hint on the same wire as the
+// scene-intent mirror. It is a best-effort capability of the dual LSDP wire:
+// minimal test registries and bespoke embedders may omit it without changing
+// scene-intent execution.
+func sceneIntentEmitRoster(wires lsdpWires) func(bluehost.Slot, []runtime.RosterEntry) {
+	return func(slot bluehost.Slot, entries []runtime.RosterEntry) {
+		var target lsdpMirrorRegistry
+		switch slot {
+		case bluehost.SlotPreview:
+			target = wires.preview
+		case bluehost.SlotOnAir:
+			target = wires.antenne
+		default:
+			return
+		}
+		emitter, ok := target.(lsdpRosterEmitter)
+		if ok {
+			emitter.EmitRoster(entries)
 		}
 	}
 }

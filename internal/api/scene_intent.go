@@ -164,6 +164,13 @@ type SceneIntentDeps struct {
 	// Required whenever MirrorFor is set; built once by cmd/orion via
 	// bluewire.NewRegistry().
 	Bridges *bluewire.Registry
+	// EmitRoster publishes a short-lived, slot-scoped preload hint to the
+	// matching LSDP wire. It is deliberately not persisted and does not
+	// activate or prepare a future scene: it only lets an already-connected
+	// Solar client fetch the exact validated bundle while the keyframe and
+	// Blue projection are being assembled. Nil keeps minimal/bespoke embeds
+	// unchanged.
+	EmitRoster func(slot bluehost.Slot, entries []runtime.RosterEntry)
 	// ProjectionInterval paces the bridge's injected Tick loop. <= 0 defaults to
 	// 100ms.
 	ProjectionInterval time.Duration
@@ -953,6 +960,19 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	mirror := deps.MirrorFor(claims.SceneID, claims.SceneDigest, slot, mirrorBundle)
 	if mirror == nil {
 		return
+	}
+	// The stateless scene-intent path has no Show roster to emit the
+	// scene_roster frame for it. Publish this one validated bundle to the
+	// wire that owns the slot before the keyframe/activation. Solar's runtime
+	// fetcher then warms its content-addressed cache in parallel; the later
+	// snapshot reuses the same in-flight request instead of paying the bundle
+	// fetch after scene_changed. Orion keeps no roster entry after this wire
+	// update and still remains stateless across restarts.
+	if deps.EmitRoster != nil {
+		deps.EmitRoster(slot, []runtime.RosterEntry{{
+			SceneID:      claims.SceneID,
+			SceneVersion: claims.SceneDigest,
+		}})
 	}
 	// A compiled LSML bundle can legitimately have no authored defaults while
 	// still containing a renderable static scene and dynamic bindings. Solar
