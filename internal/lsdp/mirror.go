@@ -60,10 +60,15 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 		m.scene.SetVersion(v.SceneVersion)
 		m.observeSnapshotIdentityGap()
 		if len(v.State) == 0 {
-			// lumencast-go rejects an empty patch set. This wire-only marker
-			// makes a valid bundle with empty authored defaults mountable; it
-			// is not authored LSML state and is replaced by real deltas.
-			_ = m.scene.Set(map[string]any{bootstrapStatePath: true})
+			// lumencast-go rejects an empty patch set. Seed every authored
+			// binding with neutral nulls when defaults are absent, so Solar
+			// mounts the real tree without fabricating match data. A marker is
+			// retained only for a bundle with no bindings at all.
+			state := m.bound.bootstrapState()
+			if len(state) == 0 {
+				state = map[string]any{bootstrapStatePath: true}
+			}
+			_ = m.scene.Set(state)
 			return
 		}
 		patches := make(map[string]any, len(v.State))
