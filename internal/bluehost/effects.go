@@ -78,9 +78,8 @@ type ServiceRouteResolver func(service, routeID string) (ServiceCallRoute, bool)
 // dependency. This is required for a preview to be a real replica of the
 // scene state rather than a graph that only appears to run.
 //
-// Engine A's PreviewSlot applies the same stateless policy to its private
-// effect bundle, so both host implementations expose the same synthetic
-// preview observation before transport admission.
+// Engine A's PreviewSlot applies the same read-only policy to its private
+// effect bundle, so both host implementations expose the same data path.
 //
 // THIS IS ONE OF THREE PATHS an instance can reach the network/DB/wire
 // through, and this doc covers only this one — a reader relying on it alone
@@ -104,9 +103,10 @@ func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueru
 		return doHTTPRequest(context.Background(), deps.Egress, inputs)
 	}
 	db := func(config, inputs map[string]any) (map[string]any, error) {
-		if mode != blueruntime.Execute {
-			return previewDBResult(), nil
-		}
+		// db.query is already a read-only, compiler-curated QueryMe request.
+		// Preview must use the same data path as on-air so Engine B can produce
+		// the real match-driven LSML delta instead of acknowledging a no-op
+		// against an invented empty result set.
 		return doDBQuery(context.Background(), deps.DB, deps.DataSources, config, inputs)
 	}
 	serviceCall := func(config, inputs map[string]any) (map[string]any, error) {
@@ -155,15 +155,6 @@ func previewHTTPResult() map[string]any {
 		"headers": map[string]any{},
 		"ok":      false,
 		"preview": true,
-	}
-}
-
-func previewDBResult() map[string]any {
-	return map[string]any{
-		"rows":       nil,
-		"count":      json.Number("0"),
-		"elapsed_ms": json.Number("0"),
-		"preview":    true,
 	}
 }
 
