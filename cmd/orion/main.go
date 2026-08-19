@@ -213,6 +213,7 @@ func run() error {
 		ServiceCall:     serviceCallClient,
 		EgressBudget:    egressBudget,
 		EgressBudgetKey: "orion-bluehost",
+		Logger:          logger,
 	}
 	// Curated service-egress (ADR Blue 002 §3.3) is EXTINGUISHED: its minter
 	// was the last consumer of the standing operator credential, retired with

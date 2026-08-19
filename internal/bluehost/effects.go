@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -35,6 +36,7 @@ type EffectDeps struct {
 	ResolveServiceRoute ServiceRouteResolver
 	EgressBudget        *effects.StreamEgressLimiter
 	EgressBudgetKey     string
+	Logger              *slog.Logger
 	// OverlayMirror is the real effector `core.overlay-app.set@1` forwards
 	// to (ENGINE-B-PARITY-ORION, effect_overlay.go): unlike the 4 opcodes
 	// above, walker.go's fireLocalSideEffect NEVER calls a host-injected
@@ -107,7 +109,15 @@ func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueru
 		// Preview must use the same data path as on-air so Engine B can produce
 		// the real match-driven LSML delta instead of acknowledging a no-op
 		// against an invented empty result set.
-		return doDBQuery(context.Background(), deps.DB, deps.DataSources, config, inputs)
+		result, err := doDBQuery(context.Background(), deps.DB, deps.DataSources, config, inputs)
+		if deps.Logger != nil {
+			if err != nil {
+				deps.Logger.Error("engine b db query failed", "datasource", strOf(config["datasource"]), "err", err)
+			} else {
+				deps.Logger.Info("engine b db query completed", "datasource", strOf(config["datasource"]), "count", result["count"], "rows_type", fmt.Sprintf("%T", result["rows"]))
+			}
+		}
+		return result, err
 	}
 	serviceCall := func(config, inputs map[string]any) (map[string]any, error) {
 		if mode != blueruntime.Execute {
