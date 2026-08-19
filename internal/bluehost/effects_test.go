@@ -204,16 +204,14 @@ func startedInstance(t *testing.T, program []byte, mode blueruntime.Mode, handle
 	return instance
 }
 
-// TestEffectHandlers_PreviewNeverDialsNetwork proves issue #358 §7's
-// explicit preview criterion by construction: the egress policy's
-// allowlist is EMPTY and CheckURL/Client are never exercised (a spy
-// RoundTripper would fail the test if dialed) — Preview returns the
-// synthetic no-op result and fires `then`, never touching the network.
-func TestEffectHandlers_PreviewNeverDialsNetwork(t *testing.T) {
+// TestEffectHandlers_PreviewReadFailureIsVisible proves a read failure is
+// surfaced to the graph instead of being hidden behind the old synthetic
+// status=0 preview result. The preview read path is real; a denied egress must
+// therefore stop the `then` continuation.
+func TestEffectHandlers_PreviewReadFailureIsVisible(t *testing.T) {
 	dialed := false
-	// A deny-all policy whose lookup would flag any dial attempt — since
-	// Preview must never even reach CheckURL/Client, this proves the point
-	// by construction: a dialed lookup here means the no-op path regressed.
+	// A deny-all policy keeps the test deterministic while proving the graph
+	// receives an error rather than a fake successful response.
 	poison := effects.NewEgressPolicy(nil, false)
 	poison.SetLookupForTest(func(_ context.Context, _ string) ([]net.IPAddr, error) {
 		dialed = true
@@ -232,10 +230,10 @@ func TestEffectHandlers_PreviewNeverDialsNetwork(t *testing.T) {
 		t.Fatalf("Step: %v", err)
 	}
 	if dialed {
-		t.Fatal("preview dialed the network")
+		t.Fatal("preview attempted DNS resolution before egress admission")
 	}
-	if v, _ := step.Outputs["result"].(json.Number); v != "0" {
-		t.Fatalf("expected preview status 0, got %#v (outputs=%#v)", step.Outputs["result"], step.Outputs)
+	if step.Outputs["result"] != nil {
+		t.Fatalf("denied preview read reached `then`: outputs=%#v", step.Outputs)
 	}
 }
 
@@ -313,29 +311,28 @@ func TestEffectHandlers_ExecuteWithoutEgressPolicyFailsClosed(t *testing.T) {
 	}
 }
 
-func TestEffectHandlers_ServiceCallPreviewNeverDials(t *testing.T) {
+func TestEffectHandlers_ServiceCallPreviewRejectsWrite(t *testing.T) {
 	dialed := false
 	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		dialed = true
 	}))
 	defer srv.Close()
 	client := effects.NewServiceCallClient(srv.URL, func([]string) string { return "scoped" }, nil)
-	handler := NewEffectHandlers(EffectDeps{ServiceCall: client}, blueruntime.Preview)["core.service.call@1"]
+	handler := NewEffectHandlers(EffectDeps{
+		ServiceCall: client, ResolveServiceRoute: serviceParityRouteResolver,
+	}, blueruntime.Preview)["core.service.call@1"]
 
-	outputs, err := handler(map[string]any{
+	_, err := handler(map[string]any{
 		"__route": serviceParityRouteReference(),
 	}, map[string]any{
 		"params":  map[string]any{"id": "preview"},
 		"payload": map[string]any{"ok": true},
 	})
-	if err != nil {
-		t.Fatalf("preview service.call: %v", err)
+	if err == nil || err.Error() != "PREVIEW_WRITE_FORBIDDEN: core.service.call method POST is not read-only" {
+		t.Fatalf("preview service.call write was not rejected explicitly: %v", err)
 	}
 	if dialed {
-		t.Fatal("preview service.call dialed the network")
-	}
-	if got := outputs["preview"]; got != true {
-		t.Fatalf("preview service.call did not return synthetic result: %#v", outputs)
+		t.Fatal("preview service.call write dialed the network")
 	}
 }
 

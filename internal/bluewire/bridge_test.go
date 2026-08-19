@@ -131,6 +131,37 @@ func TestBridge_StepOnce_ForwardsDelta(t *testing.T) {
 	}
 }
 
+func TestBridge_ForwardResult_ForwardsImmediateOperatorMutation(t *testing.T) {
+	mirror := &fakeMirror{}
+	b := &Bridge{
+		slot:           bluehost.SlotPreview,
+		mirror:         mirror,
+		sceneID:        "scene-1",
+		sceneDigest:    "sha256:scene",
+		instanceID:     "instance-1",
+		target:         blueproject.TargetPreview,
+		renderRevision: "revision-1",
+		correlationID:  "intent-1",
+	}
+
+	if err := b.ForwardResult(StepResult{
+		RuntimeSequence: 9,
+		Outputs:         map[string]any{"match.lec": "loaded"},
+	}); err != nil {
+		t.Fatalf("ForwardResult: %v", err)
+	}
+	if len(mirror.forwarded) != 1 {
+		t.Fatalf("expected one immediate projection, got %d", len(mirror.forwarded))
+	}
+	delta, ok := mirror.forwarded[0].(*protocol.Delta)
+	if !ok {
+		t.Fatalf("expected *protocol.Delta, got %T", mirror.forwarded[0])
+	}
+	if delta.CorrelationID != "intent-1" || len(delta.Patches) != 1 || delta.Patches[0].Path != "match.lec" {
+		t.Fatalf("unexpected immediate projection: %+v", delta)
+	}
+}
+
 // TestBridge_StepOnce_LogsSuccessfulForward proves the ADR-BLUE-012 §16.1
 // out-of-wire trace actually fires with the full projection identity on a
 // real forward — the gap this test closes is that bridge.go previously had

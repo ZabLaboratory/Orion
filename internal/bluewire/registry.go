@@ -2,6 +2,7 @@ package bluewire
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -130,6 +131,18 @@ func (r *Registry) Current(slot bluehost.Slot) *Bridge {
 		return nil
 	}
 	return run.bridge
+}
+
+// Forward sends a result produced outside the ticker (for example an
+// operator on-call) through the bridge currently owning slot. It fails closed
+// when the slot has no active bridge instead of accepting a trigger that
+// cannot reach Solar.
+func (r *Registry) Forward(slot bluehost.Slot, result StepResult) error {
+	bridge := r.Current(slot)
+	if bridge == nil {
+		return fmt.Errorf("bluewire: no running bridge for slot %s", slot)
+	}
+	return bridge.ForwardResult(result)
 }
 
 // StopAll stops every running bridge. Intended for process shutdown.

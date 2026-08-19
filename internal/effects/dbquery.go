@@ -71,8 +71,9 @@ type DBQueryClient struct {
 	// frozen boot token would 401 every `_query` once it rotated — the
 	// same C1 bug class the compiler fetcher hit
 	// (NewHTTPFetcherWithTokenFunc).
-	tokenFn func() string
-	client  *http.Client
+	tokenFn     func() string
+	pathTokenFn func([]string) string
+	client      *http.Client
 }
 
 // NewDBQueryClient builds the client with a STATIC token. Kept for tests
@@ -99,6 +100,23 @@ func NewDBQueryClientWithTokenFunc(gatewayURL string, tokenFn func() string, htt
 	}
 }
 
+// NewDBQueryClientWithPathTokenFunc asks the minter for the exact datasource
+// scope on every query. It is the production Engine B constructor; the
+// parameterless constructor remains for legacy/static tests.
+func NewDBQueryClientWithPathTokenFunc(gatewayURL string, tokenFn func([]string) string, httpClient *http.Client) *DBQueryClient {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if tokenFn == nil {
+		tokenFn = func([]string) string { return "" }
+	}
+	return &DBQueryClient{
+		gatewayURL:  strings.TrimRight(gatewayURL, "/"),
+		pathTokenFn: tokenFn,
+		client:      httpClient,
+	}
+}
+
 // maxQueryResponse bounds the `_query` response read (same 1 MiB bound
 // as the poller).
 const maxQueryResponse = 1 << 20
@@ -113,7 +131,13 @@ func (c *DBQueryClient) Query(ctx context.Context, ds DataSource, descriptor jso
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if tok := c.tokenFn(); tok != "" {
+	tok := ""
+	if c.pathTokenFn != nil {
+		tok = c.pathTokenFn([]string{ds.Scope()})
+	} else if c.tokenFn != nil {
+		tok = c.tokenFn()
+	}
+	if tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	resp, err := c.client.Do(req)
