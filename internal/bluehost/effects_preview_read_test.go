@@ -9,35 +9,6 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/effects"
 )
 
-func TestEffectHandlers_PreviewExecutesReadOnlyHTTP(t *testing.T) {
-	hits := 0
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
-		if r.Method != http.MethodGet {
-			t.Fatalf("method = %s, want GET", r.Method)
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"match_id":"lec-1","home":"Team A"}`))
-	}))
-	defer srv.Close()
-	u := srv.URL
-	// The private-address exception is test-only; production still uses the
-	// configured allowlist and DNS/IP re-checks.
-	egress := effects.NewEgressPolicy([]string{"127.0.0.1"}, true).InsecureAllowPrivateForTest()
-	handler := NewEffectHandlers(EffectDeps{Egress: egress}, blueruntime.Preview)["core.http.request@1"]
-
-	outputs, err := handler(nil, map[string]any{"url": u, "method": http.MethodGet})
-	if err != nil {
-		t.Fatalf("preview GET: %v", err)
-	}
-	if hits != 1 {
-		t.Fatalf("preview GET hits = %d, want 1", hits)
-	}
-	if outputs["ok"] != true {
-		t.Fatalf("preview GET outputs = %#v", outputs)
-	}
-}
-
 func TestEffectHandlers_PreviewExecutesCuratedReadRoute(t *testing.T) {
 	var gotPath, gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -59,7 +30,7 @@ func TestEffectHandlers_PreviewExecutesCuratedReadRoute(t *testing.T) {
 		return ServiceCallRoute{
 			Service: "truth", RouteID: routeID, Method: http.MethodGet,
 			PathTemplate: "/truth/leaguepedia/matches/{match_id}/preview",
-			Params: []string{"match_id"}, TokenPaths: []string{"query.read.truth"},
+			Params:       []string{"match_id"}, TokenPaths: []string{"query.read.truth"},
 		}, true
 	}
 	handler := NewEffectHandlers(EffectDeps{

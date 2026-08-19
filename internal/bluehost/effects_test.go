@@ -204,11 +204,11 @@ func startedInstance(t *testing.T, program []byte, mode blueruntime.Mode, handle
 	return instance
 }
 
-// TestEffectHandlers_PreviewReadFailureIsVisible proves a read failure is
-// surfaced to the graph instead of being hidden behind the old synthetic
-// status=0 preview result. The preview read path is real; a denied egress must
-// therefore stop the `then` continuation.
-func TestEffectHandlers_PreviewReadFailureIsVisible(t *testing.T) {
+// TestEffectHandlers_PreviewNeverDialsNetwork proves the generic HTTP preview
+// seam remains construction-safe: it returns the synthetic status=0 result
+// without touching the network. Scene-intent data reads use the curated
+// core.service.call route below, not this generic primitive.
+func TestEffectHandlers_PreviewNeverDialsNetwork(t *testing.T) {
 	dialed := false
 	// A deny-all policy keeps the test deterministic while proving the graph
 	// receives an error rather than a fake successful response.
@@ -232,8 +232,8 @@ func TestEffectHandlers_PreviewReadFailureIsVisible(t *testing.T) {
 	if dialed {
 		t.Fatal("preview attempted DNS resolution before egress admission")
 	}
-	if step.Outputs["result"] != nil {
-		t.Fatalf("denied preview read reached `then`: outputs=%#v", step.Outputs)
+	if v, _ := step.Outputs["result"].(json.Number); v != "0" {
+		t.Fatalf("expected preview status 0, got %#v (outputs=%#v)", step.Outputs["result"], step.Outputs)
 	}
 }
 

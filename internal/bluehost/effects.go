@@ -98,15 +98,15 @@ type ServiceRouteResolver func(service, routeID string) (ServiceCallRoute, bool)
 //     now, not by that upstream declaration).
 func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueruntime.EffectFunc {
 	http := func(_, inputs map[string]any) (map[string]any, error) {
-		if mode != blueruntime.Execute && !previewReadMethod(strOf(inputs["method"])) {
-			return nil, previewWriteForbidden("core.http.request", strOf(inputs["method"]))
+		if mode != blueruntime.Execute {
+			return previewHTTPResult(), nil
 		}
 		return doHTTPRequest(context.Background(), deps.Egress, inputs)
 	}
 	db := func(config, inputs map[string]any) (map[string]any, error) {
-		// QueryDescriptor is read-only by construction and the datasource is
-		// resolved from Orion's allowlist. It is safe, and necessary, in both
-		// modes.
+		if mode != blueruntime.Execute {
+			return previewDBResult(), nil
+		}
 		return doDBQuery(context.Background(), deps.DB, deps.DataSources, config, inputs)
 	}
 	serviceCall := func(config, inputs map[string]any) (map[string]any, error) {
@@ -146,6 +146,25 @@ func previewWriteForbidden(effect, method string) error {
 		method = "unspecified"
 	}
 	return fmt.Errorf("PREVIEW_WRITE_FORBIDDEN: %s method %s is not read-only", effect, strings.ToUpper(strings.TrimSpace(method)))
+}
+
+func previewHTTPResult() map[string]any {
+	return map[string]any{
+		"status":  json.Number("0"),
+		"body":    nil,
+		"headers": map[string]any{},
+		"ok":      false,
+		"preview": true,
+	}
+}
+
+func previewDBResult() map[string]any {
+	return map[string]any{
+		"rows":       nil,
+		"count":      json.Number("0"),
+		"elapsed_ms": json.Number("0"),
+		"preview":    true,
+	}
 }
 
 // doHTTPRequest executes `core.http.request@1`/`core.http-request@1` for
