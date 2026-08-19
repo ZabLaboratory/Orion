@@ -563,6 +563,7 @@ func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
 	if err != nil {
 		return result, err
 	}
+	result = normalizeRuntimeOutputs(result)
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
@@ -667,6 +668,7 @@ func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, er
 	if err != nil {
 		return result, err
 	}
+	result = normalizeRuntimeOutputs(result)
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
@@ -693,6 +695,7 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 	if err != nil {
 		return result, err
 	}
+	result = normalizeRuntimeOutputs(result)
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
@@ -721,6 +724,7 @@ func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (bluerunt
 	if err != nil {
 		return result, err
 	}
+	result = normalizeRuntimeOutputs(result)
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
@@ -759,6 +763,7 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 	if err != nil {
 		return result, err
 	}
+	result = normalizeRuntimeOutputs(result)
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
