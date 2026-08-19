@@ -4,8 +4,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/blueproject"
+	"github.com/ZabLaboratory/Orion/internal/bluewire"
 	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
@@ -31,6 +34,37 @@ func TestOperator_CallPreviewFiresWhenSlotPreviewHosted(t *testing.T) {
 	}
 	if got, _ := f.peekVarSlot(t, bluehost.SlotPreview, "called").(string); got != "preview-fired" {
 		t.Fatalf("called = %#v, want %q", got, "preview-fired")
+	}
+}
+
+func TestOperator_CallPreviewProjectsResultImmediately(t *testing.T) {
+	program := buildEngineBOperatorProgram(t, "call", "called", "", "", "")
+	host := bluehost.NewHost()
+	if err := loadEngineBSlot(host, bluehost.SlotPreview, program); err != nil {
+		t.Fatalf("load preview: %v", err)
+	}
+	mirror := &recordingMirror{}
+	bridges := bluewire.NewRegistry()
+	bridge := bluewire.NewBridge(host, bluehost.SlotPreview, mirror, "scene-1", "sha256:scene", "instance-1", blueproject.TargetPreview, "revision-1", "intent-1")
+	bridges.Start(bluehost.SlotPreview, bridge, time.Hour, nil)
+	t.Cleanup(func() { bridges.StopAll(); _ = host.Release(bluehost.SlotPreview, "test-cleanup") })
+
+	m := obs.NewMetrics()
+	show := runtime.NewShow(runtime.NewComputeRegistry(), testLogger())
+	t.Cleanup(show.Stop)
+	mux := http.NewServeMux()
+	RegisterPublic(mux, PublicDeps{
+		Logger: testLogger(), Metrics: m, Show: show,
+		SceneIntent: &SceneIntentDeps{Host: host, Bridges: bridges},
+	})
+
+	w := opRequest(t, mux, "POST", "/api/v1/operator/call/_/call?target=preview", "operator",
+		map[string]any{"payload": "preview-immediate"})
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("preview call: got %d, want 202 (body=%s)", w.Code, w.Body.String())
+	}
+	if got := mirror.count(); got != 1 {
+		t.Fatalf("expected the call result to reach the preview mirror immediately, got %d forwards", got)
 	}
 }
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
@@ -70,11 +72,11 @@ type ServiceCallRoute struct {
 type ServiceRouteResolver func(service, routeID string) (ServiceCallRoute, bool)
 
 // NewEffectHandlers builds the StartOptions.EffectHandlers table for one
-// instance. mode gates the transport: blueruntime.Preview NEVER dials the
-// network or the DB — CheckURL/DB.Query are not even reached, proven by
-// construction, satisfying issue #358 §7's explicit preview criterion —
-// while blueruntime.Execute dispatches for real through deps, the same
-// policy (allowlist, token, response caps) Engine A's on-air scene uses.
+// instance. Preview admits the same read-only data path as the on-air
+// instance: GET/HEAD HTTP, curated read-only service routes, and topology-A
+// db.query. Mutating transports remain rejected before they can reach a
+// dependency. This is required for a preview to be a real replica of the
+// scene state rather than a graph that only appears to run.
 //
 // Engine A's PreviewSlot applies the same stateless policy to its private
 // effect bundle, so both host implementations expose the same synthetic
@@ -109,7 +111,13 @@ func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueru
 	}
 	serviceCall := func(config, inputs map[string]any) (map[string]any, error) {
 		if mode != blueruntime.Execute {
-			return previewServiceCallResult(), nil
+			route, err := serviceCallRouteOf(config, deps.ResolveServiceRoute)
+			if err != nil {
+				return nil, err
+			}
+			if !previewReadMethod(route.Method) {
+				return nil, previewWriteForbidden("core.service.call", route.Method)
+			}
 		}
 		return doServiceCall(context.Background(), deps.ServiceCall, deps.ResolveServiceRoute, deps.EgressBudget, deps.EgressBudgetKey, config, inputs)
 	}
@@ -121,10 +129,25 @@ func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueru
 	}
 }
 
-// previewHTTPResult is the construction-safe, no-transport preview
-// response: fires `then` (nil error), never touches the network — the
-// same "unwired seam still fires then" ethos walker.go's
-// fireLocalSideEffect applies to animation.play/show.emit/overlay-app.set.
+// previewReadMethod is deliberately narrower than the transport's method
+// parser. An absent method means the Blue ABI default, GET. No authored or
+// registry method can turn a preview read into a write.
+func previewReadMethod(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case "", http.MethodGet, http.MethodHead:
+		return true
+	default:
+		return false
+	}
+}
+
+func previewWriteForbidden(effect, method string) error {
+	if method == "" {
+		method = "unspecified"
+	}
+	return fmt.Errorf("PREVIEW_WRITE_FORBIDDEN: %s method %s is not read-only", effect, strings.ToUpper(strings.TrimSpace(method)))
+}
+
 func previewHTTPResult() map[string]any {
 	return map[string]any{
 		"status":  json.Number("0"),
@@ -141,15 +164,6 @@ func previewDBResult() map[string]any {
 		"count":      json.Number("0"),
 		"elapsed_ms": json.Number("0"),
 		"preview":    true,
-	}
-}
-
-func previewServiceCallResult() map[string]any {
-	return map[string]any{
-		"status":  json.Number("0"),
-		"body":    nil,
-		"ok":      false,
-		"preview": true,
 	}
 }
 

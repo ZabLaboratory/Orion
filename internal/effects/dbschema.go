@@ -43,9 +43,10 @@ type Schema struct {
 // service token — same wiring as DBQueryClient (no egress policy: the
 // gateway URL is operator config, never blueprint-authored).
 type SchemaClient struct {
-	gatewayURL string
-	tokenFn    func() string
-	client     *http.Client
+	gatewayURL  string
+	tokenFn     func() string
+	pathTokenFn func([]string) string
+	client      *http.Client
 }
 
 // NewSchemaClientWithTokenFunc builds the client reading its bearer LIVE
@@ -66,6 +67,22 @@ func NewSchemaClientWithTokenFunc(gatewayURL string, tokenFn func() string, http
 	}
 }
 
+// NewSchemaClientWithPathTokenFunc asks the minter for the exact datasource
+// read scope on every catalog request.
+func NewSchemaClientWithPathTokenFunc(gatewayURL string, tokenFn func([]string) string, httpClient *http.Client) *SchemaClient {
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	if tokenFn == nil {
+		tokenFn = func([]string) string { return "" }
+	}
+	return &SchemaClient{
+		gatewayURL:  strings.TrimRight(gatewayURL, "/"),
+		pathTokenFn: tokenFn,
+		client:      httpClient,
+	}
+}
+
 // Schema GETs the catalog of the owning service. A non-200 is returned
 // as an error suitable for surfacing upstream.
 func (c *SchemaClient) Schema(ctx context.Context, ds DataSource) (*Schema, error) {
@@ -74,7 +91,13 @@ func (c *SchemaClient) Schema(ctx context.Context, ds DataSource) (*Schema, erro
 	if err != nil {
 		return nil, err
 	}
-	if tok := c.tokenFn(); tok != "" {
+	tok := ""
+	if c.pathTokenFn != nil {
+		tok = c.pathTokenFn([]string{ds.Scope()})
+	} else if c.tokenFn != nil {
+		tok = c.tokenFn()
+	}
+	if tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	resp, err := c.client.Do(req)

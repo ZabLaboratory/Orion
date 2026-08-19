@@ -30,15 +30,6 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/ws"
 )
 
-// noServiceToken is the outbound-Bearer seam every ZabGate-fronted client
-// below took as `serviceTokens.Token` before the ServiceTokenManager was
-// retired (#15, #331 — ADR-BLUE-012 §4.3, Orion holds no durable state).
-// The db.query/service.call/schema surfaces stay wired dark (no token,
-// egress fails closed to the `error` port) rather than being ripped out:
-// they still serve the routes RegisterPublic keeps, matching the "capacity
-// paused" posture documented for stream-rules in the #331 final report.
-func noServiceToken() string { return "" }
-
 func main() {
 	if err := run(); err != nil {
 		_, _ = os.Stderr.WriteString("orion: " + err.Error() + "\n")
@@ -184,11 +175,11 @@ func run() error {
 
 	_ = auth.NewValidator(cfg.ZabAuthValidateURL, cfg.ServiceToken, cfg.AuthCacheTTL)
 
-	// Service-token manager — RETIRED (#15, #331, ADR-BLUE-012 §4.3): Orion
-	// holds no durable refresh token anymore. Every outbound ZabGate call
-	// below (db.query, service.call, schema) reads noServiceToken() instead
-	// — dark (egress fails closed to the `error` port) rather than ripped
-	// out, matching the "capacity paused" posture in the #331 report.
+	// Engine B egress uses the durable family only to obtain exact,
+	// short-lived route tokens. The family bearer is never sent to a data
+	// route, and an absent/expired exchange fails closed in the effect.
+	serviceTokenMinter := effects.NewServiceTokenExchangeMinter(cfg.ZabGateURL, cfg.ServiceToken, nil)
+	serviceTokenFn := serviceTokenMinter.Token
 
 	// Async-effect bundle (ADR 003 §3.1.3 / R9 lift ADR 006 §3.4).
 	// Installed on the show so a VALIDATED, exec-bearing scene registers
@@ -205,7 +196,7 @@ func run() error {
 	for name, svc := range cfg.DataSources {
 		dataSources[name] = effects.DataSource{Name: name, Svc: svc}
 	}
-	serviceCallClient := effects.NewServiceCallClient(cfg.ZabGateURL, nil, nil)
+	serviceCallClient := effects.NewServiceCallClient(cfg.ZabGateURL, serviceTokenFn, nil)
 	// The direct bluehost ABI has no stream identity in EffectFunc, so its
 	// conservative fallback budget is shared under one host key. Engine A's
 	// scene runtime keeps the same limiter but supplies its per-stream key.
@@ -217,7 +208,7 @@ func run() error {
 	effectDeps := bluehost.EffectDeps{
 		Runner:          effectRunner,
 		Egress:          effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP),
-		DB:              effects.NewDBQueryClientWithTokenFunc(cfg.ZabGateURL, noServiceToken, nil),
+		DB:              effects.NewDBQueryClientWithPathTokenFunc(cfg.ZabGateURL, serviceTokenMinter.Token, nil),
 		DataSources:     dataSources,
 		ServiceCall:     serviceCallClient,
 		EgressBudget:    egressBudget,
@@ -410,9 +401,8 @@ func run() error {
 		PreviewLSDP:   previewLSDPHandler,
 		AuthSource:    authSource,
 		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway as the
-		// db.query client; dark (noServiceToken) since #15/#331 — see
-		// noServiceToken doc comment.
-		SchemaClient: effects.NewSchemaClientWithTokenFunc(cfg.ZabGateURL, noServiceToken, nil),
+		// db.query client; both use the same exact-route exchange callback.
+		SchemaClient: effects.NewSchemaClientWithPathTokenFunc(cfg.ZabGateURL, serviceTokenMinter.Token, nil),
 		SceneIntent:  sceneIntent,
 	})
 

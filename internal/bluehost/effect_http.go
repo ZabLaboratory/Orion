@@ -11,7 +11,9 @@
 // out of scope for this pass (Orion #336).
 //
 // MODE GATE (ORION-PREVIEW-EFFECT-GATE): dispatchInvocations only dials for
-// Execute-mode slots (the antenna). See its own doc for why.
+// Execute-mode slots (the antenna). The direct Engine-B effect handlers own
+// the read-only preview data path; this generic async admission surface stays
+// silent in preview.
 package bluehost
 
 import (
@@ -53,20 +55,15 @@ func (h *Host) SetHTTPEffects(deps EffectDeps, logger *slog.Logger) {
 // goroutine and reports back through Runtime.Complete once the real HTTP
 // call resolves.
 //
-// Preview NEVER dials the network — same posture NewEffectHandlers already
-// applies to the 4 opcodes of full right (effects.go: "blueruntime.Preview
-// NEVER dials the network or the DB") and dispatchOverlayAppSet applies to
-// the wire effector (effect_overlay.go). `core.effect.invoke@1` is the third
-// path an instance can reach the network through — StepResult.Invocations,
-// the async admission protocol — and had no such gate: a preview instance
-// invoking core.http.request would have dispatched a REAL outbound call.
-// Gated first, before even reading h.httpEgress/h.httpRunner, mirroring
-// dispatchOverlayAppSet's placement exactly (ORION-PREVIEW-EFFECT-GATE).
+// `core.effect.invoke@1` is the async path an instance can reach the network
+// through. Read-only invocations use the same egress policy and worker pool as
+// on-air; write invocations complete with an explicit error and never submit a
+// network job.
 func (h *Host) dispatchInvocations(slot Slot, instance *blueruntime.InstanceHandle, invocations []map[string]any) {
-	if modeFor(slot) != blueruntime.Execute {
+	if len(invocations) == 0 {
 		return
 	}
-	if len(invocations) == 0 {
+	if modeFor(slot) != blueruntime.Execute {
 		return
 	}
 	h.mu.Lock()

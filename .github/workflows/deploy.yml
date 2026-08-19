@@ -26,25 +26,13 @@ jobs:
     runs-on: [self-hosted, vps-ovh]
     timeout-minutes: 2
     steps:
-      # The cutover of issue #307 happened: ORION_ENCRYPTION_KEY is now
-      # required (ADR ZabAuth 003 Am.3 § A3.3 part 2). It is permanent — it
-      # decrypts the durable refresh token every boot, so a deploy without it
-      # puts Orion on the air with no service token.
-      #
-      # ORION_SERVICE_REFRESH_TOKEN is deliberately NOT required. It is an
-      # amorce consumed by the first rotation and purged from the deploy path
-      # afterwards (§ A3.7 step 2.6, § 5 R8): requiring it would either block
-      # every deploy after the purge, or push an operator to keep a spent
-      # generation wired — which trips `reuse` and revokes the live family the
-      # first time the database resolution comes back empty.
-      #
-      # ORION_SERVICE_TOKEN / ORION_OPERATOR_TOKEN are retired outright
-      # (§ A3.3 parts 5/6, RC 47): the antenne profile refuses the former and
-      # the latter lost its last consumer with EgressTokenSource.
+      # Orion keeps one provisioned durable service-family access token only
+      # to request short-lived, route-scoped tokens from ZabAuth. The runtime
+      # never sends this family token to an upstream service.
       - name: Verify secrets
         run: |
-          if [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_USERNAME }}" ] || [ -z "${{ secrets.VPS_SSH_KEY }}" ] || [ -z "${{ secrets.VPS_APP_PATH }}" ] || [ -z "${{ secrets.ORION_PG_PASSWORD }}" ] || [ -z "${{ secrets.ORION_ENCRYPTION_KEY }}" ]; then
-            echo "::error::Missing required secrets (VPS_HOST, VPS_USERNAME, VPS_SSH_KEY, VPS_APP_PATH, ORION_PG_PASSWORD, ORION_ENCRYPTION_KEY)"
+          if [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_USERNAME }}" ] || [ -z "${{ secrets.VPS_SSH_KEY }}" ] || [ -z "${{ secrets.VPS_APP_PATH }}" ] || [ -z "${{ secrets.ORION_PG_PASSWORD }}" ] || [ -z "${{ secrets.ORION_ENCRYPTION_KEY }}" ] || [ -z "${{ secrets.ORION_SERVICE_TOKEN }}" ]; then
+            echo "::error::Missing required secrets (VPS_HOST, VPS_USERNAME, VPS_SSH_KEY, VPS_APP_PATH, ORION_PG_PASSWORD, ORION_ENCRYPTION_KEY, ORION_SERVICE_TOKEN)"
             exit 1
           fi
 
@@ -179,7 +167,7 @@ jobs:
           SSH_CMD: ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new ${{ secrets.VPS_USERNAME }}@${{ secrets.VPS_HOST }}
           APP_PATH: ${{ secrets.VPS_APP_PATH }}
           ORION_PG_PASSWORD: ${{ secrets.ORION_PG_PASSWORD }}
-          ORION_SERVICE_REFRESH_TOKEN: ${{ secrets.ORION_SERVICE_REFRESH_TOKEN }}
+          ORION_SERVICE_TOKEN: ${{ secrets.ORION_SERVICE_TOKEN }}
           ORION_ENCRYPTION_KEY: ${{ secrets.ORION_ENCRYPTION_KEY }}
           ORION_LSDP_MODE: ${{ vars.ORION_LSDP_MODE }}
           ORION_SERVICE_PATHS: ${{ vars.ORION_SERVICE_PATHS }}
@@ -215,19 +203,11 @@ jobs:
           ORION_ZABAUTH_VALIDATE_URL=http://zabgate:4000/auth/api/v1/tokens
           ORION_AUTH_CACHE_TTL_S=60
 
-          # No standing credential on the antenne .env (ADR ZabAuth 003 Am.3
-          # § A3.3 parts 5/6, RC 47): ORION_SERVICE_TOKEN is dev/test-only and
-          # refused by the antenne profile, ORION_OPERATOR_TOKEN is retired with
-          # its last consumer (EgressTokenSource). The durable refresh family
-          # below is the only credential path.
+          # This is the provisioned durable family credential. It is used only
+          # at the ZabAuth exchange endpoint; every upstream request receives a
+          # short-lived token with an exact route scope.
+          ORION_SERVICE_TOKEN=$ORION_SERVICE_TOKEN
           ORION_SERVICE_PATHS=${ORION_SERVICE_PATHS:-quasar.credentials.read}
-
-          # Durable service token (ADR ZabAuth 003 Am.3 § A3.3 parts 1/2/5).
-          # The seed is an amorce consumed by the FIRST rotation; the deploy
-          # path must stop re-injecting it once the family is established, and
-          # the secret is purged at étage 1 (§ 5 R8, § A3.7 step 2.6). Replaying
-          # a consumed generation trips reuse and revokes the live family.
-          ORION_SERVICE_REFRESH_TOKEN=$ORION_SERVICE_REFRESH_TOKEN
           ORION_ENCRYPTION_KEY=$ORION_ENCRYPTION_KEY
 
           # db.query topology A — empty unless the repo variables are set.

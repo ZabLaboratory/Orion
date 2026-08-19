@@ -10,6 +10,7 @@ import (
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
 
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/bluewire"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
@@ -390,9 +391,24 @@ func postOperatorCallEngineB(w http.ResponseWriter, r *http.Request, deps Public
 	if !ok {
 		return
 	}
-	if _, err := host.Call(slot, entrypointID, payload); err != nil {
+	result, err := host.Call(slot, entrypointID, payload)
+	if err != nil {
 		writeOperatorError(w, http.StatusInternalServerError, "INTERNAL", "call failed")
 		return
+	}
+	// The production stateless path owns a bridge for every scene slot. A
+	// direct forward is required here: the runtime result contains the LSML
+	// mutations caused by LEC, while the periodic bridge tick may have no
+	// output to repeat. Keep old no-wire fixtures compatible, but never report
+	// success when the production bridge exists and cannot project the result.
+	if deps.SceneIntent != nil && deps.SceneIntent.Bridges != nil {
+		if err := deps.SceneIntent.Bridges.Forward(slot, bluewire.StepResult{
+			RuntimeSequence: result.RuntimeSequence,
+			Outputs:         result.Outputs,
+		}); err != nil {
+			writeOperatorError(w, http.StatusServiceUnavailable, "PROJECTION_FAILED", err.Error())
+			return
+		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]string{"status": "fired"})
 }
