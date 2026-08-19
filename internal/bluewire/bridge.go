@@ -93,6 +93,9 @@ type Bridge struct {
 	renderRevision string
 	correlationID  string
 	logger         *slog.Logger
+	startupMu      sync.Mutex
+	startupGate    <-chan struct{}
+	startupCancel  context.CancelFunc
 
 	mu                   sync.Mutex
 	lastRuntimeSequence  uint64
@@ -133,6 +136,26 @@ func NewBridge(host *bluehost.Host, slot bluehost.Slot, mirror runtime.SceneMirr
 // Call before Run/StepOnce/TickOnce; not safe to change concurrently with a
 // running bridge.
 func (b *Bridge) SetLogger(logger *slog.Logger) { b.logger = logger }
+
+// SetStartupGate holds the bridge loop until the caller has seeded the
+// destination scene and emitted the first runtime projection. The cancel
+// function lets Registry stop a bridge whose asynchronous startup was
+// superseded before its seed completed.
+func (b *Bridge) SetStartupGate(gate <-chan struct{}, cancel context.CancelFunc) {
+	b.startupMu.Lock()
+	defer b.startupMu.Unlock()
+	b.startupGate = gate
+	b.startupCancel = cancel
+}
+
+func (b *Bridge) cancelStartup() {
+	b.startupMu.Lock()
+	cancel := b.startupCancel
+	b.startupMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
 
 // StepOnce steps the underlying instance once and forwards the result.
 // An empty projection (no wire-legal outputs this step) is a no-op —
@@ -379,6 +402,16 @@ func projectionDigest(proj blueproject.Projection, sceneID string, patches []pro
 // aborts the loop — a single instance's misbehaviour must not take down
 // every other paired instance sharing the process.
 func (b *Bridge) Run(ctx context.Context, interval time.Duration, onError func(error)) {
+	b.startupMu.Lock()
+	startupGate := b.startupGate
+	b.startupMu.Unlock()
+	if startupGate != nil {
+		select {
+		case <-startupGate:
+		case <-ctx.Done():
+			return
+		}
+	}
 	if interval <= 0 {
 		interval = 100 * time.Millisecond
 	}

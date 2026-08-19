@@ -479,3 +479,33 @@ func TestBridge_Run_ReportsErrorsButKeepsGoing(t *testing.T) {
 		t.Fatalf("expected the loop to keep stepping after an error, got %d calls", steps.callCount())
 	}
 }
+
+func TestBridge_RunWaitsForStartupGate(t *testing.T) {
+	steps := &fakeSteps{results: []StepResult{{RuntimeSequence: 1, Outputs: map[string]any{"a": "1"}}}}
+	mirror := &fakeMirror{}
+	b := &Bridge{steps: steps, slot: bluehost.SlotPreview, mirror: mirror, target: blueproject.TargetPreview}
+	gate := make(chan struct{})
+	startupCtx, cancelStartup := context.WithCancel(context.Background())
+	defer cancelStartup()
+	b.SetStartupGate(gate, cancelStartup)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		b.Run(ctx, 5*time.Millisecond, nil)
+		close(done)
+	}()
+
+	time.Sleep(20 * time.Millisecond)
+	if got := steps.callCount(); got != 0 {
+		t.Fatalf("bridge stepped before startup gate opened: %d", got)
+	}
+	if startupCtx.Err() != nil {
+		t.Fatalf("startup context unexpectedly cancelled: %v", startupCtx.Err())
+	}
+	close(gate)
+	waitFor(t, "first gated step", func() bool { return steps.callCount() >= 1 })
+	cancel()
+	<-done
+}

@@ -72,6 +72,7 @@ func (r *Registry) Start(slot bluehost.Slot, bridge *Bridge, interval time.Durat
 	previous := r.running[slot]
 	delete(r.running, slot)
 	if previous != nil {
+		previous.bridge.cancelStartup()
 		previous.cancel()
 	}
 	r.mu.Unlock()
@@ -102,6 +103,7 @@ func (r *Registry) Stop(slot bluehost.Slot) {
 	run := r.running[slot]
 	delete(r.running, slot)
 	if run != nil {
+		run.bridge.cancelStartup()
 		run.cancel()
 	}
 	r.mu.Unlock()
@@ -154,6 +156,7 @@ func (r *Registry) StopAll() {
 	runs := make([]*bridgeRun, 0, len(r.running))
 	for slot, run := range r.running {
 		runs = append(runs, run)
+		run.bridge.cancelStartup()
 		run.cancel()
 		delete(r.running, slot)
 	}

@@ -857,19 +857,23 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	// A compiled LSML bundle can legitimately have no authored defaults while
 	// still containing a renderable static scene and dynamic bindings. Solar
 	// still needs one snapshot to mount that bundle before the first operator
-	// delta can be displayed.
-	if len(staticState) > 0 || len(mirrorBundle) > 0 {
-		// Literal leaves belong to the Canvas layout, not to the Blue
-		// program. Seed them before starting/replacing the bridge so a
-		// programmed scene renders its authored text/images immediately.
+	// delta can be displayed. For programmed scenes the snapshot and first
+	// delta are sequenced behind a bridge startup gate so the HTTP response is
+	// not held by a large LSML seed, while Run cannot tick before the seed.
+	hasSnapshot := len(staticState) > 0 || len(mirrorBundle) > 0
+	var initialSnapshot *protocol.Snapshot
+	if hasSnapshot {
 		deps.Bridges.Stop(slot)
-		mirror.Forward(&protocol.Snapshot{
+		initialSnapshot = &protocol.Snapshot{
 			SceneID:      claims.SceneID,
 			SceneVersion: claims.SceneDigest,
 			State:        staticState,
-		})
+		}
 	}
 	if !hasProgram {
+		if initialSnapshot != nil {
+			mirror.Forward(initialSnapshot)
+		}
 		deps.Bridges.Stop(slot)
 		return
 	}
@@ -884,18 +888,38 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	if interval <= 0 {
 		interval = defaultProjectionInterval
 	}
+	var startupCtx context.Context
+	var startupCancel context.CancelFunc
+	var startupGate chan struct{}
+	if initialSnapshot != nil {
+		startupCtx, startupCancel = context.WithCancel(context.Background())
+		startupGate = make(chan struct{})
+		bridge.SetStartupGate(startupGate, startupCancel)
+	}
 	deps.Bridges.Start(slot, bridge, interval, func(err error) {
 		if logger != nil {
 			logger.Warn("bluewire bridge step failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
 		}
 	})
-	// The compiled render-bundle snapshot above is already on the wire before
-	// the intent response. The first Blue runtime projection is dispatched
-	// immediately but outside the HTTP critical path; the host/runtime locks
-	// and bridge sequence gate preserve ordering with the periodic loop.
+	// The compiled render-bundle snapshot and first Blue runtime projection are
+	// dispatched immediately but outside the HTTP critical path. When a
+	// snapshot exists, the startup gate keeps the periodic loop behind both
+	// operations and Registry can cancel the worker if a newer scene wins.
 	go func() {
+		if startupCtx != nil && startupCtx.Err() != nil {
+			return
+		}
+		if initialSnapshot != nil {
+			mirror.Forward(initialSnapshot)
+		}
+		if startupCtx != nil && startupCtx.Err() != nil {
+			return
+		}
 		if err := bridge.TickOnce(0); err != nil && logger != nil {
 			logger.Warn("bluewire initial projection failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
+		}
+		if startupGate != nil {
+			close(startupGate)
 		}
 	}()
 }
