@@ -484,12 +484,17 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		inlineArtifacts := req.BlueProgram != "" || req.BlueProgramDigest != "" || req.LSMLBundle != "" || req.LSMLBundleDigest != "" || req.RenderBundle != "" || req.RenderBundleDigest != ""
 		var envelopeBody []byte
 		var delegation *workload.Delegation
+		var inlineAdmissionDone chan error
 		if inlineArtifacts {
 			if inlinePortal, ok := deps.Workload.(InlineAdmissionPortal); ok {
-				if err := inlinePortal.AdmitInline(ctx, ticket, json.RawMessage(raw)); err != nil {
-					writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
-					return
-				}
+				// Admission is the commit gate, not a prerequisite for local
+				// digest verification. Run the independent mTLS round-trip in
+				// parallel with those pure checks; the result is awaited before
+				// Host mutates either slot, so a rejection can never launch Blue.
+				inlineAdmissionDone = make(chan error, 1)
+				go func() {
+					inlineAdmissionDone <- inlinePortal.AdmitInline(ctx, ticket, json.RawMessage(raw))
+				}()
 			} else {
 				// Compatibility for old workload implementations and test
 				// doubles; production Orion implements InlineAdmissionPortal.
@@ -532,6 +537,12 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 				return
 			}
 			envelopeBody = artifact.Body
+		}
+		if inlineAdmissionDone != nil {
+			if err := <-inlineAdmissionDone; err != nil {
+				writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
+				return
+			}
 		}
 
 		// artifact.Body is `zabcanvas.resolved-scene.v1` (§6.3). The
