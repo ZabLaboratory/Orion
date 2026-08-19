@@ -148,38 +148,6 @@ func previewWriteForbidden(effect, method string) error {
 	return fmt.Errorf("PREVIEW_WRITE_FORBIDDEN: %s method %s is not read-only", effect, strings.ToUpper(strings.TrimSpace(method)))
 }
 
-// These synthetic results remain available to callers that explicitly need a
-// non-data preview fallback. Scene-intent execution must not use them for the
-// LEC/LCK data path: a fake status/rows value would make the graph appear to
-// succeed while leaving LSML unchanged.
-func previewHTTPResult() map[string]any {
-	return map[string]any{
-		"status":  json.Number("0"),
-		"body":    nil,
-		"headers": map[string]any{},
-		"ok":      false,
-		"preview": true,
-	}
-}
-
-func previewDBResult() map[string]any {
-	return map[string]any{
-		"rows":       nil,
-		"count":      json.Number("0"),
-		"elapsed_ms": json.Number("0"),
-		"preview":    true,
-	}
-}
-
-func previewServiceCallResult() map[string]any {
-	return map[string]any{
-		"status":  json.Number("0"),
-		"body":    nil,
-		"ok":      false,
-		"preview": true,
-	}
-}
-
 // doHTTPRequest executes `core.http.request@1`/`core.http-request@1` for
 // real — Engine A's execHTTPRequest (internal/runtime/exec_effects.go)
 // contract, adapted from Scene/ExecNode pulls to the portable ABI's plain
