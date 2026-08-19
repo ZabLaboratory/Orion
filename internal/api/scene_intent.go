@@ -482,9 +482,11 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 				return
 			}
 			bundle = compiledBundle
-			if noProgram {
-				staticState = defaults
-			}
+			// Canvas literal leaves belong to the render bundle for both
+			// static scenes and scenes with a Blue program. The program bridge
+			// only owns dynamic values; dropping these defaults on the
+			// programmed path leaves Solar with an empty, black scene.
+			staticState = defaults
 		}
 
 		// The serving identity stays claims.SceneDigest for BOTH shapes —
