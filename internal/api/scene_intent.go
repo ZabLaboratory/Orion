@@ -880,13 +880,6 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	bridge := bluewire.NewBridge(deps.Host, slot, mirror, claims.SceneID, claims.SceneDigest, claims.RefID, target, claims.RevisionID, intentID)
 	logger := deps.Logger
 	bridge.SetLogger(logger)
-	// Project the first runtime state before returning the successful intent.
-	// The periodic bridge remains the live path, but making the first tick
-	// synchronous removes the response-to-first-delta race: a Solar client can
-	// consume the prepared slot immediately instead of waiting for the ticker.
-	if err := bridge.TickOnce(0); err != nil && logger != nil {
-		logger.Warn("bluewire initial projection failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
-	}
 	interval := deps.ProjectionInterval
 	if interval <= 0 {
 		interval = defaultProjectionInterval
@@ -896,6 +889,15 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 			logger.Warn("bluewire bridge step failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
 		}
 	})
+	// The compiled render-bundle snapshot above is already on the wire before
+	// the intent response. The first Blue runtime projection is dispatched
+	// immediately but outside the HTTP critical path; the host/runtime locks
+	// and bridge sequence gate preserve ordering with the periodic loop.
+	go func() {
+		if err := bridge.TickOnce(0); err != nil && logger != nil {
+			logger.Warn("bluewire initial projection failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
+		}
+	}()
 }
 
 // releaseSlot stops slot's bridge (if any) BEFORE releasing the
