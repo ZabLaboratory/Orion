@@ -98,9 +98,10 @@ type SceneEffects struct {
 	DataSources map[string]effects.DataSource
 	// Metrics is the phase-3 metrics sink (nil = disabled).
 	Metrics EffectMetrics
-	// Preview makes world-effect execution stateless and construction-safe:
-	// HTTP, DB, and service.call return their synthetic preview result without
-	// reaching a transport, while preserving the normal then continuation.
+	// Preview keeps mutating/world transports stateless and construction-safe:
+	// HTTP and service.call return their synthetic preview result, while the
+	// compiler-curated read-only db.query path reaches the real query service so
+	// match-driven previews remain faithful to on-air state.
 	// PreviewSlot owns setting this bit on its private effect bundle; on-air
 	// scenes keep the real bounded providers unchanged.
 	Preview bool
@@ -721,16 +722,6 @@ func execDBQuery(s *Scene, t *execTask, node *ExecNode, inPort string) execOpOut
 			}
 		})
 	}
-	if e := s.effects; e != nil && e.Preview {
-		out, err := json.Marshal(effects.QueryResult{Rows: nil, Count: 0, ElapsedMS: 0})
-		if err != nil {
-			return effectError(s, node, "DB_PREVIEW_ENCODE: "+err.Error())
-		}
-		// Preview is synthetic before datasource, descriptor, client, and
-		// budget admission; no DB object is required on this path.
-		return previewEffectOutcome(s, node, out)
-	}
-
 	name := configString(node.Config, "datasource")
 	descriptor, ok := s.pullData(t, node, "descriptor")
 	if !ok {
