@@ -490,6 +490,12 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		// chain that fetched it, not a second signed digest. Documented
 		// gap, not silently assumed equal to the program's guarantee.
 		//
+		var envelope resolvedSceneEnvelope
+		if err := json.Unmarshal(envelopeBody, &envelope); err != nil {
+			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
+			return
+		}
+
 		// A ref whose SIGNED claims declare NO program (empty
 		// blue_program_digest, ORION-NOBLUE-AND-VERSION-ALIGN #398) skips
 		// program decode/verify and never Loads anything — but an envelope
@@ -499,19 +505,19 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		noProgram := claims.BlueProgramDigest == ""
 		var program []byte
 		if noProgram {
-			if err := verifyNoProgramEnvelope(envelopeBody); err != nil {
+			if err := verifyNoProgramEnvelopeValue(envelope); err != nil {
 				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 				return
 			}
 		} else {
 			var err error
-			program, err = decodeAndVerifyProgram(envelopeBody, claims.BlueProgramDigest)
+			program, err = decodeAndVerifyProgramEnvelope(envelope, claims.BlueProgramDigest)
 			if err != nil {
 				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 				return
 			}
 		}
-		bundle, bundleErr := decodeAndVerifyBundle(envelopeBody)
+		bundle, bundleErr := decodeAndVerifyBundleEnvelope(envelope)
 		if bundleErr != nil {
 			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 			return
@@ -521,7 +527,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		if bundle != nil {
 			mirrorBundle = append([]byte(nil), bundle...)
 		}
-		precompiledBundle, precompiledErr := decodeAndVerifyRenderBundle(envelopeBody, claims.RenderBundleDigest)
+		precompiledBundle, precompiledErr := decodeAndVerifyRenderBundleEnvelope(envelope, claims.RenderBundleDigest)
 		if precompiledErr != nil {
 			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 			return
@@ -655,6 +661,10 @@ func decodeAndVerifyProgram(body json.RawMessage, expectedDigest string) ([]byte
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, err
 	}
+	return decodeAndVerifyProgramEnvelope(envelope, expectedDigest)
+}
+
+func decodeAndVerifyProgramEnvelope(envelope resolvedSceneEnvelope, expectedDigest string) ([]byte, error) {
 	if envelope.BlueProgramDigest != expectedDigest {
 		return nil, errors.New("scene-intent: envelope blue_program_digest does not match the attested claim")
 	}
@@ -722,6 +732,10 @@ func decodeAndVerifyBundle(body json.RawMessage) ([]byte, error) {
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, err
 	}
+	return decodeAndVerifyBundleEnvelope(envelope)
+}
+
+func decodeAndVerifyBundleEnvelope(envelope resolvedSceneEnvelope) ([]byte, error) {
 	if envelope.LSMLBundle == "" {
 		return nil, nil
 	}
@@ -747,6 +761,10 @@ func decodeAndVerifyRenderBundle(body json.RawMessage, expectedDigest string) ([
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return nil, err
 	}
+	return decodeAndVerifyRenderBundleEnvelope(envelope, expectedDigest)
+}
+
+func decodeAndVerifyRenderBundleEnvelope(envelope resolvedSceneEnvelope, expectedDigest string) ([]byte, error) {
 	if envelope.RenderBundle == "" {
 		if expectedDigest != "" {
 			return nil, errors.New("scene-intent: signed render_bundle_digest has no render_bundle")
@@ -790,6 +808,10 @@ func verifyNoProgramEnvelope(body json.RawMessage) error {
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		return err
 	}
+	return verifyNoProgramEnvelopeValue(envelope)
+}
+
+func verifyNoProgramEnvelopeValue(envelope resolvedSceneEnvelope) error {
 	if envelope.BlueProgram != "" || envelope.BlueProgramDigest != "" {
 		return errors.New("scene-intent: envelope carries a program the attestation did not sign")
 	}
