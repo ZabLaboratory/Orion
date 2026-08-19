@@ -69,6 +69,22 @@ func boundLeavesFromLSML(sceneID string, raw []byte, logger *slog.Logger) boundL
 	return set
 }
 
+// bootstrapState returns a neutral JSON value for every authored binding.
+// A programmed bundle may deliberately have no defaults, but Solar still
+// needs a non-empty snapshot to instantiate its tree. Null is intentional:
+// it does not invent match data, and the next Engine B delta replaces these
+// placeholders with the values loaded by the blueprint.
+func (b boundLeafSet) bootstrapState() map[string]any {
+	if !b.active() {
+		return nil
+	}
+	state := make(map[string]any, len(b.exact))
+	for path := range b.exact {
+		state[path] = nil
+	}
+	return state
+}
+
 // collectBoundLeavesLSML recurses one LSML node (opaque json.RawMessage),
 // adding every bound leaf path to dst. It reads three fields, each
 // decoded independently so a decode gap on one (e.g. a non-string `bind`
