@@ -15,11 +15,11 @@ import (
 // access token into exact, short-lived route tokens through ZabAuth. The
 // family token is never sent to a downstream data/service route.
 type ServiceTokenExchangeMinter struct {
-	url         string
-	familyToken string
-	client      *http.Client
-	mu          sync.Mutex
-	cache       map[string]cachedExchange
+	url           string
+	familyTokenFn func() string
+	client        *http.Client
+	mu            sync.Mutex
+	cache         map[string]cachedExchange
 }
 
 type cachedExchange struct {
@@ -40,14 +40,24 @@ type exchangeResponse struct {
 // NewServiceTokenExchangeMinter builds the production callback. An empty
 // family token deliberately leaves the callback fail-closed.
 func NewServiceTokenExchangeMinter(gatewayURL, familyToken string, client *http.Client) *ServiceTokenExchangeMinter {
+	return NewServiceTokenExchangeMinterWithTokenFunc(gatewayURL, func() string { return familyToken }, client)
+}
+
+// NewServiceTokenExchangeMinterWithTokenFunc reads the current family token
+// at exchange time. This is required after a durable rotation: freezing the
+// token at Orion boot turns the first ZabAuth rotation into a delayed 401.
+func NewServiceTokenExchangeMinterWithTokenFunc(gatewayURL string, familyTokenFn func() string, client *http.Client) *ServiceTokenExchangeMinter {
 	if client == nil {
 		client = http.DefaultClient
 	}
+	if familyTokenFn == nil {
+		familyTokenFn = func() string { return "" }
+	}
 	return &ServiceTokenExchangeMinter{
-		url:         strings.TrimRight(gatewayURL, "/") + "/auth/api/v1/service-tokens/exchange",
-		familyToken: familyToken,
-		client:      client,
-		cache:       map[string]cachedExchange{},
+		url:           strings.TrimRight(gatewayURL, "/") + "/auth/api/v1/service-tokens/exchange",
+		familyTokenFn: familyTokenFn,
+		client:        client,
+		cache:         map[string]cachedExchange{},
 	}
 }
 
@@ -70,7 +80,11 @@ func exchangeKey(paths []string) (string, []string) {
 // returns "" on any exchange failure so callers fail closed on their error
 // port without exposing credential details to the blueprint runtime.
 func (m *ServiceTokenExchangeMinter) Token(paths []string) string {
-	if m == nil || m.familyToken == "" {
+	if m == nil || m.familyTokenFn == nil {
+		return ""
+	}
+	familyToken := m.familyTokenFn()
+	if familyToken == "" {
 		return ""
 	}
 	key, normalized := exchangeKey(paths)
@@ -95,7 +109,7 @@ func (m *ServiceTokenExchangeMinter) Token(paths []string) string {
 	if err != nil {
 		return ""
 	}
-	req.Header.Set("Authorization", "Bearer "+m.familyToken)
+	req.Header.Set("Authorization", "Bearer "+familyToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := m.client.Do(req)
 	if err != nil {

@@ -84,12 +84,10 @@ func run() error {
 	}
 	logger.Info("auth source selected", "profile", string(cfg.Profile), "source", authSourceKind)
 
-	// Persistence — RETIRED (#15, #331, ADR-BLUE-012 §4.3): Orion holds no
-	// DB and no `validated`-record store anymore. The scene path is driven
-	// by ZabCanvas's `zabcanvas.resolved-scene-ref.v1` attestation instead
-	// (verified by the scene-intent surface below), which supersedes both
-	// the persistence layer and the air-eligibility gate
-	// (execForAir/isAirEligible) that used to read it.
+	// Scene persistence and the validated-record store remain retired. The
+	// scene path is driven by ZabCanvas's resolved-scene-ref attestation. The
+	// Postgres connection opened below is only the encrypted service-token
+	// state needed to keep Engine B's outbound identity alive across restarts.
 
 	// Runtime: compute registry → show → tick → test sessions.
 	registry := runtime.NewComputeRegistry()
@@ -175,10 +173,39 @@ func run() error {
 
 	_ = auth.NewValidator(cfg.ZabAuthValidateURL, cfg.ServiceToken, cfg.AuthCacheTTL)
 
-	// Engine B egress uses the durable family only to obtain exact,
-	// short-lived route tokens. The family bearer is never sent to a data
-	// route, and an absent/expired exchange fails closed in the effect.
-	serviceTokenMinter := effects.NewServiceTokenExchangeMinter(cfg.ZabGateURL, cfg.ServiceToken, nil)
+	// Engine B egress uses a durable family only to obtain exact, short-lived
+	// route tokens. The family bearer is never sent to a data route, and an
+	// absent/expired exchange fails closed in the effect. In embedded-local,
+	// the static token remains a test-only convenience; antenne never falls
+	// back to ORION_SERVICE_TOKEN.
+	staticServiceToken := ""
+	if cfg.Profile.IsEmbeddedLocal() {
+		staticServiceToken = cfg.ServiceToken
+	}
+	serviceTokens, tokenErr := auth.NewServiceTokenManager(
+		ctx,
+		cfg.DatabaseURL,
+		auth.ServiceTokenRefreshURL(cfg.ZabAuthValidateURL),
+		cfg.ServiceRefreshToken,
+		cfg.EncryptionKey,
+		staticServiceToken,
+		logger,
+	)
+	if tokenErr != nil {
+		logger.Error("service-token state unavailable; Engine B outbound calls fail closed", "err", tokenErr)
+	}
+	if serviceTokens != nil {
+		if err := serviceTokens.Start(ctx); err != nil {
+			logger.Error("service-token manager start failed; Engine B outbound calls fail closed", "err", err)
+		}
+		logger.Info("service-token manager", "state", string(serviceTokens.State()))
+		defer serviceTokens.Stop()
+	}
+	familyTokenFn := func() string { return "" }
+	if serviceTokens != nil {
+		familyTokenFn = serviceTokens.Token
+	}
+	serviceTokenMinter := effects.NewServiceTokenExchangeMinterWithTokenFunc(cfg.ZabGateURL, familyTokenFn, nil)
 	serviceTokenFn := serviceTokenMinter.Token
 
 	// Async-effect bundle (ADR 003 §3.1.3 / R9 lift ADR 006 §3.4).
@@ -213,6 +240,7 @@ func run() error {
 		ServiceCall:     serviceCallClient,
 		EgressBudget:    egressBudget,
 		EgressBudgetKey: "orion-bluehost",
+		Logger:          logger,
 	}
 	// Curated service-egress (ADR Blue 002 §3.3) is EXTINGUISHED: its minter
 	// was the last consumer of the standing operator credential, retired with
