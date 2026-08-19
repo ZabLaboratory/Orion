@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sort"
+	"strings"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
 
@@ -399,8 +400,12 @@ func postOperatorCallEngineB(w http.ResponseWriter, r *http.Request, deps Public
 	}
 	if deps.Logger != nil {
 		outputKeys := make([]string, 0, len(result.Outputs))
+		outputSample := make(map[string]any)
 		for key := range result.Outputs {
 			outputKeys = append(outputKeys, key)
+			if strings.HasSuffix(key, ".champ") || strings.HasSuffix(key, ".name") {
+				outputSample[key] = result.Outputs[key]
+			}
 		}
 		sort.Strings(outputKeys)
 		deps.Logger.Info("engine b operator call completed",
@@ -409,6 +414,7 @@ func postOperatorCallEngineB(w http.ResponseWriter, r *http.Request, deps Public
 			"runtime_sequence", result.RuntimeSequence,
 			"output_count", len(result.Outputs),
 			"output_keys", outputKeys,
+			"output_sample", outputSample,
 			"variable_count", len(result.Variables),
 			"invocation_count", len(result.Invocations),
 		)
