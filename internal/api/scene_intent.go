@@ -859,6 +859,13 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	bridge := bluewire.NewBridge(deps.Host, slot, mirror, claims.SceneID, claims.SceneDigest, claims.RefID, target, claims.RevisionID, intentID)
 	logger := deps.Logger
 	bridge.SetLogger(logger)
+	// Project the first runtime state before returning the successful intent.
+	// The periodic bridge remains the live path, but making the first tick
+	// synchronous removes the response-to-first-delta race: a Solar client can
+	// consume the prepared slot immediately instead of waiting for the ticker.
+	if err := bridge.TickOnce(0); err != nil && logger != nil {
+		logger.Warn("bluewire initial projection failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
+	}
 	interval := deps.ProjectionInterval
 	if interval <= 0 {
 		interval = defaultProjectionInterval
