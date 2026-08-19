@@ -11,6 +11,7 @@ import (
 // directly (MirrorForLSML already exists there, #396).
 type lsdpMirrorRegistry interface {
 	MirrorForLSML(sceneID, sceneVersion string, lsmlBundle []byte) runtime.SceneMirror
+	SetActive(sceneID string)
 }
 
 // lsdpWires names the preview and antenne wires BY FIELD, not position
@@ -68,13 +69,27 @@ type lsdpWires struct {
 // of silently landing on the antenne.
 func sceneIntentMirrorFor(wires lsdpWires) func(sceneID, sceneVersion string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
 	return func(sceneID, sceneVersion string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
+		var mirror runtime.SceneMirror
 		switch slot {
 		case bluehost.SlotPreview:
-			return wires.preview.MirrorForLSML(sceneID, sceneVersion, bundle)
+			mirror = wires.preview.MirrorForLSML(sceneID, sceneVersion, bundle)
 		case bluehost.SlotOnAir:
-			return wires.antenne.MirrorForLSML(sceneID, sceneVersion, bundle)
+			mirror = wires.antenne.MirrorForLSML(sceneID, sceneVersion, bundle)
 		default:
 			return nil
 		}
+		if mirror != nil {
+			// MirrorForLSML registers the clone, but registration alone is not
+			// sufficient when the Solar WebSocket connected before the intent.
+			// Explicitly flip the selected wire after registration so an already
+			// connected client receives scene_changed + snapshot immediately.
+			switch slot {
+			case bluehost.SlotPreview:
+				wires.preview.SetActive(sceneID)
+			case bluehost.SlotOnAir:
+				wires.antenne.SetActive(sceneID)
+			}
+		}
+		return mirror
 	}
 }
