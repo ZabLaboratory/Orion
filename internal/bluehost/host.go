@@ -12,6 +12,8 @@ package bluehost
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -39,6 +41,8 @@ var (
 	ErrAlreadyLoaded = errors.New("bluehost: slot already holds a running instance")
 	ErrNotLoaded     = errors.New("bluehost: slot holds no instance")
 )
+
+const maxCachedProgramHandles = 64
 
 // entry pairs a running instance with the program handle it was started
 // from, so Step/Stop never need the caller to keep the handle around.
@@ -272,6 +276,11 @@ type Host struct {
 	runtimeMu sync.Mutex
 	runtime   *blueruntime.Runtime
 	slots     map[Slot]*entry
+	// programHandles caches only the immutable, already-validated Blue
+	// program representation. Instances are still freshly started per slot;
+	// this removes repeated JSON/program parsing without sharing mutable state.
+	programHandles     map[string]blueruntime.ProgramHandle
+	programHandleOrder []string
 
 	// httpEgress/httpRunner wire the async invocation/completion protocol
 	// (Blue PR #313, runtime/go effects.go/runtime.go: StepResult.
@@ -297,10 +306,39 @@ type Host struct {
 // grants Orion.
 func NewHost() *Host {
 	return &Host{
-		runtime: blueruntime.NewRuntime(),
-		slots:   map[Slot]*entry{},
-		logger:  slog.Default(),
+		runtime:        blueruntime.NewRuntime(),
+		slots:          map[Slot]*entry{},
+		programHandles: map[string]blueruntime.ProgramHandle{},
+		logger:         slog.Default(),
 	}
+}
+
+func programHandleKey(program []byte) string {
+	digest := sha256.Sum256(program)
+	return hex.EncodeToString(digest[:])
+}
+
+// loadProgram must be called with h.mu held. ProgramHandle contains the
+// immutable parsed program only; Runtime.Start copies the per-instance
+// mutable state from it, so sharing this handle across slot replacements is
+// safe.
+func (h *Host) loadProgram(program []byte) (blueruntime.ProgramHandle, error) {
+	key := programHandleKey(program)
+	if handle, ok := h.programHandles[key]; ok {
+		return handle, nil
+	}
+	handle, err := h.runtime.Load(program)
+	if err != nil {
+		return blueruntime.ProgramHandle{}, err
+	}
+	h.programHandles[key] = handle
+	h.programHandleOrder = append(h.programHandleOrder, key)
+	if len(h.programHandleOrder) > maxCachedProgramHandles {
+		evict := h.programHandleOrder[0]
+		h.programHandleOrder = h.programHandleOrder[1:]
+		delete(h.programHandles, evict)
+	}
+	return handle, nil
 }
 
 // modeFor translates Orion's broadcast vocabulary to the portable ABI's
@@ -329,7 +367,7 @@ func (h *Host) Prepare(slot Slot, instanceID, sceneID, digest string, program []
 		return fmt.Errorf("%w: %s", ErrAlreadyLoaded, slot)
 	}
 
-	handle, err := h.runtime.Load(program)
+	handle, err := h.loadProgram(program)
 	if err != nil {
 		return fmt.Errorf("bluehost: load %s: %w", slot, err)
 	}
@@ -364,7 +402,7 @@ func (h *Host) PreparePreview(instanceID, sceneID, digest string, program []byte
 		return fmt.Errorf("%w: %s", ErrAlreadyLoaded, SlotPreview)
 	}
 
-	handle, err := h.runtime.Load(program)
+	handle, err := h.loadProgram(program)
 	if err != nil {
 		h.mu.Unlock()
 		return fmt.Errorf("bluehost: load preview: %w", err)
@@ -609,7 +647,7 @@ func (h *Host) Release(slot Slot, reason string) error {
 // was unservable through that resolver, unconditionally.
 func (h *Host) Take(instanceID, sceneID, digest string, program []byte, providers []map[string]any, policy blueruntime.CapabilityPolicy, effectHandlers map[string]blueruntime.EffectFunc) error {
 	h.mu.Lock()
-	handle, err := h.runtime.Load(program)
+	handle, err := h.loadProgram(program)
 	if err != nil {
 		h.mu.Unlock()
 		return fmt.Errorf("bluehost: load on-air: %w", err)

@@ -70,6 +70,24 @@ func TestHost_PreparePreviewReplacesDifferentScene(t *testing.T) {
 	}
 }
 
+func TestHost_ReusesParsedProgramHandleAcrossSceneReplacements(t *testing.T) {
+	h := NewHost()
+	program := fixture(t)
+
+	if err := h.PreparePreview("preview-1", "scene-1", "sha256:aaa", program, nil, nil, nil); err != nil {
+		t.Fatalf("first PreparePreview: %v", err)
+	}
+	if err := h.PreparePreview("preview-2", "scene-2", "sha256:bbb", program, nil, nil, nil); err != nil {
+		t.Fatalf("second PreparePreview: %v", err)
+	}
+	if got := len(h.programHandles); got != 1 {
+		t.Fatalf("expected one cached parsed program, got %d", got)
+	}
+	if got := len(h.programHandleOrder); got != 1 {
+		t.Fatalf("expected one cache order entry, got %d", got)
+	}
+}
+
 func TestHost_TakeSupersedesPreviousOnAirWithoutStateTransfer(t *testing.T) {
 	h := NewHost()
 	program := fixture(t)
