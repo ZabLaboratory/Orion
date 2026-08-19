@@ -282,7 +282,7 @@ jobs:
           echo "go_toolchain=$ORION_GO_VERSION"
 
           echo "=== Build ==="
-          docker compose -f docker-compose.prod.yml build --pull --quiet
+          docker compose -f docker-compose.prod.yml build --pull
           unset BLUE_READ_TOKEN
 
           echo "=== Ensure DB is up ==="
