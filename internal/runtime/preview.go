@@ -97,11 +97,10 @@ func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *co
 	// this the on-call chain dies on the first db.query (unregistered exec op).
 	// Pre-Run, like the show.
 	if len(progs) > 0 {
-		// Preview is a private, stateless world-effect policy. Clone the
-		// shared dependency bundle so the preview cannot mutate the on-air
-		// policy, then mark only this clone synthetic. The exec seams still
-		// park/resume through their normal then/error machinery, but their
-		// workers never call HTTP, DB, or service transports.
+		// Preview is a private world-effect policy. Clone the shared dependency
+		// bundle so the preview cannot mutate the on-air policy, then mark this
+		// clone synthetic for HTTP and service.call. The compiler-curated,
+		// read-only db.query path still uses the shared gateway data service.
 		previewEffects := SceneEffects{}
 		if p.effects != nil {
 			previewEffects = *p.effects

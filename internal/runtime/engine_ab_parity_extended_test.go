@@ -713,11 +713,11 @@ func TestEngineABParity_DBQueryObservableAndPreviewNoQuery(t *testing.T) {
 		t.Fatalf("primitive=core.db.query@1 scenario=preview-prepare Engine B bluehost.Host.Prepare: %v", err)
 	}
 	previewStep := parityBStep(t, preview, bluehost.SlotPreview, "db.query")
-	if got := previewStep.Outputs["result"]; fmt.Sprint(got) != "0" {
-		t.Fatalf("primitive=core.db.query@1 scenario=preview-no-query Engine B bluehost.Host result=%#v, want zero synthetic count", got)
+	if got := previewStep.Outputs["result"]; fmt.Sprint(got) != "1" {
+		t.Fatalf("primitive=core.db.query@1 scenario=preview-query Engine B bluehost.Host result=%#v, want live count 1", got)
 	}
-	if got := queries.Load(); got != 0 {
-		t.Fatalf("primitive=core.db.query@1 scenario=preview-no-query Engine B emitted %d DB queries, want zero", got)
+	if got := queries.Load(); got != 1 {
+		t.Fatalf("primitive=core.db.query@1 scenario=preview-query Engine B emitted %d DB queries, want one", got)
 	}
 
 	onAir := bluehost.NewHost()
@@ -745,17 +745,16 @@ func TestEngineABParity_DBQueryObservableAndPreviewNoQuery(t *testing.T) {
 		t.Fatalf("primitive=core.db.query@1 scenario=on-air-observable Engine A result=%s Engine B result=%s", aCount, bCount)
 	}
 
-	// Engine A's real PreviewSlot is exercised with the same stateless preview
-	// policy as Blue: the continuation fires with a synthetic zero count and
-	// the DB client is never reached.
+	// Engine A's real PreviewSlot is exercised with the same read-only DB path
+	// as Engine B: the preview must observe the same match count as on-air.
 	previewSlot := NewPreviewSlot(context.Background(), NewComputeRegistry(), parityPreviewWire{}, quietLogger())
 	previewSlot.SetEffects(&SceneEffects{Runner: newTestRunner(t), DB: db, DataSources: ds})
 	previewSlot.Activate("ab-db-preview-a", effectsGraph("ab-db-preview-a"), &compiler.RenderBundle{SceneVersion: "sha256:effects-test"}, parityEngineADBProgram())
 	t.Cleanup(previewSlot.Close)
-	waitForState(t, previewSlot.Current(), "__vars.bp.result", `0`, 2*time.Second)
+	waitForState(t, previewSlot.Current(), "__vars.bp.result", `1`, 2*time.Second)
 	aPreviewValue, _ := previewSlot.Current().state.Get("__vars.bp.result")
-	if got := queries.Load(); got != 2 {
-		t.Fatalf("primitive=core.db.query@1 scenario=preview-observable Engine A query count=%d, want one B on-air + one A on-air (preview synthetic)", got)
+	if got := queries.Load(); got != 4 {
+		t.Fatalf("primitive=core.db.query@1 scenario=preview-observable Engine A query count=%d, want B preview + B on-air + A on-air + A preview", got)
 	}
 	parityAssertInventoryResult(t, "core.db.query@1", "preview", aPreviewValue, previewStep.Outputs["result"])
 }
