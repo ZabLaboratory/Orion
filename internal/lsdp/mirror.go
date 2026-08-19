@@ -49,6 +49,8 @@ type sceneMirror struct {
 	hasIdentity  bool
 }
 
+const bootstrapStatePath = "__zab.scene.ready"
+
 var _ runtime.SceneMirror = (*sceneMirror)(nil)
 
 // Forward maps a reactive output message onto the kit scene.
@@ -58,6 +60,10 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 		m.scene.SetVersion(v.SceneVersion)
 		m.observeSnapshotIdentityGap()
 		if len(v.State) == 0 {
+			// lumencast-go rejects an empty patch set. This wire-only marker
+			// makes a valid bundle with empty authored defaults mountable; it
+			// is not authored LSML state and is replaced by real deltas.
+			_ = m.scene.Set(map[string]any{bootstrapStatePath: true})
 			return
 		}
 		patches := make(map[string]any, len(v.State))

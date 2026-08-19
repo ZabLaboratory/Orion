@@ -748,7 +748,11 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	if mirror == nil {
 		return
 	}
-	if len(staticState) > 0 {
+	// A compiled LSML bundle can legitimately have no authored defaults while
+	// still containing a renderable static scene and dynamic bindings. Solar
+	// still needs one snapshot to mount that bundle before the first operator
+	// delta can be displayed.
+	if len(staticState) > 0 || len(mirrorBundle) > 0 {
 		// Literal leaves belong to the Canvas layout, not to the Blue
 		// program. Seed them before starting/replacing the bridge so a
 		// programmed scene renders its authored text/images immediately.
