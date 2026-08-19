@@ -489,18 +489,18 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			staticState = defaults
 		}
 
-		// The Blue host keeps claims.SceneDigest as its program identity. The
-		// render wire needs the content identity of the LSML bundle instead:
-		// a programmed ref intentionally has distinct scene_digest and
-		// artifact_set_digest values.
+		// The serving identity stays claims.SceneDigest for BOTH shapes —
+		// the with-program path is byte-identical to before this unit.
 		// M6 note (#398, porteur's Decision A): for a NO-PROGRAM ref,
 		// ZabCanvas mints scene_digest == artifact_set_digest == the hash
 		// of the bundle, and stamps that same value as the bundle's own
 		// scene_version — so the version announced to Solar (startBridge →
 		// MirrorFor), matched by resolveHostBundle and returned as ETag
 		// equals the value @lumencast/runtime compares ?v= against, BY
-		// CONSTRUCTION, with no re-keying here. For programmed refs the wire
-		// uses the digest of the bundle attached to the host slot.
+		// CONSTRUCTION, with no re-keying here. The with-program
+		// misalignment (scene_digest is a program-family hash, not the
+		// bundle's own scene_version) is real and intentionally NOT
+		// touched by this unit — separate chantier.
 		slot := bluehost.SlotPreview
 		if action == attestation.ActionTakeOnAir {
 			slot = bluehost.SlotOnAir
@@ -744,15 +744,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	if len(mirrorBundle) == 0 {
 		mirrorBundle = deps.Host.Bundle(slot)
 	}
-	sceneVersion := claims.SceneDigest
-	if hasProgram {
-		if bundleDigest := deps.Host.BundleDigest(slot); bundleDigest != "" {
-			sceneVersion = bundleDigest
-		} else if claims.ArtifactSetDigest != "" && len(mirrorBundle) > 0 {
-			sceneVersion = claims.ArtifactSetDigest
-		}
-	}
-	mirror := deps.MirrorFor(claims.SceneID, sceneVersion, slot, mirrorBundle)
+	mirror := deps.MirrorFor(claims.SceneID, claims.SceneDigest, slot, mirrorBundle)
 	if mirror == nil {
 		return
 	}
@@ -767,7 +759,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 		deps.Bridges.Stop(slot)
 		mirror.Forward(&protocol.Snapshot{
 			SceneID:      claims.SceneID,
-			SceneVersion: sceneVersion,
+			SceneVersion: claims.SceneDigest,
 			State:        staticState,
 		})
 	}
@@ -779,7 +771,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	if slot == bluehost.SlotOnAir {
 		target = blueproject.TargetProgram
 	}
-	bridge := bluewire.NewBridge(deps.Host, slot, mirror, claims.SceneID, sceneVersion, claims.RefID, target, claims.RevisionID, intentID)
+	bridge := bluewire.NewBridge(deps.Host, slot, mirror, claims.SceneID, claims.SceneDigest, claims.RefID, target, claims.RevisionID, intentID)
 	logger := deps.Logger
 	bridge.SetLogger(logger)
 	interval := deps.ProjectionInterval
