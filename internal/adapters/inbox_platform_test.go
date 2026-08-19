@@ -59,38 +59,6 @@ func TestSceneAcceptsPath_PlatformStreamBinding(t *testing.T) {
 	}
 }
 
-// TestPlatformStreamBinding_SpawnsNoAdapterGoroutine: platform-stream
-// is a PURE acceptance binding — neither the HTTP poller nor the PG
-// listener may register a job (let alone a goroutine) for it.
-func TestPlatformStreamBinding_SpawnsNoAdapterGoroutine(t *testing.T) {
-	show := runtime.NewShow(runtime.NewComputeRegistry(), quietLogger())
-	t.Cleanup(show.Stop)
-	show.Load("scene-pf", platformGraph("scene-pf"), &compiler.RenderBundle{SceneVersion: "sha256:test"})
-	scene, _ := show.Get("scene-pf")
-
-	inbox := NewInbox(show, quietLogger(), nil)
-
-	poller := NewPoller(inbox, quietLogger(), "test-ua/1")
-	poller.Start(context.Background(), scene)
-	t.Cleanup(poller.StopAll)
-	poller.mu.Lock()
-	pollJobs := len(poller.jobs)
-	poller.mu.Unlock()
-	if pollJobs != 0 {
-		t.Fatalf("poller registered %d job(s) for a platform-stream binding, want 0", pollJobs)
-	}
-
-	listener := NewPGListener(nil, inbox, quietLogger())
-	listener.Start(context.Background(), scene)
-	t.Cleanup(listener.StopAll)
-	listener.mu.Lock()
-	listenJobs := len(listener.jobs)
-	listener.mu.Unlock()
-	if listenJobs != 0 {
-		t.Fatalf("pg listener registered %d job(s) for a platform-stream binding, want 0", listenJobs)
-	}
-}
-
 // TestInbox_PlatformServiceScope is criterion 11 E3, Orion half: a
 // service token scoped `__inputs.platform.twitch.*` (what Quasar#9
 // mints) writes the twitch leaf through to a subscriber delta, while

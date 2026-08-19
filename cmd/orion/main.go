@@ -315,21 +315,13 @@ func run() error {
 	// populated by the scene-intent surface (attestation-driven Prepare/
 	// Take) below, never by a boot-time reseed.
 
-	// Adapter inbox + HTTP poller + PG LISTEN/NOTIFY.
+	// Adapter inbox for authenticated platform/system writes.
 	inbox := adapters.NewInbox(show, logger, metrics)
 	// `show.emit` active-only injection sink (ADR 009 §3.6, issue #155):
 	// the inbox owns the audit ring + the system-write path, so it is the
 	// Emitter. Wired before live traffic; scenes loaded earlier read it at
 	// call time.
 	show.SetEmitter(inbox)
-	poller := adapters.NewPoller(inbox, logger, cfg.HTTPPollUserAgent)
-	defer poller.StopAll()
-
-	// PG LISTEN/NOTIFY — RETIRED (#15, #331): Postgres-only adapter, acquired
-	// its connection from the store's pool. The roster boots empty (no
-	// cold-start reseed), so the "wire listeners on every loaded scene" step
-	// it fed is gone with it.
-
 	// HTTP compiler fetcher / blueprint-direct stream-rule reseed — RETIRED
 	// (#15, #331): both `selectFetcher` and `api.ReloadBlueprintStreamRules`
 	// (deleted with internal/api/stream_rules.go) existed solely to compile

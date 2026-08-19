@@ -237,7 +237,6 @@ jobs:
           # Runtime
           ORION_TICK_HZ=60
           ORION_PUSH_TIMEOUT_S=10
-          ORION_HTTP_POLL_USER_AGENT=orion-poller/1.0
           ORION_LOG_LEVEL=info
           ORION_LOG_FORMAT=json
 

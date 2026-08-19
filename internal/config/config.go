@@ -191,7 +191,6 @@ type Config struct {
 	// ticker (arming still re-runs on a slot-assignment change).
 	ViewerCredsRefreshS int
 
-	HTTPPollUserAgent string
 	LogLevel          string
 	LogFormat         LogFormat
 	LSDPMode          LSDPMode
@@ -294,7 +293,6 @@ func Load() (Config, error) {
 		SQLitePath:           getenv("ORION_SQLITE_PATH", ""),
 		SceneBundlePath:      getenv("ORION_SCENE_BUNDLE_PATH", ""),
 		ValidationMirrorRoot: getenv("ORION_VALIDATION_MIRROR_ROOT", ""),
-		HTTPPollUserAgent:    getenv("ORION_HTTP_POLL_USER_AGENT", "orion-poller/1.0"),
 		LogLevel:             strings.ToLower(getenv("ORION_LOG_LEVEL", "info")),
 
 		WorkloadZabGateURL:     strings.TrimRight(getenv("ORION_WORKLOAD_ZABGATE_URL", ""), "/"),
