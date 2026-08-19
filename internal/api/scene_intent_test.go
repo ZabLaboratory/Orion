@@ -754,6 +754,48 @@ func TestPostSceneIntent_RejectsArtifactDigestMismatch(t *testing.T) {
 	}
 }
 
+func TestPostSceneIntent_InlineValidatedCapsuleSkipsCanvasFetch(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(nil)
+	program := minimalProgram(t)
+	_, digest := canvasEnvelope(program)
+	now := time.Now()
+	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
+	wl := &fakeWorkload{}
+	deps := SceneIntentDeps{
+		Trust:         attestation.TrustSet{"canvas-key-1": pub},
+		LocatorPrefix: "scenes/",
+		OwnerID:       "owner-1",
+		TenantID:      "tenant-1",
+		Workload:      wl,
+		Host:          bluehost.NewHost(),
+	}
+	body, err := json.Marshal(sceneIntentRequest{
+		IntentID:          "intent-1",
+		StreamID:          "stream-1",
+		Target:            "preview",
+		Action:            string(attestation.ActionPreparePreview),
+		ResolvedSceneRef:  ref,
+		BlueProgram:       base64.StdEncoding.EncodeToString(program),
+		BlueProgramDigest: digest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
+	req.Header.Set("X-Authenticated-User", "operator-1")
+	req.Header.Set("X-Authenticated-Role", "operator")
+	req.Header.Set(authContextHeader, "opaque-ticket")
+
+	rec := httptest.NewRecorder()
+	postSceneIntent(deps)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if wl.fetchCalls != 0 {
+		t.Fatalf("expected validated inline capsule to skip Canvas dereference, got %d fetches", wl.fetchCalls)
+	}
+}
+
 type recordingMirror struct {
 	mu        sync.Mutex
 	forwarded int

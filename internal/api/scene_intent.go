@@ -317,13 +317,19 @@ func idempotencyKey(principal, owner, tenant, stream string, action attestation.
 // the intent's values (deadline among them) into the ticket and any
 // reconstruction risks AUTH_CONTEXT_MISMATCH.
 type sceneIntentRequest struct {
-	SchemaVersion    string `json:"schema_version"`
-	IntentID         string `json:"intent_id"`
-	IdempotencyKey   string `json:"idempotency_key"`
-	StreamID         string `json:"stream_id"`
-	Target           string `json:"target"` // preview | on-air
-	Action           string `json:"action"` // prepare-preview | take-on-air
-	ResolvedSceneRef string `json:"resolved_scene_ref"`
+	SchemaVersion      string `json:"schema_version"`
+	IntentID           string `json:"intent_id"`
+	IdempotencyKey     string `json:"idempotency_key"`
+	StreamID           string `json:"stream_id"`
+	Target             string `json:"target"` // preview | on-air
+	Action             string `json:"action"` // prepare-preview | take-on-air
+	ResolvedSceneRef   string `json:"resolved_scene_ref"`
+	BlueProgram        string `json:"blue_program,omitempty"`
+	BlueProgramDigest  string `json:"blue_program_digest,omitempty"`
+	LSMLBundle         string `json:"lsml_bundle,omitempty"`
+	LSMLBundleDigest   string `json:"lsml_bundle_digest,omitempty"`
+	RenderBundle       string `json:"render_bundle,omitempty"`
+	RenderBundleDigest string `json:"render_bundle_digest,omitempty"`
 }
 
 // maxSceneIntentBytes bounds the raw intent body kept for the verbatim
@@ -423,14 +429,34 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 
-		artifact, err := deps.Workload.FetchCanvas(ctx, delegation, ticket, json.RawMessage(raw))
-		if err != nil {
-			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "compensating", IntentID: req.IntentID, Reason: workloadReason(err), Message: workloadMessage(err)})
-			return
-		}
-		if artifact.Status < 200 || artifact.Status >= 300 {
-			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_UNAVAILABLE"})
-			return
+		var envelopeBody []byte
+		if req.BlueProgram != "" || req.BlueProgramDigest != "" || req.LSMLBundle != "" || req.LSMLBundleDigest != "" || req.RenderBundle != "" || req.RenderBundleDigest != "" {
+			// ZabGate's validated capsule is already the result of Canvas
+			// validation and bundle creation. Keep the raw intent as the mint
+			// binding, but do not dereference Canvas again on activation.
+			envelopeBody, err = json.Marshal(resolvedSceneEnvelope{
+				BlueProgram:        req.BlueProgram,
+				BlueProgramDigest:  req.BlueProgramDigest,
+				LSMLBundle:         req.LSMLBundle,
+				LSMLBundleDigest:   req.LSMLBundleDigest,
+				RenderBundle:       req.RenderBundle,
+				RenderBundleDigest: req.RenderBundleDigest,
+			})
+			if err != nil {
+				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_UNAVAILABLE", Message: err.Error()})
+				return
+			}
+		} else {
+			artifact, fetchErr := deps.Workload.FetchCanvas(ctx, delegation, ticket, json.RawMessage(raw))
+			if fetchErr != nil {
+				writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "compensating", IntentID: req.IntentID, Reason: workloadReason(fetchErr), Message: workloadMessage(fetchErr)})
+				return
+			}
+			if artifact.Status < 200 || artifact.Status >= 300 {
+				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_UNAVAILABLE"})
+				return
+			}
+			envelopeBody = artifact.Body
 		}
 
 		// artifact.Body is `zabcanvas.resolved-scene.v1` (§6.3). The
@@ -452,19 +478,19 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		noProgram := claims.BlueProgramDigest == ""
 		var program []byte
 		if noProgram {
-			if err := verifyNoProgramEnvelope(artifact.Body); err != nil {
+			if err := verifyNoProgramEnvelope(envelopeBody); err != nil {
 				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 				return
 			}
 		} else {
 			var err error
-			program, err = decodeAndVerifyProgram(artifact.Body, claims.BlueProgramDigest)
+			program, err = decodeAndVerifyProgram(envelopeBody, claims.BlueProgramDigest)
 			if err != nil {
 				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 				return
 			}
 		}
-		bundle, bundleErr := decodeAndVerifyBundle(artifact.Body)
+		bundle, bundleErr := decodeAndVerifyBundle(envelopeBody)
 		if bundleErr != nil {
 			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 			return
@@ -474,7 +500,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		if bundle != nil {
 			mirrorBundle = append([]byte(nil), bundle...)
 		}
-		precompiledBundle, precompiledErr := decodeAndVerifyRenderBundle(artifact.Body, claims.RenderBundleDigest)
+		precompiledBundle, precompiledErr := decodeAndVerifyRenderBundle(envelopeBody, claims.RenderBundleDigest)
 		if precompiledErr != nil {
 			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 			return
@@ -772,7 +798,10 @@ func getHostRenderBundle(deps SceneIntentDeps) http.HandlerFunc {
 	})
 }
 
-const defaultProjectionInterval = 100 * time.Millisecond
+// 10ms keeps the first bridge tick inside the live switch budget. This is
+// only a pacing bound for a bridge attached after the operator action; Orion
+// remains stateless and does not prepare a future scene.
+const defaultProjectionInterval = 10 * time.Millisecond
 
 // startBridge pairs the just-Prepared/Taken bluehost instance with the
 // LSDP scene deps.MirrorFor resolves for claims.SceneID, and starts a
