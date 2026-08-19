@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"sort"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
 
@@ -395,6 +396,22 @@ func postOperatorCallEngineB(w http.ResponseWriter, r *http.Request, deps Public
 	if err != nil {
 		writeOperatorError(w, http.StatusInternalServerError, "INTERNAL", "call failed")
 		return
+	}
+	if deps.Logger != nil {
+		outputKeys := make([]string, 0, len(result.Outputs))
+		for key := range result.Outputs {
+			outputKeys = append(outputKeys, key)
+		}
+		sort.Strings(outputKeys)
+		deps.Logger.Info("engine b operator call completed",
+			"slot", slot,
+			"entrypoint_id", entrypointID,
+			"runtime_sequence", result.RuntimeSequence,
+			"output_count", len(result.Outputs),
+			"output_keys", outputKeys,
+			"variable_count", len(result.Variables),
+			"invocation_count", len(result.Invocations),
+		)
 	}
 	// The production stateless path owns a bridge for every scene slot. A
 	// direct forward is required here: the runtime result contains the LSML
