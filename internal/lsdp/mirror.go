@@ -26,6 +26,10 @@ type sceneMirror struct {
 	wire    *Wire
 	sceneID string
 	scene   *lserver.Scene
+	// skipSnapshot is set only when Wire has already applied an identical
+	// immutable scene version. It is consumed once, so the mirror still
+	// forwards any later runtime snapshot normally.
+	skipSnapshot bool
 	// bound is the renderable leaf surface of the active scene's bundle.
 	// When active() it is the PRIMARY wire gate: only bound leaves (and
 	// their descendants) are emitted, so every compute intermediate
@@ -57,6 +61,10 @@ var _ runtime.SceneMirror = (*sceneMirror)(nil)
 func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 	switch v := msg.(type) {
 	case *protocol.Snapshot:
+		if m.skipSnapshot {
+			m.skipSnapshot = false
+			return
+		}
 		m.scene.SetVersion(v.SceneVersion)
 		m.observeSnapshotIdentityGap()
 		if len(v.State) == 0 {
@@ -69,6 +77,7 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 				state = map[string]any{bootstrapStatePath: true}
 			}
 			_ = m.scene.Set(state)
+			m.markSeeded(v.SceneVersion)
 			return
 		}
 		patches := make(map[string]any, len(v.State))
@@ -85,6 +94,7 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 		// with a fresh snapshot — the right semantics for the initial
 		// seed and for back-pressure/scene-switch snapshots.
 		_ = m.scene.Set(patches)
+		m.markSeeded(v.SceneVersion)
 	case *protocol.Delta:
 		if len(v.Patches) == 0 {
 			// A zero-patch delta is the bespoke idempotency confirm
@@ -117,6 +127,15 @@ func (m *sceneMirror) Forward(msg runtime.SubscriberMsg) {
 		// Wire.SetActive (kit Server.SetActive migrates live subs with
 		// its own scene_changed + snapshot). Nothing to do per-scene.
 	}
+}
+
+func (m *sceneMirror) markSeeded(sceneVersion string) {
+	if m.wire == nil || sceneVersion == "" {
+		return
+	}
+	m.wire.mu.Lock()
+	m.wire.seededVersions[m.sceneID] = sceneVersion
+	m.wire.mu.Unlock()
 }
 
 // recordIdentity remembers the projection identity of the most recent Delta

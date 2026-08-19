@@ -57,6 +57,11 @@ type Wire struct {
 
 	mu     sync.Mutex
 	scenes map[string]*lserver.Scene
+	// seededVersions records the scene digest of the last snapshot that was
+	// actually applied to the corresponding kit scene. A later activation of
+	// the same immutable render bundle can reuse that keyframe; a new digest
+	// must still receive a full seed.
+	seededVersions map[string]string
 	// boundLeavesCache stores the immutable wire surface derived from a
 	// validated LSML bundle. The bundle is content-addressed, so revisiting a
 	// scene never needs to parse the same bytes again.
@@ -182,6 +187,7 @@ func NewWire(logger *slog.Logger, src auth.AuthSource) (*Wire, error) {
 		srv:              srv,
 		logger:           logger.With("component", "lsdp"),
 		scenes:           make(map[string]*lserver.Scene),
+		seededVersions:   make(map[string]string),
 		boundLeavesCache: make(map[string]boundLeafSet),
 	}, nil
 }
@@ -247,17 +253,20 @@ func (w *Wire) mirrorFor(sceneID, sceneVersion string, bound boundLeafSet) runti
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	sc, ok := w.scenes[sceneID]
+	skipSnapshot := false
 	if !ok {
 		sc = w.srv.NewScene(sceneID, lserver.WithSceneVersion(sceneVersion))
 		w.scenes[sceneID] = sc
 	} else {
 		sc.SetVersion(sceneVersion)
+		skipSnapshot = sceneVersion != "" && w.seededVersions[sceneID] == sceneVersion
 	}
 	return &sceneMirror{
-		wire:    w,
-		sceneID: sceneID,
-		scene:   sc,
-		bound:   bound,
+		wire:         w,
+		sceneID:      sceneID,
+		scene:        sc,
+		bound:        bound,
+		skipSnapshot: skipSnapshot,
 	}
 }
 

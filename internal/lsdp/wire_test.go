@@ -14,6 +14,7 @@ import (
 	lproto "github.com/Lumencast/lumencast-go/protocol"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
+	"github.com/ZabLaboratory/Orion/internal/protocol"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
@@ -79,6 +80,30 @@ func TestWire_CachesLSMLBoundLeavesByBundleContent(t *testing.T) {
 
 	if got := len(wire.boundLeavesCache); got != 1 {
 		t.Fatalf("expected one cached LSML surface, got %d", got)
+	}
+}
+
+func TestWire_ReusesSeededSceneVersionOnReactivation(t *testing.T) {
+	wire, err := NewWire(quietLogger(t), nil)
+	if err != nil {
+		t.Fatalf("NewWire: %v", err)
+	}
+
+	first := wire.MirrorFor("scene-1", "sha256:scene-1", nil).(*sceneMirror)
+	first.Forward(&protocol.Snapshot{
+		SceneID:      "scene-1",
+		SceneVersion: "sha256:scene-1",
+		State:        map[string]json.RawMessage{"score.team_a": json.RawMessage(`1`)},
+	})
+
+	reactivated := wire.MirrorFor("scene-1", "sha256:scene-1", nil).(*sceneMirror)
+	if !reactivated.skipSnapshot {
+		t.Fatal("expected an identical seeded scene version to reuse its keyframe")
+	}
+
+	changed := wire.MirrorFor("scene-1", "sha256:scene-2", nil).(*sceneMirror)
+	if changed.skipSnapshot {
+		t.Fatal("a new scene version must receive a full keyframe")
 	}
 }
 
