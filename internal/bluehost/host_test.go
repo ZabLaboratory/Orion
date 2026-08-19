@@ -86,6 +86,12 @@ func TestHost_ReusesParsedProgramHandleAcrossSceneReplacements(t *testing.T) {
 	if got := len(h.programHandleOrder); got != 1 {
 		t.Fatalf("expected one cache order entry, got %d", got)
 	}
+	if got := len(h.programMetadata); got != 1 {
+		t.Fatalf("expected one cached metadata entry, got %d", got)
+	}
+	if got := len(h.metadataOrder); got != 1 {
+		t.Fatalf("expected one metadata cache order entry, got %d", got)
+	}
 }
 
 func TestHost_TakeSupersedesPreviousOnAirWithoutStateTransfer(t *testing.T) {

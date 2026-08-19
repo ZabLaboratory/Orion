@@ -111,6 +111,12 @@ type AwaitDecl struct {
 	UI        json.RawMessage
 }
 
+type programMetadata struct {
+	triggers   []TriggerDecl
+	awaits     []AwaitDecl
+	awaitTypes map[string]string
+}
+
 // DeclaredContracts returns slot's loaded program's statically-declared
 // operator surface (triggers + awaits) — nil, nil when the slot holds no
 // instance.
@@ -281,6 +287,8 @@ type Host struct {
 	// this removes repeated JSON/program parsing without sharing mutable state.
 	programHandles     map[string]blueruntime.ProgramHandle
 	programHandleOrder []string
+	programMetadata    map[string]programMetadata
+	metadataOrder      []string
 
 	// httpEgress/httpRunner wire the async invocation/completion protocol
 	// (Blue PR #313, runtime/go effects.go/runtime.go: StepResult.
@@ -306,10 +314,11 @@ type Host struct {
 // grants Orion.
 func NewHost() *Host {
 	return &Host{
-		runtime:        blueruntime.NewRuntime(),
-		slots:          map[Slot]*entry{},
-		programHandles: map[string]blueruntime.ProgramHandle{},
-		logger:         slog.Default(),
+		runtime:         blueruntime.NewRuntime(),
+		slots:           map[Slot]*entry{},
+		programHandles:  map[string]blueruntime.ProgramHandle{},
+		programMetadata: map[string]programMetadata{},
+		logger:          slog.Default(),
 	}
 }
 
@@ -339,6 +348,31 @@ func (h *Host) loadProgram(program []byte) (blueruntime.ProgramHandle, error) {
 		delete(h.programHandles, evict)
 	}
 	return handle, nil
+}
+
+// metadataForProgram must be called with h.mu held. Contract metadata is
+// immutable for a program digest, just like ProgramHandle, so repeated scene
+// admissions can reuse it without reparsing the Blue document or sharing any
+// mutable runtime instance state.
+func (h *Host) metadataForProgram(program []byte) programMetadata {
+	key := programHandleKey(program)
+	if metadata, ok := h.programMetadata[key]; ok {
+		return metadata
+	}
+	triggers, awaits := declaredContracts(program)
+	metadata := programMetadata{
+		triggers:   triggers,
+		awaits:     awaits,
+		awaitTypes: awaitTypesInProgram(program),
+	}
+	h.programMetadata[key] = metadata
+	h.metadataOrder = append(h.metadataOrder, key)
+	if len(h.metadataOrder) > maxCachedProgramHandles {
+		evict := h.metadataOrder[0]
+		h.metadataOrder = h.metadataOrder[1:]
+		delete(h.programMetadata, evict)
+	}
+	return metadata
 }
 
 // modeFor translates Orion's broadcast vocabulary to the portable ABI's
@@ -383,8 +417,8 @@ func (h *Host) Prepare(slot Slot, instanceID, sceneID, digest string, program []
 		return fmt.Errorf("bluehost: start %s: %w", slot, err)
 	}
 
-	triggers, awaits := declaredContracts(program)
-	h.slots[slot] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: awaitTypesInProgram(program), triggers: triggers, awaits: awaits}
+	metadata := h.metadataForProgram(program)
+	h.slots[slot] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: metadata.awaitTypes, triggers: metadata.triggers, awaits: metadata.awaits}
 	return nil
 }
 
@@ -419,8 +453,8 @@ func (h *Host) PreparePreview(instanceID, sceneID, digest string, program []byte
 		return fmt.Errorf("bluehost: start preview: %w", err)
 	}
 
-	triggers, awaits := declaredContracts(program)
-	h.slots[SlotPreview] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: awaitTypesInProgram(program), triggers: triggers, awaits: awaits}
+	metadata := h.metadataForProgram(program)
+	h.slots[SlotPreview] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: metadata.awaitTypes, triggers: metadata.triggers, awaits: metadata.awaits}
 	h.mu.Unlock()
 
 	if previous != nil && previous.instance != nil {
@@ -664,9 +698,9 @@ func (h *Host) Take(instanceID, sceneID, digest string, program []byte, provider
 		return fmt.Errorf("bluehost: start on-air: %w", err)
 	}
 
-	triggers, awaits := declaredContracts(program)
+	metadata := h.metadataForProgram(program)
 	previous := h.slots[SlotOnAir]
-	h.slots[SlotOnAir] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: awaitTypesInProgram(program), triggers: triggers, awaits: awaits}
+	h.slots[SlotOnAir] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: metadata.awaitTypes, triggers: metadata.triggers, awaits: metadata.awaits}
 	h.mu.Unlock()
 
 	if previous != nil && previous.instance != nil {
