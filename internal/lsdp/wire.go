@@ -27,6 +27,8 @@ package lsdp
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -55,6 +57,10 @@ type Wire struct {
 
 	mu     sync.Mutex
 	scenes map[string]*lserver.Scene
+	// boundLeavesCache stores the immutable wire surface derived from a
+	// validated LSML bundle. The bundle is content-addressed, so revisiting a
+	// scene never needs to parse the same bytes again.
+	boundLeavesCache map[string]boundLeafSet
 
 	// slots is the stream-level slot-assignment mirror (ADR Blue 009 §3.3,
 	// issue #260): slot_ref → peer_label, the derived LSDP cache. Guarded by
@@ -173,10 +179,36 @@ func NewWire(logger *slog.Logger, src auth.AuthSource) (*Wire, error) {
 		return nil, err
 	}
 	return &Wire{
-		srv:    srv,
-		logger: logger.With("component", "lsdp"),
-		scenes: make(map[string]*lserver.Scene),
+		srv:              srv,
+		logger:           logger.With("component", "lsdp"),
+		scenes:           make(map[string]*lserver.Scene),
+		boundLeavesCache: make(map[string]boundLeafSet),
 	}, nil
+}
+
+func lsmlBundleKey(raw []byte) string {
+	digest := sha256.Sum256(raw)
+	return hex.EncodeToString(digest[:])
+}
+
+func (w *Wire) boundLeavesForLSML(sceneID string, raw []byte) boundLeafSet {
+	key := lsmlBundleKey(raw)
+	w.mu.Lock()
+	if bound, ok := w.boundLeavesCache[key]; ok {
+		w.mu.Unlock()
+		return bound
+	}
+	w.mu.Unlock()
+
+	bound := boundLeavesFromLSML(sceneID, raw, w.logger)
+	w.mu.Lock()
+	if existing, ok := w.boundLeavesCache[key]; ok {
+		w.mu.Unlock()
+		return existing
+	}
+	w.boundLeavesCache[key] = bound
+	w.mu.Unlock()
+	return bound
 }
 
 // Handler returns the kit's LSDP/1.1 WebSocket handler so the public
@@ -205,7 +237,7 @@ func (w *Wire) MirrorFor(sceneID, sceneVersion string, bundle *compiler.RenderBu
 // identical to MirrorFor (same kit scene get-or-create, same mirror
 // shape) — only the bound-set source differs.
 func (w *Wire) MirrorForLSML(sceneID, sceneVersion string, lsmlBundle []byte) runtime.SceneMirror {
-	return w.mirrorFor(sceneID, sceneVersion, boundLeavesFromLSML(sceneID, lsmlBundle, w.logger))
+	return w.mirrorFor(sceneID, sceneVersion, w.boundLeavesForLSML(sceneID, lsmlBundle))
 }
 
 // mirrorFor is the shared scene get-or-create body both MirrorFor and

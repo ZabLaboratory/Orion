@@ -67,6 +67,21 @@ func dualShow(t *testing.T) (*Wire, *runtime.Scene, string) {
 	return wire, scene, wsURL
 }
 
+func TestWire_CachesLSMLBoundLeavesByBundleContent(t *testing.T) {
+	wire, err := NewWire(quietLogger(t), nil)
+	if err != nil {
+		t.Fatalf("NewWire: %v", err)
+	}
+	raw := []byte(`{"layout":{"kind":"text","bind":{"value":"score.team_a"}}}`)
+
+	wire.MirrorForLSML("scene-1", "sha256:scene-1", raw)
+	wire.MirrorForLSML("scene-1", "sha256:scene-1", raw)
+
+	if got := len(wire.boundLeavesCache); got != 1 {
+		t.Fatalf("expected one cached LSML surface, got %d", got)
+	}
+}
+
 // dialLSDP opens an LSDP/1.1 connection carrying ZabGate header-trust
 // headers (operator). The Subscribe token is empty on purpose — the
 // header-trust seam must ignore it.
