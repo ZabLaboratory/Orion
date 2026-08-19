@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/Lumencast/lumencast-go v0.3.2-0.20260816093300-0c7cfc65c694
-	github.com/ZabLaboratory/Blue/runtime/go v0.1.1-0.20260817114317-748c91a1aad1
+	github.com/ZabLaboratory/Blue/runtime/go v0.1.1-0.20260819031940-65d18d839260
 	github.com/coder/websocket v1.8.14
 	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.9.2
