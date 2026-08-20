@@ -301,11 +301,26 @@ func doSlotAssignment(ctx context.Context, deps EffectDeps, config, inputs map[s
 	if slotRef == "" || peerLabel == "" {
 		return nil, fmt.Errorf("ZABCAM_SLOT_ASSIGN_INVALID: slot_ref and peer_label are required")
 	}
+	// Unlike core.service.call@1, this host extension is compiled from its
+	// own {service, route_id} config and therefore does not receive Blue's
+	// internal __route wrapper. Convert only that opaque reference here; the
+	// authoritative resolver still supplies method, path and token scope.
+	routeConfig := config
+	if _, ok := config["__route"]; !ok {
+		service := strOf(config["service"])
+		routeID := strOf(config["route_id"])
+		if service == "" || routeID == "" {
+			return nil, fmt.Errorf("EGRESS_ROUTE_REFERENCE_INVALID: service and route_id are required")
+		}
+		routeConfig = map[string]any{
+			"__route": map[string]any{"service": service, "route_id": routeID},
+		}
+	}
 	streamID := deps.StreamID
 	if streamID == "" {
 		streamID = "live"
 	}
-	result, err := doServiceCall(ctx, deps.ServiceCall, deps.ResolveServiceRoute, deps.EgressBudget, deps.EgressBudgetKey, config, map[string]any{
+	result, err := doServiceCall(ctx, deps.ServiceCall, deps.ResolveServiceRoute, deps.EgressBudget, deps.EgressBudgetKey, routeConfig, map[string]any{
 		"params":  map[string]any{"slot_ref": slotRef, "stream_id": streamID},
 		"payload": map[string]any{"peer_label": peerLabel},
 	})

@@ -55,7 +55,7 @@ func TestAssignSlotHandlerPersistsThenMirrors(t *testing.T) {
 		SlotMirror:      mirror,
 	}, blueruntime.Execute)["zabcam.assign-slot@1"]
 
-	outputs, err := handler(map[string]any{"__route": map[string]any{"service": "zabcam", "route_id": "zabcam.slots.assign"}}, map[string]any{"slot_ref": "cam-0", "peer_label": "peer-0"})
+	outputs, err := handler(map[string]any{"service": "zabcam", "route_id": "zabcam.slots.assign"}, map[string]any{"slot_ref": "cam-0", "peer_label": "peer-0"})
 	if err != nil {
 		t.Fatalf("handler: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestAssignSlotHandlerDoesNotMirrorNon2xx(t *testing.T) {
 		SlotMirror: mirror,
 	}, blueruntime.Execute)["zabcam.assign-slot@1"]
 
-	if _, err := handler(map[string]any{"__route": map[string]any{"service": "zabcam", "route_id": "zabcam.slots.assign"}}, map[string]any{"slot_ref": "cam-0", "peer_label": "peer-0"}); err == nil {
+	if _, err := handler(map[string]any{"service": "zabcam", "route_id": "zabcam.slots.assign"}, map[string]any{"slot_ref": "cam-0", "peer_label": "peer-0"}); err == nil {
 		t.Fatal("non-2xx assignment unexpectedly succeeded")
 	}
 	if len(mirror.calls) != 0 {
