@@ -2,6 +2,8 @@ github.com/Lumencast/lumencast-go v0.3.2-0.20260816093300-0c7cfc65c694 h1:2y14te
 github.com/Lumencast/lumencast-go v0.3.2-0.20260816093300-0c7cfc65c694/go.mod h1:S99/WPDLew+UDUW9tHsoaGdMMDCdtf4dF/HJbxn8rAE=
 github.com/ZabLaboratory/Blue/runtime/go v0.1.1-0.20260819031940-65d18d839260 h1:lsD9bJyhkuKqssB5hQ39vENKLopMkDbMNtMxHP4RwXM=
 github.com/ZabLaboratory/Blue/runtime/go v0.1.1-0.20260819031940-65d18d839260/go.mod h1:IFCHQr+8V5XV/Z8qFyNtvvSSTnAHFUTX1AMkyOVWnK8=
+github.com/ZabLaboratory/Blue/runtime/go v0.1.1-0.20260820185630-76db48bb03fc h1:sDzPKXVHEZvkbfYNUzNdEo5OnMvabwzQqCAvm5IEc+k=
+github.com/ZabLaboratory/Blue/runtime/go v0.1.1-0.20260820185630-76db48bb03fc/go.mod h1:IFCHQr+8V5XV/Z8qFyNtvvSSTnAHFUTX1AMkyOVWnK8=
 github.com/beorn7/perks v1.0.1 h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
 github.com/beorn7/perks v1.0.1/go.mod h1:G2ZrVWU2WbWT9wwq4/hrbKbnv/1ERSJQ0ibhJ6rlkpw=
 github.com/cespare/xxhash/v2 v2.3.0 h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
