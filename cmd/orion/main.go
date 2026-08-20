@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/auth"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
+	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/config"
 	"github.com/ZabLaboratory/Orion/internal/effects"
 	"github.com/ZabLaboratory/Orion/internal/lsdp"
@@ -208,6 +210,17 @@ func run() error {
 	}
 	serviceTokenMinter := effects.NewServiceTokenExchangeMinterWithTokenFunc(cfg.ZabGateURL, familyTokenFn, nil)
 	serviceTokenFn := serviceTokenMinter.Token
+	// The runtime must resolve every curated service route against the same
+	// Blue-published registry used by Orion's compiler. Loading this once at
+	// boot keeps the hot path local while preserving Blue as the sole route
+	// producer; a missing route remains fail-closed in bluehost.
+	egressFetcher := compiler.NewHTTPFetcherWithTokenFunc(cfg.CanvasBaseURL, cfg.BlueBaseURL, func() string {
+		return serviceTokenFn(cfg.ServicePaths)
+	})
+	egressRoutes, egressErr := egressFetcher.FetchEgressRoutes(ctx)
+	if egressErr != nil {
+		return fmt.Errorf("load Blue curated egress routes: %w", egressErr)
+	}
 
 	// Async-effect bundle (ADR 003 §3.1.3 / R9 lift ADR 006 §3.4).
 	// Installed on the show so a VALIDATED, exec-bearing scene registers
@@ -234,15 +247,16 @@ func run() error {
 	// direct EffectHandlers use different contracts, but must share the same
 	// worker pool, egress policy, topology-A DB client, and datasource map.
 	effectDeps := bluehost.EffectDeps{
-		Runner:          effectRunner,
-		Egress:          effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP),
-		DB:              effects.NewDBQueryClientWithPathTokenFunc(cfg.ZabGateURL, serviceTokenMinter.Token, nil),
-		DataSources:     dataSources,
-		ServiceCall:     serviceCallClient,
-		EgressBudget:    egressBudget,
-		EgressBudgetKey: "orion-bluehost",
-		StreamID:        "live",
-		Logger:          logger,
+		Runner:              effectRunner,
+		Egress:              effects.NewEgressPolicy(cfg.HTTPEgressAllowHosts, cfg.HTTPEgressAllowHTTP),
+		DB:                  effects.NewDBQueryClientWithPathTokenFunc(cfg.ZabGateURL, serviceTokenMinter.Token, nil),
+		DataSources:         dataSources,
+		ServiceCall:         serviceCallClient,
+		ResolveServiceRoute: bluehostRouteResolver(egressRoutes),
+		EgressBudget:        egressBudget,
+		EgressBudgetKey:     "orion-bluehost",
+		StreamID:            "live",
+		Logger:              logger,
 	}
 	// Curated service-egress (ADR Blue 002 §3.3) no longer uses a standing
 	// operator credential. The viewer armer below uses the durable service-token
