@@ -73,6 +73,11 @@ type PublicDeps struct {
 	// registered — every existing route above is unaffected. Non-nil only
 	// once Trust/Workload/Host are all provisioned by cmd/orion.
 	SceneIntent *SceneIntentDeps
+
+	// StreamRules is the volatile, scene-independent Engine B rule plane.
+	// Prism owns durable intent and replays it after restart; Orion never
+	// stores a rule selection or folds one into either scene slot.
+	StreamRules *StreamRulesDeps
 }
 
 // RegisterPublic wires every endpoint per ADR 004 § 2. Routes start
@@ -140,12 +145,15 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// the preview scene). Operator-gated; degrade when Preview is nil.
 	mux.HandleFunc("POST /api/v1/show/preview-active-scene", postPreviewActiveScene(deps))
 	mux.HandleFunc("GET /api/v1/show/preview-snapshot", getPreviewSnapshot(deps))
-	// Stream-level Blue rules (ADR 009 §3.1, issue #154) — capacity paused
-	// (#15, #331), not abandoned: HTTP surface AND handlers
-	// (internal/api/stream_rules.go) fully removed with internal/store.
-	// Successor tracked by the R6 ledger in Orion#332 (11-ORION-PROVIDERS,
-	// routing) + ZabCanvas (durability) — not yet opened. cockpit/operator
-	// read an empty rule set gracefully, so no caller regression.
+	// Stream-level Blue rules (ADR 009): restored as a volatile Engine B
+	// RulePlane, orthogonal to preview/on-air scene slots. Prism owns durable
+	// intent and replay; no Orion store and no Canvas scene artefact enters
+	// this path. The HTTP contract remains the existing POST/GET/DELETE one.
+	if deps.StreamRules != nil {
+		mux.HandleFunc("POST /api/v1/show/stream-rules", postStreamRule(deps))
+		mux.HandleFunc("GET /api/v1/show/stream-rules", getStreamRules(deps))
+		mux.HandleFunc("DELETE /api/v1/show/stream-rules/{id}", deleteStreamRule(deps))
+	}
 
 	// DB catalog surface (ADR Blue 008 §3.4, issue #211): read-only
 	// introspection of whitelisted datasources for cockpit selectors.
