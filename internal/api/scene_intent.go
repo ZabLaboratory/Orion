@@ -510,7 +510,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			} else {
 				// Compatibility for old workload implementations and test
 				// doubles; production Orion implements InlineAdmissionPortal.
-				delegation, err = deps.Workload.MintDelegation(ctx, ticket, json.RawMessage(raw))
+				_, err = deps.Workload.MintDelegation(ctx, ticket, json.RawMessage(raw))
 				if err != nil {
 					writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
 					return
@@ -726,25 +726,9 @@ type resolvedSceneEnvelope struct {
 	RenderBundleDigest string `json:"render_bundle_digest,omitempty"`
 }
 
-// decodeAndVerifyProgram parses the Canvas artifact envelope, decodes
-// the pinned program bytes, and cross-checks BOTH the envelope's own
-// claimed digest and the freshly computed sha256 of the received bytes
-// against expectedDigest (claims.BlueProgramDigest, from the SIGNED
-// attestation — the only digest actually trusted). A mismatch anywhere
-// in this chain fails closed: Orion never Loads bytes it cannot prove
-// match what ZabCanvas attested to sign.
-func decodeAndVerifyProgram(body json.RawMessage, expectedDigest string) ([]byte, error) {
-	var envelope resolvedSceneEnvelope
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, err
-	}
-	return decodeAndVerifyProgramEnvelope(envelope, expectedDigest)
-}
-
-func decodeAndVerifyProgramEnvelope(envelope resolvedSceneEnvelope, expectedDigest string) ([]byte, error) {
-	return decodeAndVerifyProgramEnvelopeCached(envelope, expectedDigest, nil)
-}
-
+// decodeAndVerifyProgramEnvelopeCached decodes the pinned program bytes and
+// cross-checks both the envelope digest and freshly computed canonical digest
+// against the signed attestation claim. A mismatch fails closed before Load.
 func decodeAndVerifyProgramEnvelopeCached(envelope resolvedSceneEnvelope, expectedDigest string, cache *VerifiedProgramCache) ([]byte, error) {
 	if envelope.BlueProgramDigest != expectedDigest {
 		return nil, errors.New("scene-intent: envelope blue_program_digest does not match the attested claim")
@@ -838,17 +822,9 @@ func decodeAndVerifyBundleEnvelope(envelope resolvedSceneEnvelope) ([]byte, erro
 	return bundle, nil
 }
 
-// decodeAndVerifyRenderBundle extracts the optional Solar bundle produced by
-// POST /validate/render-bundle. The expected digest comes from the signed
-// Canvas claims, so the response body cannot substitute another artifact.
-func decodeAndVerifyRenderBundle(body json.RawMessage, expectedDigest string) ([]byte, error) {
-	var envelope resolvedSceneEnvelope
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, err
-	}
-	return decodeAndVerifyRenderBundleEnvelope(envelope, expectedDigest)
-}
-
+// decodeAndVerifyRenderBundleEnvelope extracts the optional Solar bundle
+// produced by POST /validate/render-bundle. The expected digest comes from
+// signed Canvas claims, so the envelope cannot substitute another artifact.
 func decodeAndVerifyRenderBundleEnvelope(envelope resolvedSceneEnvelope, expectedDigest string) ([]byte, error) {
 	if envelope.RenderBundle == "" {
 		if expectedDigest != "" {
@@ -881,21 +857,8 @@ func decodeRenderBundleDefaults(bundle []byte) (map[string]json.RawMessage, erro
 	return payload.Defaults, nil
 }
 
-// verifyNoProgramEnvelope enforces the no-program contract on the fetched
-// envelope (ORION-NOBLUE-AND-VERSION-ALIGN, #398): a ref whose SIGNED
-// claims carry an empty blue_program_digest must fetch an envelope with
-// NO program fields at all. An envelope that carries blue_program (or
-// declares a blue_program_digest) the attestation never signed is refused
-// fail-closed — those bytes are unattested and must not enter Orion, even
-// though the static path would never Load them.
-func verifyNoProgramEnvelope(body json.RawMessage) error {
-	var envelope resolvedSceneEnvelope
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return err
-	}
-	return verifyNoProgramEnvelopeValue(envelope)
-}
-
+// verifyNoProgramEnvelopeValue enforces the no-program contract on the
+// decoded envelope: bytes absent from signed claims must not enter Orion.
 func verifyNoProgramEnvelopeValue(envelope resolvedSceneEnvelope) error {
 	if envelope.BlueProgram != "" || envelope.BlueProgramDigest != "" {
 		return errors.New("scene-intent: envelope carries a program the attestation did not sign")
