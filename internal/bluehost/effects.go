@@ -36,7 +36,11 @@ type EffectDeps struct {
 	ResolveServiceRoute ServiceRouteResolver
 	EgressBudget        *effects.StreamEgressLimiter
 	EgressBudgetKey     string
-	Logger              *slog.Logger
+	// StreamID is host runtime context for stream-level extensions. It is not
+	// authored graph data; Orion's single-show deployment uses the canonical
+	// live stream identity when constructing curated ZabCam paths.
+	StreamID string
+	Logger   *slog.Logger
 	// OverlayMirror is the real effector `core.overlay-app.set@1` forwards
 	// to (ENGINE-B-PARITY-ORION, effect_overlay.go): unlike the 4 opcodes
 	// above, walker.go's fireLocalSideEffect NEVER calls a host-injected
@@ -51,6 +55,16 @@ type EffectDeps struct {
 	// core.overlay-app.set@1 firing is dropped (bag write still happens),
 	// same unwired-seam-still-fires-then posture as every other field here.
 	OverlayMirror OverlayAppMirror
+	// SlotMirror receives the derived LSDP re-key only after the durable
+	// ZabCam slot upsert succeeds. It is intentionally a narrow interface so
+	// Blue remains unaware of Solar/LSDP.
+	SlotMirror SlotAssignmentMirror
+}
+
+// SlotAssignmentMirror is the stream-level derived-cache seam for the
+// host-owned zabcam.assign-slot@1 extension.
+type SlotAssignmentMirror interface {
+	EmitSlotAssignment(slotRef, peerLabel string)
 }
 
 // ServiceCallRoute is the host-resolved portion of a compiler-curated
@@ -131,11 +145,18 @@ func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueru
 		}
 		return doServiceCall(context.Background(), deps.ServiceCall, deps.ResolveServiceRoute, deps.EgressBudget, deps.EgressBudgetKey, config, inputs)
 	}
+	slotAssignment := func(config, inputs map[string]any) (map[string]any, error) {
+		if mode != blueruntime.Execute {
+			return nil, previewWriteForbidden("zabcam.assign-slot", "PUT")
+		}
+		return doSlotAssignment(context.Background(), deps, config, inputs)
+	}
 	return map[string]blueruntime.EffectFunc{
-		"core.http.request@1": http,
-		"core.http-request@1": http,
-		"core.db.query@1":     db,
-		"core.service.call@1": serviceCall,
+		"core.http.request@1":  http,
+		"core.http-request@1":  http,
+		"core.db.query@1":      db,
+		"core.service.call@1":  serviceCall,
+		"zabcam.assign-slot@1": slotAssignment,
 	}
 }
 
@@ -267,6 +288,38 @@ func doServiceCall(ctx context.Context, client *effects.ServiceCallClient, resol
 		"body":   body,
 		"ok":     result.Status >= 200 && result.Status <= 299,
 	}, nil
+}
+
+// doSlotAssignment is the Orion host implementation of Blue's admitted
+// zabcam.assign-slot@1 extension. The graph supplies only slot_ref and
+// peer_label; stream_id is injected from the host context and never accepted
+// from authored configuration. The durable ZabCam write is the source of
+// truth; the LSDP mirror is emitted only after a 2xx response.
+func doSlotAssignment(ctx context.Context, deps EffectDeps, config, inputs map[string]any) (map[string]any, error) {
+	slotRef := strOf(inputs["slot_ref"])
+	peerLabel := strOf(inputs["peer_label"])
+	if slotRef == "" || peerLabel == "" {
+		return nil, fmt.Errorf("ZABCAM_SLOT_ASSIGN_INVALID: slot_ref and peer_label are required")
+	}
+	streamID := deps.StreamID
+	if streamID == "" {
+		streamID = "live"
+	}
+	result, err := doServiceCall(ctx, deps.ServiceCall, deps.ResolveServiceRoute, deps.EgressBudget, deps.EgressBudgetKey, config, map[string]any{
+		"params":  map[string]any{"slot_ref": slotRef, "stream_id": streamID},
+		"payload": map[string]any{"peer_label": peerLabel},
+	})
+	if err != nil {
+		return nil, err
+	}
+	ok, _ := result["ok"].(bool)
+	if !ok {
+		return nil, fmt.Errorf("ZABCAM_SLOT_ASSIGN_FAILED: status=%v body=%v", result["status"], result["body"])
+	}
+	if deps.SlotMirror != nil {
+		deps.SlotMirror.EmitSlotAssignment(slotRef, peerLabel)
+	}
+	return map[string]any{"ok": true, "error": ""}, nil
 }
 
 func serviceCallRouteOf(config map[string]any, resolveRoute ServiceRouteResolver) (ServiceCallRoute, error) {

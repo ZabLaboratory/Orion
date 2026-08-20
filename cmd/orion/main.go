@@ -241,6 +241,7 @@ func run() error {
 		ServiceCall:     serviceCallClient,
 		EgressBudget:    egressBudget,
 		EgressBudgetKey: "orion-bluehost",
+		StreamID:        "live",
 		Logger:          logger,
 	}
 	// Curated service-egress (ADR Blue 002 §3.3) no longer uses a standing
@@ -266,6 +267,7 @@ func run() error {
 		// interface field would store a non-nil interface wrapping a nil
 		// pointer, defeating dispatchOverlayAppSet's nil check.
 		effectDeps.OverlayMirror = antenneWire
+		effectDeps.SlotMirror = antenneWire
 		credsFetcher := lsdp.NewZabCamCredsFetcher(cfg.ZabGateURL, serviceTokenMinter.Token, logger)
 		antenneWire.EnableViewerCreds(ctx,
 			credsFetcher, time.Duration(cfg.ViewerCredsRefreshS)*time.Second)
