@@ -243,13 +243,10 @@ func run() error {
 		EgressBudgetKey: "orion-bluehost",
 		Logger:          logger,
 	}
-	// Curated service-egress (ADR Blue 002 §3.3) is EXTINGUISHED: its minter
-	// was the last consumer of the standing operator credential, retired with
-	// ORION_OPERATOR_TOKEN (ADR ZabAuth 003 Am.3 § A3.3 part 6, RC 40 measured
-	// zero exercise over 98 days). Both consumers below are wired on their
-	// documented "no token" mode (mint nil ⇒ "" ⇒ fail-closed to the `error`
-	// port), until #301 decides how a per-route least-privilege token exists
-	// under the durable model.
+	// Curated service-egress (ADR Blue 002 §3.3) no longer uses a standing
+	// operator credential. The viewer armer below uses the durable service-token
+	// manager to exchange for the exact ZabCam credentials-read scope, so it
+	// remains least-privilege and fail-closed when the family token is absent.
 	//
 	// Stream-level Meet viewer-credentials arming on the antenne LSDP wire
 	// (ADR Blue 009 §3.2, issue #261 — R1, Bastion-gated). Orion resolves the
@@ -257,9 +254,7 @@ func run() error {
 	// receive-only viewer credentials via ZabCam and carries them on
 	// `__cam.viewer` so Solar #28 can join the Meet room(s) on air. The token
 	// is short-lived: re-fetched + re-emitted every ViewerCredsRefreshS. The
-	// fetch now carries NO service token (nil minter): the arming was never put
-	// in service and is explicitly off until #301 (ADR Blue 009 §3.2 records
-	// the retrait). The meet_token rides a reserved leaf (off the
+	// The meet_token rides a reserved leaf (off the
 	// blueprint/_query surface) and is never logged. Antenne wire only —
 	// preview keeps the Prism global.
 	if antenneWire != nil {
@@ -271,7 +266,7 @@ func run() error {
 		// interface field would store a non-nil interface wrapping a nil
 		// pointer, defeating dispatchOverlayAppSet's nil check.
 		effectDeps.OverlayMirror = antenneWire
-		credsFetcher := lsdp.NewZabCamCredsFetcher(cfg.ZabGateURL, nil, logger)
+		credsFetcher := lsdp.NewZabCamCredsFetcher(cfg.ZabGateURL, serviceTokenMinter.Token, logger)
 		antenneWire.EnableViewerCreds(ctx,
 			credsFetcher, time.Duration(cfg.ViewerCredsRefreshS)*time.Second)
 		logger.Info("viewer creds arming enabled", "refresh_s", cfg.ViewerCredsRefreshS)
