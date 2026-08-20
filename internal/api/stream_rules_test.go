@@ -155,3 +155,58 @@ func TestStreamRules_RejectsSceneCarrierWithoutCallingBlue(t *testing.T) {
 		t.Fatalf("scene carrier: got %d %s", response.Code, response.Body.String())
 	}
 }
+
+func TestStreamRules_PreservesBlueCompileDiagnostics(t *testing.T) {
+	blue := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/blueprints/"+streamRuleAPIBlueprintID:
+			writeJSON(w, http.StatusOK, map[string]any{"status": "published", "current_version": 7})
+		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/programs/compile":
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+				"code":    "UNSUPPORTED_FIELD",
+				"message": "graph.nodes[3].config.foo is not supported",
+				"errors": []map[string]string{{
+					"path":    "graph.nodes[3].config.foo",
+					"message": "remove the field before compiling",
+				}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer blue.Close()
+
+	plane := bluehost.NewRulePlane(nil, nil, bluehost.EffectDeps{}, 1, testLogger())
+	defer plane.Stop()
+	show := runtime.NewShow(runtime.NewComputeRegistry(), testLogger())
+	defer show.Stop()
+	mux := http.NewServeMux()
+	RegisterPublic(mux, PublicDeps{
+		Logger: testLogger(),
+		Show:   show,
+		StreamRules: &StreamRulesDeps{
+			Plane:       plane,
+			BlueBaseURL: blue.URL,
+			HTTPClient:  blue.Client(),
+		},
+	})
+
+	response := opRequest(t, mux, http.MethodPost, "/api/v1/show/stream-rules", "operator", map[string]any{
+		"blueprint_id": streamRuleAPIBlueprintID,
+	})
+	body := response.Body.String()
+	if response.Code != http.StatusBadGateway {
+		t.Fatalf("compile failure: got %d %s", response.Code, body)
+	}
+	for _, expected := range []string{
+		`"error":"BLUEPRINT_COMPILE_FAILED"`,
+		`"upstream_status":422`,
+		`"code":"UNSUPPORTED_FIELD"`,
+		`graph.nodes[3].config.foo is not supported`,
+		`remove the field before compiling`,
+	} {
+		if !strings.Contains(body, expected) {
+			t.Fatalf("compile failure missing %q in %s", expected, body)
+		}
+	}
+}

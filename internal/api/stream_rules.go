@@ -18,6 +18,7 @@ import (
 )
 
 const maxStreamRuleBlueResponse = 16 << 20
+const maxStreamRuleBlueErrorResponse = 64 << 10
 
 // StreamRulesDeps wires the restored ADR 009 HTTP surface to Orion's
 // volatile Engine B RulePlane. BlueBaseURL is the existing Blue edge (the
@@ -31,9 +32,11 @@ type StreamRulesDeps struct {
 }
 
 type streamRuleLoadError struct {
-	status  int
-	code    string
-	message string
+	status         int
+	code           string
+	message        string
+	upstreamStatus int
+	upstream       any
 }
 
 func (e *streamRuleLoadError) Error() string { return e.message }
@@ -86,7 +89,7 @@ func postStreamRule(deps PublicDeps) http.HandlerFunc {
 		if err != nil {
 			var loadErr *streamRuleLoadError
 			if errors.As(err, &loadErr) {
-				writeOperatorError(w, loadErr.status, loadErr.code, loadErr.message)
+				writeStreamRuleLoadError(w, loadErr)
 				return
 			}
 			writeOperatorError(w, http.StatusBadGateway, "BLUEPRINT_COMPILE_FAILED", "could not load the published Blue program")
@@ -137,7 +140,7 @@ func deleteStreamRule(deps PublicDeps) http.HandlerFunc {
 func loadStreamRuleProgram(r *http.Request, deps StreamRulesDeps, blueprintID string) ([]byte, string, error) {
 	base, err := url.Parse(strings.TrimRight(deps.BlueBaseURL, "/"))
 	if err != nil || base.Scheme == "" || base.Host == "" {
-		return nil, "", &streamRuleLoadError{http.StatusServiceUnavailable, "BLUE_UNAVAILABLE", "Blue base URL is not configured"}
+		return nil, "", &streamRuleLoadError{status: http.StatusServiceUnavailable, code: "BLUE_UNAVAILABLE", message: "Blue base URL is not configured"}
 	}
 	client := deps.HTTPClient
 	if client == nil {
@@ -149,7 +152,7 @@ func loadStreamRuleProgram(r *http.Request, deps StreamRulesDeps, blueprintID st
 		return nil, "", err
 	}
 	if blueprint.Status != "published" || blueprint.CurrentVersion <= 0 {
-		return nil, "", &streamRuleLoadError{http.StatusConflict, "BLUEPRINT_NOT_PUBLISHED", "stream rule blueprint has no current published version"}
+		return nil, "", &streamRuleLoadError{status: http.StatusConflict, code: "BLUEPRINT_NOT_PUBLISHED", message: "stream rule blueprint has no current published version"}
 	}
 
 	body, err := json.Marshal(map[string]any{"pins": []map[string]any{{
@@ -164,18 +167,18 @@ func loadStreamRuleProgram(r *http.Request, deps StreamRulesDeps, blueprintID st
 		return nil, "", err
 	}
 	if compiled.SchemaVersion != "blue.program.v1" || compiled.ProgramDigest == "" || compiled.ProgramBytesBase64 == "" {
-		return nil, "", &streamRuleLoadError{http.StatusBadGateway, "BLUEPRINT_COMPILE_INVALID", "Blue returned an incomplete program envelope"}
+		return nil, "", &streamRuleLoadError{status: http.StatusBadGateway, code: "BLUEPRINT_COMPILE_INVALID", message: "Blue returned an incomplete program envelope"}
 	}
 	program, err := base64.StdEncoding.DecodeString(compiled.ProgramBytesBase64)
 	if err != nil || len(program) == 0 {
-		return nil, "", &streamRuleLoadError{http.StatusBadGateway, "BLUEPRINT_COMPILE_INVALID", "Blue returned invalid program bytes"}
+		return nil, "", &streamRuleLoadError{status: http.StatusBadGateway, code: "BLUEPRINT_COMPILE_INVALID", message: "Blue returned invalid program bytes"}
 	}
 	var document struct {
 		SchemaVersion string `json:"schema_version"`
 		ProgramDigest string `json:"program_digest"`
 	}
 	if json.Unmarshal(program, &document) != nil || document.SchemaVersion != "blue.program.v1" || document.ProgramDigest != compiled.ProgramDigest {
-		return nil, "", &streamRuleLoadError{http.StatusBadGateway, "BLUEPRINT_COMPILE_INVALID", "Blue program identity does not match its envelope"}
+		return nil, "", &streamRuleLoadError{status: http.StatusBadGateway, code: "BLUEPRINT_COMPILE_INVALID", message: "Blue program identity does not match its envelope"}
 	}
 	return program, compiled.ProgramDigest, nil
 }
@@ -201,23 +204,81 @@ func streamRuleBlueJSON(origin *http.Request, client *http.Client, method, endpo
 
 	response, err := client.Do(request)
 	if err != nil {
-		return &streamRuleLoadError{http.StatusBadGateway, "BLUE_UNAVAILABLE", "Blue could not be reached"}
+		return &streamRuleLoadError{status: http.StatusBadGateway, code: "BLUE_UNAVAILABLE", message: "Blue could not be reached"}
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, maxStreamRuleBlueResponse))
+		upstream := readStreamRuleBlueError(response.Body)
 		switch response.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
-			return &streamRuleLoadError{http.StatusBadGateway, "BLUE_AUTHORIZATION_FAILED", "Blue rejected the operator credential"}
+			return &streamRuleLoadError{status: http.StatusBadGateway, code: "BLUE_AUTHORIZATION_FAILED", message: "Blue rejected the operator credential"}
 		case http.StatusNotFound:
-			return &streamRuleLoadError{http.StatusNotFound, "BLUEPRINT_NOT_FOUND", "stream rule blueprint was not found"}
+			return &streamRuleLoadError{
+				status:         http.StatusNotFound,
+				code:           "BLUEPRINT_NOT_FOUND",
+				message:        "stream rule blueprint was not found",
+				upstreamStatus: response.StatusCode,
+				upstream:       upstream,
+			}
 		default:
-			return &streamRuleLoadError{http.StatusBadGateway, "BLUEPRINT_COMPILE_FAILED", fmt.Sprintf("Blue returned HTTP %d", response.StatusCode)}
+			return &streamRuleLoadError{
+				status:         http.StatusBadGateway,
+				code:           "BLUEPRINT_COMPILE_FAILED",
+				message:        fmt.Sprintf("Blue returned HTTP %d: %s", response.StatusCode, formatStreamRuleBlueError(upstream)),
+				upstreamStatus: response.StatusCode,
+				upstream:       upstream,
+			}
 		}
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, maxStreamRuleBlueResponse))
 	if err := decoder.Decode(dst); err != nil {
-		return &streamRuleLoadError{http.StatusBadGateway, "BLUE_RESPONSE_INVALID", "Blue returned malformed JSON"}
+		return &streamRuleLoadError{status: http.StatusBadGateway, code: "BLUE_RESPONSE_INVALID", message: "Blue returned malformed JSON"}
 	}
 	return nil
+}
+
+func writeStreamRuleLoadError(w http.ResponseWriter, loadErr *streamRuleLoadError) {
+	if loadErr.upstream == nil {
+		writeOperatorError(w, loadErr.status, loadErr.code, loadErr.message)
+		return
+	}
+	writeJSON(w, loadErr.status, map[string]any{
+		"error":           loadErr.code,
+		"message":         loadErr.message,
+		"upstream_status": loadErr.upstreamStatus,
+		"upstream":        loadErr.upstream,
+	})
+}
+
+func readStreamRuleBlueError(body io.Reader) any {
+	raw, err := io.ReadAll(io.LimitReader(body, maxStreamRuleBlueErrorResponse+1))
+	if err != nil || len(raw) == 0 {
+		return nil
+	}
+	truncated := len(raw) > maxStreamRuleBlueErrorResponse
+	if truncated {
+		raw = raw[:maxStreamRuleBlueErrorResponse]
+	}
+	var structured any
+	if json.Unmarshal(raw, &structured) == nil {
+		if truncated {
+			return map[string]any{"body": structured, "truncated": true}
+		}
+		return structured
+	}
+	return map[string]any{
+		"body":      string(raw),
+		"truncated": truncated,
+	}
+}
+
+func formatStreamRuleBlueError(upstream any) string {
+	if upstream == nil {
+		return "no diagnostic body"
+	}
+	raw, err := json.Marshal(upstream)
+	if err != nil {
+		return "diagnostic body could not be encoded"
+	}
+	return string(raw)
 }
