@@ -61,6 +61,14 @@ type InboxMetrics interface {
 	InboxDropped(sceneID string)
 }
 
+// StreamRulePlatformSink is the narrow seam from the authenticated inbox to
+// the scene-independent Engine B rule plane. The inbox retains scope/audit
+// ownership; the sink only receives already-authorized canonical platform
+// leaves. Keeping this interface here avoids coupling adapters to bluehost.
+type StreamRulePlatformSink interface {
+	WritePlatformEvent(leaf string, payload any)
+}
+
 // dropWarnInterval rate-limits the inbox-drop warn log: under a flood
 // (the exact condition that produces drops) one warn per interval is
 // signal, one warn per drop is its own incident. The metric counts
@@ -74,10 +82,20 @@ type Inbox struct {
 	audit   *Audit
 	metrics InboxMetrics // nil-safe: nil disables the drop counter
 	events  *runtime.CanonicalEventIngress
+	rules   StreamRulePlatformSink
 
 	// lastDropWarn is the unix-nano stamp of the last drop warn, used
 	// to rate-limit logging (never the metric).
 	lastDropWarn atomic.Int64
+}
+
+// SetStreamRulePlatformSink wires the volatile global rule plane before the
+// public servers start. It does not transfer scene ownership or persistence
+// into the inbox.
+func (in *Inbox) SetStreamRulePlatformSink(sink StreamRulePlatformSink) {
+	if in != nil {
+		in.rules = sink
+	}
 }
 
 // NewInbox builds an inbox bound to the show. metrics may be nil
@@ -138,6 +156,19 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 	// Test-mode paths never reach the live show.
 	if isTestNamespace(w.Path) && !w.system {
 		return ErrWriteForbidden
+	}
+
+	// Engine B stream rules receive canonical platform writes independently
+	// from the active scene. Decode with UseNumber to preserve the portable
+	// runtime's canonical JSON number contract. A malformed internal RawMessage
+	// is left to the existing scene path rather than broadening this seam.
+	if in.rules != nil && strings.HasPrefix(w.Path, "__inputs.platform.") {
+		decoder := json.NewDecoder(strings.NewReader(string(w.Value)))
+		decoder.UseNumber()
+		var payload any
+		if err := decoder.Decode(&payload); err == nil {
+			in.rules.WritePlatformEvent(w.Path, payload)
+		}
 	}
 
 	msg := runtime.InputMsg{

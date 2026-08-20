@@ -276,6 +276,110 @@ func engineBHost(deps PublicDeps) *bluehost.Host {
 	return deps.SceneIntent.Host
 }
 
+// resolveRulePlane validates the frozen ?rule={rule_id} selector and returns
+// the global Engine B RulePlane entry it names. Stream rules are orthogonal to
+// both scene slots, but the historical selector conflict with
+// ?target=preview remains part of the HTTP contract and is preserved.
+func resolveRulePlane(w http.ResponseWriter, deps PublicDeps, r *http.Request) (*bluehost.RulePlane, string, bool) {
+	ruleID := r.URL.Query().Get("rule")
+	if ruleID == "" {
+		return nil, "", true
+	}
+	if r.URL.Query().Get("target") == "preview" {
+		writeOperatorError(w, http.StatusBadRequest, "SELECTOR_CONFLICT", "?rule and ?target=preview are mutually exclusive")
+		return nil, "", false
+	}
+	if deps.StreamRules == nil || deps.StreamRules.Plane == nil || deps.StreamRules.Plane.Digest(ruleID) == "" {
+		writeOperatorError(w, http.StatusConflict, "RULE_NOT_ACTIVE", "no promoted stream-level rule by that id")
+		return nil, "", false
+	}
+	return deps.StreamRules.Plane, ruleID, true
+}
+
+func streamRuleArmedAwaits(plane *bluehost.RulePlane, ruleID string, logger *slog.Logger) []runtime.PendingAwait {
+	declared := map[string]bluehost.AwaitDecl{}
+	for _, contract := range plane.Contracts() {
+		if contract.RuleID != ruleID {
+			continue
+		}
+		for _, await := range contract.Awaits {
+			declared[await.AwaitName] = await
+		}
+		break
+	}
+	out := []runtime.PendingAwait{}
+	for _, name := range plane.PendingAwaitNames(ruleID) {
+		await, ok := declared[name]
+		if !ok {
+			if logger != nil {
+				logger.Warn("stream rule armed await has no declared metadata, omitted", "rule_id", ruleID, "await_name", name)
+			}
+			continue
+		}
+		out = append(out, runtime.PendingAwait{
+			BlueprintKey: ruleID,
+			AwaitName:    await.AwaitName,
+			ValueType:    await.ValueType,
+			UI:           await.UI,
+		})
+	}
+	return out
+}
+
+func postOperatorCallRule(w http.ResponseWriter, r *http.Request, deps PublicDeps, blueprintID, entrypointID string) {
+	plane, ruleID, ok := resolveRulePlane(w, deps, r)
+	if !ok {
+		return
+	}
+	if blueprintID != ruleID {
+		writeOperatorError(w, http.StatusConflict, "BLUEPRINT_NOT_ACTIVE", "blueprint does not identify the selected stream rule")
+		return
+	}
+	if !plane.HasTrigger(ruleID, entrypointID) {
+		writeOperatorError(w, http.StatusConflict, "ENTRYPOINT_UNKNOWN", "no on-call entrypoint by that id on the active blueprint")
+		return
+	}
+	var body operatorCallBody
+	if !readOperatorBody(w, r, &body) {
+		return
+	}
+	payload, ok := decodeOperatorPayload(w, body.Payload)
+	if !ok {
+		return
+	}
+	if _, err := plane.Call(ruleID, entrypointID, payload); err != nil {
+		writeOperatorError(w, http.StatusInternalServerError, "INTERNAL", "stream rule call failed")
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "fired"})
+}
+
+func postOperatorResolveRule(w http.ResponseWriter, deps PublicDeps, r *http.Request, blueprintID, awaitName string, rawValue json.RawMessage) {
+	plane, ruleID, ok := resolveRulePlane(w, deps, r)
+	if !ok {
+		return
+	}
+	if blueprintID != ruleID {
+		writeOperatorError(w, http.StatusGone, "AWAIT_GONE", "no live await for this blueprint")
+		return
+	}
+	value, ok := decodeOperatorPayload(w, rawValue)
+	if !ok {
+		return
+	}
+	_, err := plane.Resolve(ruleID, awaitName, value)
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+	case isBlueRuntimeCode(err, "AWAIT_TYPE_MISMATCH"):
+		writeOperatorError(w, http.StatusUnprocessableEntity, "VALUE_TYPE_MISMATCH", "value does not match the await's value_type")
+	case isBlueRuntimeCode(err, "EVENT_MALFORMED"), errors.Is(err, bluehost.ErrRuleNotActive):
+		writeOperatorError(w, http.StatusGone, "AWAIT_GONE", "no live await by that name (already resolved or invalidated)")
+	default:
+		writeOperatorError(w, http.StatusInternalServerError, "INTERNAL", "resolve failed")
+	}
+}
+
 // engineBArmedAwaits joins bluehost.Host's live armed-await registry
 // (Host.PendingAwaitNames, wrapping blueruntime.Runtime.PendingAwaitNames
 // #344) against its declared metadata (Host.DeclaredContracts' AwaitDecl)
@@ -494,6 +598,11 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 		blueprintID := resolveBlueprintKey(r.PathValue("blueprint_id"))
 		entrypointID := r.PathValue("entrypoint_id")
 
+		if r.URL.Query().Get("rule") != "" && deps.StreamRules != nil {
+			postOperatorCallRule(w, r, deps, blueprintID, entrypointID)
+			return
+		}
+
 		if isEngineBRouted(r) {
 			kind, ok := resolveTargetKind(w, r)
 			if !ok {
@@ -518,7 +627,6 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 				"no on-call entrypoint by that id on the active blueprint")
 			return
 		}
-
 		var body operatorCallBody
 		if !readOperatorBody(w, r, &body) {
 			return
@@ -549,6 +657,20 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 // registry exactly as before this change.
 func getRuntimePending(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("rule") != "" && deps.StreamRules != nil {
+			plane, ruleID, ok := resolveRulePlane(w, deps, r)
+			if !ok {
+				return
+			}
+			blueprintID := resolveBlueprintKey(r.PathValue("blueprint_id"))
+			pending := []runtime.PendingAwait{}
+			if blueprintID == ruleID {
+				pending = streamRuleArmedAwaits(plane, ruleID, deps.Logger)
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"pending": pending})
+			return
+		}
+
 		if isEngineBRouted(r) {
 			kind, ok := resolveTargetKind(w, r)
 			if !ok {
@@ -598,6 +720,11 @@ func postOperatorResolve(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 
+		if r.URL.Query().Get("rule") != "" && deps.StreamRules != nil {
+			postOperatorResolveRule(w, deps, r, blueprintID, awaitName, body.Value)
+			return
+		}
+
 		if isEngineBRouted(r) {
 			kind, ok := resolveTargetKind(w, r)
 			if !ok {
@@ -612,7 +739,6 @@ func postOperatorResolve(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 		if active == nil || !active.HostsBlueprint(blueprintID) {
-			// Dormant / unknown blueprint: the await cannot exist — Gone.
 			writeOperatorError(w, http.StatusGone, "AWAIT_GONE",
 				"no live await for this blueprint (inactive or invalidated)")
 			return

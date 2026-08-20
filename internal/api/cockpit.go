@@ -149,15 +149,67 @@ func getCockpitContracts(deps PublicDeps) http.HandlerFunc {
 				appendEngineBScene(&out, host, bluehost.SlotOnAir, deps.Logger)
 			}
 		}
-		// Promoted stream-level rules → scope `stream` (permanent). Each item is
-		// stamped with rule_id = the scene's id, which IS the stable rule key in
-		// `streamRules` (scene_id or blueprint_id) — the token #286 routes on.
-		for _, rule := range deps.Show.StreamRuleScenes() {
-			appendScene(&out, rule, scopeStream, rule.ID())
+		// Promoted stream-level rules live on the global Engine B RulePlane,
+		// never in either scene program. Therefore the same stream facets are
+		// appended for antenna and preview targets and survive every slot flip.
+		if deps.StreamRules != nil && deps.StreamRules.Plane != nil {
+			appendRulePlane(&out, deps.StreamRules.Plane, deps.Logger)
+		} else {
+			// Compatibility seam for isolated Engine A fixtures and callers that
+			// intentionally construct PublicDeps without the production plane.
+			for _, rule := range deps.Show.StreamRuleScenes() {
+				appendScene(&out, rule, scopeStream, rule.ID())
+			}
 		}
 
 		writeJSON(w, http.StatusOK, out)
 	})
+}
+
+// appendRulePlane derives every global rule's Engine B operator contract.
+// rule_id and blueprint_id are both the promoted blueprint id, preserving the
+// frozen cockpit routing contract used by ?rule={rule_id}. Params are absent:
+// a stream rule has no LSML render bundle or Canvas-owned scene interface.
+func appendRulePlane(out *cockpitContracts, plane *bluehost.RulePlane, logger *slog.Logger) {
+	for _, contract := range plane.Contracts() {
+		for _, trigger := range contract.Triggers {
+			out.Triggers = append(out.Triggers, cockpitTrigger{
+				ContractTrigger: runtime.ContractTrigger{
+					BlueprintKey: contract.RuleID,
+					EntrypointID: trigger.CallID,
+					State:        "armed",
+					UI:           trigger.UI,
+				},
+				Scope:  scopeStream,
+				RuleID: contract.RuleID,
+			})
+		}
+
+		declared := make(map[string]bluehost.AwaitDecl, len(contract.Awaits))
+		for _, await := range contract.Awaits {
+			declared[await.AwaitName] = await
+		}
+		for _, name := range plane.PendingAwaitNames(contract.RuleID) {
+			await, ok := declared[name]
+			if !ok {
+				if logger != nil {
+					logger.Warn("stream rule armed await has no declared metadata, omitted", "rule_id", contract.RuleID, "await_name", name)
+				}
+				continue
+			}
+			out.Awaits = append(out.Awaits, cockpitAwait{
+				ContractAwait: runtime.ContractAwait{
+					BlueprintKey: contract.RuleID,
+					AwaitName:    await.AwaitName,
+					ValueType:    await.ValueType,
+					State:        "armed",
+					UI:           await.UI,
+				},
+				Scope:  scopeStream,
+				RuleID: contract.RuleID,
+			})
+		}
+	}
 }
 
 // appendScene derives one scene's contract and appends its facet items to the

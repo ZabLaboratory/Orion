@@ -26,6 +26,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/effects"
 	"github.com/ZabLaboratory/Orion/internal/lsdp"
 	"github.com/ZabLaboratory/Orion/internal/obs"
+	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/ws"
 )
@@ -405,6 +406,22 @@ func run() error {
 		}
 	}
 
+	// Global stream-rule runtime (ADR 009): one volatile Engine B plane,
+	// independent of the preview/on-air scene Host. Prism remains the durable
+	// intent owner and replays missing rules after restart. The plane receives
+	// the same providers, capability policy and effect dependencies as scene
+	// instances, including the show-level overlay mirror, but no Canvas
+	// artefact or Orion store participates in promotion.
+	rulePlane := bluehost.NewRulePlane(
+		providers.Registry(),
+		providers.Policy(len(cfg.HTTPEgressAllowHosts) > 0),
+		effectDeps,
+		cfg.TickHz,
+		logger,
+	)
+	defer rulePlane.Stop()
+	inbox.SetStreamRulePlatformSink(rulePlane)
+
 	// Public mux: HTTP + WS surface routed through ZabGate.
 	publicMux := http.NewServeMux()
 	api.RegisterPublic(publicMux, api.PublicDeps{
@@ -426,6 +443,10 @@ func run() error {
 		// db.query client; both use the same exact-route exchange callback.
 		SchemaClient: effects.NewSchemaClientWithPathTokenFunc(cfg.ZabGateURL, serviceTokenMinter.Token, nil),
 		SceneIntent:  sceneIntent,
+		StreamRules: &api.StreamRulesDeps{
+			Plane:       rulePlane,
+			BlueBaseURL: cfg.BlueBaseURL,
+		},
 	})
 
 	// Internal-only HTTP surface for prom scrape + dev probes.

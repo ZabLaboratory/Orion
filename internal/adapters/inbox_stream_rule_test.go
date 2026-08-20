@@ -3,6 +3,7 @@ package adapters
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -10,6 +11,19 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/protocol"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
+
+type recordedPlatformWrite struct {
+	leaf    string
+	payload any
+}
+
+type recordingRulePlaneSink struct {
+	writes []recordedPlatformWrite
+}
+
+func (s *recordingRulePlaneSink) WritePlatformEvent(leaf string, payload any) {
+	s.writes = append(s.writes, recordedPlatformWrite{leaf: leaf, payload: payload})
+}
 
 // Stream-rule routing at the inbox seam (ADR 009 §3.3, issue #153). A
 // write accepted by the inbox fans out to the union {active} ∪ {promoted
@@ -131,4 +145,36 @@ func TestInbox_RuleReceivesWithoutActiveScene(t *testing.T) {
 	}
 	// No active scene, yet the rule received and emitted the delta.
 	awaitLeafDelta(t, ruleSub, twitchLeaf)
+}
+
+// TestInbox_RulePlaneReceivesPlatformWithoutActiveScene proves the production
+// Engine B seam: an authenticated platform write reaches the global plane even
+// when the Show has neither an active scene nor a legacy promoted scene.
+func TestInbox_RulePlaneReceivesPlatformWithoutActiveScene(t *testing.T) {
+	show := runtime.NewShow(runtime.NewComputeRegistry(), quietLogger())
+	t.Cleanup(show.Stop)
+	inbox := NewInbox(show, quietLogger(), nil)
+	sink := &recordingRulePlaneSink{}
+	inbox.SetStreamRulePlatformSink(sink)
+	quasar := identityForTest("service", "quasar", []string{"__inputs.platform.twitch.*"})
+
+	if err := inbox.Write(context.Background(), Write{
+		Identity: quasar,
+		Path:     twitchLeaf,
+		Value:    json.RawMessage(`{"message":"between-scenes","score":7}`),
+		Source:   "service:quasar",
+	}); err != nil {
+		t.Fatalf("write refused: %v", err)
+	}
+
+	want := []recordedPlatformWrite{{
+		leaf: twitchLeaf,
+		payload: map[string]any{
+			"message": "between-scenes",
+			"score":   json.Number("7"),
+		},
+	}}
+	if !reflect.DeepEqual(sink.writes, want) {
+		t.Fatalf("RulePlane writes = %#v, want %#v", sink.writes, want)
+	}
 }
