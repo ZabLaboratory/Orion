@@ -768,6 +768,9 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 		return result, err
 	}
 	result = normalizeRuntimeOutputs(result)
+	if h.logger != nil {
+		h.logger.Info("blue runtime operator call completed", "slot", slot, "call_id", callID, "status", result.Status, "output_count", len(result.Outputs))
+	}
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil

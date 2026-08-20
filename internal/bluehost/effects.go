@@ -149,7 +149,23 @@ func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueru
 		if mode != blueruntime.Execute {
 			return nil, previewWriteForbidden("zabcam.assign-slot", "PUT")
 		}
-		return doSlotAssignment(context.Background(), deps, config, inputs)
+		if deps.Logger != nil {
+			deps.Logger.Info("engine b slot assignment invoked",
+				"slot_ref", strOf(inputs["slot_ref"]),
+				"peer_label", strOf(inputs["peer_label"]),
+				"service", strOf(config["service"]),
+				"route_id", strOf(config["route_id"]),
+			)
+		}
+		result, err := doSlotAssignment(context.Background(), deps, config, inputs)
+		if deps.Logger != nil {
+			if err != nil {
+				deps.Logger.Error("engine b slot assignment failed", "err", err)
+			} else {
+				deps.Logger.Info("engine b slot assignment completed", "ok", result["ok"])
+			}
+		}
+		return result, err
 	}
 	return map[string]blueruntime.EffectFunc{
 		"core.http.request@1":  http,
