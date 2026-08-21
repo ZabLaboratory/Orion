@@ -334,6 +334,28 @@ func TestLowerText_ContentKeyTextToValue(t *testing.T) {
 	}
 }
 
+// TestLowerText_MetadataGeometryBecomesRuntimeBounds proves the authoring
+// text contract reaches Solar's layout box. Prism stores text dimensions and
+// truncation in metadata.figma; the runtime consumes flat width/height and
+// maxLines. Without this lowering a long live chat line has no wrap box and
+// can paint outside its black panel.
+func TestLowerText_MetadataGeometryBecomesRuntimeBounds(t *testing.T) {
+	raw := func(s string) json.RawMessage { return json.RawMessage(s) }
+	props := map[string]json.RawMessage{
+		"metadata": raw(`{"figma":{"size":{"w":260,"h":680},"maxLines":4}}`),
+		"style":    raw(`{"fontSize":24,"lineHeight":1.2}`),
+	}
+
+	out, _ := lowerRenderProps("text", props, nil)
+	jsonEq(t, &LayoutNode{Props: out}, "width", 260)
+	jsonEq(t, &LayoutNode{Props: out}, "height", 680)
+	jsonEq(t, &LayoutNode{Props: out}, "maxLines", 4)
+	jsonEq(t, &LayoutNode{Props: out}, "lineHeight", 1.2)
+	if _, leaked := out["metadata"]; leaked {
+		t.Fatalf("authoring metadata must not reach the runtime props: %v", keysOf(out))
+	}
+}
+
 // TestLowerRenderProps_LayoutKindSizeSplit is the regression for the
 // collapsed `sizing:fixed` auto-layout (canevas-chat-sponso right column /
 // camera rail vanished at the antenne): the default lowering branch passed

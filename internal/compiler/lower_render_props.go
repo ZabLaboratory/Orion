@@ -77,11 +77,16 @@ type renameMap map[string]string
 // object is flattened first (see lowerText), so these apply to the keys
 // AFTER flattening. The producer emits these inside `style`.
 var textRenames = renameMap{
-	"fontSize":   "size",   // text.tsx resolved.size
-	"fontFamily": "font",   // text.tsx resolved.font (LSML style.fontFamily)
-	"fontWeight": "weight", // text.tsx resolved.weight
-	"color":      "colour", // text.tsx resolved.colour (US→GB, text only)
-	"textAlign":  "align",  // text.tsx resolved.align
+	"fontSize":       "size",   // text.tsx resolved.size
+	"fontFamily":     "font",   // text.tsx resolved.font (LSML style.fontFamily)
+	"fontWeight":     "weight", // text.tsx resolved.weight
+	"color":          "colour", // text.tsx resolved.colour (US→GB, text only)
+	"textAlign":      "align",  // text.tsx resolved.align
+	"lineHeight":     "lineHeight",
+	"letterSpacing":  "letterSpacing",
+	"textTransform":  "textTransform",
+	"textDecoration": "textDecoration",
+	"fontStyle":      "fontStyle",
 }
 
 // textContentRename lowers a text node's CONTENT key. `text` is the
@@ -105,12 +110,24 @@ const textContentRenderKey = "value"
 // letterSpacing/…) is dropped — we do not fabricate render keys the
 // `.tsx` never reads (ADR 007 §9.3).
 var textKeep = map[string]struct{}{
-	"value":   {},
-	"opacity": {},
+	"value":          {},
+	"opacity":        {},
+	"maxLines":       {},
+	"lineHeight":     {},
+	"letterSpacing":  {},
+	"textTransform":  {},
+	"textDecoration": {},
+	"fontStyle":      {},
 }
 
 func lowerText(props map[string]json.RawMessage, bindings map[string]string) (map[string]json.RawMessage, map[string]string) {
 	out := make(map[string]json.RawMessage)
+	// Text geometry is intentionally stored in LSML's advisory
+	// metadata.figma.size (the authoring text schema has no first-class
+	// size field). Solar, however, needs the flattened universal
+	// width/height pair to wrap text inside its panel. Lower the metadata
+	// fallback here, without trusting metadata as a runtime prop.
+	lowerTextMetadataGeometry(props["metadata"], out)
 
 	// The binding-rename table is derived from the static mapping
 	// UNCONDITIONALLY — a bound prop has no static counterpart in
@@ -141,6 +158,15 @@ func lowerText(props map[string]json.RawMessage, bindings map[string]string) (ma
 					// are silently dropped — survive in LSML, no render slot.
 				}
 			}
+		case "metadata":
+			// Authoring metadata is consumed above only for text geometry and
+			// truncation. It is not a Solar text prop and must not reach the
+			// runtime allowlist as an ignored key.
+			continue
+		case "size":
+			// Be tolerant of an already-materialised nested size from an
+			// older producer; the canonical LSML text path uses metadata.
+			splitSize(v, out)
 		case textContentAuthoringKey:
 			// Content authored as `text` → the render vocab `value`. A
 			// node that already carries `value` keeps it (textKeep below);
@@ -164,6 +190,58 @@ func lowerText(props map[string]json.RawMessage, bindings map[string]string) (ma
 		}
 	}
 	return out, rekeyBindings(bindings, rename)
+}
+
+// lowerTextMetadataGeometry extracts only the typed numeric fields Solar
+// consumes from the Figma authoring metadata. Invalid or partial metadata is
+// ignored, never copied into the render bundle.
+func lowerTextMetadataGeometry(metadata json.RawMessage, out map[string]json.RawMessage) {
+	if len(metadata) == 0 {
+		return
+	}
+	var envelope struct {
+		Figma struct {
+			Size struct {
+				W json.RawMessage `json:"w"`
+				H json.RawMessage `json:"h"`
+			} `json:"size"`
+			MaxLines json.RawMessage `json:"maxLines"`
+		} `json:"figma"`
+	}
+	if err := json.Unmarshal(metadata, &envelope); err != nil {
+		return
+	}
+	if _, exists := out["width"]; !exists && positiveFiniteJSONNumber(envelope.Figma.Size.W) {
+		out["width"] = envelope.Figma.Size.W
+	}
+	if _, exists := out["height"]; !exists && positiveFiniteJSONNumber(envelope.Figma.Size.H) {
+		out["height"] = envelope.Figma.Size.H
+	}
+	if _, exists := out["maxLines"]; !exists && positiveIntegerJSONNumber(envelope.Figma.MaxLines) {
+		out["maxLines"] = envelope.Figma.MaxLines
+	}
+}
+
+func positiveFiniteJSONNumber(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var value float64
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	return value > 0
+}
+
+func positiveIntegerJSONNumber(raw json.RawMessage) bool {
+	if len(raw) == 0 {
+		return false
+	}
+	var value int
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return false
+	}
+	return value > 0
 }
 
 func lowerFrame(props map[string]json.RawMessage, bindings map[string]string) (map[string]json.RawMessage, map[string]string) {
