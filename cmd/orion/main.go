@@ -440,6 +440,15 @@ func run() error {
 		logger,
 	)
 	defer rulePlane.Stop()
+	if sceneIntent != nil && sceneIntent.Host != nil {
+		rulePlane.SetShowEmitSink(func(topic string, payload any) {
+			for _, slot := range []bluehost.Slot{bluehost.SlotPreview, bluehost.SlotOnAir} {
+				if err := sceneIntent.Host.EmitEvent(slot, topic, payload); err != nil && !errors.Is(err, bluehost.ErrNotLoaded) {
+					logger.Warn("stateless show.emit delivery failed", "slot", slot, "topic", topic, "error", err)
+				}
+			}
+		})
+	}
 	inbox.SetStreamRulePlatformSink(rulePlane)
 
 	// Public mux: HTTP + WS surface routed through ZabGate.
