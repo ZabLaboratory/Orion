@@ -53,3 +53,26 @@ func TestBuildShowEmitEventIsAcceptedByBlueRuntime(t *testing.T) {
 		t.Fatalf("blue runtime rejected show.emit event: %v", err)
 	}
 }
+
+func TestHost_EmitEventDoesNotConsumeSequenceWhenTopicIsRejected(t *testing.T) {
+	h := NewHost()
+	if err := h.Take("onair-show-emit-sequence", "scene-show-emit-sequence", "sha256:show-emit-sequence", fixture(t), nil, nil, nil); err != nil {
+		t.Fatalf("Take: %v", err)
+	}
+
+	// The minimal fixture declares no event topics. Both calls must be
+	// rejected as unknown topics, not as a sequence gap caused by the first
+	// rejection consuming source sequence one.
+	if err := h.EmitEvent(SlotOnAir, "stream_chat_event", map[string]any{"text": "first"}); err == nil {
+		t.Fatal("expected the undeclared topic to be rejected")
+	}
+	if got := h.slots[SlotOnAir].showEmitSequence; got != 0 {
+		t.Fatalf("rejected show.emit advanced source sequence to %d", got)
+	}
+	if err := h.EmitEvent(SlotOnAir, "stream_chat_event", map[string]any{"text": "second"}); err == nil {
+		t.Fatal("expected the undeclared topic to remain rejected")
+	}
+	if got := h.slots[SlotOnAir].showEmitSequence; got != 0 {
+		t.Fatalf("second rejected show.emit advanced source sequence to %d", got)
+	}
+}
