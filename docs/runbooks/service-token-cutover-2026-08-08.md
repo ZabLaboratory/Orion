@@ -76,7 +76,10 @@ durable service token: the persisted credential is marked rotating …
    ```
    *Rollback* : aucun n'est utile — restaurer la ligne remettrait le marqueur,
    donc l'état dégradé. La reprise passe obligatoirement par un nouveau mint.
-3. Re-minter une famille (§ 3, ligne 1), poser `ORION_SERVICE_REFRESH_TOKEN`,
+3. Re-minter une famille (§ 3, ligne 1), avec `exchange_paths` identiques aux
+   `paths` réellement demandés par Orion (`quasar.credentials.read`,
+   `query.read.truth`, `query.read.ranking` dans la configuration actuelle),
+   puis poser `ORION_SERVICE_REFRESH_TOKEN`,
    redéployer (`workflow_dispatch` suffit).
 4. Vérifier `/ready` → `armed` **et** `generation = 1` sur la nouvelle famille.
 5. Révoquer la famille orpheline précédente (sa tête vivante n'est détenue par

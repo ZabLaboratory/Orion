@@ -29,6 +29,10 @@ jobs:
       # Orion keeps a durable refresh-token possession. The runtime rotates
       # it at boot and before expiry, then requests short-lived route-scoped
       # tokens from ZabAuth. No static access token is deployed.
+      # The family behind ORION_SERVICE_REFRESH_TOKEN must be minted with
+      # exchange_paths equal to ORION_SERVICE_PATHS. A family that only has
+      # paths can rotate successfully but cannot exchange, so the Blue-route
+      # fetch must succeed before Orion is considered usable.
       - name: Verify secrets
         run: |
           if [ -z "${{ secrets.VPS_HOST }}" ] || [ -z "${{ secrets.VPS_USERNAME }}" ] || [ -z "${{ secrets.VPS_SSH_KEY }}" ] || [ -z "${{ secrets.VPS_APP_PATH }}" ] || [ -z "${{ secrets.ORION_PG_PASSWORD }}" ] || [ -z "${{ secrets.ORION_ENCRYPTION_KEY }}" ] || [ -z "${{ secrets.ORION_SERVICE_REFRESH_TOKEN }}" ]; then
