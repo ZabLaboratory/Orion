@@ -415,6 +415,15 @@ func run() error {
 			sceneIntent.Bridges = bluewire.NewRegistry()
 			sceneIntent.Logger = logger
 		}
+		if sceneIntent.Host != nil {
+			inbox.SetPlatformEventSink(func(path string, payload any) {
+				for _, slot := range []bluehost.Slot{bluehost.SlotPreview, bluehost.SlotOnAir} {
+					if _, err := sceneIntent.Host.WritePlatformEvent(slot, path, payload); err != nil && !errors.Is(err, bluehost.ErrNotLoaded) {
+						logger.Warn("stateless platform event delivery failed", "slot", slot, "path", path, "error", err)
+					}
+				}
+			})
+		}
 	}
 
 	// Global stream-rule runtime (ADR 009): one volatile Engine B plane,

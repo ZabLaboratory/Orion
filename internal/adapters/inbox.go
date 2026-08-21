@@ -69,6 +69,11 @@ type StreamRulePlatformSink interface {
 	WritePlatformEvent(leaf string, payload any)
 }
 
+// PlatformEventSink receives an already-authorized canonical platform input.
+// The sink is downstream of Inbox authorization so callers cannot inject
+// arbitrary events into a stateless host.
+type PlatformEventSink func(leaf string, payload any)
+
 // dropWarnInterval rate-limits the inbox-drop warn log: under a flood
 // (the exact condition that produces drops) one warn per interval is
 // signal, one warn per drop is its own incident. The metric counts
@@ -77,12 +82,13 @@ const dropWarnInterval = time.Second
 
 // Inbox is the single write entry into the runtime.
 type Inbox struct {
-	show    *runtime.Show
-	logger  *slog.Logger
-	audit   *Audit
-	metrics InboxMetrics // nil-safe: nil disables the drop counter
-	events  *runtime.CanonicalEventIngress
-	rules   StreamRulePlatformSink
+	show              *runtime.Show
+	logger            *slog.Logger
+	audit             *Audit
+	metrics           InboxMetrics // nil-safe: nil disables the drop counter
+	events            *runtime.CanonicalEventIngress
+	rules             StreamRulePlatformSink
+	platformEventSink PlatformEventSink
 
 	// lastDropWarn is the unix-nano stamp of the last drop warn, used
 	// to rate-limit logging (never the metric).
@@ -95,6 +101,15 @@ type Inbox struct {
 func (in *Inbox) SetStreamRulePlatformSink(sink StreamRulePlatformSink) {
 	if in != nil {
 		in.rules = sink
+	}
+}
+
+// SetPlatformEventSink wires the stateless SceneIntent hosts before public
+// traffic starts. A stateless host that is not loaded must be handled by the
+// sink as a best-effort delivery and must not make the legacy write fail.
+func (in *Inbox) SetPlatformEventSink(sink PlatformEventSink) {
+	if in != nil {
+		in.platformEventSink = sink
 	}
 }
 
@@ -162,12 +177,17 @@ func (in *Inbox) Write(_ context.Context, w Write) error {
 	// from the active scene. Decode with UseNumber to preserve the portable
 	// runtime's canonical JSON number contract. A malformed internal RawMessage
 	// is left to the existing scene path rather than broadening this seam.
-	if in.rules != nil && strings.HasPrefix(w.Path, "__inputs.platform.") {
+	if strings.HasPrefix(w.Path, "__inputs.platform.") {
 		decoder := json.NewDecoder(strings.NewReader(string(w.Value)))
 		decoder.UseNumber()
 		var payload any
 		if err := decoder.Decode(&payload); err == nil {
-			in.rules.WritePlatformEvent(w.Path, payload)
+			if in.platformEventSink != nil {
+				in.platformEventSink(w.Path, payload)
+			}
+			if in.rules != nil {
+				in.rules.WritePlatformEvent(w.Path, payload)
+			}
 		}
 	}
 
