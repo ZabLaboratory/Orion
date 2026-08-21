@@ -38,12 +38,13 @@ type ruleInstance struct {
 // Orion restart; Orion owns only reconstructible runtime state and therefore
 // remains stateless in the platform sense.
 type RulePlane struct {
-	mu        sync.RWMutex
-	rules     map[string]*ruleInstance
-	providers []map[string]any
-	policy    blueruntime.CapabilityPolicy
-	effects   EffectDeps
-	logger    *slog.Logger
+	mu           sync.RWMutex
+	rules        map[string]*ruleInstance
+	providers    []map[string]any
+	policy       blueruntime.CapabilityPolicy
+	effects      EffectDeps
+	logger       *slog.Logger
+	showEmitSink ShowEmitSink
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -130,6 +131,7 @@ func (p *RulePlane) Promote(ruleID, digest string, program []byte) error {
 	host := NewHost()
 	host.SetHTTPEffects(p.effects, p.logger)
 	host.SetOverlayMirror(p.effects.OverlayMirror)
+	host.SetShowEmitSink(p.emitShowEvent)
 	if err := host.Take(
 		"stream-rule:"+ruleID,
 		ruleID,
@@ -162,6 +164,38 @@ func (p *RulePlane) Promote(ruleID, digest string, program []byte) error {
 		}
 	}
 	return nil
+}
+
+// SetShowEmitSink wires the stream rule's core.show.emit@1 output to the
+// embedding's active scene-intent targets. Existing rules are updated and
+// future promotions inherit the same seam. The rule plane remains stateless;
+// the caller owns which slots are active and how the event is admitted.
+func (p *RulePlane) SetShowEmitSink(sink ShowEmitSink) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.showEmitSink = sink
+	hosts := make([]*Host, 0, len(p.rules))
+	for _, rule := range p.rules {
+		hosts = append(hosts, rule.host)
+	}
+	p.mu.Unlock()
+	for _, host := range hosts {
+		host.SetShowEmitSink(p.emitShowEvent)
+	}
+}
+
+func (p *RulePlane) emitShowEvent(topic string, payload any) {
+	if p == nil {
+		return
+	}
+	p.mu.RLock()
+	sink := p.showEmitSink
+	p.mu.RUnlock()
+	if sink != nil {
+		sink(topic, payload)
+	}
 }
 
 // Demote removes a rule idempotently. Runtime state is not persisted.

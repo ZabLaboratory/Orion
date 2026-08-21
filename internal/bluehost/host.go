@@ -76,6 +76,14 @@ type entry struct {
 	// explicitly invalidated.
 	overlaySeen map[string]string
 
+	// showEmitOrigin and showEmitSequence scope topic-event ordering to the
+	// current slot generation. showEmitSeen deduplicates the cumulative Blue
+	// local-effect bag without collapsing two identical payloads from distinct
+	// dispatches.
+	showEmitOrigin   string
+	showEmitSequence uint64
+	showEmitSeen     map[string]struct{}
+
 	triggers []TriggerDecl // declared core.operator.on-call@1 entrypoints (operator rail, #335)
 	awaits   []AwaitDecl   // declared core.operator.await-value@1 suspend points (operator rail, #335)
 }
@@ -307,6 +315,11 @@ type Host struct {
 	// but dispatchOverlayAppSet drops it instead of reaching the wire — the
 	// same unwired-seam posture httpEgress/httpRunner apply above.
 	overlayMirror OverlayAppMirror
+
+	// showEmitSink is the Engine-B host seam for core.show.emit@1. Blue's
+	// portable runtime records local side effects in StepResult.Variables;
+	// Orion projects that record into the active scene-intent slot.
+	showEmitSink ShowEmitSink
 }
 
 // NewHost builds an empty Host. One Host per Orion process — it is the
@@ -418,7 +431,7 @@ func (h *Host) Prepare(slot Slot, instanceID, sceneID, digest string, program []
 	}
 
 	metadata := h.metadataForProgram(program)
-	h.slots[slot] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: metadata.awaitTypes, triggers: metadata.triggers, awaits: metadata.awaits}
+	h.slots[slot] = &entry{instance: instance, sceneID: sceneID, digest: digest, showEmitOrigin: showEmitOrigin(instanceID, slot), awaitTypes: metadata.awaitTypes, triggers: metadata.triggers, awaits: metadata.awaits}
 	return nil
 }
 
@@ -454,7 +467,7 @@ func (h *Host) PreparePreview(instanceID, sceneID, digest string, program []byte
 	}
 
 	metadata := h.metadataForProgram(program)
-	h.slots[SlotPreview] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: metadata.awaitTypes, triggers: metadata.triggers, awaits: metadata.awaits}
+	h.slots[SlotPreview] = &entry{instance: instance, sceneID: sceneID, digest: digest, showEmitOrigin: showEmitOrigin(instanceID, SlotPreview), awaitTypes: metadata.awaitTypes, triggers: metadata.triggers, awaits: metadata.awaits}
 	h.mu.Unlock()
 
 	if previous != nil && previous.instance != nil {
@@ -637,6 +650,7 @@ func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
 	}
 	result = normalizeRuntimeOutputs(result)
 	h.dispatchInvocations(slot, instance, result.Invocations)
+	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
 }
@@ -700,7 +714,7 @@ func (h *Host) Take(instanceID, sceneID, digest string, program []byte, provider
 
 	metadata := h.metadataForProgram(program)
 	previous := h.slots[SlotOnAir]
-	h.slots[SlotOnAir] = &entry{instance: instance, sceneID: sceneID, digest: digest, awaitTypes: metadata.awaitTypes, triggers: metadata.triggers, awaits: metadata.awaits}
+	h.slots[SlotOnAir] = &entry{instance: instance, sceneID: sceneID, digest: digest, showEmitOrigin: showEmitOrigin(instanceID, SlotOnAir), awaitTypes: metadata.awaitTypes, triggers: metadata.triggers, awaits: metadata.awaits}
 	h.mu.Unlock()
 
 	if previous != nil && previous.instance != nil {
@@ -742,6 +756,7 @@ func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, er
 	}
 	result = normalizeRuntimeOutputs(result)
 	h.dispatchInvocations(slot, instance, result.Invocations)
+	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
 }
@@ -772,6 +787,7 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 		h.logger.Info("blue runtime operator call completed", "slot", slot, "call_id", callID, "status", result.Status, "output_count", len(result.Outputs))
 	}
 	h.dispatchInvocations(slot, instance, result.Invocations)
+	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
 }
@@ -801,6 +817,7 @@ func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (bluerunt
 	}
 	result = normalizeRuntimeOutputs(result)
 	h.dispatchInvocations(slot, instance, result.Invocations)
+	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
 }
@@ -840,6 +857,7 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 	}
 	result = normalizeRuntimeOutputs(result)
 	h.dispatchInvocations(slot, instance, result.Invocations)
+	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
 	return result, nil
 }
