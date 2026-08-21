@@ -49,15 +49,23 @@ func (h *Host) EmitEvent(slot Slot, topic string, payload any) error {
 		h.mu.Unlock()
 		return err
 	}
-	e.showEmitSequence = sequence
 	instance := e.instance
-	h.mu.Unlock()
 
 	h.runtimeMu.Lock()
 	if _, err := h.runtime.Dispatch(instance, raw); err != nil {
 		h.runtimeMu.Unlock()
+		h.mu.Unlock()
 		return err
 	}
+	// Reserve the source sequence only after admission succeeds. A scene may
+	// legitimately not declare every topic emitted by a promoted rule (for
+	// example transport lifecycle topics while it observes chat). Dispatch
+	// rejects those topics before they enter the runtime inbox; consuming the
+	// sequence before that rejection would make the next valid event arrive
+	// with a false EVENT_SEQUENCE_GAP. Keep the host lock through admission so
+	// concurrent emitters cannot receive the same sequence.
+	e.showEmitSequence = sequence
+	h.mu.Unlock()
 	result, err := h.runtime.Step(instance)
 	h.runtimeMu.Unlock()
 	if err != nil {
