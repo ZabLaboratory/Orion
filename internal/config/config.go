@@ -115,6 +115,9 @@ type Config struct {
 	// an amorce: resolved only when the database holds nothing, consumed by the
 	// first rotation, then purged at étage 1 — never rewritten by the service.
 	ServiceRefreshToken string
+	// ServiceTokenStatePath is the encrypted local state file used only by
+	// embedded-local. Antenne keeps its durable state in Postgres.
+	ServiceTokenStatePath string
 	// EncryptionKey is base64 of the 32 random bytes that encrypt the durable
 	// refresh token at rest (ORION_ENCRYPTION_KEY, § A3.3 part 2). Absent or
 	// malformed ⇒ the durable manager refuses to arm; it never degrades to a
@@ -191,9 +194,9 @@ type Config struct {
 	// ticker (arming still re-runs on a slot-assignment change).
 	ViewerCredsRefreshS int
 
-	LogLevel          string
-	LogFormat         LogFormat
-	LSDPMode          LSDPMode
+	LogLevel  string
+	LogFormat LogFormat
+	LSDPMode  LSDPMode
 	// Profile selects the execution-profile edge wiring at boot
 	// (ORION_PROFILE, ADR 016 §3.3). Default antenne = unchanged prod.
 	Profile Profile
@@ -204,8 +207,9 @@ type Config struct {
 	// (#224), ORION_SCENE_BUNDLE_PATH. Since #246 it is OPTIONAL in
 	// embedded-local — an offline fallback only; unset selects the nominal
 	// httpFetcher path. Unused in antenne.
-	SQLitePath      string
-	SceneBundlePath string
+	SQLitePath        string
+	SceneBundlePath   string
+	LocalArtifactRoot string
 
 	// ValidationMirrorRoot is the embedded-local validation mirror root
 	// (ORION_VALIDATION_MIRROR_ROOT, ADR 016 Amendment 1 / #247): the
@@ -225,6 +229,9 @@ type Config struct {
 	// LocalAuthUser is the cosmetic user id stamped on the local operator
 	// Identity (ORION_LOCAL_AUTH_USER). Optional; role is what gates.
 	LocalAuthUser string
+	// LocalViewerToken is a loopback-only viewer capability for Solar, which
+	// cannot attach a custom HTTP header to its browser WebSocket.
+	LocalViewerToken string
 
 	// --- stateless-cutover workload surface (#331, ADR-BLUE-012 §4.7/§6.2) ---
 	// All optional and dark by default: cmd/orion wires SceneIntentDeps
@@ -275,25 +282,27 @@ func Load() (Config, error) {
 	var problems []string
 
 	cfg := Config{
-		ListenAddr:           getenv("ORION_LISTEN_ADDR", "0.0.0.0:4007"),
-		InternalAddr:         getenv("ORION_INTERNAL_ADDR", "0.0.0.0:4017"),
-		PublicBaseURL:        strings.TrimRight(getenv("ORION_PUBLIC_BASE_URL", ""), "/"),
-		DatabaseURL:          os.Getenv("ORION_DATABASE_URL"),
-		AssetRoot:            getenv("ORION_ASSET_ROOT", "/var/lib/orion/assets"),
-		SolarRoot:            getenv("ORION_SOLAR_ROOT", "/var/lib/orion/solar"),
-		CompilerCacheDir:     getenv("ORION_COMPILER_CACHE_DIR", "/var/lib/orion/compiler-cache"),
-		ZabAuthValidateURL:   strings.TrimRight(getenv("ORION_ZABAUTH_VALIDATE_URL", ""), "/"),
-		ServiceToken:         os.Getenv("ORION_SERVICE_TOKEN"),
-		ServicePaths:         splitCSV(getenv("ORION_SERVICE_PATHS", "quasar.credentials.read")),
-		ServiceRefreshToken:  os.Getenv("ORION_SERVICE_REFRESH_TOKEN"),
-		EncryptionKey:        os.Getenv("ORION_ENCRYPTION_KEY"),
-		QuasarBaseURL:        strings.TrimRight(getenv("ORION_QUASAR_BASE_URL", ""), "/"),
-		CanvasBaseURL:        strings.TrimRight(getenv("ORION_CANVAS_BASE_URL", ""), "/"),
-		BlueBaseURL:          strings.TrimRight(getenv("ORION_BLUE_BASE_URL", ""), "/"),
-		SQLitePath:           getenv("ORION_SQLITE_PATH", ""),
-		SceneBundlePath:      getenv("ORION_SCENE_BUNDLE_PATH", ""),
-		ValidationMirrorRoot: getenv("ORION_VALIDATION_MIRROR_ROOT", ""),
-		LogLevel:             strings.ToLower(getenv("ORION_LOG_LEVEL", "info")),
+		ListenAddr:            getenv("ORION_LISTEN_ADDR", "0.0.0.0:4007"),
+		InternalAddr:          getenv("ORION_INTERNAL_ADDR", "0.0.0.0:4017"),
+		PublicBaseURL:         strings.TrimRight(getenv("ORION_PUBLIC_BASE_URL", ""), "/"),
+		DatabaseURL:           os.Getenv("ORION_DATABASE_URL"),
+		AssetRoot:             getenv("ORION_ASSET_ROOT", "/var/lib/orion/assets"),
+		SolarRoot:             getenv("ORION_SOLAR_ROOT", "/var/lib/orion/solar"),
+		CompilerCacheDir:      getenv("ORION_COMPILER_CACHE_DIR", "/var/lib/orion/compiler-cache"),
+		ZabAuthValidateURL:    strings.TrimRight(getenv("ORION_ZABAUTH_VALIDATE_URL", ""), "/"),
+		ServiceToken:          os.Getenv("ORION_SERVICE_TOKEN"),
+		ServicePaths:          splitCSV(getenv("ORION_SERVICE_PATHS", "quasar.credentials.read")),
+		ServiceRefreshToken:   os.Getenv("ORION_SERVICE_REFRESH_TOKEN"),
+		ServiceTokenStatePath: strings.TrimSpace(os.Getenv("ORION_SERVICE_TOKEN_STATE_PATH")),
+		EncryptionKey:         os.Getenv("ORION_ENCRYPTION_KEY"),
+		QuasarBaseURL:         strings.TrimRight(getenv("ORION_QUASAR_BASE_URL", ""), "/"),
+		CanvasBaseURL:         strings.TrimRight(getenv("ORION_CANVAS_BASE_URL", ""), "/"),
+		BlueBaseURL:           strings.TrimRight(getenv("ORION_BLUE_BASE_URL", ""), "/"),
+		SQLitePath:            getenv("ORION_SQLITE_PATH", ""),
+		SceneBundlePath:       getenv("ORION_SCENE_BUNDLE_PATH", ""),
+		LocalArtifactRoot:     getenv("ORION_LOCAL_ARTIFACT_ROOT", ""),
+		ValidationMirrorRoot:  getenv("ORION_VALIDATION_MIRROR_ROOT", ""),
+		LogLevel:              strings.ToLower(getenv("ORION_LOG_LEVEL", "info")),
 
 		WorkloadZabGateURL:     strings.TrimRight(getenv("ORION_WORKLOAD_ZABGATE_URL", ""), "/"),
 		WorkloadClientCertPath: getenv("ORION_WORKLOAD_CLIENT_CERT_PATH", ""),
@@ -349,6 +358,7 @@ func Load() (Config, error) {
 		// to any loopback caller (R2). Fail the boot rather than open that.
 		cfg.LocalAuthSecret = os.Getenv("ORION_LOCAL_OPERATOR_SECRET")
 		cfg.LocalAuthUser = getenv("ORION_LOCAL_AUTH_USER", "local-operator")
+		cfg.LocalViewerToken = os.Getenv("ORION_LOCAL_VIEWER_TOKEN")
 		if cfg.LocalAuthSecret == "" {
 			problems = append(problems, "ORION_LOCAL_OPERATOR_SECRET is required when ORION_PROFILE=embedded-local")
 		}

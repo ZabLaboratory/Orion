@@ -13,6 +13,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -36,6 +38,42 @@ const (
 type serviceTokenStore interface {
 	Get(ctx context.Context) ([]byte, error)
 	Put(ctx context.Context, ciphertext []byte) error
+}
+
+// fileServiceTokenStore is the embedded-local counterpart of the Postgres
+// store. The bytes written here are already encrypted by serviceTokenBox;
+// this store never receives plaintext refresh material.
+type fileServiceTokenStore struct {
+	path string
+	mu   sync.Mutex
+}
+
+func (s *fileServiceTokenStore) Get(_ context.Context) ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	data, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) || len(data) == 0 {
+		return nil, errServiceTokenNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read local service token: %w", err)
+	}
+	return data, nil
+}
+
+func (s *fileServiceTokenStore) Put(_ context.Context, ciphertext []byte) error {
+	if len(ciphertext) == 0 {
+		return errors.New("write local service token: empty ciphertext")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+		return fmt.Errorf("create local service-token directory: %w", err)
+	}
+	if err := os.WriteFile(s.path, ciphertext, 0o600); err != nil {
+		return fmt.Errorf("write local service token: %w", err)
+	}
+	return nil
 }
 
 type pgServiceTokenStore struct{ pool *pgxpool.Pool }
@@ -122,6 +160,13 @@ type ServiceTokenManager struct {
 }
 
 func NewServiceTokenManager(ctx context.Context, databaseURL, refreshURL, seed, encryptionKey, staticToken string, logger *slog.Logger) (*ServiceTokenManager, error) {
+	return NewServiceTokenManagerWithStatePath(ctx, databaseURL, refreshURL, seed, encryptionKey, staticToken, "", logger)
+}
+
+// NewServiceTokenManagerWithStatePath adds encrypted file-backed state for
+// Prism's embedded-local profile. Antenne callers retain the original
+// constructor and remain Postgres-backed.
+func NewServiceTokenManagerWithStatePath(ctx context.Context, databaseURL, refreshURL, seed, encryptionKey, staticToken, statePath string, logger *slog.Logger) (*ServiceTokenManager, error) {
 	m := &ServiceTokenManager{
 		refreshURL:  strings.TrimRight(refreshURL, "/"),
 		seed:        seed,
@@ -134,6 +179,9 @@ func NewServiceTokenManager(ctx context.Context, databaseURL, refreshURL, seed, 
 		m.box, m.boxErr = newServiceTokenBox(encryptionKey)
 	}
 	if databaseURL == "" {
+		if statePath != "" {
+			m.store = &fileServiceTokenStore{path: statePath}
+		}
 		return m, nil
 	}
 	pool, err := pgxpool.New(ctx, databaseURL)
@@ -231,26 +279,36 @@ func (m *ServiceTokenManager) Start(ctx context.Context) error {
 	if err == nil {
 		plain, openErr := m.box.open(enc)
 		if openErr != nil {
-			m.logError("durable service token disabled: state cannot be decrypted", openErr)
-			m.setState(ServiceTokenDegraded)
-			return nil
-		}
-		var record durableServiceTokenRecord
-		if err := json.Unmarshal(plain, &record); err != nil || record.RefreshToken == "" || record.Rotating {
-			// A process crash can leave the write-ahead rotating marker in
-			// durable storage. When the operator-provisioned bootstrap refresh
-			// token is still present, recover by rotating from that seed instead
-			// of permanently disabling every topology-A query after the next
-			// restart. If the seed is absent, preserve the fail-closed posture.
 			if m.seed == "" {
-				m.logError("durable service token disabled: state is malformed or marked rotating", nil)
+				m.logError("durable service token disabled: state cannot be decrypted", openErr)
 				m.setState(ServiceTokenDegraded)
 				return nil
 			}
-			m.logError("durable service token recovering from interrupted rotation with bootstrap seed", nil)
+			// A profile moved between machines may have lost the OS key
+			// that encrypted the old local file. The fresh seed is a valid
+			// new family; do not strand the local runtime.
+			m.logError("local service-token state cannot be decrypted; using fresh bootstrap seed", openErr)
 			refresh = m.seed
-		} else {
-			refresh = record.RefreshToken
+			plain = nil
+		}
+		var record durableServiceTokenRecord
+		if plain != nil {
+			if err := json.Unmarshal(plain, &record); err != nil || record.RefreshToken == "" || record.Rotating {
+				// A process crash can leave the write-ahead rotating marker in
+				// durable storage. When the operator-provisioned bootstrap refresh
+				// token is still present, recover by rotating from that seed instead
+				// of permanently disabling every topology-A query after the next
+				// restart. If the seed is absent, preserve the fail-closed posture.
+				if m.seed == "" {
+					m.logError("durable service token disabled: state is malformed or marked rotating", nil)
+					m.setState(ServiceTokenDegraded)
+					return nil
+				}
+				m.logError("durable service token recovering from interrupted rotation with bootstrap seed", nil)
+				refresh = m.seed
+			} else {
+				refresh = record.RefreshToken
+			}
 		}
 	}
 	if refresh == "" {

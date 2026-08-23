@@ -5,6 +5,24 @@ import (
 	"net/http"
 )
 
+// LocalViewerQuery authenticates a browser WebSocket against the same local
+// operator source without exposing the operator handshake in the URL. Prism
+// verifies the random viewer token before this middleware injects the
+// loopback-only handshake header into a cloned request.
+func LocalViewerQuery(viewerToken, operatorSecret string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provided := r.URL.Query().Get("local_viewer_token")
+		if viewerToken == "" || operatorSecret == "" ||
+			subtle.ConstantTimeCompare([]byte(provided), []byte(viewerToken)) != 1 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		clone := r.Clone(r.Context())
+		clone.Header.Set(HandshakeHeader, operatorSecret)
+		next.ServeHTTP(w, clone)
+	})
+}
+
 // HandshakeHeader is the request header carrying the Prism↔Orion shared
 // handshake secret (ADR 016 §3.2-2, §3.4). In the embedded-local profile
 // the Prism main process generates a high-entropy secret at sidecar spawn,
@@ -13,6 +31,14 @@ import (
 // ONLY when this header matches — so another local process that finds the
 // loopback port cannot impersonate Prism and obtain operator (D4, R2).
 const HandshakeHeader = "X-Orion-Local-Auth" //nolint:gosec // header name, not a credential.
+
+// LocalRoleHeader lets Prism distinguish its background Quasar event writer
+// from the local desktop operator. It is meaningful only after the same
+// loopback handshake has succeeded; the header alone never authenticates a
+// caller.
+const LocalRoleHeader = "X-Orion-Local-Role"
+
+const localServiceRole = "service"
 
 // localOperatorAuth is the embedded-local AuthSource (ADR 016 §3.2-2). It
 // is the SECOND implementation of AuthSource; it is wired at boot ONLY
@@ -79,6 +105,13 @@ func (l *localOperatorAuth) FromHeaders(h http.Header) Identity {
 	got := h.Get(HandshakeHeader)
 	if got == "" || subtle.ConstantTimeCompare([]byte(got), l.secret) != 1 {
 		return Identity{} // anonymous — fail-closed.
+	}
+	if h.Get(LocalRoleHeader) == localServiceRole {
+		return Identity{
+			UserID: l.localUserID,
+			Role:   RoleService,
+			Paths:  []string{"__inputs.platform.*"},
+		}
 	}
 	return Identity{
 		UserID: l.localUserID,

@@ -18,6 +18,30 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
+func TestAllowLoopbackBrowserOriginRewritesOnlyLoopbackRequests(t *testing.T) {
+	var gotOrigin string
+	next := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		gotOrigin = r.Header.Get("Origin")
+	})
+	handler := AllowLoopbackBrowserOrigin(next)
+
+	local := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:4317/lsdp.v1", nil)
+	local.Host = "127.0.0.1:4317"
+	local.Header.Set("Origin", "http://127.0.0.1:51516")
+	handler.ServeHTTP(httptest.NewRecorder(), local)
+	if gotOrigin != "http://127.0.0.1:4317" {
+		t.Fatalf("local origin = %q, want Orion host origin", gotOrigin)
+	}
+
+	remote := httptest.NewRequest(http.MethodGet, "https://zabgate.example/lsdp.v1", nil)
+	remote.Host = "zabgate.example"
+	remote.Header.Set("Origin", "https://operator.example")
+	handler.ServeHTTP(httptest.NewRecorder(), remote)
+	if gotOrigin != "https://operator.example" {
+		t.Fatalf("remote origin = %q, want unchanged origin", gotOrigin)
+	}
+}
+
 // dualShow builds a runtime.Show with the LSDP wire installed (dual
 // mode), loads one passthrough scene, makes it active, and mounts the
 // kit handler on an httptest server. Returns the show, the scene, and

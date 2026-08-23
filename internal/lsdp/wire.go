@@ -31,7 +31,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -224,6 +226,34 @@ func (w *Wire) boundLeavesForLSML(sceneID string, raw []byte) boundLeafSet {
 // kit sees its own route.
 func (w *Wire) Handler() http.Handler {
 	return w.srv.Mux()
+}
+
+// AllowLoopbackBrowserOrigin adapts the browser Origin for an embedded-local
+// Orion listener. Prism's Solar document is served from a different ephemeral
+// loopback port than Orion, so coder/websocket's default same-host origin
+// check rejects a legitimate local viewer before LSDP authentication runs.
+// The adapter is intentionally limited to loopback hosts and rewrites only a
+// cloned request; the remote/antenne handler remains byte-for-byte unchanged.
+func AllowLoopbackBrowserOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Origin") == "" || !isLoopbackHost(r.Host) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		clone := r.Clone(r.Context())
+		clone.Header.Set("Origin", "http://"+r.Host)
+		next.ServeHTTP(w, clone)
+	})
+}
+
+func isLoopbackHost(hostport string) bool {
+	host := hostport
+	if parsed, _, err := net.SplitHostPort(hostport); err == nil {
+		host = parsed
+	}
+	host = strings.Trim(host, "[]")
+	parsedIP := net.ParseIP(host)
+	return strings.EqualFold(host, "localhost") || (parsedIP != nil && parsedIP.IsLoopback())
 }
 
 // MirrorFor registers (or returns the existing) kit scene for sceneID

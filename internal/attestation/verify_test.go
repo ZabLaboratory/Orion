@@ -217,6 +217,42 @@ func TestVerify_RejectsExpiredReadiness(t *testing.T) {
 	}
 }
 
+func TestVerify_AcceptsBoundedNotBeforeClockSkew(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	issued := now.Add(4 * time.Second)
+	c := baseClaims(issued)
+	c["issued_at"] = issued.Unix()
+	c["not_before"] = issued.Unix()
+	jws := sign(t, priv, validHeader(), c)
+	opts := validOptions(now)
+	opts.ClockSkew = 5 * time.Second
+	if _, err := Verify(jws, testTrust(t, pub), opts); err != nil {
+		t.Fatalf("bounded local clock skew must be accepted: %v", err)
+	}
+}
+
+func TestVerify_RejectsNotBeforeBeyondClockSkew(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	issued := now.Add(6 * time.Second)
+	c := baseClaims(issued)
+	c["issued_at"] = issued.Unix()
+	c["not_before"] = issued.Unix()
+	jws := sign(t, priv, validHeader(), c)
+	opts := validOptions(now)
+	opts.ClockSkew = 5 * time.Second
+	if _, err := Verify(jws, testTrust(t, pub), opts); err != ErrExpired {
+		t.Fatalf("not_before beyond bounded clock skew must be rejected, got %v", err)
+	}
+}
+
 func TestVerify_RejectsWrongAudience(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	if err != nil {
