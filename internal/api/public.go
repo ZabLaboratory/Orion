@@ -192,6 +192,9 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// Stateless-cutover surface (#331, ADR-BLUE-012 §4.4/§6.4) — additive,
 	// registered only once cmd/orion provisions Trust/Workload/Host.
 	if deps.SceneIntent != nil {
+		if deps.SceneIntent.EmbeddedLocal {
+			mux.HandleFunc("POST /api/v1/host/scene-intent/atomic", postLocalAtomicSceneIntent(*deps.SceneIntent))
+		}
 		mux.HandleFunc("POST /api/v1/host/scene-intent", postSceneIntent(*deps.SceneIntent))
 		// Read-path migration of GET /api/v1/show (#15 route-by-route plan,
 		// Refs #331) — bluehost-backed slot status, additive beside the

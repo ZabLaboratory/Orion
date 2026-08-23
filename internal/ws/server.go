@@ -14,6 +14,7 @@ package ws
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -48,6 +49,10 @@ type Server struct {
 	// is honoured on the WS, not just on HTTP. Only WHO derives the
 	// Identity changes; the role checks below are identical either way.
 	AuthSource auth.AuthSource
+	// LocalViewerToken is accepted only on the embedded-local profile. It
+	// exists for Solar browser WebSockets, which cannot send a custom header.
+	LocalViewerToken string
+	LocalViewerUser  string
 }
 
 // identityFrom derives the caller Identity through the configured
@@ -62,9 +67,25 @@ func (s *Server) identityFrom(h http.Header) auth.Identity {
 	return src.FromHeaders(h)
 }
 
+func (s *Server) identityFromRequest(r *http.Request) auth.Identity {
+	id := s.identityFrom(r.Header)
+	if id.IsAuthenticated() || s.LocalViewerToken == "" {
+		return id
+	}
+	provided := r.URL.Query().Get("local_viewer_token")
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(s.LocalViewerToken)) != 1 {
+		return id
+	}
+	user := s.LocalViewerUser
+	if user == "" {
+		user = "local-viewer"
+	}
+	return auth.Identity{UserID: user, Role: auth.RoleViewer}
+}
+
 // ServeShowStream is the live show subscription handler.
 func (s *Server) ServeShowStream(w http.ResponseWriter, r *http.Request) {
-	id := s.identityFrom(r.Header)
+	id := s.identityFromRequest(r)
 	if !id.IsAuthenticated() {
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return

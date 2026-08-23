@@ -37,6 +37,28 @@ func TestLocalOperatorAuth_GrantsOperatorOnValidHandshake(t *testing.T) {
 	}
 }
 
+// TestLocalOperatorAuth_GrantsScopedServiceForQuasarWriter proves the local
+// Quasar bridge can remain connected without requiring an active scene while
+// still being restricted to the declared platform-event input namespace.
+func TestLocalOperatorAuth_GrantsScopedServiceForQuasarWriter(t *testing.T) {
+	src := newLocal(t)
+	h := http.Header{
+		HandshakeHeader: {testSecret},
+		LocalRoleHeader: {localServiceRole},
+	}
+
+	id := src.FromHeaders(h)
+	if id.Role != RoleService {
+		t.Fatalf("role = %q, want service", id.Role)
+	}
+	if !id.CanWritePath("__inputs.platform.twitch.channel.last_chat") {
+		t.Fatal("service cannot write a platform event input")
+	}
+	if id.CanWritePath("__scene.internal") {
+		t.Fatal("service can write outside the platform event namespace")
+	}
+}
+
 // TestLocalOperatorAuth_RefusesWrongOrAbsentHandshake proves the source is
 // fail-closed (RC-4 refusal): a missing, empty, or mismatched secret yields
 // the anonymous Identity, which requireOperator rejects. This is the guard

@@ -16,9 +16,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -70,8 +73,20 @@ type SceneIntentDeps struct {
 	LocatorPrefix string
 	OwnerID       string
 	TenantID      string
-	Workload      WorkloadPortal
-	Host          *bluehost.Host
+	// AttestationClockSkew is only populated by the embedded-local boot
+	// profile. Antenne keeps the strict attestation verifier default.
+	AttestationClockSkew time.Duration
+	Workload             WorkloadPortal
+	Host                 *bluehost.Host
+	// EmbeddedLocal enables the loopback sidecar path. It skips only the
+	// remote ZabGate workload ticket because Prism synchronized this signed
+	// capsule during startup; attestation and every artifact digest remain
+	// mandatory below.
+	EmbeddedLocal bool
+	// LocalArtifactRoot is Prism's content-addressed cache root. It is only
+	// read by the embedded-local path after the signed scene ref has passed
+	// attestation verification.
+	LocalArtifactRoot string
 
 	// StaticBundleCompiler converts ZabCanvas authoring LSML into the Solar
 	// RenderBundle and returns its initial literal state. Production wiring
@@ -404,6 +419,7 @@ type sceneIntentRequest struct {
 	LSMLBundleDigest   string `json:"lsml_bundle_digest,omitempty"`
 	RenderBundle       string `json:"render_bundle,omitempty"`
 	RenderBundleDigest string `json:"render_bundle_digest,omitempty"`
+	LocalArtifacts     bool   `json:"local_artifacts,omitempty"`
 }
 
 // maxSceneIntentBytes bounds the raw intent body kept for the verbatim
@@ -430,7 +446,7 @@ const authContextHeader = "X-ZabGate-Auth-Context"
 func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
 		ticket := r.Header.Get(authContextHeader)
-		if ticket == "" {
+		if ticket == "" && !deps.EmbeddedLocal {
 			writeJSON(w, http.StatusUnauthorized, sceneIntentResponse{Status: "rejected", Reason: "AUTH_CONTEXT_UNAVAILABLE"})
 			return
 		}
@@ -472,6 +488,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			StreamID:      req.StreamID,
 			Action:        action,
 			LocatorPrefix: deps.LocatorPrefix,
+			ClockSkew:     deps.AttestationClockSkew,
 		})
 		if err != nil {
 			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "ATTESTATION_REJECTED", Message: err.Error()})
@@ -494,11 +511,30 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 
 		ctx := r.Context()
 		inlineArtifacts := req.BlueProgram != "" || req.BlueProgramDigest != "" || req.LSMLBundle != "" || req.LSMLBundleDigest != "" || req.RenderBundle != "" || req.RenderBundleDigest != ""
+		localArtifacts := deps.EmbeddedLocal && req.LocalArtifacts
+		if localArtifacts && inlineArtifacts {
+			writeJSON(w, http.StatusBadRequest, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "MALFORMED_INTENT"})
+			return
+		}
+		if deps.EmbeddedLocal && !inlineArtifacts && !localArtifacts {
+			writeJSON(w, http.StatusConflict, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "LOCAL_SCENE_CAPSULE_REQUIRED"})
+			return
+		}
 		var envelopeBody []byte
 		var delegation *workload.Delegation
 		var inlineAdmissionDone chan error
-		if inlineArtifacts {
-			if inlinePortal, ok := deps.Workload.(InlineAdmissionPortal); ok {
+		if localArtifacts {
+			envelopeBody, err = loadLocalSceneEnvelope(deps.LocalArtifactRoot, claims)
+			if err != nil {
+				writeJSON(w, http.StatusConflict, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "LOCAL_SCENE_ARTIFACT_UNAVAILABLE", Message: err.Error()})
+				return
+			}
+		} else if inlineArtifacts {
+			if deps.EmbeddedLocal {
+				// The local capsule was synchronized through ZabGate before the
+				// sidecar became reachable. Verify and digest checks below are
+				// still the local admission boundary.
+			} else if inlinePortal, ok := deps.Workload.(InlineAdmissionPortal); ok {
 				// Admission is the commit gate, not a prerequisite for local
 				// digest verification. Run the independent mTLS round-trip in
 				// parallel with those pure checks; the result is awaited before
@@ -724,6 +760,94 @@ type resolvedSceneEnvelope struct {
 	// bytes verbatim and skips StaticBundleCompiler.
 	RenderBundle       string `json:"render_bundle,omitempty"`
 	RenderBundleDigest string `json:"render_bundle_digest,omitempty"`
+}
+
+type localSceneIndex struct {
+	SceneID          string `json:"scene_id"`
+	RevisionID       string `json:"revision_id"`
+	LSMLBundleDigest string `json:"lsml_bundle_digest,omitempty"`
+}
+
+const maxLocalSceneArtifactBytes = 1 << 30
+
+func loadLocalSceneEnvelope(root string, claims *attestation.Claims) ([]byte, error) {
+	if root == "" {
+		return nil, errors.New("local artifact root is not configured")
+	}
+	if !safeLocalComponent(claims.SceneID) || !safeLocalComponent(claims.RevisionID) {
+		return nil, errors.New("scene or revision id is not a safe local cache key")
+	}
+	indexPath := filepath.Join(root, "scene-index", claims.SceneID+"--"+claims.RevisionID+".json")
+	indexRaw, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, fmt.Errorf("read local scene index: %w", err)
+	}
+	var index localSceneIndex
+	if err := json.Unmarshal(indexRaw, &index); err != nil || index.SceneID != claims.SceneID || index.RevisionID != claims.RevisionID {
+		return nil, errors.New("local scene index does not match the attested scene")
+	}
+	envelope := resolvedSceneEnvelope{}
+	if claims.BlueProgramDigest != "" {
+		program, err := readLocalArtifact(root, claims.BlueProgramDigest)
+		if err != nil {
+			return nil, fmt.Errorf("read local Blue program: %w", err)
+		}
+		envelope.BlueProgram = base64.StdEncoding.EncodeToString(program)
+		envelope.BlueProgramDigest = claims.BlueProgramDigest
+	}
+	if index.LSMLBundleDigest != "" {
+		bundle, err := readLocalArtifact(root, index.LSMLBundleDigest)
+		if err != nil {
+			return nil, fmt.Errorf("read local LSML bundle: %w", err)
+		}
+		envelope.LSMLBundle = base64.StdEncoding.EncodeToString(bundle)
+		envelope.LSMLBundleDigest = index.LSMLBundleDigest
+	}
+	if claims.RenderBundleDigest != "" {
+		render, err := readLocalArtifact(root, claims.RenderBundleDigest)
+		if err != nil {
+			return nil, fmt.Errorf("read local render bundle: %w", err)
+		}
+		envelope.RenderBundle = base64.StdEncoding.EncodeToString(render)
+		envelope.RenderBundleDigest = claims.RenderBundleDigest
+	}
+	return json.Marshal(envelope)
+}
+
+func readLocalArtifact(root, digest string) ([]byte, error) {
+	if len(digest) != len("sha256:")+64 || !strings.HasPrefix(digest, "sha256:") || !isHexDigest(digest[len("sha256:"):]) {
+		return nil, errors.New("invalid local artifact digest")
+	}
+	path := filepath.Join(root, "artifacts", digest[len("sha256:"):]+".bin")
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() <= 0 || info.Size() > maxLocalSceneArtifactBytes {
+		return nil, errors.New("local artifact size is outside the allowed range")
+	}
+	return io.ReadAll(io.LimitReader(file, maxLocalSceneArtifactBytes+1))
+}
+
+func safeLocalComponent(value string) bool {
+	return value != "" && value != "." && value != ".." && filepath.Base(value) == value
+}
+
+func isHexDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f')) {
+			return false
+		}
+	}
+	return true
 }
 
 // decodeAndVerifyProgramEnvelopeCached decodes the pinned program bytes and
