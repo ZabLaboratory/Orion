@@ -32,6 +32,14 @@ func LocalViewerQuery(viewerToken, operatorSecret string, next http.Handler) htt
 // loopback port cannot impersonate Prism and obtain operator (D4, R2).
 const HandshakeHeader = "X-Orion-Local-Auth" //nolint:gosec // header name, not a credential.
 
+// LocalRoleHeader lets Prism distinguish its background Quasar event writer
+// from the local desktop operator. It is meaningful only after the same
+// loopback handshake has succeeded; the header alone never authenticates a
+// caller.
+const LocalRoleHeader = "X-Orion-Local-Role"
+
+const localServiceRole = "service"
+
 // localOperatorAuth is the embedded-local AuthSource (ADR 016 §3.2-2). It
 // is the SECOND implementation of AuthSource; it is wired at boot ONLY
 // when ORION_PROFILE=embedded-local, and never reached on the antenne path
@@ -97,6 +105,13 @@ func (l *localOperatorAuth) FromHeaders(h http.Header) Identity {
 	got := h.Get(HandshakeHeader)
 	if got == "" || subtle.ConstantTimeCompare([]byte(got), l.secret) != 1 {
 		return Identity{} // anonymous — fail-closed.
+	}
+	if h.Get(LocalRoleHeader) == localServiceRole {
+		return Identity{
+			UserID: l.localUserID,
+			Role:   RoleService,
+			Paths:  []string{"__inputs.platform.*"},
+		}
 	}
 	return Identity{
 		UserID: l.localUserID,

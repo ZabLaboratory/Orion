@@ -131,6 +131,7 @@ func run() error {
 		antenneWire = wire
 		lsdpHandler = wire.Handler()
 		if cfg.Profile.IsEmbeddedLocal() && cfg.LocalViewerToken != "" {
+			lsdpHandler = lsdp.AllowLoopbackBrowserOrigin(lsdpHandler)
 			lsdpHandler = auth.LocalViewerQuery(
 				cfg.LocalViewerToken,
 				cfg.LocalAuthSecret,
@@ -158,6 +159,7 @@ func run() error {
 		previewWire.SetSnapshotMetrics(metrics)
 		previewLSDPHandler = previewWire.Handler()
 		if cfg.Profile.IsEmbeddedLocal() && cfg.LocalViewerToken != "" {
+			previewLSDPHandler = lsdp.AllowLoopbackBrowserOrigin(previewLSDPHandler)
 			previewLSDPHandler = auth.LocalViewerQuery(
 				cfg.LocalViewerToken,
 				cfg.LocalAuthSecret,
@@ -197,13 +199,14 @@ func run() error {
 	if cfg.Profile.IsEmbeddedLocal() {
 		staticServiceToken = cfg.ServiceToken
 	}
-	serviceTokens, tokenErr := auth.NewServiceTokenManager(
+	serviceTokens, tokenErr := auth.NewServiceTokenManagerWithStatePath(
 		ctx,
 		cfg.DatabaseURL,
 		auth.ServiceTokenRefreshURL(cfg.ZabAuthValidateURL),
 		cfg.ServiceRefreshToken,
 		cfg.EncryptionKey,
 		staticServiceToken,
+		cfg.ServiceTokenStatePath,
 		logger,
 	)
 	if tokenErr != nil {

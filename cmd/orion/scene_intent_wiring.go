@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/api"
 	"github.com/ZabLaboratory/Orion/internal/attestation"
@@ -19,6 +20,8 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
+
+const embeddedLocalAttestationClockSkew = 5 * time.Second
 
 // wireSceneIntent builds the additive stateless-cutover surface (#331,
 // ADR-BLUE-012). It returns (nil, nil) only when NONE of the workload
@@ -115,10 +118,16 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost
 	}
 
 	return &api.SceneIntentDeps{
-		Trust:             trust,
-		LocatorPrefix:     cfg.CanvasLocatorPrefix,
-		OwnerID:           cfg.OwnerID,
-		TenantID:          cfg.TenantID,
+		Trust:         trust,
+		LocatorPrefix: cfg.CanvasLocatorPrefix,
+		OwnerID:       cfg.OwnerID,
+		TenantID:      cfg.TenantID,
+		AttestationClockSkew: func() time.Duration {
+			if embeddedLocal {
+				return embeddedLocalAttestationClockSkew
+			}
+			return 0
+		}(),
 		LocalArtifactRoot: cfg.LocalArtifactRoot,
 		Workload:          wc,
 		Host:              host,

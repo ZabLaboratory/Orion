@@ -79,7 +79,12 @@ type Options struct {
 	StreamID      string
 	Action        Action
 	LocatorPrefix string
-	Now           time.Time // zero = time.Now()
+	// ClockSkew tolerates a bounded issuer/consumer wall-clock difference
+	// when a freshly minted ref's not_before is a few seconds ahead of the
+	// verifier. It is intentionally opt-in; production callers keep the
+	// strict zero default and embedded-local wires a small explicit bound.
+	ClockSkew time.Duration
+	Now       time.Time // zero = time.Now()
 }
 
 var (
@@ -183,7 +188,14 @@ func Verify(jws string, trust TrustSet, opts Options) (*Claims, error) {
 		now = time.Now()
 	}
 	nowEpoch := now.Unix()
-	if nowEpoch < claims.NotBefore || nowEpoch >= claims.ExpiresAt {
+	clockSkew := opts.ClockSkew
+	if clockSkew < 0 {
+		clockSkew = 0
+	}
+	if nowEpoch < claims.NotBefore && now.Add(clockSkew).Unix() < claims.NotBefore {
+		return nil, ErrExpired
+	}
+	if nowEpoch >= claims.ExpiresAt {
 		return nil, ErrExpired
 	}
 	if nowEpoch >= claims.ReadinessExpiresAt {

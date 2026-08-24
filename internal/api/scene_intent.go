@@ -73,8 +73,11 @@ type SceneIntentDeps struct {
 	LocatorPrefix string
 	OwnerID       string
 	TenantID      string
-	Workload      WorkloadPortal
-	Host          *bluehost.Host
+	// AttestationClockSkew is only populated by the embedded-local boot
+	// profile. Antenne keeps the strict attestation verifier default.
+	AttestationClockSkew time.Duration
+	Workload             WorkloadPortal
+	Host                 *bluehost.Host
 	// EmbeddedLocal enables the loopback sidecar path. It skips only the
 	// remote ZabGate workload ticket because Prism synchronized this signed
 	// capsule during startup; attestation and every artifact digest remain
@@ -485,6 +488,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			StreamID:      req.StreamID,
 			Action:        action,
 			LocatorPrefix: deps.LocatorPrefix,
+			ClockSkew:     deps.AttestationClockSkew,
 		})
 		if err != nil {
 			writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "ATTESTATION_REJECTED", Message: err.Error()})
