@@ -1,9 +1,13 @@
 name: Deploy
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy_retired_remote:
+        description: "Explicitly redeploy the retired Orion VPS for rollback"
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -11,6 +15,9 @@ permissions:
 concurrency:
   group: deploy-orion
   cancel-in-progress: false
+
+# Orion is retired from production. This workflow is manual-only and the
+# rollback input above must be explicitly set to true.
 
 # ---------------------------------------------------------------------------
 # Self-hosted runners on vps-ovh (org GitHub Actions billing frozen).
@@ -22,6 +29,7 @@ concurrency:
 
 jobs:
   preflight:
+    if: inputs.deploy_retired_remote == true
     name: Preflight (deploy secrets)
     runs-on: [self-hosted, vps-ovh]
     timeout-minutes: 2
@@ -41,6 +49,7 @@ jobs:
           fi
 
   deploy:
+    if: inputs.deploy_retired_remote == true
     name: Deploy
     environment: production
     needs: [preflight]

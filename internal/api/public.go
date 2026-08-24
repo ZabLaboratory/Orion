@@ -99,6 +99,9 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /ready", ready(deps))
 	mux.HandleFunc("GET /api/v1/health", health)
 	mux.HandleFunc("GET /api/v1/ready", ready(deps))
+	// Public descriptor used by Prism to verify the Blue runtime embedded in
+	// its local Orion sidecar. This is not the remote Blue authoring service.
+	mux.HandleFunc("GET /api/v1/runtime/descriptor", getRuntimeDescriptor)
 
 	// POST /api/v1/scenes/{id}/push — RETIRED (#15, #331): see the removed
 	// scenes_push.go. Superseded by POST /api/v1/host/scene-intent below.
