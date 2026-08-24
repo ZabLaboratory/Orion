@@ -219,7 +219,15 @@ func streamRuleBlueJSON(origin *http.Request, client *http.Client, tokenFunc fun
 		upstream := readStreamRuleBlueError(response.Body)
 		switch response.StatusCode {
 		case http.StatusUnauthorized, http.StatusForbidden:
-			return &streamRuleLoadError{status: http.StatusBadGateway, code: "BLUE_AUTHORIZATION_FAILED", message: "Blue rejected the operator credential"}
+			authorizationState := "absent"
+			if request.Header.Get("Authorization") != "" {
+				authorizationState = "present"
+			}
+			return &streamRuleLoadError{
+				status:  http.StatusBadGateway,
+				code:    "BLUE_AUTHORIZATION_FAILED",
+				message: fmt.Sprintf("Blue rejected Orion's service credential (authorization header %s)", authorizationState),
+			}
 		case http.StatusNotFound:
 			return &streamRuleLoadError{
 				status:         http.StatusNotFound,
