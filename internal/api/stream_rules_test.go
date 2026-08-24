@@ -28,8 +28,8 @@ func TestStreamRules_BlueLoadCockpitBothTargetsAndOperatorCall(t *testing.T) {
 	var getCalls atomic.Int32
 	var compileCalls atomic.Int32
 	blue := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer operator-token" {
-			t.Errorf("Blue Authorization = %q, want activating operator bearer", r.Header.Get("Authorization"))
+		if r.Header.Get("Authorization") != "Bearer service-token" {
+			t.Errorf("Blue Authorization = %q, want Orion service bearer", r.Header.Get("Authorization"))
 		}
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/blueprints/"+streamRuleAPIBlueprintID:
@@ -72,6 +72,7 @@ func TestStreamRules_BlueLoadCockpitBothTargetsAndOperatorCall(t *testing.T) {
 			Plane:       plane,
 			BlueBaseURL: blue.URL,
 			HTTPClient:  blue.Client(),
+			TokenFunc:   func() string { return "service-token" },
 		},
 	})
 
