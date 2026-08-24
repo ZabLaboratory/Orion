@@ -22,13 +22,14 @@ const maxStreamRuleBlueErrorResponse = 64 << 10
 
 // StreamRulesDeps wires the restored ADR 009 HTTP surface to Orion's
 // volatile Engine B RulePlane. BlueBaseURL is the existing Blue edge (the
-// gateway in production); the activating operator's Authorization header is
-// forwarded only for the two synchronous Blue reads needed to resolve and
-// compile the published program. No credential or program is persisted.
+// gateway in production). TokenFunc mints the service bearer for the two
+// synchronous Blue reads needed to resolve and compile the published program.
+// No credential or program is persisted.
 type StreamRulesDeps struct {
 	Plane       *bluehost.RulePlane
 	BlueBaseURL string
 	HTTPClient  *http.Client
+	TokenFunc   func() string
 }
 
 type streamRuleLoadError struct {
@@ -148,7 +149,7 @@ func loadStreamRuleProgram(r *http.Request, deps StreamRulesDeps, blueprintID st
 	}
 
 	var blueprint blueBlueprintRead
-	if err := streamRuleBlueJSON(r, client, http.MethodGet, base.String()+"/api/v1/blueprints/"+url.PathEscape(blueprintID), nil, &blueprint); err != nil {
+	if err := streamRuleBlueJSON(r, client, deps.TokenFunc, http.MethodGet, base.String()+"/api/v1/blueprints/"+url.PathEscape(blueprintID), nil, &blueprint); err != nil {
 		return nil, "", err
 	}
 	if blueprint.Status != "published" || blueprint.CurrentVersion <= 0 {
@@ -163,7 +164,7 @@ func loadStreamRuleProgram(r *http.Request, deps StreamRulesDeps, blueprintID st
 		return nil, "", err
 	}
 	var compiled blueCompileResponse
-	if err := streamRuleBlueJSON(r, client, http.MethodPost, base.String()+"/api/v1/programs/compile", body, &compiled); err != nil {
+	if err := streamRuleBlueJSON(r, client, deps.TokenFunc, http.MethodPost, base.String()+"/api/v1/programs/compile", body, &compiled); err != nil {
 		return nil, "", err
 	}
 	if compiled.SchemaVersion != "blue.program.v1" || compiled.ProgramDigest == "" || compiled.ProgramBytesBase64 == "" {
@@ -183,7 +184,7 @@ func loadStreamRuleProgram(r *http.Request, deps StreamRulesDeps, blueprintID st
 	return program, compiled.ProgramDigest, nil
 }
 
-func streamRuleBlueJSON(origin *http.Request, client *http.Client, method, endpoint string, body []byte, dst any) error {
+func streamRuleBlueJSON(origin *http.Request, client *http.Client, tokenFunc func() string, method, endpoint string, body []byte, dst any) error {
 	request, err := http.NewRequestWithContext(origin.Context(), method, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -192,11 +193,18 @@ func streamRuleBlueJSON(origin *http.Request, client *http.Client, method, endpo
 	if len(body) > 0 {
 		request.Header.Set("Content-Type", "application/json")
 	}
-	// The incoming command has already passed requireOperator. Forward only
-	// the bearer credential Blue's gateway needs for this bounded synchronous
-	// resolution; never persist, log or copy it into runtime state.
-	if authorization := origin.Header.Get("Authorization"); authorization != "" {
-		request.Header.Set("Authorization", authorization)
+	// Blue authorizes Orion's internal workload, not the operator credential
+	// used at the public command boundary. Keep the incoming bearer only as a
+	// compatibility fallback for unit fixtures that do not configure a minter.
+	if tokenFunc != nil {
+		if token := tokenFunc(); token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+	if request.Header.Get("Authorization") == "" {
+		if authorization := origin.Header.Get("Authorization"); authorization != "" {
+			request.Header.Set("Authorization", authorization)
+		}
 	}
 	if requestID := origin.Header.Get("X-Request-ID"); requestID != "" {
 		request.Header.Set("X-Request-ID", requestID)
