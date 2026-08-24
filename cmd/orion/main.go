@@ -489,7 +489,9 @@ func run() error {
 		StreamRules: &api.StreamRulesDeps{
 			Plane:       rulePlane,
 			BlueBaseURL: cfg.BlueBaseURL,
-			TokenFunc:   serviceTokenMinter.Token,
+			TokenFunc: func() string {
+				return serviceTokenMinter.Token(cfg.ServicePaths)
+			},
 		},
 	})
 
