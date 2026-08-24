@@ -191,9 +191,9 @@ type Config struct {
 	// ticker (arming still re-runs on a slot-assignment change).
 	ViewerCredsRefreshS int
 
-	LogLevel          string
-	LogFormat         LogFormat
-	LSDPMode          LSDPMode
+	LogLevel  string
+	LogFormat LogFormat
+	LSDPMode  LSDPMode
 	// Profile selects the execution-profile edge wiring at boot
 	// (ORION_PROFILE, ADR 016 §3.3). Default antenne = unchanged prod.
 	Profile Profile
@@ -204,8 +204,9 @@ type Config struct {
 	// (#224), ORION_SCENE_BUNDLE_PATH. Since #246 it is OPTIONAL in
 	// embedded-local — an offline fallback only; unset selects the nominal
 	// httpFetcher path. Unused in antenne.
-	SQLitePath      string
-	SceneBundlePath string
+	SQLitePath        string
+	SceneBundlePath   string
+	LocalArtifactRoot string
 
 	// ValidationMirrorRoot is the embedded-local validation mirror root
 	// (ORION_VALIDATION_MIRROR_ROOT, ADR 016 Amendment 1 / #247): the
@@ -225,6 +226,9 @@ type Config struct {
 	// LocalAuthUser is the cosmetic user id stamped on the local operator
 	// Identity (ORION_LOCAL_AUTH_USER). Optional; role is what gates.
 	LocalAuthUser string
+	// LocalViewerToken is a loopback-only viewer capability for Solar, which
+	// cannot attach a custom HTTP header to its browser WebSocket.
+	LocalViewerToken string
 
 	// --- stateless-cutover workload surface (#331, ADR-BLUE-012 §4.7/§6.2) ---
 	// All optional and dark by default: cmd/orion wires SceneIntentDeps
@@ -292,6 +296,7 @@ func Load() (Config, error) {
 		BlueBaseURL:          strings.TrimRight(getenv("ORION_BLUE_BASE_URL", ""), "/"),
 		SQLitePath:           getenv("ORION_SQLITE_PATH", ""),
 		SceneBundlePath:      getenv("ORION_SCENE_BUNDLE_PATH", ""),
+		LocalArtifactRoot:    getenv("ORION_LOCAL_ARTIFACT_ROOT", ""),
 		ValidationMirrorRoot: getenv("ORION_VALIDATION_MIRROR_ROOT", ""),
 		LogLevel:             strings.ToLower(getenv("ORION_LOG_LEVEL", "info")),
 
@@ -349,6 +354,7 @@ func Load() (Config, error) {
 		// to any loopback caller (R2). Fail the boot rather than open that.
 		cfg.LocalAuthSecret = os.Getenv("ORION_LOCAL_OPERATOR_SECRET")
 		cfg.LocalAuthUser = getenv("ORION_LOCAL_AUTH_USER", "local-operator")
+		cfg.LocalViewerToken = os.Getenv("ORION_LOCAL_VIEWER_TOKEN")
 		if cfg.LocalAuthSecret == "" {
 			problems = append(problems, "ORION_LOCAL_OPERATOR_SECRET is required when ORION_PROFILE=embedded-local")
 		}

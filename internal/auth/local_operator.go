@@ -5,6 +5,24 @@ import (
 	"net/http"
 )
 
+// LocalViewerQuery authenticates a browser WebSocket against the same local
+// operator source without exposing the operator handshake in the URL. Prism
+// verifies the random viewer token before this middleware injects the
+// loopback-only handshake header into a cloned request.
+func LocalViewerQuery(viewerToken, operatorSecret string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		provided := r.URL.Query().Get("local_viewer_token")
+		if viewerToken == "" || operatorSecret == "" ||
+			subtle.ConstantTimeCompare([]byte(provided), []byte(viewerToken)) != 1 {
+			next.ServeHTTP(w, r)
+			return
+		}
+		clone := r.Clone(r.Context())
+		clone.Header.Set(HandshakeHeader, operatorSecret)
+		next.ServeHTTP(w, clone)
+	})
+}
+
 // HandshakeHeader is the request header carrying the Prism↔Orion shared
 // handshake secret (ADR 016 §3.2-2, §3.4). In the embedded-local profile
 // the Prism main process generates a high-entropy secret at sidecar spawn,

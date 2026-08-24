@@ -29,6 +29,7 @@ import (
 // deploy is visible at boot rather than a route that quietly never
 // registers. Phase A of the #331 cutover plan posted on the issue.
 func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost.EffectDeps) (*api.SceneIntentDeps, error) {
+	embeddedLocal := cfg.Profile.IsEmbeddedLocal()
 	required := map[string]string{
 		"ORION_WORKLOAD_ZABGATE_URL":      cfg.WorkloadZabGateURL,
 		"ORION_WORKLOAD_CLIENT_CERT_PATH": cfg.WorkloadClientCertPath,
@@ -47,34 +48,39 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost
 			present++
 		}
 	}
-	if present == 0 {
+	if !embeddedLocal && present == 0 {
 		return nil, nil // fully dark: intentional feature-off
 	}
-	if len(missing) > 0 {
+	if !embeddedLocal && len(missing) > 0 {
 		return nil, fmt.Errorf("scene-intent: partially configured (%d/%d vars set) — missing %v; set all of them or none", present, len(required), missing)
 	}
 
-	cert, err := tls.LoadX509KeyPair(cfg.WorkloadClientCertPath, cfg.WorkloadClientKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("scene-intent: load workload mTLS keypair: %w", err)
-	}
-	caPEM, err := os.ReadFile(cfg.WorkloadCAPath)
-	if err != nil {
-		return nil, fmt.Errorf("scene-intent: read workload CA: %w", err)
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(caPEM) {
-		return nil, fmt.Errorf("scene-intent: workload CA file carries no usable certificate")
-	}
-
-	httpClient := workload.NewMTLSHTTPClient(cert, roots)
-	identity := workload.Identity{San: cfg.WorkloadSAN}
-	if len(cert.Certificate) > 0 {
-		identity.CertSHA256 = workload.FingerprintCert(cert.Certificate[0])
-	}
-	wc, err := workload.NewClient(cfg.WorkloadZabGateURL, identity, httpClient)
-	if err != nil {
-		return nil, fmt.Errorf("scene-intent: build workload client: %w", err)
+	var wc api.WorkloadPortal
+	if !embeddedLocal {
+		cert, err := tls.LoadX509KeyPair(cfg.WorkloadClientCertPath, cfg.WorkloadClientKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("scene-intent: load workload mTLS keypair: %w", err)
+		}
+		caPEM, err := os.ReadFile(cfg.WorkloadCAPath)
+		if err != nil {
+			return nil, fmt.Errorf("scene-intent: read workload CA: %w", err)
+		}
+		roots := x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("scene-intent: workload CA file carries no usable certificate")
+		}
+		httpClient := workload.NewMTLSHTTPClient(cert, roots)
+		identity := workload.Identity{San: cfg.WorkloadSAN}
+		if len(cert.Certificate) > 0 {
+			identity.CertSHA256 = workload.FingerprintCert(cert.Certificate[0])
+		}
+		client, err := workload.NewClient(cfg.WorkloadZabGateURL, identity, httpClient)
+		if err != nil {
+			return nil, fmt.Errorf("scene-intent: build workload client: %w", err)
+		}
+		wc = client
+	} else if cfg.CanvasTrustPath == "" || cfg.OwnerID == "" || cfg.TenantID == "" {
+		return nil, fmt.Errorf("scene-intent: embedded-local requires ORION_CANVAS_TRUST_PATH, ORION_OWNER_ID, and ORION_TENANT_ID")
 	}
 
 	trust, err := loadCanvasTrust(cfg.CanvasTrustPath)
@@ -109,12 +115,14 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost
 	}
 
 	return &api.SceneIntentDeps{
-		Trust:         trust,
-		LocatorPrefix: cfg.CanvasLocatorPrefix,
-		OwnerID:       cfg.OwnerID,
-		TenantID:      cfg.TenantID,
-		Workload:      wc,
-		Host:          host,
+		Trust:             trust,
+		LocatorPrefix:     cfg.CanvasLocatorPrefix,
+		OwnerID:           cfg.OwnerID,
+		TenantID:          cfg.TenantID,
+		LocalArtifactRoot: cfg.LocalArtifactRoot,
+		Workload:          wc,
+		Host:              host,
+		EmbeddedLocal:     embeddedLocal,
 		StaticBundleCompiler: func(raw []byte, sceneID, sceneVersion string) ([]byte, map[string]json.RawMessage, error) {
 			return compiler.CompileStaticLSML(raw, sceneID, sceneVersion, assetBaseURL)
 		},

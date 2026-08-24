@@ -8,7 +8,6 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -23,7 +22,6 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/auth"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
-	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/config"
 	"github.com/ZabLaboratory/Orion/internal/effects"
 	"github.com/ZabLaboratory/Orion/internal/lsdp"
@@ -132,6 +130,13 @@ func run() error {
 		show.SetMirrors(wire)
 		antenneWire = wire
 		lsdpHandler = wire.Handler()
+		if cfg.Profile.IsEmbeddedLocal() && cfg.LocalViewerToken != "" {
+			lsdpHandler = auth.LocalViewerQuery(
+				cfg.LocalViewerToken,
+				cfg.LocalAuthSecret,
+				lsdpHandler,
+			)
+		}
 		// Per-session preview LSDP wire (preview/antenne split): each test
 		// session gets its OWN isolated kit server so the preview Solar
 		// runtime follows only the session clone, never the antenne's
@@ -152,6 +157,13 @@ func run() error {
 		}
 		previewWire.SetSnapshotMetrics(metrics)
 		previewLSDPHandler = previewWire.Handler()
+		if cfg.Profile.IsEmbeddedLocal() && cfg.LocalViewerToken != "" {
+			previewLSDPHandler = auth.LocalViewerQuery(
+				cfg.LocalViewerToken,
+				cfg.LocalAuthSecret,
+				previewLSDPHandler,
+			)
+		}
 		previewSlot = runtime.NewPreviewSlot(ctx, registry, previewWire, logger)
 		defer previewSlot.Close()
 		logger.Info("lsdp wire enabled", "mode", string(cfg.LSDPMode))
@@ -211,15 +223,12 @@ func run() error {
 	serviceTokenMinter := effects.NewServiceTokenExchangeMinterWithTokenFunc(cfg.ZabGateURL, familyTokenFn, nil)
 	serviceTokenFn := serviceTokenMinter.Token
 	// The runtime must resolve every curated service route against the same
-	// Blue-published registry used by Orion's compiler. Loading this once at
-	// boot keeps the hot path local while preserving Blue as the sole route
-	// producer; a missing route remains fail-closed in bluehost.
-	egressFetcher := compiler.NewHTTPFetcherWithTokenFunc(cfg.CanvasBaseURL, cfg.BlueBaseURL, func() string {
-		return serviceTokenFn(cfg.ServicePaths)
-	})
-	egressRoutes, egressErr := egressFetcher.FetchEgressRoutes(ctx)
+	// Blue-published registry used by Orion's compiler. Antenne fetches it from
+	// Blue once at boot; embedded-local reads the synchronized immutable bundle
+	// so the hot path and local boot stay independent of Blue HTTP.
+	egressRoutes, egressErr := loadEgressRoutes(ctx, cfg, serviceTokenFn)
 	if egressErr != nil {
-		return fmt.Errorf("load Blue curated egress routes: %w", egressErr)
+		return egressErr
 	}
 
 	// Async-effect bundle (ADR 003 §3.1.3 / R9 lift ADR 006 §3.4).
@@ -351,7 +360,9 @@ func run() error {
 		// this is HeaderAuthSource (byte-for-byte header-trust); on
 		// embedded-local it is localOperatorAuth, so the loopback handshake
 		// header X-Orion-Local-Auth is honoured on /show/stream too.
-		AuthSource: authSource,
+		AuthSource:       authSource,
+		LocalViewerToken: cfg.LocalViewerToken,
+		LocalViewerUser:  cfg.LocalAuthUser,
 	}
 
 	// Additive stateless-cutover surface (#331, ADR-BLUE-012). Dark by
