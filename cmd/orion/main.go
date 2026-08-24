@@ -490,7 +490,12 @@ func run() error {
 			Plane:       rulePlane,
 			BlueBaseURL: cfg.BlueBaseURL,
 			TokenFunc: func() string {
-				return serviceTokenMinter.Token(cfg.ServicePaths)
+				// Blue's blueprint read and program compile endpoints are
+				// authenticated surfaces but do not require a Blue path scope.
+				// Use Orion's durable service bearer here: the ephemeral
+				// exchange token is reserved for scoped egress and is rejected
+				// by the gateway on this internal read path.
+				return familyTokenFn()
 			},
 		},
 	})
