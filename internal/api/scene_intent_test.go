@@ -1079,6 +1079,8 @@ func TestGetHostStatus_ReflectsPreparedSlot(t *testing.T) {
 	if err := host.Prepare(bluehost.SlotPreview, "instance-1", "scene-1", "sha256:abc", program, nil, nil, nil); err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
+	artifactSetDigest := "sha256:" + strings.Repeat("b", 64)
+	host.SetArtifactSetDigest(bluehost.SlotPreview, artifactSetDigest)
 	deps := SceneIntentDeps{Host: host}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/host/status", nil)
 	req.Header.Set("X-Authenticated-User", "operator-1")
@@ -1092,6 +1094,9 @@ func TestGetHostStatus_ReflectsPreparedSlot(t *testing.T) {
 	}
 	if !resp.Preview.Loaded || resp.Preview.SceneDigest != "sha256:abc" {
 		t.Fatalf("expected preview loaded with sha256:abc, got %+v", resp.Preview)
+	}
+	if resp.Preview.ArtifactSetDigest != artifactSetDigest {
+		t.Fatalf("expected preview artifact_set_digest %q, got %+v", artifactSetDigest, resp.Preview)
 	}
 	if resp.OnAir.Loaded {
 		t.Fatalf("expected on_air empty, got %+v", resp.OnAir)

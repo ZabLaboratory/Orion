@@ -62,10 +62,11 @@ type entry struct {
 	// so no {scene_id} could ever match the on-air slot post-#401, which
 	// silently made every on-air stateless occupation unservable through
 	// that resolver, program or not.
-	sceneID    string
-	digest     string            // scene_digest this slot is serving (for a no-program ref: the bundle hash, #398 Decision A); see Serving
-	bundle     []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
-	awaitTypes map[string]string // compiler-declared operator.await value types
+	sceneID           string
+	digest            string            // scene_digest this slot is serving (for a no-program ref: the bundle hash, #398 Decision A); see Serving
+	artifactSetDigest string            // attested artifact_set_digest associated with this slot admission
+	bundle            []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
+	awaitTypes        map[string]string // compiler-declared operator.await value types
 
 	// overlaySeen dedupes core.overlay-app.set@1 dispatch (effect_overlay.go)
 	// against StepResult.Variables' cumulative bag: keyed by node id, valued
@@ -557,6 +558,28 @@ func (h *Host) Digest(slot Slot) string {
 		return ""
 	}
 	return e.digest
+}
+
+// SetArtifactSetDigest records the attested local artifact set associated with
+// the prepared slot. It is stored with the slot identity because the digest is
+// an admission contract, not a property Orion should infer from bundle bytes.
+func (h *Host) SetArtifactSetDigest(slot Slot, digest string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if e, ok := h.slots[slot]; ok {
+		e.artifactSetDigest = digest
+	}
+}
+
+// ArtifactSetDigest returns the attested artifact set for the current slot.
+func (h *Host) ArtifactSetDigest(slot Slot) string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	e, ok := h.slots[slot]
+	if !ok {
+		return ""
+	}
+	return e.artifactSetDigest
 }
 
 // Serving reports whether slot is currently loaded for EXACTLY

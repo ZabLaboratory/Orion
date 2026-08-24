@@ -714,6 +714,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		if bundle != nil {
 			deps.Host.SetBundle(slot, bundle)
 		}
+		deps.Host.SetArtifactSetDigest(slot, claims.ArtifactSetDigest)
 		if slot == bluehost.SlotOnAir {
 			// A successful take is a new stateless generation, even when the
 			// scene digest is reused. Drop process-local ingress ordering from
@@ -1166,8 +1167,9 @@ type hostStatusResponse struct {
 }
 
 type hostSlotStatus struct {
-	SceneDigest string `json:"scene_digest,omitempty"`
-	Loaded      bool   `json:"loaded"`
+	SceneDigest       string `json:"scene_digest,omitempty"`
+	ArtifactSetDigest string `json:"artifact_set_digest,omitempty"`
+	Loaded            bool   `json:"loaded"`
 
 	// Projection is the identity of the most recently forwarded LSDP
 	// delta for this slot's bridge, if any has forwarded yet — the SAME
@@ -1197,11 +1199,11 @@ func getHostStatus(deps SceneIntentDeps) http.HandlerFunc {
 		onAirDigest := deps.Host.Digest(bluehost.SlotOnAir)
 		writeJSON(w, http.StatusOK, hostStatusResponse{
 			Preview: hostSlotStatus{
-				SceneDigest: previewDigest, Loaded: previewDigest != "",
+				SceneDigest: previewDigest, ArtifactSetDigest: deps.Host.ArtifactSetDigest(bluehost.SlotPreview), Loaded: previewDigest != "",
 				Projection: lastProjection(deps.Bridges, bluehost.SlotPreview),
 			},
 			OnAir: hostSlotStatus{
-				SceneDigest: onAirDigest, Loaded: onAirDigest != "",
+				SceneDigest: onAirDigest, ArtifactSetDigest: deps.Host.ArtifactSetDigest(bluehost.SlotOnAir), Loaded: onAirDigest != "",
 				Projection: lastProjection(deps.Bridges, bluehost.SlotOnAir),
 			},
 		})
