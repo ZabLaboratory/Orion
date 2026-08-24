@@ -523,33 +523,33 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		var envelopeBody []byte
 		var delegation *workload.Delegation
 		var inlineAdmissionDone chan error
-		if localArtifacts {
+		switch {
+		case localArtifacts:
 			envelopeBody, err = loadLocalSceneEnvelope(deps.LocalArtifactRoot, claims)
 			if err != nil {
 				writeJSON(w, http.StatusConflict, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "LOCAL_SCENE_ARTIFACT_UNAVAILABLE", Message: err.Error()})
 				return
 			}
-		} else if inlineArtifacts {
-			if deps.EmbeddedLocal {
-				// The local capsule was synchronized through ZabGate before the
-				// sidecar became reachable. Verify and digest checks below are
-				// still the local admission boundary.
-			} else if inlinePortal, ok := deps.Workload.(InlineAdmissionPortal); ok {
-				// Admission is the commit gate, not a prerequisite for local
-				// digest verification. Run the independent mTLS round-trip in
-				// parallel with those pure checks; the result is awaited before
-				// Host mutates either slot, so a rejection can never launch Blue.
-				inlineAdmissionDone = make(chan error, 1)
-				go func() {
-					inlineAdmissionDone <- inlinePortal.AdmitInline(ctx, ticket, json.RawMessage(raw))
-				}()
-			} else {
-				// Compatibility for old workload implementations and test
-				// doubles; production Orion implements InlineAdmissionPortal.
-				_, err = deps.Workload.MintDelegation(ctx, ticket, json.RawMessage(raw))
-				if err != nil {
-					writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
-					return
+		case inlineArtifacts:
+			if !deps.EmbeddedLocal {
+				switch inlinePortal, ok := deps.Workload.(InlineAdmissionPortal); {
+				case ok:
+					// Admission is the commit gate, not a prerequisite for local
+					// digest verification. Run the independent mTLS round-trip in
+					// parallel with those pure checks; the result is awaited before
+					// Host mutates either slot, so a rejection can never launch Blue.
+					inlineAdmissionDone = make(chan error, 1)
+					go func() {
+						inlineAdmissionDone <- inlinePortal.AdmitInline(ctx, ticket, json.RawMessage(raw))
+					}()
+				default:
+					// Compatibility for old workload implementations and test
+					// doubles; production Orion implements InlineAdmissionPortal.
+					_, err = deps.Workload.MintDelegation(ctx, ticket, json.RawMessage(raw))
+					if err != nil {
+						writeJSON(w, http.StatusForbidden, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: workloadReason(err)})
+						return
+					}
 				}
 			}
 			// ZabGate's validated capsule is already the result of Canvas
@@ -567,7 +567,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_UNAVAILABLE", Message: err.Error()})
 				return
 			}
-		} else {
+		default:
 			// Legacy path: mint and consume a one-shot Canvas delegation before
 			// accepting the fetched artifact envelope.
 			delegation, err = deps.Workload.MintDelegation(ctx, ticket, json.RawMessage(raw))
