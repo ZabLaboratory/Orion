@@ -22,7 +22,7 @@ func Recover(logger *slog.Logger, next http.Handler) http.Handler {
 					"stack", string(debug.Stack()),
 				)
 				if !headersWritten(w) {
-					http.Error(w, "internal error", http.StatusInternalServerError)
+					WritePrismHTTPError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "An unexpected error occurred", "orion.recovery")
 				}
 			}
 		}()

@@ -87,13 +87,13 @@ func (s *Server) identityFromRequest(r *http.Request) auth.Identity {
 func (s *Server) ServeShowStream(w http.ResponseWriter, r *http.Request) {
 	id := s.identityFromRequest(r)
 	if !id.IsAuthenticated() {
-		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		writeWSError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "unauthenticated")
 		return
 	}
 	switch id.Role {
 	case auth.RoleViewer, auth.RoleOperator, auth.RoleService, auth.RoleAdmin:
 	default:
-		http.Error(w, "forbidden", http.StatusForbidden)
+		writeWSError(w, http.StatusForbidden, "PERMISSION_DENIED", "forbidden")
 		return
 	}
 
@@ -119,16 +119,16 @@ func (s *Server) ServeShowStream(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ServeTestSession(w http.ResponseWriter, r *http.Request) {
 	id := s.identityFrom(r.Header)
 	if !id.IsAuthenticated() {
-		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		writeWSError(w, http.StatusUnauthorized, "AUTH_REQUIRED", "unauthenticated")
 		return
 	}
 	if id.Role != auth.RoleOperator && id.Role != auth.RoleAdmin {
-		http.Error(w, "operator role required", http.StatusForbidden)
+		writeWSError(w, http.StatusForbidden, "PERMISSION_DENIED", "operator role required")
 		return
 	}
 	sessionID := r.URL.Query().Get("session")
 	if sessionID == "" {
-		http.Error(w, "session id required", http.StatusBadRequest)
+		writeWSError(w, http.StatusBadRequest, "VALIDATION_FAILED", "session id required")
 		return
 	}
 	scene, err := s.Test.Connect(sessionID)
@@ -266,14 +266,27 @@ func composeSource(id auth.Identity, suggested string) string {
 // response, before the WS upgrade has actually happened.
 func writeWSError(w http.ResponseWriter, status int, code, message string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	requestID := obs.PrismRequestID(w)
 	w.WriteHeader(status)
 	body := map[string]any{
-		"type":        "error",
-		"v":           protocol.ProtocolVersion,
-		"code":        code,
-		"message":     message,
-		"recoverable": false,
+		"type":          "error",
+		"v":             protocol.ProtocolVersion,
+		"code":          code,
+		"message":       message,
+		"recoverable":   false,
+		"schemaVersion": 1,
+		"title":         http.StatusText(status),
+		"status":        status,
+		"detail":        message,
+		"severity":      obs.PrismEvent(status, code, message, "orion.ws", "service", requestID, nil)["severity"],
+		"domain":        "service",
+		"source":        "orion.ws",
+		"context":       map[string]any{"requestId": requestID},
+		"details":       map[string]any{},
+		"requestId":     requestID,
+		"legacy":        map[string]any{"type": "error", "v": protocol.ProtocolVersion, "code": code, "message": message, "recoverable": false},
 	}
+	obs.LogPrismEvent(status, code, message, "orion.ws", "service", requestID, nil)
 	_ = json.NewEncoder(w).Encode(body)
 }
 

@@ -19,7 +19,7 @@ func staticSolarHandler(fs http.FileSystem) http.Handler {
 		// Fail closed so a misconfigured deploy returns 404 instead
 		// of silently 200ing nothing.
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "static root unconfigured", http.StatusNotFound)
+			writeOperatorError(w, http.StatusNotFound, "RESOURCE_NOT_FOUND", "static root unconfigured")
 		})
 	}
 	server := http.FileServer(fs)

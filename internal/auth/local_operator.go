@@ -3,6 +3,8 @@ package auth
 import (
 	"crypto/subtle"
 	"net/http"
+
+	"github.com/ZabLaboratory/Orion/internal/obs"
 )
 
 // LocalViewerQuery authenticates a browser WebSocket against the same local
@@ -128,7 +130,7 @@ func (l *localOperatorAuth) FromHeaders(h http.Header) Identity {
 func LoopbackOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isLoopbackRemote(r.RemoteAddr) {
-			http.Error(w, "embedded-local: non-loopback request refused", http.StatusForbidden)
+			obs.WritePrismHTTPError(w, http.StatusForbidden, "PERMISSION_DENIED", "embedded-local: non-loopback request refused", "orion.local-auth")
 			return
 		}
 		next.ServeHTTP(w, r)

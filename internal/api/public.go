@@ -310,7 +310,7 @@ func operatorGate(src auth.AuthSource, handler http.HandlerFunc) http.HandlerFun
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := src.FromHeaders(r.Header)
 		if !id.IsAuthenticated() || (id.Role != auth.RoleOperator && id.Role != auth.RoleAdmin) {
-			http.Error(w, "operator role required", http.StatusForbidden)
+			writeOperatorError(w, http.StatusForbidden, "PERMISSION_DENIED", "operator role required")
 			return
 		}
 		handler(w, r)
@@ -318,6 +318,53 @@ func operatorGate(src auth.AuthSource, handler http.HandlerFunc) http.HandlerFun
 }
 
 func writeJSON(w http.ResponseWriter, status int, body any) {
+	requestID := obs.PrismRequestID(w)
+	_, legacyStringMap := body.(map[string]string)
+	legacy := map[string]any{}
+	if encoded, err := json.Marshal(body); err == nil {
+		_ = json.Unmarshal(encoded, &legacy)
+	}
+	code, _ := legacy["code"].(string)
+	if code == "" {
+		code, _ = legacy["error"].(string)
+	}
+	message, _ := legacy["message"].(string)
+	if message == "" {
+		message, _ = legacy["detail"].(string)
+	}
+	if status >= 400 {
+		if message == "" {
+			message = "Request failed"
+		}
+		if code == "" {
+			code = "ACTION_REFUSED"
+		}
+		canonical := obs.PrismEvent(status, code, message, "orion.http", "service", requestID, map[string]any{"status": status})
+		canonical["type"] = "https://cyell.pro/problems/" + code
+		canonical["title"] = http.StatusText(status)
+		canonical["status"] = status
+		canonical["detail"] = message
+		legacySnapshot := make(map[string]any, len(legacy))
+		for key, value := range legacy {
+			legacySnapshot[key] = value
+		}
+		canonical["legacy"] = legacySnapshot
+		// A few historical Orion callers decode these error bodies into
+		// map[string]string. Keep that wire shape for those callers while the
+		// Prism event above remains complete and canonical. Structured bodies
+		// receive the additive Prism profile below.
+		if !legacyStringMap {
+			for key, value := range canonical {
+				if _, exists := legacy[key]; !exists {
+					legacy[key] = value
+				}
+			}
+			body = legacy
+		}
+		obs.LogPrismEvent(status, code, message, "orion.http", "service", requestID, map[string]any{"status": status})
+	} else {
+		obs.LogPrismEvent(status, "ACTION_SUCCEEDED", "HTTP action completed", "orion.http", "service", requestID, map[string]any{"status": status})
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(body)
