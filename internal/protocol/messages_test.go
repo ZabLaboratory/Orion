@@ -28,6 +28,16 @@ func TestEncode_SetsTypeAndV(t *testing.T) {
 	}
 }
 
+func TestEncode_SubscribedWriterAck(t *testing.T) {
+	out, err := Encode(Subscribed{Mode: "writer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != `{"type":"subscribed","v":1,"mode":"writer"}` {
+		t.Fatalf("unexpected subscribed ack: %s", out)
+	}
+}
+
 func TestDecode_DispatchesByType(t *testing.T) {
 	cases := []struct {
 		raw  string

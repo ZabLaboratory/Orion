@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -184,6 +185,29 @@ func TestPostValidateProgram_AcceptsServableProgram(t *testing.T) {
 	}
 	if resp.Code != "" || resp.Reason != "" {
 		t.Fatalf("expected no code/reason on a servable verdict, got %+v", resp)
+	}
+}
+
+func TestPostValidateProgram_AcceptsByteExactBase64Program(t *testing.T) {
+	program := httpRequiresProgram(t)
+	body, err := json.Marshal(validateProgramRequest{
+		ProgramBase64: base64.StdEncoding.EncodeToString(program),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := validateProgramHTTPRequest("operator", nil, body)
+	rec := httptest.NewRecorder()
+	postValidateProgram(validateProgramDeps())(rec, r)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response validateProgramResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Servable {
+		t.Fatalf("expected byte-exact base64 program to be servable: %+v", response)
 	}
 }
 

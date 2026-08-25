@@ -359,8 +359,18 @@ func TestWS_ServiceWriterConnectsWithoutActiveScene(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// No snapshot is sent (no active scene). The connection must stay
-	// open: push an input leaf — scene-1 is loaded and declares the
+	// No snapshot is possible (no active scene), but the authenticated writer
+	// receives an explicit subscription acknowledgement before it can write.
+	_, raw, err := c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ack protocol.Subscribed
+	if err := json.Unmarshal(raw, &ack); err != nil || ack.Type != protocol.TypeSubscribed || ack.Mode != "writer" {
+		t.Fatalf("expected writer subscription ack, got %s", raw)
+	}
+
+	// The connection must stay open: push an input leaf — scene-1 declares the
 	// path, so the inbox accepts and fans it out. The write must not
 	// draw a WRITE_FORBIDDEN nor a SCENE_NOT_FOUND, and the socket must
 	// not be closed by the server.
@@ -444,6 +454,16 @@ func TestWS_ServiceWriterMigratedOnActivate(t *testing.T) {
 	if err := c.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","v":1,"since_sequence":null}`)); err != nil {
 		t.Fatal(err)
 	}
+	// Consume the detached-writer acknowledgement. The next frame after scene
+	// activation must remain the destination snapshot, not this boot ack.
+	_, raw, err := c.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ack protocol.Subscribed
+	if err := json.Unmarshal(raw, &ack); err != nil || ack.Type != protocol.TypeSubscribed {
+		t.Fatalf("expected writer subscription ack, got %s", raw)
+	}
 
 	// Activate scene-1 — the detached writer must be migrated onto the
 	// destination and receive a fresh snapshot proving it is now bound.
@@ -453,7 +473,7 @@ func TestWS_ServiceWriterMigratedOnActivate(t *testing.T) {
 
 	rctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	_, raw, err := c.Read(rctx)
+	_, raw, err = c.Read(rctx)
 	if err != nil {
 		t.Fatalf("writer received nothing after activate (not migrated): %v", err)
 	}

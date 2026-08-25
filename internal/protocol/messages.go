@@ -34,6 +34,7 @@ const (
 	TypeSceneChanged = "scene_changed"
 	TypeError        = "error"
 	TypePong         = "pong"
+	TypeSubscribed   = "subscribed"
 	TypeSubscribe    = "subscribe"
 	TypeInput        = "input"
 	TypeUnsubscribe  = "unsubscribe"
@@ -137,6 +138,16 @@ type Pong struct {
 	Nonce string `json:"nonce"`
 }
 
+// Subscribed acknowledges that the server authenticated the connection and
+// accepted its initial subscription. Service writers receive this frame when
+// no scene is active, where a Snapshot cannot truthfully be produced yet.
+// The mode is additive diagnostics; clients must key readiness on the type.
+type Subscribed struct {
+	Type string `json:"type"`
+	V    int    `json:"v"`
+	Mode string `json:"mode,omitempty"`
+}
+
 // Subscribe is the first message a client sends after connect. nil
 // since_sequence asks for a full snapshot.
 type Subscribe struct {
@@ -220,6 +231,15 @@ func Encode(msg any) ([]byte, error) {
 	case *Pong:
 		cp := *m
 		cp.Type = TypePong
+		cp.V = ProtocolVersion
+		return marshal(cp)
+	case Subscribed:
+		m.Type = TypeSubscribed
+		m.V = ProtocolVersion
+		return marshal(m)
+	case *Subscribed:
+		cp := *m
+		cp.Type = TypeSubscribed
 		cp.V = ProtocolVersion
 		return marshal(cp)
 	case Ping:

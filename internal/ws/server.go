@@ -190,11 +190,18 @@ func (s *Server) runShowConnection(ctx context.Context, conn *connection) error 
 	defer s.Show.UnsubscribeLive(sub)
 	defer sub.Close()
 
-	// snap is nil for a writer that connected with no active scene —
-	// there is no scene to snapshot yet. Skip the initial frame; the
-	// writer receives its first snapshot when SetActive migrates it.
+	// snap is nil for a writer that connected with no active scene — there is
+	// no scene to snapshot yet. A positive protocol-level acknowledgement is
+	// still mandatory: the local Quasar bridge must distinguish an accepted,
+	// authenticated service writer from a TCP socket that merely opened and is
+	// about to be rejected. The writer receives its first real snapshot when
+	// SetActive migrates it.
 	if snap != nil {
 		if err := conn.sendMessage(ctx, snap); err != nil {
+			return err
+		}
+	} else if conn.identity.Role == auth.RoleService {
+		if err := conn.sendMessage(ctx, protocol.Subscribed{Mode: "writer"}); err != nil {
 			return err
 		}
 	}

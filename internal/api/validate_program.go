@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -40,7 +41,8 @@ const maxValidateProgramBody = 1 << 20 // 1 MiB
 // unlike scene_intent.go's Canvas envelope, there is no signed digest claim
 // to cross-check here, so no base64/hash wrapping is needed.
 type validateProgramRequest struct {
-	Program json.RawMessage `json:"program"`
+	Program       json.RawMessage `json:"program,omitempty"`
+	ProgramBase64 string          `json:"program_bytes_base64"`
 }
 
 // validateProgramResponse is the contre-validation verdict. Servable=true
@@ -125,12 +127,29 @@ func postValidateProgram(deps SceneIntentDeps) http.HandlerFunc {
 		}
 
 		var body validateProgramRequest
-		if jsonErr := json.Unmarshal(raw, &body); jsonErr != nil || len(body.Program) == 0 {
+		if jsonErr := json.Unmarshal(raw, &body); jsonErr != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_BODY"})
+			return
+		}
+		program := []byte(body.Program)
+		if body.ProgramBase64 != "" {
+			if len(program) != 0 {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_BODY"})
+				return
+			}
+			var decodeErr error
+			program, decodeErr = base64.StdEncoding.Strict().DecodeString(body.ProgramBase64)
+			if decodeErr != nil || !json.Valid(program) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_BODY"})
+				return
+			}
+		}
+		if len(program) == 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_BODY"})
 			return
 		}
 
-		if verdict := bluehost.ValidateProgram(body.Program, deps.Providers, deps.Policy, deps.ValidationMaxSteps, deps.ValidationMaxWall); verdict != nil {
+		if verdict := bluehost.ValidateProgram(program, deps.Providers, deps.Policy, deps.ValidationMaxSteps, deps.ValidationMaxWall); verdict != nil {
 			writeJSON(w, http.StatusOK, validateProgramResponse{
 				Servable: false,
 				Code:     verdict.Code,
