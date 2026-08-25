@@ -113,10 +113,20 @@ jobs:
           path: runtime-artifacts
           merge-multiple: true
 
+      - name: Mint Blue-read App token for release manifest
+        id: blue-read
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+
       - name: Build local Orion release manifest
         env:
           TAG: ${{ steps.notes.outputs.tag }}
           BASE_VERSION: ${{ steps.notes.outputs.base_version }}
+          BLUE_READ_TOKEN: ${{ steps.blue-read.outputs.token }}
         run: |
           set -euo pipefail
           python3 - "$TAG" "$BASE_VERSION" "$GITHUB_REPOSITORY" <<'PY'
@@ -127,7 +137,7 @@ jobs:
           import sys
           import urllib.request
 
-          tag, version, repository = sys.argv[1:]
+           tag, version, repository = sys.argv[1:]
           artifacts = []
           for path in sorted(pathlib.Path("runtime-artifacts").glob("orion-*")):
               name = path.name
@@ -143,16 +153,19 @@ jobs:
               })
           if not artifacts:
               raise SystemExit("no Orion runtime artifacts were downloaded")
-          blue_digest = None
-          try:
-              request = urllib.request.Request(
-                  "https://github.com/ZabLaboratory/Blue/releases/latest/download/prism-blue-runtime-manifest.json",
-                  headers={"User-Agent": "Orion-release"},
-              )
-              payload = json.load(urllib.request.urlopen(request, timeout=20))
-              blue_digest = payload.get("runtime_manifest", {}).get("source_digest")
-          except Exception as error:
-              print(f"::warning::Blue release manifest unavailable: {error}")
+           blue_url = "https://github.com/ZabLaboratory/Blue/releases/latest/download/prism-blue-runtime-manifest.json"
+           request = urllib.request.Request(
+               blue_url,
+               headers={
+                   "Accept": "application/json",
+                   "User-Agent": "Orion-release",
+                   "Authorization": f"Bearer {__import__('os').environ['BLUE_READ_TOKEN']}",
+               },
+           )
+           payload = json.load(urllib.request.urlopen(request, timeout=20))
+           blue_digest = payload.get("runtime_manifest", {}).get("source_digest")
+           if not isinstance(blue_digest, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", blue_digest):
+               raise SystemExit("Blue release manifest has no valid runtime source_digest")
           manifest = {
               "schema_version": "prism.component.release.v1",
               "component": "orion",
