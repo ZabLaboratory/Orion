@@ -5,6 +5,7 @@
 *.test.exe
 *.out
 /bin/
+/build/
 /dist/
 
 # Coverage
