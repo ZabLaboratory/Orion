@@ -9,6 +9,13 @@ Every release section is written *before* the tag is pushed — the
 it as the GitHub Release body. If a section is missing, the release
 publishes with empty notes.
 
+## [2.0.0] - 2026-08-25
+
+### Changed
+
+- Publish the embedded-local Orion sidecar contract as Orion 2.0.0.
+- Keep the Blue runtime digest and source revision bound to the sidecar marker.
+
 ## [Unreleased]
 
 ### ✨ Features
