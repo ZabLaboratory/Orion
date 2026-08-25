@@ -1,9 +1,8 @@
 name: Release
 
-# Orion is a backend service — no cross-platform binaries to ship.
-# This workflow turns a tag push into a documented GitHub Release +
-# a Discord announcement. The actual deployment is orchestrated by
-# the deploy job inside `ci.yml` on pushes to `main`.
+# Orion is a backend service in production, and a local executable in Prism.
+# A release therefore publishes verified loopback binaries for every Prism
+# platform plus a manifest that binds the binary to the Blue runtime digest.
 
 on:
   push:
@@ -14,8 +13,73 @@ permissions:
   contents: write
 
 jobs:
+  build-runtime:
+    name: Build local Orion runtime (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: win32-x64
+            goos: windows
+            goarch: amd64
+            suffix: .exe
+          - target: linux-x64
+            goos: linux
+            goarch: amd64
+            suffix: ""
+          - target: darwin-x64
+            goos: darwin
+            goarch: amd64
+            suffix: ""
+          - target: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            suffix: ""
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: false
+      - name: Mint Blue-read App token
+        id: blue-read-app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.ORION_BLUE_READ_APP_ID }}
+          private-key: ${{ secrets.ORION_BLUE_READ_APP_PRIVATE_KEY }}
+          owner: ZabLaboratory
+          repositories: Blue
+      - name: Download private Blue runtime module
+        env:
+          GH_TOKEN: ${{ steps.blue-read-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
+          export GOPRIVATE=github.com/ZabLaboratory/*
+          rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
+          rm -rf "$(go env GOMODCACHE)/cache/vcs"
+          go mod download
+      - name: Build Orion binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          go build -trimpath -ldflags="-s -w" -o "release/orion-${{ matrix.target }}${{ matrix.suffix }}" ./cmd/orion
+      - uses: actions/upload-artifact@v4
+        with:
+          name: orion-runtime-${{ matrix.target }}
+          path: release/orion-${{ matrix.target }}${{ matrix.suffix }}
+          if-no-files-found: error
+
   publish:
     name: Publish release + notify
+    needs: build-runtime
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -26,15 +90,82 @@ jobs:
         id: notes
         run: |
           TAG="${GITHUB_REF_NAME}"
+          BASE_VERSION="$(printf '%s' "$TAG" | sed -E 's/^v([0-9]+\.[0-9]+\.[0-9]+).*/\1/')"
+          if [ "$BASE_VERSION" = "$TAG" ]; then
+            echo "::error::invalid release tag $TAG" >&2
+            exit 1
+          fi
           chmod +x scripts/extract-changelog.sh
-          BODY="$(scripts/extract-changelog.sh "${TAG}")"
+          BODY="$(scripts/extract-changelog.sh "v${BASE_VERSION}")"
           if [ -z "$BODY" ]; then
             echo "::warning::no CHANGELOG.md section for ${TAG} — release will ship with empty notes"
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "base_version=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           # Persist the body to a file — multi-line output via
           # $GITHUB_OUTPUT is awkward and eats backticks.
           printf '%s' "$BODY" > .release-notes.md
+
+      - name: Download local Orion runtimes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: orion-runtime-*
+          path: runtime-artifacts
+          merge-multiple: true
+
+      - name: Build local Orion release manifest
+        env:
+          TAG: ${{ steps.notes.outputs.tag }}
+          BASE_VERSION: ${{ steps.notes.outputs.base_version }}
+        run: |
+          set -euo pipefail
+          python3 - "$TAG" "$BASE_VERSION" "$GITHUB_REPOSITORY" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import re
+          import sys
+          import urllib.request
+
+          tag, version, repository = sys.argv[1:]
+          artifacts = []
+          for path in sorted(pathlib.Path("runtime-artifacts").glob("orion-*")):
+              name = path.name
+              target = re.sub(r"^orion-", "", name)
+              if target.endswith(".exe"):
+                  target = target[:-4]
+              digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+              artifacts.append({
+                  "target": target,
+                  "name": name,
+                  "url": f"https://github.com/{repository}/releases/download/{tag}/{name}",
+                  "sha256": digest,
+              })
+          if not artifacts:
+              raise SystemExit("no Orion runtime artifacts were downloaded")
+          blue_digest = None
+          try:
+              request = urllib.request.Request(
+                  "https://github.com/ZabLaboratory/Blue/releases/latest/download/prism-blue-runtime-manifest.json",
+                  headers={"User-Agent": "Orion-release"},
+              )
+              payload = json.load(urllib.request.urlopen(request, timeout=20))
+              blue_digest = payload.get("runtime_manifest", {}).get("source_digest")
+          except Exception as error:
+              print(f"::warning::Blue release manifest unavailable: {error}")
+          manifest = {
+              "schema_version": "prism.component.release.v1",
+              "component": "orion",
+              "version": version,
+              "release_tag": tag,
+              "blue_runtime_source_digest": blue_digest,
+              "artifacts": artifacts,
+          }
+          pathlib.Path("prism-orion-runtime-manifest.json").write_text(
+              json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
+          )
+          PY
+          cat prism-orion-runtime-manifest.json
 
       - name: Create or update GitHub release
         env:
@@ -48,6 +179,7 @@ jobs:
               --title "${TAG}" \
               --notes-file .release-notes.md
           fi
+          gh release upload "${TAG}" runtime-artifacts/* prism-orion-runtime-manifest.json --clobber
 
       - name: Post to Discord
         env:
