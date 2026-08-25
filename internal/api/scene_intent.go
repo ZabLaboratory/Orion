@@ -520,6 +520,38 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusConflict, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "LOCAL_SCENE_CAPSULE_REQUIRED"})
 			return
 		}
+		slot := bluehost.SlotPreview
+		if action == attestation.ActionTakeOnAir {
+			slot = bluehost.SlotOnAir
+		}
+		// A refreshed resolved-scene reference changes only the short-lived
+		// admission proof. If the slot already owns the exact same scene and
+		// artifact set, preserve its Blue instance, bridge, accumulated state,
+		// wire sequence and Solar bundle cache. Rebuilding that healthy
+		// generation would emit an identical snapshot, force Solar to refetch
+		// the same content-addressed bundle and create a visible Preview gap.
+		//
+		// A programmed slot whose bridge disappeared is not healthy and must go
+		// through the normal repair path below. Static scenes intentionally have
+		// no bridge, while embedders without a registry retain the historical
+		// Host-only idempotence contract.
+		bridgeReady := claims.BlueProgramDigest == "" || deps.Bridges == nil || deps.Bridges.Running(slot)
+		if localArtifacts &&
+			deps.Host.Serving(slot, claims.SceneID, claims.SceneDigest) &&
+			deps.Host.ArtifactSetDigest(slot) == claims.ArtifactSetDigest &&
+			bridgeReady {
+			resp := sceneIntentResponse{
+				Status:     actionResultStatus(action),
+				IntentID:   req.IntentID,
+				SceneID:    claims.SceneID,
+				RevisionID: claims.RevisionID,
+			}
+			if dedupKey != "" {
+				deps.Idempotency.store(dedupKey, resp)
+			}
+			writeJSON(w, http.StatusOK, resp)
+			return
+		}
 		var envelopeBody []byte
 		var delegation *workload.Delegation
 		var inlineAdmissionDone chan error
@@ -679,10 +711,6 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		// misalignment (scene_digest is a program-family hash, not the
 		// bundle's own scene_version) is real and intentionally NOT
 		// touched by this unit — separate chantier.
-		slot := bluehost.SlotPreview
-		if action == attestation.ActionTakeOnAir {
-			slot = bluehost.SlotOnAir
-		}
 		var opErr error
 		switch action {
 		case attestation.ActionPreparePreview:

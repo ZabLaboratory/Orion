@@ -79,7 +79,8 @@ func TestPostLocalAtomicSceneIntent_ReadsContentAddressedArtifacts(t *testing.T)
 	if err := os.MkdirAll(filepath.Join(root, "scene-index", ""), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "artifacts", strings.TrimPrefix(digest, "sha256:")+".bin"), program, 0o600); err != nil {
+	artifactPath := filepath.Join(root, "artifacts", strings.TrimPrefix(digest, "sha256:")+".bin")
+	if err := os.WriteFile(artifactPath, program, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "scene-index", "scene-1--rev-1.json"), []byte(`{"scene_id":"scene-1","revision_id":"rev-1"}`), 0o600); err != nil {
@@ -109,11 +110,15 @@ func TestPostLocalAtomicSceneIntent_ReadsContentAddressedArtifacts(t *testing.T)
 		Host:              bluehost.NewHost(),
 		EmbeddedLocal:     true,
 	}
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent/atomic", bytes.NewReader(body))
-	req.Header.Set("X-Authenticated-User", "operator-1")
-	req.Header.Set("X-Authenticated-Role", "operator")
-	rec := httptest.NewRecorder()
-	postLocalAtomicSceneIntent(deps)(rec, req)
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent/atomic", bytes.NewReader(body))
+		req.Header.Set("X-Authenticated-User", "operator-1")
+		req.Header.Set("X-Authenticated-Role", "operator")
+		rec := httptest.NewRecorder()
+		postLocalAtomicSceneIntent(deps)(rec, req)
+		return rec
+	}
+	rec := send()
 	if rec.Code != http.StatusOK {
 		t.Fatalf("local cache atomic scene-intent: got %d: %s", rec.Code, rec.Body.String())
 	}
@@ -123,5 +128,12 @@ func TestPostLocalAtomicSceneIntent_ReadsContentAddressedArtifacts(t *testing.T)
 	}
 	if response.Status != "prepared" || response.SceneID != "scene-1" {
 		t.Fatalf("unexpected local cache result: %+v", response)
+	}
+	if err := os.Remove(artifactPath); err != nil {
+		t.Fatal(err)
+	}
+	refreshed := send()
+	if refreshed.Code != http.StatusOK {
+		t.Fatalf("identical local re-admission refetched the removed artifact instead of preserving the loaded generation: got %d: %s", refreshed.Code, refreshed.Body.String())
 	}
 }
