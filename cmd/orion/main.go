@@ -113,9 +113,11 @@ func run() error {
 	var lsdpHandler http.Handler
 	var sessionWires runtime.SessionWireFactory
 	var previewLSDPHandler http.Handler
+	var generationLSDPHandler http.Handler
 	var previewSlot *runtime.PreviewSlot
 	var antenneWire *lsdp.Wire
 	var previewWire *lsdp.Wire
+	var generationWires *lsdp.GenerationWires
 	if cfg.LSDPMode == config.LSDPModeDual || cfg.LSDPMode == config.LSDPModeLSDP {
 		wire, err := lsdp.NewWire(logger, authSource)
 		if err != nil {
@@ -158,12 +160,20 @@ func run() error {
 		}
 		previewWire.SetSnapshotMetrics(metrics)
 		previewLSDPHandler = previewWire.Handler()
+		generationWires = lsdp.NewGenerationWires(logger, authSource)
+		generationLSDPHandler = generationWires.Handler()
 		if cfg.Profile.IsEmbeddedLocal() && cfg.LocalViewerToken != "" {
 			previewLSDPHandler = lsdp.AllowLoopbackBrowserOrigin(previewLSDPHandler)
 			previewLSDPHandler = auth.LocalViewerQuery(
 				cfg.LocalViewerToken,
 				cfg.LocalAuthSecret,
 				previewLSDPHandler,
+			)
+			generationLSDPHandler = lsdp.AllowLoopbackBrowserOrigin(generationLSDPHandler)
+			generationLSDPHandler = auth.LocalViewerQuery(
+				cfg.LocalViewerToken,
+				cfg.LocalAuthSecret,
+				generationLSDPHandler,
 			)
 		}
 		previewSlot = runtime.NewPreviewSlot(ctx, registry, previewWire, logger)
@@ -423,8 +433,8 @@ func run() error {
 			// here left boundLeafSet permanently disabled on the stateless
 			// path even though the SAME mechanism is already proven safe on
 			// the legacy Show-backed path.
-			sceneIntent.MirrorFor = sceneIntentMirrorFor(lsdpWires{preview: previewWire, antenne: antenneWire})
-			sceneIntent.Activate = sceneIntentActivate(lsdpWires{preview: previewWire, antenne: antenneWire})
+			sceneIntent.MirrorFor = sceneIntentMirrorFor(lsdpWires{preview: previewWire, antenne: antenneWire, generation: generationWires})
+			sceneIntent.Activate = sceneIntentActivate(lsdpWires{preview: previewWire, antenne: antenneWire, generation: generationWires})
 			sceneIntent.EmitRoster = sceneIntentEmitRoster(lsdpWires{preview: previewWire, antenne: antenneWire})
 			sceneIntent.Bridges = bluewire.NewRegistry()
 			sceneIntent.Logger = logger
@@ -466,20 +476,21 @@ func run() error {
 	// Public mux: HTTP + WS surface routed through ZabGate.
 	publicMux := http.NewServeMux()
 	api.RegisterPublic(publicMux, api.PublicDeps{
-		Logger:        logger,
-		Metrics:       metrics,
-		Config:        cfg,
-		Show:          show,
-		Inbox:         inbox,
-		Test:          testMgr,
-		WSServer:      wsServer,
-		Harness:       harness,
-		StaticDir:     http.Dir(cfg.SolarRoot),
-		QuasarBaseURL: cfg.QuasarBaseURL,
-		LSDPHandler:   lsdpHandler,
-		Preview:       previewSlot,
-		PreviewLSDP:   previewLSDPHandler,
-		AuthSource:    authSource,
+		Logger:         logger,
+		Metrics:        metrics,
+		Config:         cfg,
+		Show:           show,
+		Inbox:          inbox,
+		Test:           testMgr,
+		WSServer:       wsServer,
+		Harness:        harness,
+		StaticDir:      http.Dir(cfg.SolarRoot),
+		QuasarBaseURL:  cfg.QuasarBaseURL,
+		LSDPHandler:    lsdpHandler,
+		Preview:        previewSlot,
+		PreviewLSDP:    previewLSDPHandler,
+		GenerationLSDP: generationLSDPHandler,
+		AuthSource:     authSource,
 		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway as the
 		// db.query client; both use the same exact-route exchange callback.
 		SchemaClient: effects.NewSchemaClientWithPathTokenFunc(cfg.ZabGateURL, serviceTokenMinter.Token, nil),
