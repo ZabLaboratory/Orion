@@ -18,6 +18,21 @@ type lsdpRosterEmitter interface {
 	EmitRoster(entries []runtime.RosterEntry)
 }
 
+type generationMirrorRegistry interface {
+	MirrorForLSML(sceneID, sceneVersion, owner string, lsmlBundle []byte) runtime.SceneMirror
+	SetActive(sceneID, sceneVersion string)
+}
+
+type fanoutSceneMirror []runtime.SceneMirror
+
+func (f fanoutSceneMirror) Forward(message runtime.SubscriberMsg) {
+	for _, mirror := range f {
+		if mirror != nil {
+			mirror.Forward(message)
+		}
+	}
+}
+
 // lsdpWires names the preview and antenne wires BY FIELD, not position
 // (#398 F1, Vigil review on d448def). sceneIntentMirrorFor's prior shape
 // — two positional, identically-typed *lsdp.Wire arguments — compiled
@@ -36,8 +51,9 @@ type lsdpRosterEmitter interface {
 // the wrong FIELD NAME, a visible, deliberate edit rather than an
 // invisible transposition.
 type lsdpWires struct {
-	preview lsdpMirrorRegistry
-	antenne lsdpMirrorRegistry
+	preview    lsdpMirrorRegistry
+	antenne    lsdpMirrorRegistry
+	generation generationMirrorRegistry
 }
 
 // sceneIntentMirrorFor resolves scene-intent's LSDP projection target BY
@@ -82,20 +98,27 @@ func sceneIntentMirrorFor(wires lsdpWires) func(sceneID, sceneVersion string, sl
 		default:
 			return nil
 		}
-		return mirror
+		if wires.generation == nil {
+			return mirror
+		}
+		generation := wires.generation.MirrorForLSML(sceneID, sceneVersion, string(slot), bundle)
+		return fanoutSceneMirror{mirror, generation}
 	}
 }
 
 // sceneIntentActivate changes the selected wire's active scene after the
 // caller has applied the real validated keyframe. SetActive must not publish
 // an empty snapshot before the render bundle state is present.
-func sceneIntentActivate(wires lsdpWires) func(sceneID string, slot bluehost.Slot) {
-	return func(sceneID string, slot bluehost.Slot) {
+func sceneIntentActivate(wires lsdpWires) func(sceneID, sceneVersion string, slot bluehost.Slot) {
+	return func(sceneID, sceneVersion string, slot bluehost.Slot) {
 		switch slot {
 		case bluehost.SlotPreview:
 			wires.preview.SetActive(sceneID)
 		case bluehost.SlotOnAir:
 			wires.antenne.SetActive(sceneID)
+		}
+		if wires.generation != nil {
+			wires.generation.SetActive(sceneID, sceneVersion)
 		}
 	}
 }

@@ -32,11 +32,12 @@ func PrismEvent(status int, code, message, source, domain, requestID string, det
 		severity = "warning"
 	}
 	if code == "" {
-		if status >= 500 {
+		switch {
+		case status >= 500:
 			code = "ACTION_FAILED"
-		} else if status >= 400 {
+		case status >= 400:
 			code = "ACTION_REFUSED"
-		} else {
+		default:
 			code = "ACTION_SUCCEEDED"
 		}
 	}

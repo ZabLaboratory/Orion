@@ -59,6 +59,9 @@ type PublicDeps struct {
 	// (/show/preview.lsdp) — the second wire beside LSDPHandler. Non-nil only
 	// in dual/lsdp mode; nil ⇒ the preview LSDP route is not registered.
 	PreviewLSDP http.Handler
+	// GenerationLSDP serves immutable scene/version projection wires used by
+	// Pulsar's physical A/B lanes. It never follows Preview or On-air roles.
+	GenerationLSDP http.Handler
 
 	// AuthSource is the seam through which requireOperator derives the
 	// request Identity (ADR 016 §3.2-2). Nil ⇒ HeaderAuthSource (the
@@ -240,6 +243,9 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 		// above, so a preview switch can never reach /show/stream.lsdp.
 		if deps.PreviewLSDP != nil {
 			mux.Handle("/api/v1/show/preview.lsdp", lsdpRoute(deps.PreviewLSDP))
+		}
+		if deps.GenerationLSDP != nil {
+			mux.Handle("/api/v1/show/generation.lsdp", deps.GenerationLSDP)
 		}
 	}
 

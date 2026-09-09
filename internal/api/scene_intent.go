@@ -172,7 +172,7 @@ type SceneIntentDeps struct {
 	// been applied. Registration and activation stay separate so a connected
 	// client never receives an empty keyframe before the validated bundle is
 	// seeded.
-	Activate func(sceneID string, slot bluehost.Slot)
+	Activate func(sceneID, sceneVersion string, slot bluehost.Slot)
 	// Bridges tracks the running bridge per bluehost.Slot so a superseding
 	// Take (or a re-Prepare) stops the previous one instead of leaking a
 	// goroutine stepping an instance the Host has already released.
@@ -1111,7 +1111,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 			mirror.Forward(initialSnapshot)
 		}
 		if deps.Activate != nil {
-			deps.Activate(claims.SceneID, slot)
+			deps.Activate(claims.SceneID, claims.SceneDigest, slot)
 		}
 		deps.Bridges.Stop(slot)
 		return
@@ -1151,7 +1151,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 			mirror.Forward(initialSnapshot)
 		}
 		if deps.Activate != nil {
-			deps.Activate(claims.SceneID, slot)
+			deps.Activate(claims.SceneID, claims.SceneDigest, slot)
 		}
 	}
 	go func() {

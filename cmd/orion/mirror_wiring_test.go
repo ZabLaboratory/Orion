@@ -11,8 +11,8 @@ import (
 // records every MirrorForLSML call it receives — no real LSDP websocket
 // kit needed to prove routing.
 type recordingLsdpRegistry struct {
-	calls  int
-	active []string
+	calls   int
+	active  []string
 	rosters [][]runtime.RosterEntry
 }
 
@@ -71,7 +71,7 @@ func TestSceneIntentMirrorFor_RoutesBySlot(t *testing.T) {
 	if len(preview.active) != 0 || len(antenne.active) != 0 {
 		t.Fatalf("registration must not activate either wire before the keyframe is seeded")
 	}
-	sceneIntentActivate(lsdpWires{preview: preview, antenne: antenne})("scene-1", bluehost.SlotPreview)
+	sceneIntentActivate(lsdpWires{preview: preview, antenne: antenne})("scene-1", "sha256:test-1", bluehost.SlotPreview)
 	if len(preview.active) != 1 || preview.active[0] != "scene-1" {
 		t.Fatalf("prepare-preview activation must target the preview wire, got %#v", preview.active)
 	}
@@ -83,7 +83,7 @@ func TestSceneIntentMirrorFor_RoutesBySlot(t *testing.T) {
 	if preview.calls != 1 {
 		t.Fatalf("take must NOT touch the preview wire — preview calls changed to %d", preview.calls)
 	}
-	sceneIntentActivate(lsdpWires{preview: preview, antenne: antenne})("scene-1", bluehost.SlotOnAir)
+	sceneIntentActivate(lsdpWires{preview: preview, antenne: antenne})("scene-1", "sha256:test-1", bluehost.SlotOnAir)
 	if len(antenne.active) != 1 || antenne.active[0] != "scene-1" {
 		t.Fatalf("take activation must target the antenne wire, got %#v", antenne.active)
 	}
