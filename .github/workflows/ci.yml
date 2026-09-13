@@ -452,7 +452,9 @@ jobs:
       # Install from source so it uses our Go toolchain (pre-built binaries
       # refuse modules declaring `go 1.26`).
       - name: install golangci-lint from source
-        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+        # Keep the v1 config format used by .golangci.yml; @latest currently
+        # resolves to v2, which rejects that configuration before linting.
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
       - name: run
         run: golangci-lint run --timeout=5m
 

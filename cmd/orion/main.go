@@ -8,6 +8,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -226,8 +227,13 @@ func run() error {
 		if err := serviceTokens.Start(ctx); err != nil {
 			logger.Error("service-token manager start failed; Engine B outbound calls fail closed", "err", err)
 		}
-		logger.Info("service-token manager", "state", string(serviceTokens.State()))
 		defer serviceTokens.Stop()
+	}
+	if cfg.Profile.IsEmbeddedLocal() && serviceTokens != nil {
+		state := serviceTokens.State()
+		if state != auth.ServiceTokenArmed && state != auth.ServiceTokenStatic {
+			return fmt.Errorf("embedded-local service-token manager is not ready: %s", state)
+		}
 	}
 	familyTokenFn := func() string { return "" }
 	if serviceTokens != nil {

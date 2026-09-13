@@ -135,6 +135,42 @@ type terminalServiceTokenError struct{ err error }
 func (e terminalServiceTokenError) Error() string { return e.err.Error() }
 func (e terminalServiceTokenError) Unwrap() error { return e.err }
 
+// serviceTokenIdentityError is returned when ZabAuth rotates a refresh token
+// successfully but the resulting access token belongs to a different
+// workload identity. HTTP success alone is not sufficient: Blue's Orion
+// adapter admits the exact service principal "orion" on its internal
+// blueprint-read and program-compile surfaces.
+type serviceTokenIdentityError struct{ reason string }
+
+func (e serviceTokenIdentityError) Error() string {
+	return "service token access identity rejected: " + e.reason
+}
+
+func validateServiceAccessToken(token string) error {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return serviceTokenIdentityError{reason: "access token is not a JWT"}
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		payload, err = base64.URLEncoding.DecodeString(parts[1])
+	}
+	if err != nil {
+		return serviceTokenIdentityError{reason: "access token payload is not valid base64url"}
+	}
+	var claims struct {
+		Subject string `json:"sub"`
+		Role    string `json:"role"`
+	}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return serviceTokenIdentityError{reason: "access token payload is not valid JSON"}
+	}
+	if claims.Subject != "orion" || claims.Role != "service" {
+		return serviceTokenIdentityError{reason: "expected sub=orion and role=service"}
+	}
+	return nil
+}
+
 // ServiceTokenManager owns durable refresh-token possession used by Engine B.
 // It never sends the family bearer to truth/ranking: callers use the current
 // access token only to exchange for exact route-scoped tokens.
@@ -276,6 +312,7 @@ func (m *ServiceTokenManager) Start(ctx context.Context) error {
 		return nil
 	}
 	refresh := m.seed
+	usedPersistedRefresh := false
 	if err == nil {
 		plain, openErr := m.box.open(enc)
 		if openErr != nil {
@@ -308,6 +345,7 @@ func (m *ServiceTokenManager) Start(ctx context.Context) error {
 				refresh = m.seed
 			} else {
 				refresh = record.RefreshToken
+				usedPersistedRefresh = true
 			}
 		}
 	}
@@ -320,6 +358,31 @@ func (m *ServiceTokenManager) Start(ctx context.Context) error {
 	m.refresh = refresh
 	m.mu.Unlock()
 	if err := m.rotate(ctx); err != nil {
+		var terminal terminalServiceTokenError
+		var identity serviceTokenIdentityError
+		persistedRejected := errors.As(err, &terminal) || errors.As(err, &identity)
+		if usedPersistedRefresh && m.seed != "" && m.seed != refresh && persistedRejected {
+			// Prism provisions a fresh bootstrap seed for every local runtime
+			// start. A persisted family can be revoked independently (logout,
+			// expiry, or a prior interrupted machine session), or it can still
+			// issue an access token for a legacy installation identity. Retrying
+			// that family forever leaves the local runtime alive but unable to
+			// reach Blue. The new seed is already authorized by ZabAuth, so one
+			// bounded fallback is safe and makes restart preparation converge.
+			m.logger().Warn("persisted service-token family rejected or identity mismatched; retrying with fresh bootstrap seed")
+			m.mu.Lock()
+			m.access = ""
+			m.refresh = m.seed
+			m.mu.Unlock()
+			seedErr := m.rotate(ctx)
+			if seedErr == nil {
+				m.stop = make(chan struct{})
+				m.wg.Add(1)
+				go m.refreshLoop()
+				return nil
+			}
+			m.logError("durable service token fresh bootstrap rotation failed", seedErr)
+		}
 		m.logError("durable service token boot rotation failed", err)
 		return nil
 	}
@@ -381,6 +444,13 @@ func (m *ServiceTokenManager) rotate(ctx context.Context) error {
 	}
 	if bundle.AccessToken == "" || bundle.RefreshToken == "" || bundle.ExpiresAt.IsZero() {
 		return errors.New("refresh response missing token material or expiry")
+	}
+	if err := validateServiceAccessToken(bundle.AccessToken); err != nil {
+		m.mu.Lock()
+		m.access, m.refresh = "", ""
+		m.state = ServiceTokenDegraded
+		m.mu.Unlock()
+		return err
 	}
 	successor, err := m.box.seal(durableServiceTokenRecord{RefreshToken: bundle.RefreshToken})
 	if err != nil {
