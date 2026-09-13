@@ -374,14 +374,14 @@ func (m *ServiceTokenManager) Start(ctx context.Context) error {
 			m.access = ""
 			m.refresh = m.seed
 			m.mu.Unlock()
-			if seedErr := m.rotate(ctx); seedErr == nil {
+			seedErr := m.rotate(ctx)
+			if seedErr == nil {
 				m.stop = make(chan struct{})
 				m.wg.Add(1)
 				go m.refreshLoop()
 				return nil
-			} else {
-				m.logError("durable service token fresh bootstrap rotation failed", seedErr)
 			}
+			m.logError("durable service token fresh bootstrap rotation failed", seedErr)
 		}
 		m.logError("durable service token boot rotation failed", err)
 		return nil
