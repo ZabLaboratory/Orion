@@ -208,6 +208,22 @@ func TestBoundLeaves_DisabledWhenNoBindings(t *testing.T) {
 	}
 }
 
+func TestBoundLeaves_AnimateBindingsAreRenderable(t *testing.T) {
+	bundle := &compiler.RenderBundle{
+		SceneVersion: "sha256:editable",
+		Root: compiler.LayoutNode{
+			Kind: "shape",
+			AnimateBindings: map[string]string{
+				"transform.translate": "__editable.70616e656c.translate",
+			},
+		},
+	}
+	bound := boundLeavesFromBundle(bundle)
+	if !bound.renderable("__editable.70616e656c.translate") {
+		t.Fatal("bindAnimate leaf must survive the LSDP gate")
+	}
+}
+
 // TestBoundLeaves_DeltaEmitsOnlyBound proves the same gate on the delta
 // path: a delta touching the bound board scalar alongside an unbound
 // empty-array literal emits only the board scalar.

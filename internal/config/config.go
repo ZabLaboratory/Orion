@@ -232,6 +232,10 @@ type Config struct {
 	// LocalViewerToken is a loopback-only viewer capability for Solar, which
 	// cannot attach a custom HTTP header to its browser WebSocket.
 	LocalViewerToken string
+	// LocalEditorToken is a distinct loopback-only capability for Prism's
+	// prewarmed editable-preview WebSocket. It grants only hot Preview leaf
+	// mutations; it is never shared with Solar and cannot reach Program.
+	LocalEditorToken string
 
 	// --- stateless-cutover workload surface (#331, ADR-BLUE-012 §4.7/§6.2) ---
 	// All optional and dark by default: cmd/orion wires SceneIntentDeps
@@ -359,6 +363,7 @@ func Load() (Config, error) {
 		cfg.LocalAuthSecret = os.Getenv("ORION_LOCAL_OPERATOR_SECRET")
 		cfg.LocalAuthUser = getenv("ORION_LOCAL_AUTH_USER", "local-operator")
 		cfg.LocalViewerToken = os.Getenv("ORION_LOCAL_VIEWER_TOKEN")
+		cfg.LocalEditorToken = os.Getenv("ORION_LOCAL_EDITOR_TOKEN")
 		if cfg.LocalAuthSecret == "" {
 			problems = append(problems, "ORION_LOCAL_OPERATOR_SECRET is required when ORION_PROFILE=embedded-local")
 		}

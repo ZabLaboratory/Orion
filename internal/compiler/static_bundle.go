@@ -104,7 +104,7 @@ func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assets
 
 	for key, value := range raw {
 		switch key {
-		case "kind", "id", "children", "animate", "animations", "bind", "bindStyle", "bindUniversal":
+		case "kind", "id", "children", "animate", "animations", "bind", "bindStyle", "bindUniversal", "bindAnimate":
 			continue
 		default:
 			rewritten, touched, err := rewriteJSON(value, assetBaseURL)
@@ -135,6 +135,10 @@ func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assets
 	}
 	if len(node.Bindings) == 0 {
 		node.Bindings = nil
+	}
+	_ = json.Unmarshal(raw["bindAnimate"], &node.AnimateBindings)
+	if len(node.AnimateBindings) == 0 {
+		node.AnimateBindings = nil
 	}
 	if err := json.Unmarshal(raw["animate"], &node.Transitions); err != nil {
 		node.Transitions = nil

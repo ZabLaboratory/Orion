@@ -58,3 +58,27 @@ func TestCompileStaticLSMLRejectsMissingRenderTree(t *testing.T) {
 		t.Fatal("expected malformed static bundle to be rejected")
 	}
 }
+
+func TestCompileStaticLSMLPreservesEditableBindAnimate(t *testing.T) {
+	raw := []byte(`{
+  "layout":{"kind":"shape","id":"panel","position":{"x":0,"y":0},"bindAnimate":{"transform.translate":"__editable.70616e656c.translate"},"animate":{"transition":{"duration":0,"easing":"linear"}}},
+  "defaults":{"__editable.70616e656c.translate":[25,40]}
+}`)
+	bundleBytes, defaults, err := CompileStaticLSML(raw, "editable-1", "sha256:editable", "https://zabgate.test/canvas/api/v1/scene-assets")
+	if err != nil {
+		t.Fatalf("CompileStaticLSML: %v", err)
+	}
+	var bundle RenderBundle
+	if err := json.Unmarshal(bundleBytes, &bundle); err != nil {
+		t.Fatalf("decode RenderBundle: %v", err)
+	}
+	if got := bundle.Root.AnimateBindings["transform.translate"]; got != "__editable.70616e656c.translate" {
+		t.Fatalf("animate binding = %q", got)
+	}
+	if string(bundle.Root.Transitions["x"]) != `{"kind":"tween","duration_ms":0,"ease":"linear"}` || string(bundle.Root.Transitions["y"]) != `{"kind":"tween","duration_ms":0,"ease":"linear"}` {
+		t.Fatalf("translate transitions = %#v", bundle.Root.Transitions)
+	}
+	if string(defaults["__editable.70616e656c.translate"]) != `[25,40]` {
+		t.Fatalf("translate default = %s", defaults["__editable.70616e656c.translate"])
+	}
+}

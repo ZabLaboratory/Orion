@@ -117,12 +117,13 @@ type CanvasLayout struct {
 // (kind in primitive set) or a user-component reference (kind ==
 // component_id, fetched via ComponentRef).
 type LayoutNode struct {
-	Kind        string                     `json:"kind"`
-	ID          string                     `json:"id,omitempty"`
-	Props       map[string]json.RawMessage `json:"props,omitempty"`
-	Bindings    map[string]string          `json:"bindings,omitempty"`
-	Transitions map[string]json.RawMessage `json:"transitions,omitempty"`
-	Children    []LayoutNode               `json:"children,omitempty"`
+	Kind            string                     `json:"kind"`
+	ID              string                     `json:"id,omitempty"`
+	Props           map[string]json.RawMessage `json:"props,omitempty"`
+	Bindings        map[string]string          `json:"bindings,omitempty"`
+	AnimateBindings map[string]string          `json:"animateBindings,omitempty"`
+	Transitions     map[string]json.RawMessage `json:"transitions,omitempty"`
+	Children        []LayoutNode               `json:"children,omitempty"`
 
 	// component_id is set when Kind names a user component (the
 	// authored layout uses the component's id directly as the kind
