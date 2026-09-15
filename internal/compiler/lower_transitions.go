@@ -139,6 +139,53 @@ func lowerTransitions(transitions map[string]json.RawMessage) map[string]json.Ra
 	return out
 }
 
+// lowerTransitionsForAnimateBindings mirrors the current TypeScript compiler's
+// bindAnimate fan-out. An LSML animate envelope containing only a transition is
+// meaningful when bindAnimate declares the target channels, even though it has
+// no static animate target of its own.
+func lowerTransitionsForAnimateBindings(transitions map[string]json.RawMessage, bindings map[string]string) map[string]json.RawMessage {
+	out := lowerTransitions(transitions)
+	if len(bindings) == 0 || len(transitions) == 0 || isPerPropTransitions(transitions) {
+		return out
+	}
+	var authored animateTransition
+	if raw, ok := transitions["transition"]; !ok || json.Unmarshal(raw, &authored) != nil {
+		return out
+	}
+	tx := compileAnimateTransition(&authored)
+	if tx == nil {
+		return out
+	}
+	if out == nil || hasAnimateEnvelopeKey(out) {
+		out = make(map[string]json.RawMessage)
+	} else {
+		cloned := make(map[string]json.RawMessage, len(out)+3)
+		for key, value := range out {
+			cloned[key] = value
+		}
+		out = cloned
+	}
+	for key := range bindings {
+		switch key {
+		case "opacity":
+			out["opacity"] = tx
+		case "transform.translate":
+			out["x"] = tx
+			out["y"] = tx
+		case "transform.scale":
+			out["scale"] = tx
+		case "transform.rotate":
+			out["rotate"] = tx
+		case "filter.blur", "filter.brightness":
+			out["filter"] = tx
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // isPerPropTransitions reports whether the map is ALREADY in the runtime
 // per-prop contract: every value is a JSON object carrying a string
 // `kind` (tween/spring/crossfade/none). The LSML envelope can never

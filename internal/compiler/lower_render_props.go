@@ -542,7 +542,7 @@ func lowerRenderTreeRec(node LayoutNode, animations map[string]animationAsset, i
 	// mount-play falls back to the 400 ms default). Already-per-prop or
 	// unknown shapes pass through untouched; AuthoringRoot keeps the raw
 	// envelope, so EmitLSML / the C4 hash are unperturbed.
-	out.Transitions = lowerTransitions(node.Transitions)
+	out.Transitions = lowerTransitionsForAnimateBindings(node.Transitions, node.AnimateBindings)
 	if len(node.Children) > 0 {
 		lowered := make([]LayoutNode, 0, len(node.Children))
 		for _, c := range node.Children {

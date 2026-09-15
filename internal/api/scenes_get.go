@@ -122,24 +122,31 @@ func serveHostBundle(w http.ResponseWriter, r *http.Request, deps PublicDeps) {
 // fetch through this resolver succeed. Diagnostic gain (silent client
 // failure → explicit 404), not a rendering fix.
 func resolveHostBundle(deps PublicDeps, r *http.Request) (digest string, bundle []byte, ok bool) {
-	if deps.SceneIntent == nil || deps.SceneIntent.Host == nil {
-		return "", nil, false
-	}
-	host := deps.SceneIntent.Host
 	sceneID := r.PathValue("id")
 	v := r.URL.Query().Get("v")
 	if sceneID == "" || v == "" {
 		return "", nil, false
 	}
-	for _, slot := range []bluehost.Slot{bluehost.SlotOnAir, bluehost.SlotPreview} {
-		if !host.Serving(slot, sceneID, v) {
-			continue
+	// Preserve the existing bluehost/Program precedence byte-for-byte. The
+	// Preview fallback is additive and is consulted only when neither host
+	// slot serves the exact content address.
+	if deps.SceneIntent != nil && deps.SceneIntent.Host != nil {
+		host := deps.SceneIntent.Host
+		for _, slot := range []bluehost.Slot{bluehost.SlotOnAir, bluehost.SlotPreview} {
+			if !host.Serving(slot, sceneID, v) {
+				continue
+			}
+			b := host.Bundle(slot)
+			if b == nil {
+				continue
+			}
+			return v, b, true
 		}
-		b := host.Bundle(slot)
-		if b == nil {
-			continue
+	}
+	if deps.Preview != nil {
+		if b, found := deps.Preview.Bundle(sceneID, v); found {
+			return v, b, true
 		}
-		return v, b, true
 	}
 	return "", nil, false
 }

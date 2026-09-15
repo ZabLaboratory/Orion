@@ -151,6 +151,10 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// the preview scene). Operator-gated; degrade when Preview is nil.
 	mux.HandleFunc("POST /api/v1/show/preview-active-scene", postPreviewActiveScene(deps))
 	mux.HandleFunc("GET /api/v1/show/preview-snapshot", getPreviewSnapshot(deps))
+	mux.HandleFunc("POST /api/v1/show/editable-preview", postEditablePreview(deps))
+	mux.HandleFunc("POST /api/v1/show/editable-preview/activate", postEditablePreviewActivate(deps))
+	mux.HandleFunc("PUT /api/v1/show/editable-preview", putEditablePreviewPatch(deps))
+	mux.HandleFunc("GET /api/v1/show/editable-preview.ws", editablePreviewSocket(deps))
 	// Stream-level Blue rules (ADR 009): restored as a volatile Engine B
 	// RulePlane, orthogonal to preview/on-air scene slots. Prism owns durable
 	// intent and replay; no Orion store and no Canvas scene artefact enters

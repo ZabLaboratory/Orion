@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"strconv"
 	"sync"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
@@ -39,12 +41,35 @@ type PreviewSlot struct {
 	mu      sync.Mutex
 	ctx     context.Context
 	current *previewClone
-	effects *SceneEffects
+	// editable keeps already-compiled no-Blue clones warm while a regular
+	// scene temporarily owns the Preview wire. Re-selecting an editable scene
+	// is therefore only a Wire.SetActive operation: no LSML compilation, no
+	// clone restart and no Solar/Pulsar reconnection.
+	editable map[string]*previewClone
+	effects  *SceneEffects
 }
 
 type previewClone struct {
-	sceneID string
-	scene   *Scene
+	sceneID      string
+	sceneVersion string
+	scene        *Scene
+	bundle       []byte
+	editable     bool
+	editSeq      uint64
+}
+
+var (
+	ErrPreviewNotEditable   = errors.New("preview scene is not editable")
+	ErrPreviewSceneMismatch = errors.New("editable preview scene mismatch")
+	ErrPreviewEditSequence  = errors.New("editable preview sequence conflict")
+	ErrPreviewEditPath      = errors.New("editable preview path is not declared")
+	ErrPreviewBusy          = errors.New("editable preview input queue is full")
+	ErrPreviewCacheMiss     = errors.New("editable preview clone is not cached")
+)
+
+type EditablePatch struct {
+	Path  string
+	Value json.RawMessage
 }
 
 // NewPreviewSlot builds the slot over a persistent preview wire. ctx is the
@@ -56,6 +81,7 @@ func NewPreviewSlot(ctx context.Context, registry *ComputeRegistry, wire Preview
 		logger:   logger.With("component", "preview-slot"),
 		wire:     wire,
 		ctx:      ctx,
+		editable: make(map[string]*previewClone),
 	}
 }
 
@@ -80,10 +106,15 @@ func (p *PreviewSlot) SetEffects(e *SceneEffects) {
 // Re-activating the same scene rebuilds a fresh clone (reseeds defaults +
 // fires on-start), matching a push-swap of the live scene on the antenne.
 func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, progs ...*ExecProgram) {
+	p.activate(sceneID, graph, bundle, false, 0, progs...)
+}
+
+func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editable bool, editSeq uint64, progs ...*ExecProgram) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	prev := p.current
+	replaced := p.editable[sceneID]
 
 	// Clone the compiled artefacts so the preview's reactive loop owns private
 	// inputs — the antenne instance of the same scene is untouched.
@@ -123,17 +154,140 @@ func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *co
 	// preview Solar migrates (scene_changed + fresh snapshot) over its EXISTING
 	// socket — no reload. Identical mechanism to the antenne's Show.SetActive.
 	p.wire.SetActive(sceneID)
-	p.current = &previewClone{sceneID: sceneID, scene: scene}
+	bundleBytes, err := json.Marshal(&bcopy)
+	if err != nil {
+		// RenderBundle is composed entirely of JSON-backed fields and was
+		// already decoded before reaching the runtime. Keep activation live if
+		// a future extension violates that assumption, but make the fetch gap
+		// explicit instead of serving corrupt bytes.
+		p.logger.Error("preview render bundle cannot be serialized", "scene_id", sceneID, "err", err)
+		bundleBytes = nil
+	}
+	next := &previewClone{
+		sceneID:      sceneID,
+		sceneVersion: gcopy.SceneVersion,
+		scene:        scene,
+		bundle:       bundleBytes,
+		editable:     editable,
+		editSeq:      editSeq,
+	}
+	p.current = next
+	if editable {
+		p.editable[sceneID] = next
+	} else {
+		delete(p.editable, sceneID)
+	}
 
-	// Tear the previous clone down AFTER the flip (no preview gap). Keep the
-	// kit scene if we just re-activated the same id — MirrorFor re-registered
-	// it, so dropping would orphan the fresh clone.
-	if prev != nil {
+	// Tear disposable clones down AFTER the flip (no preview gap). An editable
+	// clone with another id deliberately stays alive in p.editable so a later
+	// switch back is compilation-free. A same-id cached clone is replaced by
+	// the fresh structural build above and must be stopped exactly once.
+	if replaced != nil && replaced != next {
+		replaced.scene.Stop()
+	}
+	if prev != nil && prev != replaced && !prev.editable {
 		prev.scene.Stop()
 		if prev.sceneID != sceneID {
 			p.wire.Drop(prev.sceneID)
 		}
 	}
+}
+
+// Bundle returns the exact compiled render tree owned by the persistent
+// Preview slot. Solar learns (scene_id, scene_version) from preview.lsdp and
+// resolves that immutable pair through the ordinary render-bundle endpoint;
+// bluehost does not own editable scenes, so this is the missing read side of
+// their no-Blue activation path. A defensive copy prevents HTTP writers from
+// aliasing the live preview clone.
+func (p *PreviewSlot) Bundle(sceneID, sceneVersion string) ([]byte, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cur := p.current
+	if cur == nil || cur.sceneID != sceneID {
+		cur = p.editable[sceneID]
+	}
+	if cur == nil || cur.sceneVersion != sceneVersion || len(cur.bundle) == 0 {
+		return nil, false
+	}
+	return append([]byte(nil), cur.bundle...), true
+}
+
+// ActivateEditable arms a no-Blue preview clone and records the durable
+// ZabCanvas edit sequence that subsequent hot patches must extend.
+func (p *PreviewSlot) ActivateEditable(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editSeq uint64) {
+	p.activate(sceneID, graph, bundle, true, editSeq)
+}
+
+// ReactivateEditable flips Preview back to an already-compiled editable
+// clone. expectedEditSeq binds Prism's durable ZabCanvas head to the cached
+// runtime instance so stale UI state can never silently reactivate. The clone
+// and its scene mirror stay alive while Blue owns Preview; only the preview
+// wire's active scene changes here.
+func (p *PreviewSlot) ReactivateEditable(sceneID string, expectedEditSeq uint64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	next := p.editable[sceneID]
+	if next == nil {
+		return ErrPreviewCacheMiss
+	}
+	if next.editSeq != expectedEditSeq {
+		return ErrPreviewEditSequence
+	}
+	prev := p.current
+	if prev == next {
+		return nil
+	}
+	p.wire.SetActive(sceneID)
+	p.current = next
+	if prev != nil && !prev.editable {
+		prev.scene.Stop()
+		if prev.sceneID != sceneID {
+			p.wire.Drop(prev.sceneID)
+		}
+	}
+	return nil
+}
+
+// ApplyEditablePatches queues one atomic hot edit on the live preview clone.
+// All values travel through the existing scene mirror, so Solar receives a
+// real LSDP delta over its persistent socket; the antenna show is untouched.
+func (p *PreviewSlot) ApplyEditablePatches(sceneID string, baseSeq, editSeq uint64, patches []EditablePatch) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cur := p.current
+	if cur == nil || cur.sceneID != sceneID {
+		return ErrPreviewSceneMismatch
+	}
+	if !cur.editable {
+		return ErrPreviewNotEditable
+	}
+	if cur.editSeq != baseSeq || editSeq != baseSeq+1 {
+		return ErrPreviewEditSequence
+	}
+	keyspace := cur.scene.DeclaredKeyspace()
+	for _, patch := range patches {
+		if _, ok := keyspace[patch.Path]; !ok {
+			return ErrPreviewEditPath
+		}
+	}
+	batch := append([]EditablePatch(nil), patches...)
+	if !cur.scene.Input(InputMsg{
+		Source:      "operator:editable-cockpit",
+		ClientMsgID: strconv.FormatUint(editSeq, 10),
+		Control: func(scene *Scene) {
+			for _, patch := range batch {
+				scene.applyInput(InputMsg{
+					Path:   patch.Path,
+					Value:  patch.Value,
+					Source: "operator:editable-cockpit",
+				})
+			}
+		},
+	}) {
+		return ErrPreviewBusy
+	}
+	cur.editSeq = editSeq
+	return nil
 }
 
 // SnapshotState exports the live preview clone's state for the preview→air
@@ -178,9 +332,18 @@ func (p *PreviewSlot) Current() *Scene {
 func (p *PreviewSlot) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	stopped := make(map[*previewClone]struct{}, len(p.editable)+1)
 	if p.current != nil {
 		p.current.scene.Stop()
 		p.wire.Drop(p.current.sceneID)
-		p.current = nil
+		stopped[p.current] = struct{}{}
 	}
+	for sceneID, clone := range p.editable {
+		if _, ok := stopped[clone]; !ok {
+			clone.scene.Stop()
+			p.wire.Drop(sceneID)
+		}
+	}
+	p.current = nil
+	clear(p.editable)
 }

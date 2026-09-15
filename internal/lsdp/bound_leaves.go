@@ -88,20 +88,21 @@ func boundLeavesFromBundle(bundle *compiler.RenderBundle) boundLeafSet {
 
 // collectBoundLeaves recurses a layout node, adding every bound leaf
 // path to dst. It reads the leaf-bearing fields the Lumencast runtime
-// subscribes (tree.tsx resolveProps / KeyframePlayer): `bindings` values
-// and `keyframes.key`. The Go LayoutNode does not carry §6.3 bindAnimate
-// targets, so there is nothing to collect for them here.
+// subscribes (tree.tsx resolveProps / useBindAnimate / KeyframePlayer):
+// `bindings`, `animateBindings` values and `keyframes.key`.
 func collectBoundLeaves(n *compiler.LayoutNode, dst map[string]struct{}) {
 	for _, path := range n.Bindings {
 		if path != "" {
 			dst[path] = struct{}{}
 		}
 	}
+	for _, path := range n.AnimateBindings {
+		if path != "" {
+			dst[path] = struct{}{}
+		}
+	}
 	// keyframes.key (§6.6) — the KeyframePlayer replays on changes to
 	// this leaf, so it is renderable. Decode just the `key` field.
-	// (The Go LayoutNode has no `animateBindings` field — §6.3 bindAnimate
-	// targets are not represented on Orion's side, so there is nothing to
-	// collect for them here; should that field ever land, add it.)
 	if len(n.Keyframes) > 0 {
 		var kf struct {
 			Key string `json:"key"`
