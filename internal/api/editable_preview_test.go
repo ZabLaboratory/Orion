@@ -37,7 +37,7 @@ func editableAPIFixture(t *testing.T, profile config.Profile) (*http.ServeMux, *
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	preview := runtime.NewPreviewSlot(context.Background(), runtime.NewComputeRegistry(), wire, logger)
 	t.Cleanup(preview.Close)
-	staticCompiler := func(_ []byte, sceneID, sceneVersion string) ([]byte, map[string]json.RawMessage, error) {
+	staticCompiler := func(_ []byte, _, sceneVersion string) ([]byte, map[string]json.RawMessage, error) {
 		compiled, err := json.Marshal(compiler.RenderBundle{SceneVersion: sceneVersion})
 		return compiled, map[string]json.RawMessage{
 			"__editable.61.x": json.RawMessage(`10`),
@@ -69,16 +69,26 @@ func TestEditablePreviewSocketUsesDistinctCapabilityAndOrderedSequence(t *testin
 	wsBase := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/v1/show/editable-preview.ws"
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
-	if _, resp, err := websocket.Dial(ctx, wsBase+"?local_editor_token=wrong", nil); err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
+	_, resp, err := websocket.Dial(ctx, wsBase+"?local_editor_token=wrong", nil)
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	if err == nil || resp == nil || resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("wrong capability: err=%v response=%v", err, resp)
 	}
 
-	conn, _, err := websocket.Dial(ctx, wsBase+"?local_editor_token=editor-capability", nil)
+	conn, resp, err := websocket.Dial(ctx, wsBase+"?local_editor_token=editor-capability", nil)
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close(websocket.StatusNormalClosure, "")
-	observer, _, err := websocket.Dial(ctx, wsBase+"?local_editor_token=editor-capability&role=solar", nil)
+	observer, resp, err := websocket.Dial(ctx, wsBase+"?local_editor_token=editor-capability&role=solar", nil)
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
