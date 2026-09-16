@@ -153,6 +153,7 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("GET /api/v1/show/preview-snapshot", getPreviewSnapshot(deps))
 	mux.HandleFunc("POST /api/v1/show/editable-preview", postEditablePreview(deps))
 	mux.HandleFunc("POST /api/v1/show/editable-preview/activate", postEditablePreviewActivate(deps))
+	mux.HandleFunc("POST /api/v1/show/editable-preview/air", postEditablePreviewAir(deps))
 	mux.HandleFunc("PUT /api/v1/show/editable-preview", putEditablePreviewPatch(deps))
 	mux.HandleFunc("GET /api/v1/show/editable-preview.ws", editablePreviewSocket(deps))
 	// Stream-level Blue rules (ADR 009): restored as a volatile Engine B

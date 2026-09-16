@@ -23,6 +23,21 @@ type editablePreviewWire struct {
 	dropped   []string
 }
 
+type editableAirWire struct {
+	out       chan SubscriberMsg
+	mirrorIDs []string
+	owners    []string
+	active    []string
+}
+
+func (w *editableAirWire) MirrorForLSML(sceneID, _ string, owner string, _ []byte) SceneMirror {
+	w.mirrorIDs = append(w.mirrorIDs, sceneID)
+	w.owners = append(w.owners, owner)
+	return editablePreviewMirror{out: w.out}
+}
+
+func (w *editableAirWire) SetActive(sceneID, _ string) { w.active = append(w.active, sceneID) }
+
 func (w *editablePreviewWire) MirrorFor(sceneID string, _ string, _ *compiler.RenderBundle) SceneMirror {
 	w.mirrorIDs = append(w.mirrorIDs, sceneID)
 	return editablePreviewMirror{out: w.out}
@@ -164,5 +179,75 @@ func TestPreviewSlotReactivatesWarmEditableCloneAcrossRegularScene(t *testing.T)
 	}
 	if got := wire.dropped; len(got) != 1 || got[0] != "blue-b" {
 		t.Fatalf("drops before close = %#v, want disposable Blue clone only", got)
+	}
+}
+
+func TestPreviewSlotPromotesEditableCloneToGenerationWithoutTouchingPreview(t *testing.T) {
+	previewWire := &editablePreviewWire{out: make(chan SubscriberMsg, 8)}
+	airWire := &editableAirWire{out: make(chan SubscriberMsg, 8)}
+	slot := NewPreviewSlot(
+		context.Background(),
+		NewComputeRegistry(),
+		previewWire,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	slot.SetEditableAirWire(airWire)
+	defer slot.Close()
+
+	graph := &compiler.Graph{
+		SceneID:      "editable-air",
+		SceneVersion: "sha256:editable-air",
+		Defaults: map[string]json.RawMessage{
+			"__editable.61.x": json.RawMessage(`10`),
+		},
+	}
+	slot.ActivateEditableWithBundle(
+		"editable-air",
+		graph,
+		&compiler.RenderBundle{SceneVersion: graph.SceneVersion},
+		3,
+		[]byte(`{"lsml":"1.1","scene_id":"editable-air","scene_version":"sha256:editable-air","layout":{"kind":"stack"}}`),
+	)
+	select {
+	case <-previewWire.out:
+	case <-time.After(time.Second):
+		t.Fatal("preview mirror was not seeded")
+	}
+	version, err := slot.PromoteEditable("editable-air", "on-air")
+	if err != nil {
+		t.Fatalf("PromoteEditable: %v", err)
+	}
+	if version != graph.SceneVersion {
+		t.Fatalf("generation version = %q, want %q", version, graph.SceneVersion)
+	}
+	if len(airWire.mirrorIDs) != 1 || airWire.mirrorIDs[0] != "editable-air" {
+		t.Fatalf("generation mirror calls = %#v", airWire.mirrorIDs)
+	}
+	if len(airWire.owners) != 1 || airWire.owners[0] != "on-air" {
+		t.Fatalf("generation owner = %#v", airWire.owners)
+	}
+	if len(airWire.active) != 1 || airWire.active[0] != "editable-air" {
+		t.Fatalf("generation active = %#v", airWire.active)
+	}
+	if err := slot.ApplyEditablePatches("editable-air", 3, 4, []EditablePatch{{
+		Path: "__editable.61.x", Value: json.RawMessage(`55`),
+	}}); err != nil {
+		t.Fatalf("ApplyEditablePatches after promotion: %v", err)
+	}
+	select {
+	case got := <-airWire.out:
+		if _, ok := got.(*protocol.Snapshot); !ok {
+			t.Fatalf("generation seed type = %T, want *protocol.Snapshot", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("generation mirror did not receive promotion seed")
+	}
+	select {
+	case got := <-airWire.out:
+		if _, ok := got.(*protocol.Delta); !ok {
+			t.Fatalf("generation message type = %T, want *protocol.Delta", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("generation mirror did not receive editable delta")
 	}
 }

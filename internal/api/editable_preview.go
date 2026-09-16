@@ -94,12 +94,59 @@ func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 			SceneVersion: body.SceneVersion,
 			Defaults:     defaults,
 		}
-		deps.Preview.ActivateEditable(body.SceneID, graph, &bundle, body.EditSeq)
+		deps.Preview.ActivateEditableWithBundle(body.SceneID, graph, &bundle, body.EditSeq, rawBundleCopy(body.LSMLBundle))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"scene_id":      body.SceneID,
 			"scene_version": body.SceneVersion,
 			"edit_seq":      body.EditSeq,
 			"paths":         len(defaults),
+		})
+	})
+}
+
+func rawBundleCopy(raw json.RawMessage) []byte {
+	return append([]byte(nil), raw...)
+}
+
+type editablePreviewAirRequest struct {
+	SceneID string `json:"scene_id"`
+	Owner   string `json:"owner"`
+}
+
+// postEditablePreviewAir is the explicit local hand-off for a no-Blue
+// editable scene. It attaches the already-running Preview clone to the
+// immutable generation registry used by Pulsar's physical lane; it does not
+// touch the antenne/Program slot or any published Canvas capsule.
+func postEditablePreviewAir(deps PublicDeps) http.HandlerFunc {
+	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
+		if !deps.Config.Profile.IsEmbeddedLocal() || deps.Preview == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND"})
+			return
+		}
+		var body editablePreviewAirRequest
+		if json.NewDecoder(http.MaxBytesReader(w, r.Body, maxEditablePreviewBody)).Decode(&body) != nil || body.SceneID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_BODY"})
+			return
+		}
+		owner := body.Owner
+		if owner == "" {
+			owner = "on-air"
+		}
+		version, err := deps.Preview.PromoteEditable(body.SceneID, owner)
+		if err != nil {
+			status, code := http.StatusConflict, "EDITABLE_PREVIEW_AIR_CONFLICT"
+			if errors.Is(err, runtime.ErrPreviewAirUnavailable) {
+				status, code = http.StatusServiceUnavailable, "EDITABLE_PREVIEW_AIR_UNAVAILABLE"
+			} else if errors.Is(err, runtime.ErrPreviewCacheMiss) {
+				status, code = http.StatusNotFound, "EDITABLE_PREVIEW_CACHE_MISS"
+			}
+			writeJSON(w, status, map[string]string{"code": code, "message": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"scene_id":      body.SceneID,
+			"scene_version": version,
+			"owner":         owner,
 		})
 	})
 }
@@ -157,15 +204,25 @@ func putEditablePreviewPatch(deps PublicDeps) http.HandlerFunc {
 // still enters PreviewSlot.ApplyEditablePatches, preserving sequence checks,
 // bounded paths and the Preview/Program isolation invariant.
 func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
+	type editableObserver struct {
+		conn    *websocket.Conn
+		writeMu sync.Mutex
+		done    chan struct{}
+		once    sync.Once
+	}
 	type observerSet struct {
 		mu    sync.Mutex
-		conns map[*websocket.Conn]struct{}
+		conns map[*editableObserver]struct{}
 	}
-	observers := &observerSet{conns: make(map[*websocket.Conn]struct{})}
-	removeObserver := func(conn *websocket.Conn) {
+	observers := &observerSet{conns: make(map[*editableObserver]struct{})}
+	removeObserver := func(observer *editableObserver) {
 		observers.mu.Lock()
-		delete(observers.conns, conn)
+		delete(observers.conns, observer)
 		observers.mu.Unlock()
+		observer.once.Do(func() {
+			close(observer.done)
+			_ = observer.conn.Close(websocket.StatusGoingAway, "editable preview observer closed")
+		})
 	}
 	observerCount := func() int {
 		observers.mu.Lock()
@@ -174,9 +231,9 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 	}
 	broadcastAccepted := func(body editablePreviewPatchRequest) {
 		observers.mu.Lock()
-		connections := make([]*websocket.Conn, 0, len(observers.conns))
-		for conn := range observers.conns {
-			connections = append(connections, conn)
+		connections := make([]*editableObserver, 0, len(observers.conns))
+		for observer := range observers.conns {
+			connections = append(connections, observer)
 		}
 		observers.mu.Unlock()
 		if len(connections) == 0 {
@@ -189,12 +246,25 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 		if err != nil {
 			return
 		}
-		for _, conn := range connections {
+		for _, observer := range connections {
+			// Solar is the only observer in the embedded-local Preview path. Write
+			// the accepted patch synchronously on this already-serialized editor
+			// handler so the render sideband does not wait for a scheduler turn.
+			// writeMu keeps this safe if a second editor connection is present;
+			// the bounded context makes a dead observer recoverable.
+			observer.writeMu.Lock()
+			select {
+			case <-observer.done:
+				observer.writeMu.Unlock()
+				continue
+			default:
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-			err := conn.Write(ctx, websocket.MessageText, payload)
+			err := observer.conn.Write(ctx, websocket.MessageText, payload)
 			cancel()
+			observer.writeMu.Unlock()
 			if err != nil {
-				removeObserver(conn)
+				removeObserver(observer)
 			}
 		}
 	}
@@ -215,10 +285,14 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 		defer conn.Close(websocket.StatusNormalClosure, "")
 		conn.SetReadLimit(maxEditablePreviewBody)
 		if r.URL.Query().Get("role") == "solar" {
+			observer := &editableObserver{
+				conn: conn,
+				done: make(chan struct{}),
+			}
 			observers.mu.Lock()
-			observers.conns[conn] = struct{}{}
+			observers.conns[observer] = struct{}{}
 			observers.mu.Unlock()
-			defer removeObserver(conn)
+			defer removeObserver(observer)
 			for {
 				if _, _, err := conn.Read(r.Context()); err != nil {
 					return

@@ -178,6 +178,11 @@ func run() error {
 			)
 		}
 		previewSlot = runtime.NewPreviewSlot(ctx, registry, previewWire, logger)
+		// Editable Preview → live uses the immutable generation registry only.
+		// The antenne/Program wire remains owned by the regular scene-intent
+		// path; hot editable patches fan out to this generation mirror after an
+		// explicit operator hand-off.
+		previewSlot.SetEditableAirWire(generationWires)
 		defer previewSlot.Close()
 		logger.Info("lsdp wire enabled", "mode", string(cfg.LSDPMode))
 	}
