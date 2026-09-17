@@ -172,6 +172,77 @@ func TestViewer_DedupesRoomsAcrossPeers(t *testing.T) {
 	}
 }
 
+// TestViewer_ArmsAllThreeCanvasSlots proves the complete Canvas-chat-sponso
+// contract on the live wire: three independent slot assignments produce three
+// slot leaves and the receive-only viewer payload carries the three rooms Solar
+// needs to subscribe to. No scene switch or re-push is involved.
+func TestViewer_ArmsAllThreeCanvasSlots(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	wire, fetch, _ := armedWire(t)
+	peers := []struct {
+		slot, label, room, token string
+	}{
+		{"cam-slot-0", "fake-cam-1", "room-1", "vtok-1"},
+		{"cam-slot-1", "fake-cam-2", "room-2", "vtok-2"},
+		{"cam-slot-2", "fake-cam-3", "room-3", "vtok-3"},
+	}
+	for _, peer := range peers {
+		fetch.set(peer.label, ViewerRoom{
+			SignalingURL: "wss://meet/sig",
+			RoomID:       peer.room,
+			JoinToken:    peer.token,
+		})
+	}
+
+	c := dialLSDP(ctx, t, mountWire(t, wire), "viewer", 0)
+	defer c.Close(websocket.StatusNormalClosure, "")
+	if _, ok := readServerFrame(ctx, t, c).(*lproto.Snapshot); !ok {
+		t.Fatal("first frame must be the join snapshot")
+	}
+
+	for _, peer := range peers {
+		wire.EmitSlotAssignment(peer.slot, peer.label)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		state := wire.kitState("scene-a")
+		allSlotsPresent := true
+		for _, peer := range peers {
+			if state["__cam.slots."+peer.slot] != `"`+peer.label+`"` {
+				allSlotsPresent = false
+				break
+			}
+		}
+		if allSlotsPresent {
+			rooms := decodeViewerState(t, wire, "scene-a")
+			if len(rooms) == len(peers) {
+				for _, peer := range peers {
+					found := false
+					for _, room := range rooms {
+						if room.RoomID == peer.room && room.JoinToken == peer.token {
+							found = true
+							break
+						}
+					}
+					if !found {
+						allSlotsPresent = false
+						break
+					}
+				}
+			}
+			if allSlotsPresent && len(rooms) == len(peers) {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	t.Fatalf("three Canvas slots did not reach the wire: slots=%v viewer=%v", wire.kitState("scene-a"), decodeViewerState(t, wire, "scene-a"))
+}
+
 // TestViewer_RotationReEmitsFreshToken (TTL/rotation): when a room's short-lived
 // viewer token rotates, a fresh re-arm replaces it on the wire — proving the
 // short-lived refresh path carries a new credential without a scene switch.

@@ -291,6 +291,11 @@ func run() error {
 		StreamID:            "live",
 		Logger:              logger,
 	}
+	// Editor-authored Meet slots and Blue assign-slot effects share the same
+	// bounded projection fan-out. The preview wire is a separate consumer lane;
+	// Pulsar/Program is deliberately not part of this mirror.
+	cameraSlots := newCameraSlotMirror(previewWire, antenneWire)
+	effectDeps.SlotMirror = cameraSlots
 	// Curated service-egress (ADR Blue 002 §3.3) no longer uses a standing
 	// operator credential. The viewer armer below uses the durable service-token
 	// manager to exchange for the exact ZabCam credentials-read scope, so it
@@ -314,7 +319,6 @@ func run() error {
 		// interface field would store a non-nil interface wrapping a nil
 		// pointer, defeating dispatchOverlayAppSet's nil check.
 		effectDeps.OverlayMirror = antenneWire
-		effectDeps.SlotMirror = antenneWire
 		credsFetcher := lsdp.NewZabCamCredsFetcher(cfg.ZabGateURL, serviceTokenMinter.Token, logger)
 		antenneWire.EnableViewerCreds(ctx,
 			credsFetcher, time.Duration(cfg.ViewerCredsRefreshS)*time.Second)
@@ -501,6 +505,7 @@ func run() error {
 		Preview:        previewSlot,
 		PreviewLSDP:    previewLSDPHandler,
 		GenerationLSDP: generationLSDPHandler,
+		CameraSlots:    effectDeps,
 		AuthSource:     authSource,
 		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway as the
 		// db.query client; both use the same exact-route exchange callback.

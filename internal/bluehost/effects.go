@@ -67,6 +67,24 @@ type SlotAssignmentMirror interface {
 	EmitSlotAssignment(slotRef, peerLabel string)
 }
 
+// AssignCameraSlot is the host seam used by non-Blue editor controls.  It is
+// deliberately implemented on the same dependency bundle as the Blue
+// `zabcam.assign-slot@1` effect so both paths share validation, the canonical
+// service route, the stream egress budget, durable ZabCam persistence, and the
+// post-2xx LSDP mirror.  A camera assignment is a Prism capability control,
+// not scene automation: it may be invoked while editing an otherwise
+// deterministic scene and still calls the same rule-owned operation.
+func (deps EffectDeps) AssignCameraSlot(ctx context.Context, slotRef, peerLabel string) error {
+	if strings.TrimSpace(slotRef) == "" || strings.TrimSpace(peerLabel) == "" {
+		return fmt.Errorf("ZABCAM_SLOT_ASSIGN_INVALID: slot_ref and peer_label are required")
+	}
+	streamID := deps.StreamID
+	if streamID == "" {
+		streamID = "live"
+	}
+	return assignSlot(ctx, deps, canonicalSlotRouteConfig(), streamID, slotRef, peerLabel)
+}
+
 // ServiceCallRoute is the host-resolved portion of a compiler-curated
 // service.call route. Blue's portable ABI carries only the opaque
 // (service, route_id) reference under __route; Orion resolves that reference
@@ -336,21 +354,44 @@ func doSlotAssignment(ctx context.Context, deps EffectDeps, config, inputs map[s
 	if streamID == "" {
 		streamID = "live"
 	}
+	if err := assignSlot(ctx, deps, routeConfig, streamID, slotRef, peerLabel); err != nil {
+		return nil, err
+	}
+	return map[string]any{"ok": true, "error": ""}, nil
+}
+
+// canonicalSlotRouteConfig is the server-owned route reference used by the
+// Prism capability adapter. Blue graphs carry the same reference in their
+// compiled node config; neither path accepts authored method/path/token data.
+func canonicalSlotRouteConfig() map[string]any {
+	return map[string]any{
+		"__route": map[string]any{
+			"service":  "zabcam",
+			"route_id": "zabcam.slots.assign",
+		},
+	}
+}
+
+// assignSlot is the single durable assignment operation shared by Blue's
+// `zabcam.assign-slot@1` handler and Prism's editable-camera control. The
+// mirror is emitted only after ZabCam responds with a 2xx, so an optimistic
+// editor action can never make Solar render a camera that was not persisted.
+func assignSlot(ctx context.Context, deps EffectDeps, routeConfig map[string]any, streamID, slotRef, peerLabel string) error {
 	result, err := doServiceCall(ctx, deps.ServiceCall, deps.ResolveServiceRoute, deps.EgressBudget, deps.EgressBudgetKey, routeConfig, map[string]any{
 		"params":  map[string]any{"slot_ref": slotRef, "stream_id": streamID},
 		"payload": map[string]any{"peer_label": peerLabel},
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 	ok, _ := result["ok"].(bool)
 	if !ok {
-		return nil, fmt.Errorf("ZABCAM_SLOT_ASSIGN_FAILED: status=%v body=%v", result["status"], result["body"])
+		return fmt.Errorf("ZABCAM_SLOT_ASSIGN_FAILED: status=%v body=%v", result["status"], result["body"])
 	}
 	if deps.SlotMirror != nil {
 		deps.SlotMirror.EmitSlotAssignment(slotRef, peerLabel)
 	}
-	return map[string]any{"ok": true, "error": ""}, nil
+	return nil
 }
 
 func serviceCallRouteOf(config map[string]any, resolveRoute ServiceRouteResolver) (ServiceCallRoute, error) {
