@@ -1,6 +1,7 @@
 package bluehost
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -95,6 +96,56 @@ func TestAssignSlotHandlerDoesNotMirrorNon2xx(t *testing.T) {
 		t.Fatal("non-2xx assignment unexpectedly succeeded")
 	}
 	if len(mirror.calls) != 0 {
+		t.Fatalf("mirror calls = %#v", mirror.calls)
+	}
+}
+
+func TestAssignCameraSlotCapabilitySharesCanonicalOperation(t *testing.T) {
+	var gotPath string
+	var gotPayload map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if err := json.NewDecoder(r.Body).Decode(&gotPayload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	mirror := &slotMirrorProbe{}
+	deps := EffectDeps{
+		ServiceCall: effects.NewServiceCallClient(server.URL, func(paths []string) string {
+			if len(paths) != 1 || paths[0] != "zabcam.slots.assign" {
+				t.Errorf("token paths = %#v", paths)
+			}
+			return "slot-token"
+		}, nil),
+		ResolveServiceRoute: func(service, routeID string) (ServiceCallRoute, bool) {
+			if service != "zabcam" || routeID != "zabcam.slots.assign" {
+				return ServiceCallRoute{}, false
+			}
+			return ServiceCallRoute{
+				Service: service, RouteID: routeID, Method: http.MethodPut,
+				PathTemplate: "/cam/api/v1/cam/streams/{stream_id}/slots/{slot_ref}",
+				Params:       []string{"stream_id", "slot_ref"}, TokenPaths: []string{routeID},
+			}, true
+		},
+		EgressBudget:    effects.NewStreamEgressLimiter(2, 60),
+		EgressBudgetKey: "live",
+		StreamID:        "live",
+		SlotMirror:      mirror,
+	}
+
+	if err := deps.AssignCameraSlot(context.Background(), "cam-slot-0", "fake-cam-1"); err != nil {
+		t.Fatalf("AssignCameraSlot: %v", err)
+	}
+	if gotPath != "/cam/api/v1/cam/streams/live/slots/cam-slot-0" {
+		t.Fatalf("path = %q", gotPath)
+	}
+	if gotPayload["peer_label"] != "fake-cam-1" {
+		t.Fatalf("payload = %#v", gotPayload)
+	}
+	if len(mirror.calls) != 1 || mirror.calls[0] != [2]string{"cam-slot-0", "fake-cam-1"} {
 		t.Fatalf("mirror calls = %#v", mirror.calls)
 	}
 }

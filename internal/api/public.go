@@ -63,6 +63,11 @@ type PublicDeps struct {
 	// Pulsar's physical A/B lanes. It never follows Preview or On-air roles.
 	GenerationLSDP http.Handler
 
+	// CameraSlots is the runtime adapter for Prism's editable camera controls.
+	// It delegates to the same durable assignment operation as Blue's
+	// zabcam.assign-slot@1 effect, then emits the normal post-2xx LSDP mirror.
+	CameraSlots CameraSlotAssigner
+
 	// AuthSource is the seam through which requireOperator derives the
 	// request Identity (ADR 016 §3.2-2). Nil ⇒ HeaderAuthSource (the
 	// antenne default: read the X-Authenticated-* headers ZabGate
@@ -218,6 +223,9 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 		// Compile the Canvas LSML into an immutable Solar-facing runtime
 		// bundle during validation; this never mutates deps.Host.
 		mux.HandleFunc("POST /api/v1/validate/render-bundle", postValidateRenderBundle(*deps.SceneIntent))
+	}
+	if deps.CameraSlots != nil {
+		mux.HandleFunc("POST /api/v1/host/camera-slots", postCameraSlots(deps.CameraSlots))
 	}
 
 	// WebSocket endpoints. coder/websocket lives behind these handlers.
