@@ -1,0 +1,6 @@
+# The CI intentionally targets the private org runner pool. Keep the custom
+# label explicit so local actionlint validation checks the same runner contract
+# GitHub evaluates; no workflow behaviour is changed by this metadata.
+self-hosted-runner:
+  labels:
+    - vps-ovh
