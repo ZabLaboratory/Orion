@@ -4,11 +4,10 @@
 // This tiny binary is compiled alongside /orion and invoked by the compose
 // healthcheck (`["CMD", "/healthcheck"]`).
 //
-// It issues GET {scheme}://{host}/health against the public listener and
-// exits 0 only on HTTP 200. The target is derived from ORION_LISTEN_ADDR
-// (default 0.0.0.0:4007, the same default config.Load applies), so the
-// probe tracks the real listen port if it is overridden. A 0.0.0.0 host is
-// rewritten to 127.0.0.1 for the loopback dial.
+// It issues GET {scheme}://{host}/health against the local listener and exits
+// 0 only on HTTP 200. The target is derived from ORION_LISTEN_ADDR (default
+// 127.0.0.1:4007, the same default config.Load applies), so the probe tracks
+// the real listen port if it is overridden.
 package main
 
 import (
@@ -31,7 +30,7 @@ func main() {
 func run() int {
 	addr := os.Getenv("ORION_LISTEN_ADDR")
 	if addr == "" {
-		addr = "0.0.0.0:4007"
+		addr = "127.0.0.1:4007"
 	}
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {

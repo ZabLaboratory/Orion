@@ -59,6 +59,13 @@ type PublicDeps struct {
 	// (/show/preview.lsdp) — the second wire beside LSDPHandler. Non-nil only
 	// in dual/lsdp mode; nil ⇒ the preview LSDP route is not registered.
 	PreviewLSDP http.Handler
+	// EditablePreview is the local no-Blue authoring lane. It is deliberately
+	// separate from SceneIntent/Blue: a bounded LSML bundle is installed in
+	// the PreviewSlot and leaf edits are mirrored directly to the same Preview
+	// LSDP wire.
+	EditablePreview    *runtime.PreviewSlot
+	LocalEditorToken   string
+	StaticAssetBaseURL string
 	// GenerationLSDP serves immutable scene/version projection wires used by
 	// Pulsar's physical A/B lanes. It never follows Preview or On-air roles.
 	GenerationLSDP http.Handler
@@ -231,6 +238,22 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	}
 	if deps.CameraSlots != nil {
 		mux.HandleFunc("POST /api/v1/host/camera-slots", postCameraSlots(deps.CameraSlots))
+	}
+	// The editable authoring surface is intentionally loopback-only. A remote
+	// Orion profile cannot register these routes, and the local editor token is
+	// accepted only by the dedicated sideband WebSocket below.
+	if deps.Config.Profile.IsEmbeddedLocal() && deps.EditablePreview != nil {
+		editable := newEditablePreviewAPI(editablePreviewDeps{
+			Slot:         deps.EditablePreview,
+			EditorToken:  deps.LocalEditorToken,
+			AssetBaseURL: deps.StaticAssetBaseURL,
+			Logger:       deps.Logger,
+		})
+		mux.HandleFunc("POST /api/v1/show/editable-preview", requireOperator(editable.open))
+		mux.HandleFunc("POST /api/v1/show/editable-preview/activate", requireOperator(editable.activate))
+		mux.HandleFunc("POST /api/v1/show/editable-preview/air", requireOperator(editable.air))
+		mux.HandleFunc("PUT /api/v1/show/editable-preview", requireOperator(editable.patch))
+		mux.HandleFunc("GET /api/v1/show/editable-preview.ws", editable.websocket)
 	}
 
 	// WebSocket endpoints. coder/websocket lives behind these handlers.

@@ -57,6 +57,30 @@ func (w *Wire) EmitSlotAssignment(slotRef, peerLabel string) {
 	}
 }
 
+// EmitSlotCleared removes a stream-level binding and emits a JSON null for
+// the reserved leaf. The reserved-leaf observer treats an absent/null value as
+// unbound and Solar releases the corresponding meet-peer slot to its
+// transparent placeholder. As with assignment, the viewer armer is refreshed
+// from the complete remaining peer-label set.
+func (w *Wire) EmitSlotCleared(slotRef string) {
+	if slotRef == "" {
+		return
+	}
+	w.slotMu.Lock()
+	if w.slots != nil {
+		delete(w.slots, slotRef)
+	}
+	w.slotMu.Unlock()
+
+	if sc := w.srv.ActiveScene(); sc != nil {
+		_ = sc.Emit(map[string]any{slotLeafPrefix + slotRef: nil})
+	}
+
+	if w.viewer != nil {
+		w.viewer.setPeers(w.armedPeerLabels())
+	}
+}
+
 // armedPeerLabels returns the distinct `peer_label`s currently bound to any
 // stream-level slot — the set of cameras whose Meet rooms must be armed for
 // the viewer. Order is irrelevant (the armer sorts for a deterministic wire).

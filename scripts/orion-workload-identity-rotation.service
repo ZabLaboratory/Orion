@@ -1,9 +1,0 @@
-[Unit]
-Description=Rotate the Orion software-P256 workload identity
-After=docker.service network-online.target
-Wants=network-online.target
-RequiresMountsFor=/var/lib/zab/workload-orion /var/lib/zab/workload-orion-agent
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/orion-workload-identity-rotate

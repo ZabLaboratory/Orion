@@ -1,13 +1,46 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/compiler"
+	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
+
+func TestGetRenderBundle_EditablePreviewExactGeneration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	slot := runtime.NewPreviewSlot(ctx, runtime.NewComputeRegistry(), noopPreviewWire{}, slog.Default())
+	defer slot.Close()
+	bundle := &compiler.RenderBundle{SceneVersion: "sha256:editable", Root: compiler.LayoutNode{Kind: "frame"}}
+	if err := slot.ActivateStatic("editable-scene", bundle); err != nil {
+		t.Fatal(err)
+	}
+	deps := PublicDeps{EditablePreview: slot}
+	for _, tc := range []struct {
+		id, version string
+		status      int
+	}{
+		{"editable-scene", "sha256:editable", http.StatusOK},
+		{"editable-scene", "sha256:old", http.StatusNotFound},
+		{"other-scene", "sha256:editable", http.StatusNotFound},
+		{"editable-scene", "", http.StatusNotFound},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/scenes/"+tc.id+"/render-bundle?v="+tc.version, nil)
+		req.SetPathValue("id", tc.id)
+		rec := httptest.NewRecorder()
+		getRenderBundle(deps)(rec, req)
+		if rec.Code != tc.status {
+			t.Fatalf("%s/%s: got %d, want %d: %s", tc.id, tc.version, rec.Code, tc.status, rec.Body.String())
+		}
+	}
+}
 
 func TestGetRenderBundle_NoHostWiredIs404(t *testing.T) {
 	deps := PublicDeps{}

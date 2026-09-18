@@ -20,11 +20,11 @@ concurrency:
 #     privilege-aware: it skips apt entirely when PG is already provisioned
 #     on the runner image, and only installs (with a lock-retry) on a fresh
 #     runner — so it stays green whatever the ephemeral runner's state,
-#   - the old `docker-build` smoke job is dropped (the deploy's
-#     `docker compose build` on the host covers Dockerfile validity),
+#   - the old `docker-build` smoke job is dropped; local artifact checks cover
+#     Dockerfile validity when an image is built for development,
 #   - trufflehog runs as the native binary (the docker action exits 125).
-# setup-go downloads the toolchain on the runner. CI on PR only; merge to
-# main triggers deploy.yml.
+# setup-go downloads the toolchain on the runner. CI is validation-only; Orion
+# is launched as a local Prism runtime and this workflow never deploys it.
 # ---------------------------------------------------------------------------
 
 jobs:

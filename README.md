@@ -9,13 +9,12 @@ Owns the scene compiler (Canvas + Blue + components → graph + Solar
 render bundle), per-scene goroutine event loops, and the WS fan-out
 to live show subscribers (Solar, Prism, mPrism, Companion, Quasar).
 
-- **Port** : `4007` (HTTP + WS)
-- **Internal port** : `4017` (Prometheus scrape, dev-network only)
-- **Gateway prefix** : `/orion`
-- **DB port (local)** : `5447`
-- **Docker network** : `zab_network` (external)
-- **Status** : v2 production runtime — the same Go runtime is built as a
-  local Prism sidecar and as the deployable Orion service. See
+- **Port** : `127.0.0.1:4007` (HTTP + WS)
+- **Internal port** : `127.0.0.1:4017` (local diagnostics only)
+- **Local base path** : `/orion` (loopback only; no remote gateway deployment)
+- **Status** : v2 local runtime — the same Go runtime is built as the
+  Prism sidecar; the former remote Orion service and gateway deployment are
+  retired. See
   [CLAUDE.md](./CLAUDE.md) for the layout map and resolution matrix;
   [ADR 004](../docs/adr/004-orion-v2-runtime.md) for the contract.
 
@@ -28,7 +27,8 @@ build time. Prism downloads the matching local binary during its authenticated
 startup gate, verifies the digest, and activates it only after Blue confirms
 the same pair. Scene switching and show-slot execution then stay on the local
 Orion process; ZabCanvas, ZabTruth, ZabRanking and Quasar remain gateway
-services for synchronization and live data.
+services for synchronization and live data. No release is deployed as a public
+Orion endpoint.
 
 ## Quick start
 
@@ -41,12 +41,14 @@ go test ./...
 # Build the binary
 go build -o ./bin/orion ./cmd/orion
 
-# Boot against the dev DB
-docker compose up -d orion-postgres
-ORION_DATABASE_URL=postgres://orion:CHANGEME@localhost:5447/orion?sslmode=disable \
-ORION_ZABAUTH_VALIDATE_URL=http://zabgate:4000/auth/api/v1/tokens \
-ORION_CANVAS_BASE_URL=http://zabgate:4000/canvas \
-ORION_BLUE_BASE_URL=http://zabgate:4000/blue \
+# Boot the local Prism sidecar against a loopback gateway fixture
+ORION_PROFILE=embedded-local \
+ORION_LOCAL_OPERATOR_SECRET=dev-only-change-me \
+ORION_SQLITE_PATH=./.orion/orion.sqlite \
+ORION_ZABAUTH_VALIDATE_URL=http://127.0.0.1:4000/auth/api/v1/tokens \
+ORION_CANVAS_BASE_URL=http://127.0.0.1:4000/canvas \
+ORION_BLUE_BASE_URL=http://127.0.0.1:4000/blue \
+ORION_ZABGATE_URL=http://127.0.0.1:4000 \
 ./bin/orion
 ```
 
@@ -63,6 +65,7 @@ for every chantier resolution criterion.
 
 ## Concern preserved verbatim
 
-- `GET /orion/api/v1/credentials/{id}/stream-key` — referenced by
+- `GET /orion/api/v1/credentials/{id}/stream-key` — exposed on the local
+  loopback runtime and referenced by
   Prism's main process. Returns 503 until Quasar wires the
   underlying Twitch credential storage.

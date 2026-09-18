@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -63,33 +64,24 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// Edge-implementation selection by execution profile (ADR 016 §3.3).
-	// This is the ONLY place the profile is consulted — it picks the
-	// AuthSource (and, below, the Store) impls at boot; the hot path
-	// (requireOperator, db.query, tick, inbox) never branches on it.
-	// Until the local impls land (#222 sqliteStore, #223 localOperatorAuth),
-	// embedded-local wires the same antenne defaults, so it boots cleanly
-	// and shares the exact production code path.
-	// embedded-local (#223): localOperatorAuth grants operator on loopback
-	// requests carrying the Prism↔Orion handshake secret. NEVER wired on
-	// antenne — the profile branch keeps HeaderAuthSource there, so the
-	// production path is byte-for-byte unchanged (RC-1, invariant).
-	var authSource auth.AuthSource = auth.HeaderAuthSource{}
-	authSourceKind := "header"
-	if cfg.Profile.IsEmbeddedLocal() {
-		local, err := auth.NewLocalOperatorAuth(cfg.LocalAuthSecret, cfg.LocalAuthUser)
-		if err != nil {
-			return err
-		}
-		authSource = local
-		authSourceKind = "local-operator"
+	// Orion has one executable posture now: the Prism-embedded local sidecar.
+	// config.Load rejects the retired remote profile; keep this guard at the
+	// process boundary as well so a hand-built Config cannot select
+	// header-trusted remote wiring in a future launcher.
+	if !cfg.Profile.IsEmbeddedLocal() {
+		return errors.New("orion: only the embedded-local profile is supported")
 	}
-	logger.Info("auth source selected", "profile", string(cfg.Profile), "source", authSourceKind)
+	local, err := auth.NewLocalOperatorAuth(cfg.LocalAuthSecret, cfg.LocalAuthUser)
+	if err != nil {
+		return err
+	}
+	var authSource auth.AuthSource = local
+	logger.Info("auth source selected", "profile", string(cfg.Profile), "source", "local-operator")
 
 	// Scene persistence and the validated-record store remain retired. The
 	// scene path is driven by ZabCanvas's resolved-scene-ref attestation. The
-	// Postgres connection opened below is only the encrypted service-token
-	// state needed to keep Engine B's outbound identity alive across restarts.
+	// encrypted service-token state below is file-backed in Prism's local
+	// user-data directory; this process opens no database connection.
 
 	// Runtime: compute registry → show → tick → test sessions.
 	registry := runtime.NewComputeRegistry()
@@ -108,9 +100,8 @@ func run() error {
 	// paired with a kit scene. In bespoke mode the wire is nil: the kit
 	// is never constructed and the bespoke WS is the only wire (no-op
 	// deploy). Gateway-first holds by construction — the wire derives
-	// identity from the SAME AuthSource as the HTTP gates and the bespoke
-	// WS (HeaderAuthSource on antenne, localOperatorAuth on embedded-local);
-	// no JWT, no token.
+	// identity from the SAME local operator AuthSource as the HTTP gates and
+	// the bespoke WS; no JWT, no token.
 	var lsdpHandler http.Handler
 	var sessionWires runtime.SessionWireFactory
 	var previewLSDPHandler http.Handler
@@ -208,16 +199,13 @@ func run() error {
 
 	// Engine B egress uses a durable family only to obtain exact, short-lived
 	// route tokens. The family bearer is never sent to a data route, and an
-	// absent/expired exchange fails closed in the effect. In embedded-local,
-	// the static token remains a test-only convenience; antenne never falls
-	// back to ORION_SERVICE_TOKEN.
-	staticServiceToken := ""
-	if cfg.Profile.IsEmbeddedLocal() {
-		staticServiceToken = cfg.ServiceToken
-	}
+	// absent/expired exchange fails closed in the effect. The local sidecar
+	// stores encrypted state in Prism's user-data directory; a static token is
+	// retained only as a test-only convenience.
+	staticServiceToken := cfg.ServiceToken
 	serviceTokens, tokenErr := auth.NewServiceTokenManagerWithStatePath(
 		ctx,
-		cfg.DatabaseURL,
+		"",
 		auth.ServiceTokenRefreshURL(cfg.ZabAuthValidateURL),
 		cfg.ServiceRefreshToken,
 		cfg.EncryptionKey,
@@ -491,22 +479,25 @@ func run() error {
 	// Public mux: HTTP + WS surface routed through ZabGate.
 	publicMux := http.NewServeMux()
 	api.RegisterPublic(publicMux, api.PublicDeps{
-		Logger:         logger,
-		Metrics:        metrics,
-		Config:         cfg,
-		Show:           show,
-		Inbox:          inbox,
-		Test:           testMgr,
-		WSServer:       wsServer,
-		Harness:        harness,
-		StaticDir:      http.Dir(cfg.SolarRoot),
-		QuasarBaseURL:  cfg.QuasarBaseURL,
-		LSDPHandler:    lsdpHandler,
-		Preview:        previewSlot,
-		PreviewLSDP:    previewLSDPHandler,
-		GenerationLSDP: generationLSDPHandler,
-		CameraSlots:    effectDeps,
-		AuthSource:     authSource,
+		Logger:             logger,
+		Metrics:            metrics,
+		Config:             cfg,
+		Show:               show,
+		Inbox:              inbox,
+		Test:               testMgr,
+		WSServer:           wsServer,
+		Harness:            harness,
+		StaticDir:          http.Dir(cfg.SolarRoot),
+		QuasarBaseURL:      cfg.QuasarBaseURL,
+		LSDPHandler:        lsdpHandler,
+		Preview:            previewSlot,
+		EditablePreview:    previewSlot,
+		LocalEditorToken:   cfg.LocalEditorToken,
+		StaticAssetBaseURL: strings.TrimRight(cfg.CanvasBaseURL, "/") + "/api/v1/scene-assets",
+		PreviewLSDP:        previewLSDPHandler,
+		GenerationLSDP:     generationLSDPHandler,
+		CameraSlots:        effectDeps,
+		AuthSource:         authSource,
 		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway as the
 		// db.query client; both use the same exact-route exchange callback.
 		SchemaClient: effects.NewSchemaClientWithPathTokenFunc(cfg.ZabGateURL, serviceTokenMinter.Token, nil),

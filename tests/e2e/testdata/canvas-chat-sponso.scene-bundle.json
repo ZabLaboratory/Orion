@@ -18207,6 +18207,65 @@
         "platform": null
       }
     ],
-    "count": 138
+    "count": 138,
+    "egress_routes": [
+      {
+        "service": "example",
+        "route_id": "example.echo",
+        "method": "POST",
+        "path_template": "/example/api/v1/items/{name}/echo",
+        "params": ["name"],
+        "token_paths": ["example.echo"],
+        "payload_schema": {
+          "type": "object",
+          "properties": {"message": {"type": "string"}},
+          "additionalProperties": true
+        }
+      },
+      {
+        "service": "zabcam",
+        "route_id": "zabcam.slots.assign",
+        "method": "PUT",
+        "path_template": "/cam/api/v1/cam/streams/{stream_id}/slots/{slot_ref}",
+        "params": ["stream_id", "slot_ref"],
+        "token_paths": ["zabcam.slots.assign"],
+        "payload_schema": {
+          "type": "object",
+          "properties": {"peer_label": {"type": "string"}},
+          "required": ["peer_label"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "service": "zabcam",
+        "route_id": "zabcam.slots.release",
+        "method": "DELETE",
+        "path_template": "/cam/api/v1/cam/streams/{stream_id}/slots/{slot_ref}",
+        "params": ["stream_id", "slot_ref"],
+        "token_paths": ["zabcam.slots.assign"],
+        "payload_schema": null
+      },
+      {
+        "service": "truth",
+        "route_id": "truth.leaguepedia.import",
+        "method": "POST",
+        "path_template": "/truth/api/v1/leaguepedia/import/series",
+        "params": [],
+        "token_paths": ["truth.import"],
+        "payload_schema": {
+          "type": "object",
+          "properties": {
+            "overview_page": {"type": "string", "minLength": 1},
+            "match_id": {"type": "string", "minLength": 1},
+            "tournament_name": {
+              "type": ["string", "null"],
+              "maxLength": 128
+            }
+          },
+          "required": ["overview_page", "match_id"],
+          "additionalProperties": false
+        }
+      }
+    ]
   }
 }

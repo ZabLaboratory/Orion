@@ -14,6 +14,8 @@ import (
 
 	"github.com/ZabLaboratory/Orion/internal/attestation"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/bluewire"
+	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
 func TestPostLocalAtomicSceneIntent_UsesCachedCapsuleWithoutWorkloadTicket(t *testing.T) {
@@ -133,7 +135,27 @@ func TestPostLocalAtomicSceneIntent_ReadsContentAddressedArtifacts(t *testing.T)
 		t.Fatal(err)
 	}
 	refreshed := send()
-	if refreshed.Code != http.StatusOK {
-		t.Fatalf("identical local re-admission refetched the removed artifact instead of preserving the loaded generation: got %d: %s", refreshed.Code, refreshed.Body.String())
+	if refreshed.Code != http.StatusConflict {
+		t.Fatalf("scene load must revalidate local artifacts, not hide a missing artifact with a retained instance: got %d: %s", refreshed.Code, refreshed.Body.String())
+	}
+	if err := os.WriteFile(artifactPath, program, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Editable Preview has an independent clone on the same wire. Keeping
+	// the Blue instance loaded does not mean its scene is still selected.
+	activeScene := "editable-scene"
+	deps.MirrorFor = func(string, string, bluehost.Slot, []byte) runtime.SceneMirror { return &recordingMirror{} }
+	deps.Bridges = bluewire.NewRegistry()
+	defer deps.Bridges.Stop(bluehost.SlotPreview)
+	deps.ProjectionInterval = time.Hour
+	deps.Activate = func(sceneID, _ string, slot bluehost.Slot) {
+		if slot != bluehost.SlotPreview {
+			t.Fatalf("reactivation reached non-preview slot: %s", slot)
+		}
+		activeScene = sceneID
+	}
+	returned := send()
+	if returned.Code != http.StatusOK || activeScene != "scene-1" {
+		t.Fatalf("warm Blue return acknowledged without switching the preview wire: status=%d active=%s", returned.Code, activeScene)
 	}
 }

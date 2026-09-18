@@ -62,16 +62,20 @@ func TestLoad_LSDPModeRejectsUnknown(t *testing.T) {
 // the test overrides ORION_LSDP_MODE.
 func withRequiredEnv(t *testing.T) {
 	t.Helper()
-	t.Setenv("ORION_DATABASE_URL", "postgres://x/y")
+	// Every Load() test runs the embedded-local sidecar posture; the remote
+	// profile is retired and must not be used to satisfy required fields.
+	t.Setenv("ORION_PROFILE", "embedded-local")
+	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "prism-handshake")
+	// Orion is local-only: a stale PostgreSQL DSN must not be part of the
+	// success baseline. The dedicated rejection test covers legacy env files.
+	t.Setenv("ORION_DATABASE_URL", "")
 	t.Setenv("ORION_ZABAUTH_VALIDATE_URL", "http://zabauth/validate")
-	t.Setenv("ORION_CANVAS_BASE_URL", "http://zabgate/canvas")
-	t.Setenv("ORION_BLUE_BASE_URL", "http://zabgate/blue")
-	// embedded-local-only required fields. Ignored in antenne; set here so a
-	// profile-keyed Load() in either profile passes validation.
+	t.Setenv("ORION_CANVAS_BASE_URL", "http://127.0.0.1:4000/canvas")
+	t.Setenv("ORION_BLUE_BASE_URL", "http://127.0.0.1:4000/blue")
+	// embedded-local required fields for the local sidecar.
 	//   - SQLite store (#222).
-	//   - ZabGate loopback base (#246): required in embedded-local since the
-	//     httpFetcher is now the nominal fetch path; also the `_query`
-	//     delegation base. Harmless in antenne.
+	//   - ZabGate loopback base (#246): required by the nominal httpFetcher and
+	//     the `_query` delegation base.
 	//   - Validation mirror root (#247): required in embedded-local since the
 	//     air-eligibility gate imports the `validated` record from the mirror.
 	// ORION_SCENE_BUNDLE_PATH is deliberately NOT seeded: since #246 it is
@@ -79,6 +83,6 @@ func withRequiredEnv(t *testing.T) {
 	// exercises the nominal HTTP fetch path; tests that need the bundle set
 	// it themselves.
 	t.Setenv("ORION_SQLITE_PATH", "/tmp/orion-test.db")
-	t.Setenv("ORION_ZABGATE_URL", "http://zabgate")
+	t.Setenv("ORION_ZABGATE_URL", "http://127.0.0.1:4000")
 	t.Setenv("ORION_VALIDATION_MIRROR_ROOT", "/tmp/orion-test-mirror")
 }
