@@ -172,10 +172,19 @@ jobs:
             echo "::error::PostgreSQL major version mismatch: expected 16, got $PGVER (ADR 018 §3.2)." >&2
             exit 1
           fi
-          # Cluster start needs the postgres-cluster privilege; run via the
-          # same shim. Idempotent: start, else restart an already-running one.
-          $SUDO pg_ctlcluster "$PGVER" main start || $SUDO pg_ctlcluster "$PGVER" main restart
-          for i in $(seq 1 30); do pg_isready -h localhost -p 5432 && break; sleep 1; done
+          # A pre-provisioned runner may already have PostgreSQL accepting
+          # connections while forbidding privilege escalation (`no new
+          # privileges`). Reuse that cluster without invoking sudo. Only a
+          # runner that can elevate may start or restart a stopped cluster.
+          if pg_isready -h localhost -p 5432 >/dev/null 2>&1; then
+            echo "PostgreSQL is already accepting connections — skipping privileged start."
+          elif [ -n "$SUDO" ]; then
+            $SUDO pg_ctlcluster "$PGVER" main start || $SUDO pg_ctlcluster "$PGVER" main restart
+            for i in $(seq 1 30); do pg_isready -h localhost -p 5432 && break; sleep 1; done
+          else
+            echo "::error::PostgreSQL is not accepting connections and this runner cannot elevate privileges." >&2
+            exit 1
+          fi
           # Idempotent bootstrap. The org runner pool is EPHEMERAL, so the PG
           # cluster does NOT persist across runs — but a pre-provisioned image
           # may carry residual `orion` role / `orion_e2e` DB. Either way we
@@ -200,7 +209,16 @@ jobs:
           CREATE DATABASE orion_e2e OWNER orion;
           SQL
           chmod 644 /tmp/orion_e2e_bootstrap.sql
-          $SUDO su - postgres -c "psql -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql"
+          if [ -n "$SUDO" ]; then
+            $SUDO su - postgres -c "psql -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql"
+          else
+            # The no-new-privileges runner image keeps the E2E superuser in
+            # PostgreSQL. Bootstrap over TCP with that role instead of trying
+            # to switch OS users; the SQL still recreates the database for a
+            # clean, deterministic test run.
+            PGPASSWORD=orion_e2e_ci psql -h localhost -U orion -d postgres \
+              -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql
+          fi
       - uses: actions/setup-go@v6
         with:
           go-version: "1.26.6"
