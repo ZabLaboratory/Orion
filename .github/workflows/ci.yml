@@ -32,6 +32,12 @@ jobs:
     name: build-test
     runs-on: [self-hosted, vps-ovh]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    # The org pool runs jobs concurrently in one host container. Keep Go's
+    # module/build caches job-scoped so one job cannot delete or reuse another
+    # job's Blue VCS checkout while its App token is being rotated.
+    env:
+      GOMODCACHE: ${{ runner.temp }}/orion-go-mod-${{ github.job }}
+      GOCACHE: ${{ runner.temp }}/orion-go-build-${{ github.job }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -125,7 +131,8 @@ jobs:
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: build
     env:
-      ORION_E2E_DATABASE_URL: postgres://orion:orion_e2e_ci@localhost:5432/orion_e2e?sslmode=disable
+      GOMODCACHE: ${{ runner.temp }}/orion-go-mod-${{ github.job }}
+      GOCACHE: ${{ runner.temp }}/orion-go-build-${{ github.job }}
     steps:
       - uses: actions/checkout@v5
       - name: Start PostgreSQL natively (no Docker on the runner)
@@ -187,16 +194,23 @@ jobs:
           # connections while forbidding privilege escalation (`no new
           # privileges`). Reuse that cluster without invoking sudo. Only a
           # runner that can elevate may start or restart a stopped cluster.
-          if pg_isready -h localhost -p 5432 >/dev/null 2>&1; then
-            echo "PostgreSQL is already accepting connections — skipping privileged start."
+          PGPORT=5432
+          if pg_isready -h localhost -p "$PGPORT" >/dev/null 2>&1; then
+            echo "PostgreSQL is already accepting connections on $PGPORT — skipping privileged start."
           elif [ "$CAN_ELEVATE" = "1" ]; then
             $SUDO pg_ctlcluster "$PGVER" main start || $SUDO pg_ctlcluster "$PGVER" main restart
-            for i in $(seq 1 30); do pg_isready -h localhost -p 5432 && break; sleep 1; done
+            for i in $(seq 1 30); do pg_isready -h localhost -p "$PGPORT" && break; sleep 1; done
+            if ! pg_isready -h localhost -p "$PGPORT" >/dev/null 2>&1; then
+              echo "::error::PostgreSQL system cluster did not become ready on $PGPORT." >&2
+              exit 1
+            fi
           else
             # No-new-privileges runners cannot start the system cluster. Build
-            # a user-owned PostgreSQL 16 cluster in the ephemeral workspace
-            # instead; the E2E contract still talks to localhost:5432 and is
-            # not skipped or replaced with a mock.
+            # a user-owned PostgreSQL 16 cluster in the ephemeral workspace.
+            # Pick a free loopback port instead of assuming 5432 is available:
+            # a stale system cluster or another concurrent job may own that
+            # port while refusing connections. The E2E contract receives the
+            # selected port below; it is never replaced with a mock.
             PG_BIN="$(pg_config --bindir 2>/dev/null || true)"
             if [ -z "$PG_BIN" ] || [ ! -x "$PG_BIN/initdb" ]; then
               PG_BIN="/usr/lib/postgresql/$PGVER/bin"
@@ -205,16 +219,30 @@ jobs:
               echo "::error::PostgreSQL user-space binaries are unavailable on this runner." >&2
               exit 1
             fi
+            PGPORT=""
+            for candidate in $(seq 45432 45482); do
+              if ! pg_isready -h localhost -p "$candidate" >/dev/null 2>&1; then
+                PGPORT="$candidate"
+                break
+              fi
+            done
+            if [ -z "$PGPORT" ]; then
+              echo "::error::No free PostgreSQL loopback port was found for the user-owned cluster." >&2
+              exit 1
+            fi
             PGDATA="$(mktemp -d "${RUNNER_TEMP:-/tmp}/orion-pg.XXXXXX")"
             PG_PWFILE="$(mktemp "${RUNNER_TEMP:-/tmp}/orion-pg-password.XXXXXX")"
             chmod 600 "$PG_PWFILE"
             printf '%s\n' 'orion_e2e_ci' > "$PG_PWFILE"
             "$PG_BIN/initdb" -D "$PGDATA" --username=orion \
               --pwfile="$PG_PWFILE" --auth-local=trust --auth-host=scram-sha-256
-            "$PG_BIN/pg_ctl" -D "$PGDATA" -o "-p 5432 -h 127.0.0.1" \
+            "$PG_BIN/pg_ctl" -D "$PGDATA" -o "-p $PGPORT -h 127.0.0.1" \
               -l "$PGDATA/server.log" -w start
             rm -f "$PG_PWFILE"
           fi
+          # All following Go test steps inherit the exact endpoint used by
+          # this setup, including the user-owned fallback port.
+          echo "ORION_E2E_DATABASE_URL=postgres://orion:orion_e2e_ci@localhost:${PGPORT}/orion_e2e?sslmode=disable" >> "$GITHUB_ENV"
           # Idempotent bootstrap. The org runner pool is EPHEMERAL, so the PG
           # cluster does NOT persist across runs — but a pre-provisioned image
           # may carry residual `orion` role / `orion_e2e` DB. Either way we
@@ -240,12 +268,12 @@ jobs:
           SQL
           chmod 644 /tmp/orion_e2e_bootstrap.sql
           if [ "$CAN_ELEVATE" = "1" ]; then
-            $SUDO su - postgres -c "psql -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql"
+            $SUDO su - postgres -c "psql -p $PGPORT -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql"
           else
             # Bootstrap the user-owned cluster over TCP with the same E2E
             # superuser; the SQL still recreates the database for a clean,
             # deterministic test run.
-            PGPASSWORD=orion_e2e_ci psql -h localhost -U orion -d postgres \
+            PGPASSWORD=orion_e2e_ci psql -h localhost -p "$PGPORT" -U orion -d postgres \
               -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql
           fi
       - uses: actions/setup-go@v6
@@ -284,6 +312,9 @@ jobs:
     name: perf-20k gate
     runs-on: [self-hosted, vps-ovh]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      GOMODCACHE: ${{ runner.temp }}/orion-go-mod-${{ github.job }}
+      GOCACHE: ${{ runner.temp }}/orion-go-build-${{ github.job }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -322,6 +353,9 @@ jobs:
     name: conformance-matrix gate
     runs-on: [self-hosted, vps-ovh]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      GOMODCACHE: ${{ runner.temp }}/orion-go-mod-${{ github.job }}
+      GOCACHE: ${{ runner.temp }}/orion-go-build-${{ github.job }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -361,6 +395,9 @@ jobs:
     name: exec-port-parity gate
     runs-on: [self-hosted, vps-ovh]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      GOMODCACHE: ${{ runner.temp }}/orion-go-mod-${{ github.job }}
+      GOCACHE: ${{ runner.temp }}/orion-go-build-${{ github.job }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -397,6 +434,9 @@ jobs:
     name: staticcheck
     runs-on: [self-hosted, vps-ovh]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      GOMODCACHE: ${{ runner.temp }}/orion-go-mod-${{ github.job }}
+      GOCACHE: ${{ runner.temp }}/orion-go-build-${{ github.job }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -433,6 +473,9 @@ jobs:
     name: govulncheck
     runs-on: [self-hosted, vps-ovh]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      GOMODCACHE: ${{ runner.temp }}/orion-go-mod-${{ github.job }}
+      GOCACHE: ${{ runner.temp }}/orion-go-build-${{ github.job }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -469,6 +512,9 @@ jobs:
     name: golangci-lint
     runs-on: [self-hosted, vps-ovh]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    env:
+      GOMODCACHE: ${{ runner.temp }}/orion-go-mod-${{ github.job }}
+      GOCACHE: ${{ runner.temp }}/orion-go-build-${{ github.job }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6

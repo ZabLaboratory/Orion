@@ -182,6 +182,43 @@ func TestPreviewSlotReactivatesWarmEditableCloneAcrossRegularScene(t *testing.T)
 	}
 }
 
+func TestPreviewSlotReactivatesWarmCloneAfterExternalPreviewWireTakeover(t *testing.T) {
+	wire := &editablePreviewWire{out: make(chan SubscriberMsg, 8)}
+	slot := NewPreviewSlot(
+		context.Background(),
+		NewComputeRegistry(),
+		wire,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	defer slot.Close()
+
+	graph := &compiler.Graph{
+		SceneID:      "editable-external",
+		SceneVersion: "sha256:editable-external",
+		Defaults: map[string]json.RawMessage{
+			"__editable.61.x": json.RawMessage(`10`),
+		},
+	}
+	slot.ActivateEditable("editable-external", graph, &compiler.RenderBundle{SceneVersion: graph.SceneVersion}, 7)
+	// Blue's scene-intent path owns bluehost, but it switches this same wire
+	// directly; PreviewSlot.current deliberately remains the warm editable
+	// clone so returning must reassert SetActive instead of taking the no-op
+	// branch that caused the production switch regression.
+	wire.SetActive("blue-external")
+	if err := slot.ReactivateEditable("editable-external", 7); err != nil {
+		t.Fatalf("ReactivateEditable after external takeover: %v", err)
+	}
+	want := []string{"editable-external", "blue-external", "editable-external"}
+	if len(wire.activeIDs) != len(want) {
+		t.Fatalf("active switches = %#v, want %#v", wire.activeIDs, want)
+	}
+	for i, got := range wire.activeIDs {
+		if got != want[i] {
+			t.Fatalf("active switch %d = %q, want %q", i, got, want[i])
+		}
+	}
+}
+
 func TestPreviewSlotPromotesEditableCloneToGenerationWithoutTouchingPreview(t *testing.T) {
 	previewWire := &editablePreviewWire{out: make(chan SubscriberMsg, 8)}
 	airWire := &editableAirWire{out: make(chan SubscriberMsg, 8)}
