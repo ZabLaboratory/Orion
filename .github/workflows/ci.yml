@@ -219,25 +219,35 @@ jobs:
               echo "::error::PostgreSQL user-space binaries are unavailable on this runner." >&2
               exit 1
             fi
-            PGPORT=""
-            for candidate in $(seq 45432 45482); do
-              if ! pg_isready -h localhost -p "$candidate" >/dev/null 2>&1; then
-                PGPORT="$candidate"
-                break
-              fi
-            done
-            if [ -z "$PGPORT" ]; then
-              echo "::error::No free PostgreSQL loopback port was found for the user-owned cluster." >&2
-              exit 1
-            fi
             PGDATA="$(mktemp -d "${RUNNER_TEMP:-/tmp}/orion-pg.XXXXXX")"
             PG_PWFILE="$(mktemp "${RUNNER_TEMP:-/tmp}/orion-pg-password.XXXXXX")"
             chmod 600 "$PG_PWFILE"
             printf '%s\n' 'orion_e2e_ci' > "$PG_PWFILE"
             "$PG_BIN/initdb" -D "$PGDATA" --username=orion \
               --pwfile="$PG_PWFILE" --auth-local=trust --auth-host=scram-sha-256
-            "$PG_BIN/pg_ctl" -D "$PGDATA" -o "-p $PGPORT -h 127.0.0.1" \
-              -l "$PGDATA/server.log" -w start
+            # A readiness probe followed by a bind is racy on this shared
+            # self-hosted pool: another concurrent job can claim the port in
+            # between. Let PostgreSQL itself reserve each candidate and retry
+            # the next port when the bind loses that race. A failed attempt
+            # also leaves its server log in the CI output so the real cause is
+            # visible instead of the opaque `pg_ctl ... exit 1`.
+            PGPORT=""
+            for candidate in $(seq 45432 45482); do
+              rm -f "$PGDATA/server.log" "$PGDATA/postmaster.pid"
+              if "$PG_BIN/pg_ctl" -D "$PGDATA" \
+                -o "-p $candidate -h 127.0.0.1" \
+                -l "$PGDATA/server.log" -w start; then
+                PGPORT="$candidate"
+                break
+              fi
+              echo "::warning::PostgreSQL could not bind candidate port $candidate; trying the next candidate." >&2
+              tail -n 40 "$PGDATA/server.log" >&2 || true
+              "$PG_BIN/pg_ctl" -D "$PGDATA" -m immediate stop >/dev/null 2>&1 || true
+            done
+            if [ -z "$PGPORT" ]; then
+              echo "::error::No PostgreSQL loopback candidate could start the user-owned cluster." >&2
+              exit 1
+            fi
             rm -f "$PG_PWFILE"
           fi
           # All following Go test steps inherit the exact endpoint used by
