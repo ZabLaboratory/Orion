@@ -239,23 +239,6 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	if deps.CameraSlots != nil {
 		mux.HandleFunc("POST /api/v1/host/camera-slots", postCameraSlots(deps.CameraSlots))
 	}
-	// The editable authoring surface is intentionally loopback-only. A remote
-	// Orion profile cannot register these routes, and the local editor token is
-	// accepted only by the dedicated sideband WebSocket below.
-	if deps.Config.Profile.IsEmbeddedLocal() && deps.EditablePreview != nil {
-		editable := newEditablePreviewAPI(editablePreviewDeps{
-			Slot:         deps.EditablePreview,
-			EditorToken:  deps.LocalEditorToken,
-			AssetBaseURL: deps.StaticAssetBaseURL,
-			Logger:       deps.Logger,
-		})
-		mux.HandleFunc("POST /api/v1/show/editable-preview", requireOperator(editable.open))
-		mux.HandleFunc("POST /api/v1/show/editable-preview/activate", requireOperator(editable.activate))
-		mux.HandleFunc("POST /api/v1/show/editable-preview/air", requireOperator(editable.air))
-		mux.HandleFunc("PUT /api/v1/show/editable-preview", requireOperator(editable.patch))
-		mux.HandleFunc("GET /api/v1/show/editable-preview.ws", editable.websocket)
-	}
-
 	// WebSocket endpoints. coder/websocket lives behind these handlers.
 	mux.HandleFunc("/api/v1/show/stream", deps.WSServer.ServeShowStream)
 	mux.HandleFunc("/api/v1/scenes/{id}/test", deps.WSServer.ServeTestSession)
