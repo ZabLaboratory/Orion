@@ -138,7 +138,15 @@ jobs:
           # "Permission denied" on /var/lib/apt/lists/lock (the flake this
           # step fixes). Resolve a privilege-escalation prefix once, or empty
           # when already root.
-          if [ "$(id -u)" = "0" ]; then SUDO=; elif command -v sudo >/dev/null 2>&1; then SUDO="sudo -n"; else SUDO=; fi
+          if [ "$(id -u)" = "0" ]; then
+            SUDO=
+          elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
+            SUDO="sudo -n"
+          else
+            # Some ephemeral images expose sudo but enforce no-new-privileges;
+            # treat that exactly like a non-elevating runner.
+            SUDO=
+          fi
 
           # Install PostgreSQL ONLY if it is not already provisioned. On a
           # pre-provisioned runner image this is a no-op (no apt, no lock, no
