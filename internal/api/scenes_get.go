@@ -148,6 +148,15 @@ func resolveHostBundle(deps PublicDeps, r *http.Request) (digest string, bundle 
 			return v, b, true
 		}
 	}
+	// Embedded-local callers may wire the editable authoring lane separately
+	// from the regular preview slot. Keep the exact (scene,version) lookup
+	// scoped to that slot as a compatibility fallback; it never consults the
+	// Program/antenne host.
+	if deps.EditablePreview != nil && deps.EditablePreview != deps.Preview {
+		if b, found := deps.EditablePreview.Bundle(sceneID, v); found {
+			return v, b, true
+		}
+	}
 	return "", nil, false
 }
 

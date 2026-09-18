@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -12,6 +13,32 @@ import (
 
 type cameraSlotAssignerProbe struct {
 	assignments map[string]string
+	cleared     []string
+}
+
+type cameraSlotAssignerOnly struct{}
+
+func (cameraSlotAssignerOnly) AssignCameraSlot(context.Context, string, string) error {
+	return nil
+}
+
+type cameraSlotOptionalReleaseUnavailable struct {
+	assignments map[string]string
+}
+
+func (p *cameraSlotOptionalReleaseUnavailable) AssignCameraSlot(
+	_ context.Context,
+	slotRef, peerLabel string,
+) error {
+	if p.assignments == nil {
+		p.assignments = map[string]string{}
+	}
+	p.assignments[slotRef] = peerLabel
+	return nil
+}
+
+func (cameraSlotOptionalReleaseUnavailable) ReleaseCameraSlot(context.Context, string) error {
+	return fmt.Errorf("EGRESS_ROUTE_NOT_DECLARED: zabcam/zabcam.slots.release")
 }
 
 func (p *cameraSlotAssignerProbe) AssignCameraSlot(_ context.Context, slotRef, peerLabel string) error {
@@ -19,6 +46,12 @@ func (p *cameraSlotAssignerProbe) AssignCameraSlot(_ context.Context, slotRef, p
 		p.assignments = map[string]string{}
 	}
 	p.assignments[slotRef] = peerLabel
+	return nil
+}
+
+func (p *cameraSlotAssignerProbe) ReleaseCameraSlot(_ context.Context, slotRef string) error {
+	p.cleared = append(p.cleared, slotRef)
+	delete(p.assignments, slotRef)
 	return nil
 }
 
@@ -88,5 +121,66 @@ func TestPostCameraSlotsRequiresOperatorAndThreeSlotLimit(t *testing.T) {
 				t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestPostCameraSlotsReleasesStaleBindingsBeforeProjecting(t *testing.T) {
+	probe := &cameraSlotAssignerProbe{assignments: map[string]string{"cam-slot-old": "stale"}}
+	rec := httptest.NewRecorder()
+	postCameraSlots(probe)(rec, cameraSlotRequest(`{
+		"stream_id":"live",
+		"clear_slot_refs":["cam-slot-old"],
+		"assignments":[{"slot_ref":"cam-slot-0","peer_label":"fake-cam-1"}]
+	}`, "operator"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !reflect.DeepEqual(probe.cleared, []string{"cam-slot-old"}) {
+		t.Fatalf("cleared = %#v", probe.cleared)
+	}
+	if _, stale := probe.assignments["cam-slot-old"]; stale {
+		t.Fatalf("stale assignment survived: %#v", probe.assignments)
+	}
+	var response cameraSlotProjectionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(response.Cleared, []string{"cam-slot-old"}) {
+		t.Fatalf("response cleared = %#v", response.Cleared)
+	}
+}
+
+func TestPostCameraSlotsKeepsCurrentAssignmentsWhenReleaseRouteIsMissing(t *testing.T) {
+	probe := &cameraSlotOptionalReleaseUnavailable{}
+	rec := httptest.NewRecorder()
+	postCameraSlots(probe)(rec, cameraSlotRequest(`{
+		"clear_slot_refs":["stale-slot"],
+		"assignments":[{"slot_ref":"cam-slot-0","peer_label":"fake-cam-1"}]
+	}`, "operator"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if !reflect.DeepEqual(probe.assignments, map[string]string{"cam-slot-0": "fake-cam-1"}) {
+		t.Fatalf("assignments = %#v", probe.assignments)
+	}
+	var response cameraSlotProjectionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Cleared) != 0 {
+		t.Fatalf("cleared = %#v, want no acknowledged clear", response.Cleared)
+	}
+}
+
+func TestPostCameraSlotsRejectsClearWithoutReleaser(t *testing.T) {
+	probe := cameraSlotAssignerOnly{}
+	rec := httptest.NewRecorder()
+	postCameraSlots(probe)(rec, cameraSlotRequest(`{
+		"clear_slot_refs":["cam-slot-old"],"assignments":[]
+	}`, "operator"))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }

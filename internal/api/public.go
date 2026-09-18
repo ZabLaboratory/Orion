@@ -59,6 +59,13 @@ type PublicDeps struct {
 	// (/show/preview.lsdp) — the second wire beside LSDPHandler. Non-nil only
 	// in dual/lsdp mode; nil ⇒ the preview LSDP route is not registered.
 	PreviewLSDP http.Handler
+	// EditablePreview is the local no-Blue authoring lane. It is deliberately
+	// separate from SceneIntent/Blue: a bounded LSML bundle is installed in
+	// the PreviewSlot and leaf edits are mirrored directly to the same Preview
+	// LSDP wire.
+	EditablePreview    *runtime.PreviewSlot
+	LocalEditorToken   string
+	StaticAssetBaseURL string
 	// GenerationLSDP serves immutable scene/version projection wires used by
 	// Pulsar's physical A/B lanes. It never follows Preview or On-air roles.
 	GenerationLSDP http.Handler
@@ -232,7 +239,6 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	if deps.CameraSlots != nil {
 		mux.HandleFunc("POST /api/v1/host/camera-slots", postCameraSlots(deps.CameraSlots))
 	}
-
 	// WebSocket endpoints. coder/websocket lives behind these handlers.
 	mux.HandleFunc("/api/v1/show/stream", deps.WSServer.ServeShowStream)
 	mux.HandleFunc("/api/v1/scenes/{id}/test", deps.WSServer.ServeTestSession)

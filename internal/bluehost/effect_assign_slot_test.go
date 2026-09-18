@@ -13,13 +13,20 @@ import (
 )
 
 type slotMirrorProbe struct {
-	mu    sync.Mutex
-	calls [][2]string
+	mu     sync.Mutex
+	calls  [][2]string
+	clears []string
 }
 
 func (p *slotMirrorProbe) EmitSlotAssignment(slotRef, peerLabel string) {
 	p.mu.Lock()
 	p.calls = append(p.calls, [2]string{slotRef, peerLabel})
+	p.mu.Unlock()
+}
+
+func (p *slotMirrorProbe) EmitSlotCleared(slotRef string) {
+	p.mu.Lock()
+	p.clears = append(p.clears, slotRef)
 	p.mu.Unlock()
 }
 
@@ -147,5 +154,53 @@ func TestAssignCameraSlotCapabilitySharesCanonicalOperation(t *testing.T) {
 	}
 	if len(mirror.calls) != 1 || mirror.calls[0] != [2]string{"cam-slot-0", "fake-cam-1"} {
 		t.Fatalf("mirror calls = %#v", mirror.calls)
+	}
+}
+
+func TestReleaseCameraSlotCapabilityUsesCuratedDeleteAndClearsMirror(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	mirror := &slotMirrorProbe{}
+	deps := EffectDeps{
+		ServiceCall: effects.NewServiceCallClient(server.URL, func(paths []string) string {
+			if len(paths) != 1 || paths[0] != "zabcam.slots.assign" {
+				t.Errorf("token paths = %#v", paths)
+			}
+			return "slot-token"
+		}, nil),
+		ResolveServiceRoute: func(service, routeID string) (ServiceCallRoute, bool) {
+			if service != "zabcam" || routeID != "zabcam.slots.release" {
+				return ServiceCallRoute{}, false
+			}
+			return ServiceCallRoute{
+				Service: service, RouteID: routeID, Method: http.MethodDelete,
+				PathTemplate: "/cam/api/v1/cam/streams/{stream_id}/slots/{slot_ref}",
+				Params:       []string{"stream_id", "slot_ref"}, TokenPaths: []string{"zabcam.slots.assign"},
+			}, true
+		},
+		EgressBudget:    effects.NewStreamEgressLimiter(2, 60),
+		EgressBudgetKey: "live",
+		StreamID:        "live",
+		SlotMirror:      mirror,
+	}
+
+	if err := deps.ReleaseCameraSlot(context.Background(), "cam-slot-0"); err != nil {
+		t.Fatalf("ReleaseCameraSlot: %v", err)
+	}
+	if gotMethod != http.MethodDelete || gotPath != "/cam/api/v1/cam/streams/live/slots/cam-slot-0" {
+		t.Fatalf("request = %s %s", gotMethod, gotPath)
+	}
+	if gotAuth != "Bearer slot-token" {
+		t.Fatalf("authorization = %q", gotAuth)
+	}
+	if len(mirror.clears) != 1 || mirror.clears[0] != "cam-slot-0" {
+		t.Fatalf("mirror clears = %#v", mirror.clears)
 	}
 }

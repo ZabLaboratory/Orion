@@ -170,6 +170,25 @@ func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *co
 	p.activate(sceneID, graph, bundle, false, 0, nil, progs...)
 }
 
+// ActivateStatic installs a no-Blue render bundle in the editable preview
+// lane. It is the local cockpit convenience path: the bundle already carries
+// its declared defaults, so Orion can construct the bounded graph without
+// invoking a Blue runtime. The scene starts at edit sequence zero.
+func (p *PreviewSlot) ActivateStatic(sceneID string, bundle *compiler.RenderBundle) error {
+	if sceneID == "" || bundle == nil {
+		return ErrPreviewSceneMismatch
+	}
+	graph := &compiler.Graph{
+		SceneID:        sceneID,
+		SceneVersion:   bundle.SceneVersion,
+		Defaults:       bundle.Defaults,
+		Bindings:       bundle.ExternalAdapters,
+		OperatorInputs: bundle.OperatorInputs,
+	}
+	p.activate(sceneID, graph, bundle, true, 0, nil)
+	return nil
+}
+
 func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editable bool, editSeq uint64, lsmlBundle []byte, progs ...*ExecProgram) {
 	p.mu.Lock()
 	defer p.mu.Unlock()

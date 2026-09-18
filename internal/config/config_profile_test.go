@@ -2,48 +2,42 @@ package config
 
 import "testing"
 
-// TestLoad_ProfileDefaultsToAntenne pins RC-1: an unset ORION_PROFILE
-// resolves to the antenne profile (today's production behaviour) and
-// leaves the listen addresses at their 0.0.0.0 prod defaults.
-func TestLoad_ProfileDefaultsToAntenne(t *testing.T) {
+// TestLoad_ProfileDefaultsToEmbeddedLocal pins the local-only default: an
+// unset ORION_PROFILE resolves to the embedded Prism sidecar and both
+// listeners stay on loopback.
+func TestLoad_ProfileDefaultsToEmbeddedLocal(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Profile != ProfileAntenne {
-		t.Fatalf("Profile = %q, want %q", cfg.Profile, ProfileAntenne)
+	if cfg.Profile != ProfileEmbeddedLocal {
+		t.Fatalf("Profile = %q, want %q", cfg.Profile, ProfileEmbeddedLocal)
 	}
-	if cfg.Profile.IsEmbeddedLocal() {
-		t.Fatal("antenne profile reports IsEmbeddedLocal")
+	if !cfg.Profile.IsEmbeddedLocal() {
+		t.Fatal("default profile must report IsEmbeddedLocal")
 	}
-	if cfg.ListenAddr != "0.0.0.0:4007" {
-		t.Fatalf("ListenAddr = %q, want prod default 0.0.0.0:4007", cfg.ListenAddr)
+	if cfg.ListenAddr != "127.0.0.1:4007" {
+		t.Fatalf("ListenAddr = %q, want local default 127.0.0.1:4007", cfg.ListenAddr)
 	}
-	if cfg.InternalAddr != "0.0.0.0:4017" {
-		t.Fatalf("InternalAddr = %q, want prod default 0.0.0.0:4017", cfg.InternalAddr)
+	if cfg.InternalAddr != "127.0.0.1:4017" {
+		t.Fatalf("InternalAddr = %q, want local default 127.0.0.1:4017", cfg.InternalAddr)
 	}
 }
 
-// TestLoad_ProfileExplicitAntenne — the explicit antenne value matches
-// the default exactly.
-func TestLoad_ProfileExplicitAntenne(t *testing.T) {
+// TestLoad_ProfileRejectsRetiredAntenne proves the old remotely reachable
+// execution profile cannot be re-enabled by a stale environment file.
+func TestLoad_ProfileRejectsRetiredAntenne(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "antenne")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Profile != ProfileAntenne {
-		t.Fatalf("Profile = %q, want antenne", cfg.Profile)
+	if _, err := Load(); err == nil {
+		t.Fatal("expected retired antenne profile to be rejected")
 	}
 }
 
-// TestLoad_ProfileEmbeddedLocalCollapsesToLoopback proves the only
-// boot-visible effect of the embedded-local profile on config: the
-// listen posture collapses to loopback when no explicit override is set
-// (ADR 016 §3.3, D4). No hot-path field changes.
+// TestLoad_ProfileEmbeddedLocalCollapsesToLoopback proves the local
+// sidecar's boot posture.
 func TestLoad_ProfileEmbeddedLocalCollapsesToLoopback(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "embedded-local")
@@ -63,9 +57,8 @@ func TestLoad_ProfileEmbeddedLocalCollapsesToLoopback(t *testing.T) {
 	}
 }
 
-// TestLoad_ProfileEmbeddedLocalRespectsExplicitListen — an operator
-// override of the listen addr is honoured (loopback pin only fills the
-// prod default, never overrides an explicit value).
+// TestLoad_ProfileEmbeddedLocalRespectsExplicitListen accepts a custom
+// loopback port while retaining the local-only boundary.
 func TestLoad_ProfileEmbeddedLocalRespectsExplicitListen(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "embedded-local")
@@ -77,6 +70,42 @@ func TestLoad_ProfileEmbeddedLocalRespectsExplicitListen(t *testing.T) {
 	}
 	if cfg.ListenAddr != "127.0.0.1:5555" {
 		t.Fatalf("ListenAddr = %q, want explicit 127.0.0.1:5555", cfg.ListenAddr)
+	}
+}
+
+func TestLoad_ProfileRejectsNonLoopbackListeners(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		key  string
+		addr string
+	}{
+		{name: "wildcard-listen", key: "ORION_LISTEN_ADDR", addr: "0.0.0.0:4007"},
+		{name: "public-listen", key: "ORION_LISTEN_ADDR", addr: "192.0.2.10:4007"},
+		{name: "wildcard-internal", key: "ORION_INTERNAL_ADDR", addr: "[::]:4017"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withRequiredEnv(t)
+			t.Setenv(tc.key, tc.addr)
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected %s=%q to be rejected", tc.key, tc.addr)
+			}
+		})
+	}
+}
+
+func TestLoad_ProfileRejectsRemotePublicBaseURL(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("ORION_PUBLIC_BASE_URL", "https://zabgate.example/orion")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected remote ORION_PUBLIC_BASE_URL to be rejected")
+	}
+}
+
+func TestLoad_ProfileRejectsLegacyDatabaseURL(t *testing.T) {
+	withRequiredEnv(t)
+	t.Setenv("ORION_DATABASE_URL", "postgres://legacy.example/orion")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected legacy ORION_DATABASE_URL to be rejected")
 	}
 }
 
@@ -142,20 +171,20 @@ func TestLoad_EmbeddedLocalRequiresEachEdge(t *testing.T) {
 }
 
 // TestLoad_EmbeddedLocalMirrorRootOptional — the validation mirror root is an
-// OPTIONAL offline fallback under the full-prod model: embedded-local boots
-// without it (the air gate then reads the local store), and parses it when set.
+// OPTIONAL offline fallback: the local sidecar boots without it (the air gate
+// then reads the local store), and parses it when set.
 func TestLoad_EmbeddedLocalMirrorRootOptional(t *testing.T) {
 	t.Setenv("ORION_ZABAUTH_VALIDATE_URL", "http://zabauth/validate")
 	t.Setenv("ORION_PROFILE", "embedded-local")
 	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "prism-handshake")
 	t.Setenv("ORION_SQLITE_PATH", "/tmp/o.db")
-	t.Setenv("ORION_CANVAS_BASE_URL", "https://zabgate.cyell.dev/canvas")
-	t.Setenv("ORION_BLUE_BASE_URL", "https://zabgate.cyell.dev/blue")
-	t.Setenv("ORION_ZABGATE_URL", "https://zabgate.cyell.dev")
+	t.Setenv("ORION_CANVAS_BASE_URL", "http://127.0.0.1:4000/canvas")
+	t.Setenv("ORION_BLUE_BASE_URL", "http://127.0.0.1:4000/blue")
+	t.Setenv("ORION_ZABGATE_URL", "http://127.0.0.1:4000")
 	// Mirror root unset → boot must still succeed (store-backed air gate).
 	cfg, err := Load()
 	if err != nil {
-		t.Fatalf("embedded-local without mirror root must load (full-prod): %v", err)
+		t.Fatalf("embedded-local without mirror root must load: %v", err)
 	}
 	if cfg.ValidationMirrorRoot != "" {
 		t.Fatalf("expected empty ValidationMirrorRoot, got %q", cfg.ValidationMirrorRoot)
@@ -204,6 +233,7 @@ func TestLoad_EmbeddedLocalBundleOptional(t *testing.T) {
 func TestLoad_EmbeddedLocalRequiresHandshakeSecret(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "embedded-local")
+	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "")
 	// no ORION_LOCAL_OPERATOR_SECRET set
 	_, err := Load()
 	if err == nil {
@@ -229,21 +259,6 @@ func TestLoad_EmbeddedLocalCarriesSecretAndUser(t *testing.T) {
 	}
 }
 
-// TestLoad_AntenneIgnoresLocalAuthSecret — the secret var is consulted
-// only in embedded-local; on antenne it never leaks into Config.
-func TestLoad_AntenneIgnoresLocalAuthSecret(t *testing.T) {
-	withRequiredEnv(t)
-	t.Setenv("ORION_PROFILE", "antenne")
-	t.Setenv("ORION_LOCAL_OPERATOR_SECRET", "should-be-ignored")
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.LocalAuthSecret != "" {
-		t.Fatalf("antenne leaked LocalAuthSecret: %q", cfg.LocalAuthSecret)
-	}
-}
-
 // TestLoad_ProfileRejectsUnknown — an unrecognised profile is a config
 // error (fail-fast at boot, like every other enum flag).
 func TestLoad_ProfileRejectsUnknown(t *testing.T) {
@@ -254,25 +269,23 @@ func TestLoad_ProfileRejectsUnknown(t *testing.T) {
 	}
 }
 
-// TestLoad_AntenneLeavesEveryHotPathFieldUntouched is the RC-1 guard:
-// loading with the profile absent vs. the explicit antenne value yields
-// an identical Config, and neither touches a hot-path field. If a future
-// change leaks a profile branch into config beyond the listen posture,
-// this diff catches it.
-func TestLoad_AntenneAbsentEqualsExplicit(t *testing.T) {
+// TestLoad_ProfileAbsentEqualsExplicitLocal guards the local-only default:
+// leaving the profile unset and spelling embedded-local explicitly produces
+// the same boot configuration.
+func TestLoad_ProfileAbsentEqualsExplicitLocal(t *testing.T) {
 	withRequiredEnv(t)
 	t.Setenv("ORION_PROFILE", "")
 	absent, err := Load()
 	if err != nil {
 		t.Fatalf("Load absent: %v", err)
 	}
-	t.Setenv("ORION_PROFILE", "antenne")
+	t.Setenv("ORION_PROFILE", "embedded-local")
 	explicit, err := Load()
 	if err != nil {
 		t.Fatalf("Load explicit: %v", err)
 	}
 	if absent.ListenAddr != explicit.ListenAddr || absent.InternalAddr != explicit.InternalAddr {
-		t.Fatal("absent and explicit antenne profiles diverge on listen posture")
+		t.Fatal("absent and explicit local profiles diverge on listen posture")
 	}
 	if absent.Profile != explicit.Profile {
 		t.Fatalf("Profile mismatch: absent=%q explicit=%q", absent.Profile, explicit.Profile)

@@ -73,6 +73,22 @@ func TestLSDP_SlotAssignmentEmitsDelta(t *testing.T) {
 	}
 }
 
+func TestLSDP_SlotClearedRemovesDerivedState(t *testing.T) {
+	wire, err := NewWire(quietLogger(t), nil)
+	if err != nil {
+		t.Fatalf("NewWire: %v", err)
+	}
+	wire.EmitSlotAssignment("cam-left", "alice")
+	wire.EmitSlotCleared("cam-left")
+
+	wire.slotMu.Lock()
+	_, present := wire.slots["cam-left"]
+	wire.slotMu.Unlock()
+	if present {
+		t.Fatalf("cleared slot remained in derived state: %#v", wire.slots)
+	}
+}
+
 // TestLSDP_SlotAssignmentPersistsAcrossSceneSwitch (RC5): a slot binding is
 // stream-level — it survives a switch of active scene. A viewer joining the
 // NEW active scene after the switch gets the slot in its keyframe, even though

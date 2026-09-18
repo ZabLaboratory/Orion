@@ -33,3 +33,12 @@ func (m cameraSlotMirror) EmitSlotAssignment(slotRef, peerLabel string) {
 		mirror.EmitSlotAssignment(slotRef, peerLabel)
 	}
 }
+
+func (m cameraSlotMirror) EmitSlotCleared(slotRef string) {
+	for _, mirror := range m.mirrors {
+		clearer, ok := mirror.(bluehost.SlotAssignmentClearer)
+		if ok {
+			clearer.EmitSlotCleared(slotRef)
+		}
+	}
+}

@@ -1,8 +1,9 @@
 name: Release
 
-# Orion is a backend service in production, and a local executable in Prism.
-# A release therefore publishes verified loopback binaries for every Prism
-# platform plus a manifest that binds the binary to the Blue runtime digest.
+# Orion is a local executable embedded in Prism. A release therefore publishes
+# verified loopback binaries for every Prism platform plus a manifest that
+# binds the binary to the Blue runtime digest; it does not deploy an Orion
+# service.
 
 on:
   push:
