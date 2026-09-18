@@ -7,6 +7,8 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -49,24 +51,15 @@ func (m LSDPMode) PersistsLSML() bool {
 	return m == LSDPModeDual || m == LSDPModeLSDP
 }
 
-// Profile is the embedded-local execution-profile flag (ADR 016 §3.3).
-// It is purely additive: it selects which edge implementations
-// (Store, AuthSource, Fetcher) are wired AT BOOT and the listen
-// posture — it introduces no branch on the hot path (requireOperator,
-// db.query, tick, inbox). An unset or "antenne" value reproduces
-// today's production behaviour exactly (RC-1).
-//
-//   - antenne (default): pgStore + headerAuth + httpFetcher, binding on
-//     ORION_LISTEN_ADDR as configured (0.0.0.0:4007 in prod). The strict
-//     production path — every existing test exercises this.
-//   - embedded-local: the single-binary, zero-infra Prism sidecar
-//     posture. Listen collapses to loopback only. The local edge impls
-//     (sqliteStore #222, localOperatorAuth #223, bundledFetcher) land in
-//     follow-up issues; until then this profile wires the same defaults,
-//     so it boots without panicking and shares the antenne hot path.
+// Profile selects the only supported Orion execution posture. Orion is an
+// embedded Prism sidecar now: it binds loopback, uses the local operator
+// handshake, and is never started as a remotely reachable service.
 type Profile string
 
 const (
+	// ProfileAntenne is retained as an in-memory fixture value for the
+	// preview/program lane model. Load deliberately rejects it: there is no
+	// remote Orion profile anymore.
 	ProfileAntenne       Profile = "antenne"
 	ProfileEmbeddedLocal Profile = "embedded-local"
 )
@@ -75,12 +68,9 @@ const (
 // selected. The hot path never consults this — only boot wiring does.
 func (p Profile) IsEmbeddedLocal() bool { return p == ProfileEmbeddedLocal }
 
-// IsAntenne reports whether this is the on-air profile. It is the POSITIVE
-// form deliberately: the durable service-token model is armed only for antenne
-// (ADR ZabAuth 003 Am.3 § A3.3 part 3), and a guard written as "not
-// embedded-local" would silently arm any third profile added later. Load
-// rejects anything outside the two known values, so today the two forms agree;
-// the positive one keeps agreeing tomorrow.
+// IsAntenne reports whether an in-memory fixture names the on-air lane. It is
+// not a loadable network profile; the live and preview lanes both run inside
+// the same local Orion process.
 func (p Profile) IsAntenne() bool { return p == ProfileAntenne }
 
 // Config is the typed view of Orion's environment. Every field maps to
@@ -115,8 +105,8 @@ type Config struct {
 	// an amorce: resolved only when the database holds nothing, consumed by the
 	// first rotation, then purged at étage 1 — never rewritten by the service.
 	ServiceRefreshToken string
-	// ServiceTokenStatePath is the encrypted local state file used only by
-	// embedded-local. Antenne keeps its durable state in Postgres.
+	// ServiceTokenStatePath is the encrypted local state file used by the
+	// embedded runtime. No remote Orion profile owns durable state anymore.
 	ServiceTokenStatePath string
 	// EncryptionKey is base64 of the 32 random bytes that encrypt the durable
 	// refresh token at rest (ORION_ENCRYPTION_KEY, § A3.3 part 2). Absent or
@@ -198,15 +188,14 @@ type Config struct {
 	LogFormat LogFormat
 	LSDPMode  LSDPMode
 	// Profile selects the execution-profile edge wiring at boot
-	// (ORION_PROFILE, ADR 016 §3.3). Default antenne = unchanged prod.
+	// (ORION_PROFILE). Only embedded-local is supported.
 	Profile Profile
 
-	// SQLitePath is the embedded-local store file (ADR 016 §3.2, #222),
-	// ORION_SQLITE_PATH. Unused in antenne; required in embedded-local.
+	// SQLitePath is the local store file (ORION_SQLITE_PATH).
 	// SceneBundlePath is the frozen scene bundle the bundledFetcher serves
 	// (#224), ORION_SCENE_BUNDLE_PATH. Since #246 it is OPTIONAL in
 	// embedded-local — an offline fallback only; unset selects the nominal
-	// httpFetcher path. Unused in antenne.
+	// httpFetcher path.
 	SQLitePath        string
 	SceneBundlePath   string
 	LocalArtifactRoot string
@@ -216,7 +205,7 @@ type Config struct {
 	// directory that contains `canvas/validated/<scene_id>/<bare-64hex>.json`
 	// seeds. In embedded-local the air-eligibility gate imports the
 	// `validated` record from this mirror instead of a DB row; required
-	// there, unused in antenne.
+	// there, unused when no mirror is configured.
 	ValidationMirrorRoot string
 
 	// LocalAuthSecret is the Prism↔Orion handshake secret used by
@@ -232,6 +221,10 @@ type Config struct {
 	// LocalViewerToken is a loopback-only viewer capability for Solar, which
 	// cannot attach a custom HTTP header to its browser WebSocket.
 	LocalViewerToken string
+	// LocalEditorToken is a separate loopback-only capability for the
+	// editable Preview sideband. It is never accepted on the live/generation
+	// wires and is only meaningful in the embedded-local profile.
+	LocalEditorToken string
 
 	// --- stateless-cutover workload surface (#331, ADR-BLUE-012 §4.7/§6.2) ---
 	// All optional and dark by default: cmd/orion wires SceneIntentDeps
@@ -282,8 +275,8 @@ func Load() (Config, error) {
 	var problems []string
 
 	cfg := Config{
-		ListenAddr:            getenv("ORION_LISTEN_ADDR", "0.0.0.0:4007"),
-		InternalAddr:          getenv("ORION_INTERNAL_ADDR", "0.0.0.0:4017"),
+		ListenAddr:            getenv("ORION_LISTEN_ADDR", "127.0.0.1:4007"),
+		InternalAddr:          getenv("ORION_INTERNAL_ADDR", "127.0.0.1:4017"),
 		PublicBaseURL:         strings.TrimRight(getenv("ORION_PUBLIC_BASE_URL", ""), "/"),
 		DatabaseURL:           os.Getenv("ORION_DATABASE_URL"),
 		AssetRoot:             getenv("ORION_ASSET_ROOT", "/var/lib/orion/assets"),
@@ -335,35 +328,40 @@ func Load() (Config, error) {
 		problems = append(problems, "ORION_LSDP_MODE must be 'bespoke', 'dual', or 'lsdp'")
 	}
 
-	// Execution profile (ADR 016 §3.3). Additive: default antenne is
-	// byte-for-byte today's behaviour. embedded-local only changes boot
-	// wiring (edge impls + loopback listen), never the hot path.
-	switch Profile(strings.ToLower(getenv("ORION_PROFILE", string(ProfileAntenne)))) {
-	case ProfileAntenne:
-		cfg.Profile = ProfileAntenne
+	// Orion is a local Prism sidecar. Keep the profile switch explicit so a
+	// stale deployment environment cannot silently resurrect the retired
+	// remote profile.
+	switch Profile(strings.ToLower(getenv("ORION_PROFILE", string(ProfileEmbeddedLocal)))) {
 	case ProfileEmbeddedLocal:
 		cfg.Profile = ProfileEmbeddedLocal
-		// Loopback-only posture: the embedded sidecar must never be
-		// reachable off-host (ADR 016 §3.3, D4 — refined in #223). If the
-		// operator left the listen addrs at their 0.0.0.0 prod defaults,
-		// pin them to loopback; an explicit override is respected.
-		if _, ok := os.LookupEnv("ORION_LISTEN_ADDR"); !ok {
-			cfg.ListenAddr = "127.0.0.1:4007"
-		}
-		if _, ok := os.LookupEnv("ORION_INTERNAL_ADDR"); !ok {
-			cfg.InternalAddr = "127.0.0.1:4017"
-		}
 		// Handshake secret (ADR 016 §3.2-2, RC-4). Required in
 		// embedded-local: without it localOperatorAuth would grant operator
 		// to any loopback caller (R2). Fail the boot rather than open that.
 		cfg.LocalAuthSecret = os.Getenv("ORION_LOCAL_OPERATOR_SECRET")
 		cfg.LocalAuthUser = getenv("ORION_LOCAL_AUTH_USER", "local-operator")
 		cfg.LocalViewerToken = os.Getenv("ORION_LOCAL_VIEWER_TOKEN")
+		cfg.LocalEditorToken = os.Getenv("ORION_LOCAL_EDITOR_TOKEN")
 		if cfg.LocalAuthSecret == "" {
 			problems = append(problems, "ORION_LOCAL_OPERATOR_SECRET is required when ORION_PROFILE=embedded-local")
 		}
 	default:
-		problems = append(problems, "ORION_PROFILE must be 'antenne' or 'embedded-local'")
+		problems = append(problems, "ORION_PROFILE must be 'embedded-local'; the remote Orion profile is retired")
+	}
+
+	// The local runtime must never bind a wildcard, public, or DNS-resolved
+	// address. Rejecting instead of silently rewriting an explicit value makes
+	// a bad launch configuration visible and prevents an accidental remote
+	// Orion listener.
+	if problem := requireLoopbackAddr("ORION_LISTEN_ADDR", cfg.ListenAddr); problem != "" {
+		problems = append(problems, problem)
+	}
+	if problem := requireLoopbackAddr("ORION_INTERNAL_ADDR", cfg.InternalAddr); problem != "" {
+		problems = append(problems, problem)
+	}
+	if cfg.PublicBaseURL != "" {
+		if problem := requireLoopbackURL("ORION_PUBLIC_BASE_URL", cfg.PublicBaseURL); problem != "" {
+			problems = append(problems, problem)
+		}
 	}
 
 	if v, err := getInt("ORION_TICK_HZ", 60); err != nil {
@@ -509,16 +507,14 @@ func Load() (Config, error) {
 		cfg.ValidationTimeout = time.Duration(v) * time.Second
 	}
 
-	// Required-field punch list is profile-keyed (ADR 016 §3.2/§3.3, refined by
-	// Amendment 1 / #246 and the full-prod pivot). antenne needs its Postgres
-	// DSN + Canvas/Blue HTTP bases. embedded-local needs the local SQLite file +
-	// the three base-URLs (Canvas/Blue/ZabGate) — pointed at PROD ZabGate under
-	// the full-prod model (the httpFetcher reads prod artefacts directly; no
-	// local mirror). The frozen scene bundle and the validation mirror root are
-	// both OPTIONAL offline fallbacks. The pg DSN stays unused in embedded-local
-	// (SQLite store). ZabAuth stays required in both (validator/service-token
-	// plumbing is shared).
+	// Required-field punch list for the local sidecar. The frozen scene bundle
+	// and validation mirror are optional offline fallbacks. A legacy PostgreSQL
+	// DSN is rejected rather than ignored so a stale deployment environment
+	// cannot make the local runtime open a remote state connection.
 	if cfg.Profile.IsEmbeddedLocal() {
+		if strings.TrimSpace(cfg.DatabaseURL) != "" {
+			problems = append(problems, "ORION_DATABASE_URL must be empty in the embedded-local profile")
+		}
 		if cfg.SQLitePath == "" {
 			problems = append(problems, "ORION_SQLITE_PATH is required in the embedded-local profile")
 		}
@@ -536,16 +532,6 @@ func Load() (Config, error) {
 		// push→validate→activate chain writes the `validated` record to the
 		// store, which the air gate reads. Set it only to opt into a seeded
 		// validated-record mirror as an offline fallback (see cmd/orion).
-	} else {
-		if cfg.DatabaseURL == "" {
-			problems = append(problems, "ORION_DATABASE_URL is required")
-		}
-		if cfg.CanvasBaseURL == "" {
-			problems = append(problems, "ORION_CANVAS_BASE_URL is required")
-		}
-		if cfg.BlueBaseURL == "" {
-			problems = append(problems, "ORION_BLUE_BASE_URL is required")
-		}
 	}
 	if cfg.ZabAuthValidateURL == "" {
 		problems = append(problems, "ORION_ZABAUTH_VALIDATE_URL is required")
@@ -562,6 +548,43 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// requireLoopbackAddr validates a host:port endpoint without resolving DNS.
+// Resolving a hostname here would make startup depend on the network and
+// could turn a seemingly local configuration into a remote listener later.
+func requireLoopbackAddr(key, raw string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(raw))
+	if err != nil || host == "" {
+		return fmt.Sprintf("%s must be a loopback host:port (got %q)", key, raw)
+	}
+	if strings.EqualFold(host, "localhost") {
+		return ""
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return ""
+	}
+	return fmt.Sprintf("%s must use a loopback host (got %q)", key, raw)
+}
+
+// requireLoopbackURL applies the same boundary to an optional externally
+// advertised base URL. A local Orion must never mint asset or callback URLs
+// that point at a retired remote Orion deployment.
+func requireLoopbackURL(key, raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return fmt.Sprintf("%s must be an absolute loopback URL (got %q)", key, raw)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Sprintf("%s must use http or https (got %q)", key, raw)
+	}
+	if strings.EqualFold(u.Hostname(), "localhost") {
+		return ""
+	}
+	if ip := net.ParseIP(u.Hostname()); ip != nil && ip.IsLoopback() {
+		return ""
+	}
+	return fmt.Sprintf("%s must use a loopback host (got %q)", key, raw)
 }
 
 // splitCSV splits a comma-separated list into trimmed non-empty parts.

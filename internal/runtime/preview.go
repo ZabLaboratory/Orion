@@ -3,7 +3,9 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
@@ -36,16 +38,40 @@ type PreviewSlot struct {
 	logger   *slog.Logger
 	wire     PreviewWire
 
-	mu      sync.Mutex
-	ctx     context.Context
-	current *previewClone
-	effects *SceneEffects
+	mu       sync.Mutex
+	ctx      context.Context
+	current  *previewClone
+	editable *editablePreview
+	effects  *SceneEffects
 }
 
 type previewClone struct {
 	sceneID string
 	scene   *Scene
 }
+
+// EditablePatch is the bounded leaf-only update accepted by the local
+// editable-preview lane. It deliberately lives in runtime rather than api so
+// the HTTP and WebSocket transports share the exact same sequence and
+// keyspace checks.
+type EditablePatch struct {
+	Path  string
+	Value json.RawMessage
+}
+
+type editablePreview struct {
+	sceneID string
+	version string
+	seq     uint64
+	scene   *Scene
+}
+
+var (
+	ErrEditablePreviewUnavailable = errors.New("editable preview is not active")
+	ErrEditablePreviewSequence    = errors.New("editable preview edit sequence mismatch")
+	ErrEditablePreviewPath        = errors.New("editable preview path is not declared")
+	ErrEditablePreviewBusy        = errors.New("editable preview input queue is full")
+)
 
 // NewPreviewSlot builds the slot over a persistent preview wire. ctx is the
 // process context: every preview clone runs on it, so a process shutdown stops
@@ -80,6 +106,29 @@ func (p *PreviewSlot) SetEffects(e *SceneEffects) {
 // Re-activating the same scene rebuilds a fresh clone (reseeds defaults +
 // fires on-start), matching a push-swap of the live scene on the antenne.
 func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, progs ...*ExecProgram) {
+	p.activate(sceneID, graph, bundle, false, progs...)
+}
+
+// ActivateStatic installs a no-Blue LSML RenderBundle in the same isolated
+// PreviewSlot as a normal compiled scene. Static editable scenes intentionally
+// use an empty graph: their declared defaults are the render state and each
+// hot edit is a direct leaf write, so no Blue/automation path is involved.
+func (p *PreviewSlot) ActivateStatic(sceneID string, bundle *compiler.RenderBundle) error {
+	if strings.TrimSpace(sceneID) == "" || bundle == nil {
+		return ErrEditablePreviewUnavailable
+	}
+	graph := &compiler.Graph{
+		SceneID:        sceneID,
+		SceneVersion:   bundle.SceneVersion,
+		Defaults:       bundle.Defaults,
+		Bindings:       bundle.ExternalAdapters,
+		OperatorInputs: bundle.OperatorInputs,
+	}
+	p.activate(sceneID, graph, bundle, true)
+	return nil
+}
+
+func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editable bool, progs ...*ExecProgram) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -124,6 +173,15 @@ func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *co
 	// socket — no reload. Identical mechanism to the antenne's Show.SetActive.
 	p.wire.SetActive(sceneID)
 	p.current = &previewClone{sceneID: sceneID, scene: scene}
+	if editable {
+		p.editable = &editablePreview{
+			sceneID: sceneID,
+			version: bundle.SceneVersion,
+			scene:   scene,
+		}
+	} else {
+		p.editable = nil
+	}
 
 	// Tear the previous clone down AFTER the flip (no preview gap). Keep the
 	// kit scene if we just re-activated the same id — MirrorFor re-registered
@@ -134,6 +192,75 @@ func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *co
 			p.wire.Drop(prev.sceneID)
 		}
 	}
+}
+
+// ActivateEditable re-selects an already compiled editable clone without
+// rebuilding it. This is the warm-head path used after a React remount.
+func (p *PreviewSlot) ActivateEditable(sceneID string, editSeq uint64) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.editable == nil || p.current == nil || p.editable.sceneID != sceneID || p.current.sceneID != sceneID {
+		return "", ErrEditablePreviewUnavailable
+	}
+	if p.editable.seq != editSeq {
+		return "", ErrEditablePreviewSequence
+	}
+	p.wire.SetActive(sceneID)
+	return p.editable.version, nil
+}
+
+// PatchEditable applies one ordered leaf batch to the live editable clone.
+// The scene goroutine remains the source of truth and mirrors the accepted
+// values to the persistent Preview LSDP wire; no Pulsar command is involved.
+func (p *PreviewSlot) PatchEditable(sceneID string, baseSeq, editSeq uint64, patches []EditablePatch) (version string, observerCount int, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.editable == nil || p.current == nil || p.editable.sceneID != sceneID || p.current.sceneID != sceneID {
+		return "", 0, ErrEditablePreviewUnavailable
+	}
+	if editSeq != baseSeq+1 || baseSeq != p.editable.seq {
+		return "", p.editable.scene.SubscriberCount(), ErrEditablePreviewSequence
+	}
+	if len(patches) == 0 || len(patches) > 256 {
+		return "", p.editable.scene.SubscriberCount(), ErrEditablePreviewPath
+	}
+	for _, patch := range patches {
+		if !strings.HasPrefix(patch.Path, "__editable.") || len(patch.Path) > 2048 {
+			return "", p.editable.scene.SubscriberCount(), ErrEditablePreviewPath
+		}
+		if _, ok := p.editable.scene.Graph().Defaults[patch.Path]; !ok || !json.Valid(patch.Value) {
+			return "", p.editable.scene.SubscriberCount(), ErrEditablePreviewPath
+		}
+	}
+	for _, patch := range patches {
+		if !p.editable.scene.Input(InputMsg{Path: patch.Path, Value: patch.Value, Source: "editable-preview"}) {
+			return "", p.editable.scene.SubscriberCount(), ErrEditablePreviewBusy
+		}
+	}
+	p.editable.seq = editSeq
+	return p.editable.version, p.editable.scene.SubscriberCount(), nil
+}
+
+// EditableState reports the current local editable head for the air hand-off.
+func (p *PreviewSlot) EditableState(sceneID string) (version string, seq uint64, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.editable == nil || p.editable.sceneID != sceneID {
+		return "", 0, false
+	}
+	return p.editable.version, p.editable.seq, true
+}
+
+// EditableBundle returns only the exact generation advertised on the Preview
+// wire. A signed published capsule for this scene may describe another tree.
+func (p *PreviewSlot) EditableBundle(sceneID, version string) ([]byte, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if sceneID == "" || version == "" || p.editable == nil || p.editable.sceneID != sceneID || p.editable.version != version {
+		return nil, false
+	}
+	bundle, err := json.Marshal(p.editable.scene.Bundle())
+	return bundle, err == nil
 }
 
 // SnapshotState exports the live preview clone's state for the preview→air
@@ -182,5 +309,6 @@ func (p *PreviewSlot) Close() {
 		p.current.scene.Stop()
 		p.wire.Drop(p.current.sceneID)
 		p.current = nil
+		p.editable = nil
 	}
 }

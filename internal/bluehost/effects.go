@@ -55,9 +55,9 @@ type EffectDeps struct {
 	// core.overlay-app.set@1 firing is dropped (bag write still happens),
 	// same unwired-seam-still-fires-then posture as every other field here.
 	OverlayMirror OverlayAppMirror
-	// SlotMirror receives the derived LSDP re-key only after the durable
-	// ZabCam slot upsert succeeds. It is intentionally a narrow interface so
-	// Blue remains unaware of Solar/LSDP.
+	// SlotMirror receives derived LSDP slot re-keys only after the durable
+	// ZabCam assignment/release succeeds. It is intentionally a narrow
+	// interface so Blue remains unaware of Solar/LSDP.
 	SlotMirror SlotAssignmentMirror
 }
 
@@ -65,6 +65,14 @@ type EffectDeps struct {
 // host-owned zabcam.assign-slot@1 extension.
 type SlotAssignmentMirror interface {
 	EmitSlotAssignment(slotRef, peerLabel string)
+}
+
+// SlotAssignmentClearer is the optional inverse of SlotAssignmentMirror.
+// Keeping it separate preserves compatibility with bespoke mirrors that only
+// understand assignment deltas; the production LSDP wire implements both so
+// an editable-scene projection can remove a stale slot as well as add one.
+type SlotAssignmentClearer interface {
+	EmitSlotCleared(slotRef string)
 }
 
 // AssignCameraSlot is the host seam used by non-Blue editor controls.  It is
@@ -83,6 +91,21 @@ func (deps EffectDeps) AssignCameraSlot(ctx context.Context, slotRef, peerLabel 
 		streamID = "live"
 	}
 	return assignSlot(ctx, deps, canonicalSlotRouteConfig(), streamID, slotRef, peerLabel)
+}
+
+// ReleaseCameraSlot is the inverse capability used by Prism when a complete
+// editable-scene projection no longer contains a previously bound slot. It
+// uses a separate curated DELETE route, but the same narrow ZabCam mutation
+// scope and the same post-2xx LSDP mirror rule as assignment.
+func (deps EffectDeps) ReleaseCameraSlot(ctx context.Context, slotRef string) error {
+	if strings.TrimSpace(slotRef) == "" {
+		return fmt.Errorf("ZABCAM_SLOT_RELEASE_INVALID: slot_ref is required")
+	}
+	streamID := deps.StreamID
+	if streamID == "" {
+		streamID = "live"
+	}
+	return releaseSlot(ctx, deps, canonicalSlotReleaseRouteConfig(), streamID, slotRef)
 }
 
 // ServiceCallRoute is the host-resolved portion of a compiler-curated
@@ -372,6 +395,15 @@ func canonicalSlotRouteConfig() map[string]any {
 	}
 }
 
+func canonicalSlotReleaseRouteConfig() map[string]any {
+	return map[string]any{
+		"__route": map[string]any{
+			"service":  "zabcam",
+			"route_id": "zabcam.slots.release",
+		},
+	}
+}
+
 // assignSlot is the single durable assignment operation shared by Blue's
 // `zabcam.assign-slot@1` handler and Prism's editable-camera control. The
 // mirror is emitted only after ZabCam responds with a 2xx, so an optimistic
@@ -390,6 +422,26 @@ func assignSlot(ctx context.Context, deps EffectDeps, routeConfig map[string]any
 	}
 	if deps.SlotMirror != nil {
 		deps.SlotMirror.EmitSlotAssignment(slotRef, peerLabel)
+	}
+	return nil
+}
+
+// releaseSlot is the durable inverse of assignSlot. The derived mirror is
+// updated only after ZabCam confirms the idempotent DELETE, so Solar never
+// receives an unbound slot before the durable authority has accepted it.
+func releaseSlot(ctx context.Context, deps EffectDeps, routeConfig map[string]any, streamID, slotRef string) error {
+	result, err := doServiceCall(ctx, deps.ServiceCall, deps.ResolveServiceRoute, deps.EgressBudget, deps.EgressBudgetKey, routeConfig, map[string]any{
+		"params": map[string]any{"slot_ref": slotRef, "stream_id": streamID},
+	})
+	if err != nil {
+		return err
+	}
+	ok, _ := result["ok"].(bool)
+	if !ok {
+		return fmt.Errorf("ZABCAM_SLOT_RELEASE_FAILED: status=%v body=%v", result["status"], result["body"])
+	}
+	if clearer, ok := deps.SlotMirror.(SlotAssignmentClearer); ok {
+		clearer.EmitSlotCleared(slotRef)
 	}
 	return nil
 }

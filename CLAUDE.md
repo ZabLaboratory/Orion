@@ -9,9 +9,9 @@
 @../agents/_shared/projects.md
 @../agents/_shared/live-testing.md
 
-## Status — production (205 PRs on main)
+## Status — local Prism runtime
 
-Orion v2 (Go) is in production on `main`. The v0.x Python implementation
+Orion v2 (Go) is the local runtime embedded and launched by Prism. The v0.x Python implementation
 was deleted on 2026-05-02; the Go rewrite shipped progressively through
 205 merged PRs. ADR 004 (Orion v2 runtime) and ADR 005 (Quasar concerns
 relocation) were superseded or absorbed during the build campaign — their
@@ -26,7 +26,7 @@ Quasar CLAUDE.md respectively before the slot files were removed.
 |---|---|
 | Runtime | Go 1.26.2 — single statically-linked binary |
 | HTTP / WS | `net/http` (1.22 routing) + `coder/websocket` |
-| DB | `pgx/v5` directly (no ORM); `goose` migrations |
+| DB | SQLite in the Prism user-data directory |
 | Logging | `log/slog` |
 | Metrics | `prometheus/client_golang` on internal-only endpoint |
 | Test | stdlib `testing`; `httptest` + `coder/websocket` test client |
@@ -49,13 +49,11 @@ Orion/
 │   ├── obs/                             slog, prom metrics, panic handler
 │   ├── protocol/                        ADR 002 envelope + golden fixtures
 │   └── config/                          env parsing
-├── migrations/0001_init.sql             scenes / definitions / pushed_versions / assets
-├── Dockerfile                           multi-stage distroless (orion + goose + migrations)
+├── migrations/0001_init.sql             retained schema fixtures (not a remote service)
+├── Dockerfile                           optional local image build
 ├── docker-compose.yml                   local-dev compose
-├── docker-compose.prod.yml              prod compose (zab-internal, no host ports)
 ├── tests/e2e/                           build-tagged tests against a live PG
-├── .github/workflows/ci.yml             vet / test / build / docker / staticcheck / golangci / trufflehog
-├── .github/workflows/deploy.yml         VPS deploy (rsync + compose build + goose migrate + gateway smoke)
+├── .github/workflows/ci.yml             vet / test / build / staticcheck / golangci / trufflehog
 ├── .env.template                        every env var documented
 └── go.mod                               go 1.26.2
 ```
@@ -68,7 +66,7 @@ prefix on the way in). Source: `internal/api/public.go`.
 | Method + path | Purpose |
 |---|---|
 | `GET /api/v1/health` | liveness |
-| `GET /api/v1/ready` | readiness (DB ping + scene roster) |
+| `GET /api/v1/ready` | readiness (local store + scene roster) |
 | `POST /api/v1/scenes/{id}/push` | compile + persist + activate |
 | `GET /api/v1/scenes/{id}/render-bundle?v={hash}` | Solar fetch (content-hashed) |
 | `GET /api/v1/scenes/{id}/lsml-bundle?v={hash}` | LSML bundle for authoring tools (ADR 002) |
@@ -155,12 +153,11 @@ Rollback: re-point browser-source to `v0.2.8` (already on VPS, instant). Runbook
 
 ## Resolution criterion (branch-level, per workspace `git.md`)
 
-The branch is resolved when:
-1. CI green on `main`.
-2. Deploy workflow green on `main` (`docker compose up -d` against
-   prod compose succeeds; `GET /orion/api/v1/health` returns 200 via
-   ZabGate).
-3. Smoke run: `POST /scenes/{id}/push` against a stub Canvas/Blue
+The local runtime is resolved when:
+1. CI is green on `main`.
+2. Prism launches Orion on loopback with the generated handshake and the
+   local health/readiness probes return 200.
+3. Smoke run: `POST /scenes/{id}/push` against loopback Canvas/Blue stubs
    round-trips; `WS /show/stream` accepts a connection.
 
 ## Concerns relocated

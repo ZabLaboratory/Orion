@@ -2,7 +2,7 @@
 
 # ---- build stage ----------------------------------------------------------
 # Digest verified against the registry on 2026-08-14. Update only through a
-# reviewed toolchain change so the production compiler cannot drift by tag.
+# reviewed toolchain change so the local runtime compiler cannot drift by tag.
 FROM golang:1.26-alpine@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b91126504fd95816 AS build
 
 # The private Blue module is fetched through Git over HTTPS. The official
@@ -11,9 +11,8 @@ FROM golang:1.26-alpine@sha256:70b46548e42db77e0966aaf3619fd068734dc6c77584d526b
 # distroless and contains neither Git nor the build credentials.
 RUN apk add --no-cache git ca-certificates
 
-# OCI provenance. Fed by the deploy/build pipeline so every image on the
-# VPS is traceable to a commit + repo (the running prod image carried no
-# revision/source label, which is what let a stale tree drift in silently).
+# OCI provenance. Fed by the release/build pipeline so every optional local
+# image is traceable to a commit + repo.
 # Both default to "unknown" so a bare `docker build` still succeeds.
 ARG ORION_GIT_REVISION=unknown
 ARG ORION_GIT_SOURCE=https://github.com/ZabLaboratory/Orion
@@ -55,9 +54,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # pinned independently from the Go build image.
 FROM gcr.io/distroless/static:nonroot@sha256:f7f8f729987ad0fdf6b05eeeae94b26e6a0f613bdf46feea7fc40f7bd72953e6
 
-# Distroless static: orion only. .env.template stays in the repo (docs
-# only); it never makes it into the image because rsync's
-# `--exclude .env.*` filter would skip it on deploy anyway.
+# Distroless static: orion only. .env.template stays in the repo as local
+# documentation and never makes it into the image.
 COPY --from=build /out/orion        /orion
 COPY --from=build /out/healthcheck  /healthcheck
 

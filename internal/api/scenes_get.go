@@ -122,15 +122,20 @@ func serveHostBundle(w http.ResponseWriter, r *http.Request, deps PublicDeps) {
 // fetch through this resolver succeed. Diagnostic gain (silent client
 // failure → explicit 404), not a rendering fix.
 func resolveHostBundle(deps PublicDeps, r *http.Request) (digest string, bundle []byte, ok bool) {
-	if deps.SceneIntent == nil || deps.SceneIntent.Host == nil {
-		return "", nil, false
-	}
-	host := deps.SceneIntent.Host
 	sceneID := r.PathValue("id")
 	v := r.URL.Query().Get("v")
 	if sceneID == "" || v == "" {
 		return "", nil, false
 	}
+	if deps.EditablePreview != nil {
+		if b, found := deps.EditablePreview.EditableBundle(sceneID, v); found {
+			return v, b, true
+		}
+	}
+	if deps.SceneIntent == nil || deps.SceneIntent.Host == nil {
+		return "", nil, false
+	}
+	host := deps.SceneIntent.Host
 	for _, slot := range []bluehost.Slot{bluehost.SlotOnAir, bluehost.SlotPreview} {
 		if !host.Serving(slot, sceneID, v) {
 			continue
