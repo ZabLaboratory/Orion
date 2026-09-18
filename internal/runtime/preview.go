@@ -362,6 +362,15 @@ func (p *PreviewSlot) ReactivateEditable(sceneID string, expectedEditSeq uint64)
 	}
 	prev := p.current
 	if prev == next {
+		// Blue scene-intent uses the same persistent Preview wire but is
+		// intentionally owned by bluehost rather than PreviewSlot.  In that
+		// path p.current still points at this warm clone while the wire has
+		// moved to Blue, so returning early would acknowledge activation
+		// without emitting the scene_changed/snapshot pair Solar needs.
+		// Reassert the wire even when the cached clone is already current;
+		// this is idempotent for an actually-active editable scene and closes
+		// the external-owner hand-off gap without rebuilding the clone.
+		p.wire.SetActive(sceneID)
 		return nil
 	}
 	p.wire.SetActive(sceneID)
