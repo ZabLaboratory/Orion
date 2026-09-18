@@ -235,7 +235,7 @@ jobs:
             for candidate in $(seq 45432 45482); do
               rm -f "$PGDATA/server.log" "$PGDATA/postmaster.pid"
               if "$PG_BIN/pg_ctl" -D "$PGDATA" \
-                -o "-p $candidate -h 127.0.0.1" \
+                -o "-p $candidate -h 127.0.0.1 -k $PGDATA" \
                 -l "$PGDATA/server.log" -w start; then
                 PGPORT="$candidate"
                 break
