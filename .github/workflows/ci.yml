@@ -140,12 +140,15 @@ jobs:
           # when already root.
           if [ "$(id -u)" = "0" ]; then
             SUDO=
+            CAN_ELEVATE=1
           elif command -v sudo >/dev/null 2>&1 && sudo -n true >/dev/null 2>&1; then
             SUDO="sudo -n"
+            CAN_ELEVATE=1
           else
             # Some ephemeral images expose sudo but enforce no-new-privileges;
             # treat that exactly like a non-elevating runner.
             SUDO=
+            CAN_ELEVATE=0
           fi
 
           # Install PostgreSQL ONLY if it is not already provisioned. On a
@@ -186,12 +189,31 @@ jobs:
           # runner that can elevate may start or restart a stopped cluster.
           if pg_isready -h localhost -p 5432 >/dev/null 2>&1; then
             echo "PostgreSQL is already accepting connections — skipping privileged start."
-          elif [ -n "$SUDO" ]; then
+          elif [ "$CAN_ELEVATE" = "1" ]; then
             $SUDO pg_ctlcluster "$PGVER" main start || $SUDO pg_ctlcluster "$PGVER" main restart
             for i in $(seq 1 30); do pg_isready -h localhost -p 5432 && break; sleep 1; done
           else
-            echo "::error::PostgreSQL is not accepting connections and this runner cannot elevate privileges." >&2
-            exit 1
+            # No-new-privileges runners cannot start the system cluster. Build
+            # a user-owned PostgreSQL 16 cluster in the ephemeral workspace
+            # instead; the E2E contract still talks to localhost:5432 and is
+            # not skipped or replaced with a mock.
+            PG_BIN="$(pg_config --bindir 2>/dev/null || true)"
+            if [ -z "$PG_BIN" ] || [ ! -x "$PG_BIN/initdb" ]; then
+              PG_BIN="/usr/lib/postgresql/$PGVER/bin"
+            fi
+            if [ ! -x "$PG_BIN/initdb" ] || [ ! -x "$PG_BIN/pg_ctl" ]; then
+              echo "::error::PostgreSQL user-space binaries are unavailable on this runner." >&2
+              exit 1
+            fi
+            PGDATA="$(mktemp -d "${RUNNER_TEMP:-/tmp}/orion-pg.XXXXXX")"
+            PG_PWFILE="$(mktemp "${RUNNER_TEMP:-/tmp}/orion-pg-password.XXXXXX")"
+            chmod 600 "$PG_PWFILE"
+            printf '%s\n' 'orion_e2e_ci' > "$PG_PWFILE"
+            "$PG_BIN/initdb" -D "$PGDATA" --username=orion \
+              --pwfile="$PG_PWFILE" --auth-local=trust --auth-host=scram-sha-256
+            "$PG_BIN/pg_ctl" -D "$PGDATA" -o "-p 5432 -h 127.0.0.1" \
+              -l "$PGDATA/server.log" -w start
+            rm -f "$PG_PWFILE"
           fi
           # Idempotent bootstrap. The org runner pool is EPHEMERAL, so the PG
           # cluster does NOT persist across runs — but a pre-provisioned image
@@ -217,13 +239,12 @@ jobs:
           CREATE DATABASE orion_e2e OWNER orion;
           SQL
           chmod 644 /tmp/orion_e2e_bootstrap.sql
-          if [ -n "$SUDO" ]; then
+          if [ "$CAN_ELEVATE" = "1" ]; then
             $SUDO su - postgres -c "psql -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql"
           else
-            # The no-new-privileges runner image keeps the E2E superuser in
-            # PostgreSQL. Bootstrap over TCP with that role instead of trying
-            # to switch OS users; the SQL still recreates the database for a
-            # clean, deterministic test run.
+            # Bootstrap the user-owned cluster over TCP with the same E2E
+            # superuser; the SQL still recreates the database for a clean,
+            # deterministic test run.
             PGPASSWORD=orion_e2e_ci psql -h localhost -U orion -d postgres \
               -v ON_ERROR_STOP=1 -f /tmp/orion_e2e_bootstrap.sql
           fi
