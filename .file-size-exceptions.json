@@ -1,0 +1,18 @@
+{
+  "internal/api/scene_intent_test.go": {
+    "max_lines": 1273,
+    "reason": "Regression suite or fixture: scenario, setup and assertions form one reproducible proof; explicitly permitted test exception, no ceiling growth."
+  },
+  "internal/runtime/testdata/m3_prod_graph.json": {
+    "max_lines": 3640,
+    "reason": "Regression suite or fixture: scenario, setup and assertions form one reproducible proof; explicitly permitted test exception, no ceiling growth."
+  },
+  "internal/runtime/testdata/m4_draft_switch_graph.json": {
+    "max_lines": 3149,
+    "reason": "Regression suite or fixture: scenario, setup and assertions form one reproducible proof; explicitly permitted test exception, no ceiling growth."
+  },
+  "tests/e2e/testdata/canvas-chat-sponso.scene-bundle.json": {
+    "max_lines": 18271,
+    "reason": "Regression suite or fixture: scenario, setup and assertions form one reproducible proof; explicitly permitted test exception, no ceiling growth."
+  }
+}

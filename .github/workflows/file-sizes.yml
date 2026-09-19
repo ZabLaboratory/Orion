@@ -1,0 +1,19 @@
+name: File sizes
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  file-sizes:
+    runs-on: [self-hosted, vps-ovh]
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python scripts/check_file_sizes.py --self-test
+      - run: python scripts/check_file_sizes.py
