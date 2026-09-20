@@ -35,6 +35,13 @@ type editablePreviewPatchRequest struct {
 	} `json:"patches"`
 }
 
+type editablePreviewInputRequest struct {
+	Type   string          `json:"type"`
+	Path   string          `json:"path"`
+	Value  json.RawMessage `json:"value"`
+	Source string          `json:"source"`
+}
+
 type editablePreviewActivateRequest struct {
 	SceneID string `json:"scene_id"`
 	EditSeq uint64 `json:"edit_seq"`
@@ -295,6 +302,64 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 			defer removeObserver(observer)
 			for {
 				if _, _, err := conn.Read(r.Context()); err != nil {
+					return
+				}
+			}
+		}
+		if r.URL.Query().Get("role") == "service" {
+			// Quasar's local component bridge has its own Preview-only writer
+			// mode. It deliberately does not use adapters.Inbox or Show: those
+			// routes target Program. A service connection is acknowledged even
+			// while no editable clone is active so the bridge can stay warm across
+			// Preview/Blue switches.
+			_, raw, err := conn.Read(r.Context())
+			if err != nil {
+				return
+			}
+			var subscribe struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(raw, &subscribe) != nil || subscribe.Type != "subscribe" {
+				_ = writeEditableSocketJSON(r.Context(), conn, map[string]any{
+					"type": "error", "code": "SUBSCRIBE_REQUIRED",
+				})
+				return
+			}
+			if err := writeEditableSocketJSON(r.Context(), conn, map[string]any{
+				"type": "subscribed", "v": 1, "mode": "editable-preview-writer",
+			}); err != nil {
+				return
+			}
+			for {
+				_, raw, err := conn.Read(r.Context())
+				if err != nil {
+					return
+				}
+				var input editablePreviewInputRequest
+				if json.Unmarshal(raw, &input) != nil || input.Type != "input" || input.Path == "" || len(input.Value) == 0 || !json.Valid(input.Value) {
+					if writeEditableSocketJSON(r.Context(), conn, map[string]any{
+						"type": "input_ack", "accepted": false, "code": "INVALID_INPUT",
+					}) != nil {
+						return
+					}
+					continue
+				}
+				applyErr := deps.Preview.ApplyPreviewInput(input.Path, input.Value, "service:prism-local-quasar")
+				code := ""
+				switch {
+				case errors.Is(applyErr, runtime.ErrPreviewEditPath):
+					code = "PREVIEW_PATH_UNKNOWN"
+				case errors.Is(applyErr, runtime.ErrPreviewNotEditable):
+					code = "PREVIEW_NOT_EDITABLE"
+				case errors.Is(applyErr, runtime.ErrPreviewSceneMismatch):
+					code = "PREVIEW_SCENE_UNAVAILABLE"
+				case errors.Is(applyErr, runtime.ErrPreviewBusy):
+					code = "PREVIEW_BUSY"
+				}
+				if writeEditableSocketJSON(r.Context(), conn, map[string]any{
+					"type": "input_ack", "v": 1, "path": input.Path,
+					"accepted": applyErr == nil, "code": code,
+				}) != nil {
 					return
 				}
 			}

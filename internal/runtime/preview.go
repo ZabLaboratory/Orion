@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/ZabLaboratory/Orion/internal/compiler"
@@ -423,6 +424,44 @@ func (p *PreviewSlot) ApplyEditablePatches(sceneID string, baseSeq, editSeq uint
 		return ErrPreviewBusy
 	}
 	cur.editSeq = editSeq
+	return nil
+}
+
+// ApplyPreviewInput queues a service-originated input on the currently active
+// editable Preview clone. This is deliberately separate from the Program
+// adapter path: a local Quasar component event may update the Preview clone
+// (and any explicit editable-air mirror) without being routed through the
+// antenne Show or mutating a Blue/Program scene. The input is not an authoring
+// edit, so it does not advance ZabCanvas's edit sequence.
+func (p *PreviewSlot) ApplyPreviewInput(path string, value json.RawMessage, source string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	cur := p.current
+	if cur == nil {
+		return ErrPreviewSceneMismatch
+	}
+	if !cur.editable {
+		return ErrPreviewNotEditable
+	}
+	if path == "" || strings.HasPrefix(path, "__test.") {
+		return ErrPreviewEditPath
+	}
+	if _, ok := cur.scene.DeclaredKeyspace()[path]; !ok {
+		return ErrPreviewEditPath
+	}
+	if len(value) == 0 || !json.Valid(value) {
+		return ErrPreviewEditPath
+	}
+	if source == "" {
+		source = "service:preview-input"
+	}
+	if !cur.scene.Input(InputMsg{
+		Path:   path,
+		Value:  append(json.RawMessage(nil), value...),
+		Source: source,
+	}) {
+		return ErrPreviewBusy
+	}
 	return nil
 }
 

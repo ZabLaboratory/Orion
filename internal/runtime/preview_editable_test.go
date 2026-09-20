@@ -123,6 +123,53 @@ func TestPreviewSlotEditablePatchIsAtomicAndSequenceChecked(t *testing.T) {
 	}
 }
 
+func TestPreviewSlotInputUpdatesEditableCloneWithoutAdvancingEditSequence(t *testing.T) {
+	wire := &editablePreviewWire{out: make(chan SubscriberMsg, 8)}
+	slot := NewPreviewSlot(
+		context.Background(),
+		NewComputeRegistry(),
+		wire,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	defer slot.Close()
+
+	graph := &compiler.Graph{
+		SceneID:      "editable-chat",
+		SceneVersion: "sha256:editable-chat",
+		Defaults: map[string]json.RawMessage{
+			"overlay_message": json.RawMessage(`"Waiting for messages…"`),
+		},
+	}
+	slot.ActivateEditable("editable-chat", graph, &compiler.RenderBundle{SceneVersion: graph.SceneVersion}, 0)
+	select {
+	case <-wire.out:
+	case <-time.After(time.Second):
+		t.Fatal("preview mirror was not seeded")
+	}
+	if err := slot.ApplyPreviewInput("overlay_message", json.RawMessage(`"chat: hello"`), "service:prism-local-quasar"); err != nil {
+		t.Fatalf("ApplyPreviewInput: %v", err)
+	}
+	select {
+	case got := <-wire.out:
+		delta, ok := got.(*protocol.Delta)
+		if !ok {
+			t.Fatalf("message type = %T, want *protocol.Delta", got)
+		}
+		if len(delta.Patches) != 1 || delta.Patches[0].Path != "overlay_message" || string(delta.Patches[0].Value) != `"chat: hello"` {
+			t.Fatalf("preview input delta = %#v", delta.Patches)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no preview input delta")
+	}
+	// The service event is not a ZabCanvas edit. The next authoring patch must
+	// still extend the original sequence zero → one.
+	if err := slot.ApplyEditablePatches("editable-chat", 0, 1, []EditablePatch{{
+		Path: "overlay_message", Value: json.RawMessage(`"manual"`),
+	}}); err != nil {
+		t.Fatalf("input advanced edit sequence: %v", err)
+	}
+}
+
 func TestPreviewSlotReactivatesWarmEditableCloneAcrossRegularScene(t *testing.T) {
 	wire := &editablePreviewWire{out: make(chan SubscriberMsg, 8)}
 	slot := NewPreviewSlot(
@@ -286,5 +333,66 @@ func TestPreviewSlotPromotesEditableCloneToGenerationWithoutTouchingPreview(t *t
 		}
 	case <-time.After(time.Second):
 		t.Fatal("generation mirror did not receive editable delta")
+	}
+}
+
+func TestPreviewSlotServiceInputFansOutToPromotedGeneration(t *testing.T) {
+	previewWire := &editablePreviewWire{out: make(chan SubscriberMsg, 8)}
+	airWire := &editableAirWire{out: make(chan SubscriberMsg, 8)}
+	slot := NewPreviewSlot(
+		context.Background(),
+		NewComputeRegistry(),
+		previewWire,
+		slog.New(slog.NewTextHandler(io.Discard, nil)),
+	)
+	slot.SetEditableAirWire(airWire)
+	defer slot.Close()
+
+	graph := &compiler.Graph{
+		SceneID:      "editable-air-input",
+		SceneVersion: "sha256:editable-air-input",
+		Defaults: map[string]json.RawMessage{
+			"overlay_message": json.RawMessage(`"Waiting"`),
+		},
+	}
+	slot.ActivateEditableWithBundle(
+		"editable-air-input",
+		graph,
+		&compiler.RenderBundle{SceneVersion: graph.SceneVersion},
+		0,
+		[]byte(`{"lsml":"1.1","scene_id":"editable-air-input","scene_version":"sha256:editable-air-input","layout":{"kind":"stack"}}`),
+	)
+	select {
+	case <-previewWire.out:
+	case <-time.After(time.Second):
+		t.Fatal("preview mirror was not seeded")
+	}
+	if _, err := slot.PromoteEditable("editable-air-input", "on-air"); err != nil {
+		t.Fatalf("PromoteEditable: %v", err)
+	}
+	// Drain the generation snapshot emitted during promotion. The next frame
+	// must be the service input delta on the same immutable generation wire.
+	select {
+	case got := <-airWire.out:
+		if _, ok := got.(*protocol.Snapshot); !ok {
+			t.Fatalf("generation seed type = %T, want *protocol.Snapshot", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("generation mirror did not receive promotion seed")
+	}
+	if err := slot.ApplyPreviewInput("overlay_message", json.RawMessage(`"chat: live"`), "service:prism-local-quasar"); err != nil {
+		t.Fatalf("ApplyPreviewInput after promotion: %v", err)
+	}
+	select {
+	case got := <-airWire.out:
+		delta, ok := got.(*protocol.Delta)
+		if !ok {
+			t.Fatalf("generation input type = %T, want *protocol.Delta", got)
+		}
+		if len(delta.Patches) != 1 || delta.Patches[0].Path != "overlay_message" || string(delta.Patches[0].Value) != `"chat: live"` {
+			t.Fatalf("generation input delta = %#v", delta.Patches)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("generation mirror did not receive service input delta")
 	}
 }

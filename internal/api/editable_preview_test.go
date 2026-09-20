@@ -41,6 +41,7 @@ func editableAPIFixture(t *testing.T, profile config.Profile) (*http.ServeMux, *
 		compiled, err := json.Marshal(compiler.RenderBundle{SceneVersion: sceneVersion})
 		return compiled, map[string]json.RawMessage{
 			"__editable.61.x": json.RawMessage(`10`),
+			"overlay_message": json.RawMessage(`"Waiting for messages…"`),
 		}, err
 	}
 	mux := http.NewServeMux()
@@ -53,6 +54,51 @@ func editableAPIFixture(t *testing.T, profile config.Profile) (*http.ServeMux, *
 		},
 	})
 	return mux, wire
+}
+
+func TestEditablePreviewServiceSocketTargetsOnlyEditablePreview(t *testing.T) {
+	mux, _ := editableAPIFixture(t, config.ProfileEmbeddedLocal)
+	opened := editableAPIRequest(t, mux, http.MethodPost, map[string]any{
+		"scene_id": "editable-chat", "scene_version": "sha256:chat", "edit_seq": 0, "lsml_bundle": map[string]any{"lsml": "1.1"},
+	}, "operator")
+	if opened.Code != http.StatusOK {
+		t.Fatalf("open = %d %s", opened.Code, opened.Body.String())
+	}
+
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	wsBase := "ws" + strings.TrimPrefix(server.URL, "http") + "/api/v1/show/editable-preview.ws"
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	conn, resp, err := websocket.Dial(ctx, wsBase+"?local_editor_token=editor-capability&role=service", nil)
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"type":"subscribe","v":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, subscribed, err := conn.Read(ctx)
+	if err != nil || !strings.Contains(string(subscribed), `"type":"subscribed"`) {
+		t.Fatalf("subscribe receipt = %s err=%v", subscribed, err)
+	}
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"type":"input","v":1,"path":"overlay_message","value":"chat: proof"}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, accepted, err := conn.Read(ctx)
+	if err != nil || !strings.Contains(string(accepted), `"accepted":true`) {
+		t.Fatalf("accepted input = %s err=%v", accepted, err)
+	}
+	if err := conn.Write(ctx, websocket.MessageText, []byte(`{"type":"input","v":1,"path":"forged_program_leaf","value":1}`)); err != nil {
+		t.Fatal(err)
+	}
+	_, rejected, err := conn.Read(ctx)
+	if err != nil || !strings.Contains(string(rejected), `"code":"PREVIEW_PATH_UNKNOWN"`) {
+		t.Fatalf("rejected input = %s err=%v", rejected, err)
+	}
 }
 
 func TestEditablePreviewSocketUsesDistinctCapabilityAndOrderedSequence(t *testing.T) {
