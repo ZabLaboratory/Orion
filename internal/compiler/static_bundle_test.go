@@ -2,6 +2,7 @@ package compiler
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -80,5 +81,51 @@ func TestCompileStaticLSMLPreservesEditableBindAnimate(t *testing.T) {
 	}
 	if string(defaults["__editable.70616e656c.translate"]) != `[25,40]` {
 		t.Fatalf("translate default = %s", defaults["__editable.70616e656c.translate"])
+	}
+}
+
+func TestRewriteJSONFastPathPreservesUnchangedFragment(t *testing.T) {
+	raw := json.RawMessage(` { "label" : "Match intro", "large" : 9007199254740993 } `)
+	got, touched, err := rewriteJSON(raw, "https://zabgate.test/canvas/api/v1/scene-assets")
+	if err != nil {
+		t.Fatalf("rewriteJSON: %v", err)
+	}
+	if touched {
+		t.Fatal("rewriteJSON marked a fragment without asset references as touched")
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("rewriteJSON changed untouched raw JSON:\n got: %s\nwant: %s", got, raw)
+	}
+}
+
+func TestRewriteJSONFastPathFallsBackForEscapedAssetReferences(t *testing.T) {
+	const assetHash = "0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF"
+	for name, raw := range map[string]json.RawMessage{
+		"escaped slash":  []byte(`{"src":"assets\/` + assetHash + `.png"}`),
+		"escaped prefix": []byte(`{"src":"\u0061ssets/` + assetHash + `.png"}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, touched, err := rewriteJSON(raw, "https://zabgate.test/canvas/api/v1/scene-assets")
+			if err != nil {
+				t.Fatalf("rewriteJSON: %v", err)
+			}
+			if !touched {
+				t.Fatal("rewriteJSON did not recognize escaped asset reference")
+			}
+			var value map[string]string
+			if err := json.Unmarshal(got, &value); err != nil {
+				t.Fatalf("decode rewritten JSON: %v", err)
+			}
+			want := "https://zabgate.test/canvas/api/v1/scene-assets/" + strings.ToLower(assetHash) + "/bytes"
+			if value["src"] != want {
+				t.Fatalf("rewritten source = %q, want %q", value["src"], want)
+			}
+		})
+	}
+}
+
+func TestRewriteJSONFastPathStillRejectsInvalidJSON(t *testing.T) {
+	if _, _, err := rewriteJSON(json.RawMessage(`{"style":}`), "https://zabgate.test/canvas/api/v1/scene-assets"); err == nil {
+		t.Fatal("rewriteJSON accepted invalid JSON")
 	}
 }

@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -157,5 +159,142 @@ func TestPostLocalAtomicSceneIntent_ReadsContentAddressedArtifacts(t *testing.T)
 	returned := send()
 	if returned.Code != http.StatusOK || activeScene != "scene-1" {
 		t.Fatalf("warm Blue return acknowledged without switching the preview wire: status=%d active=%s", returned.Code, activeScene)
+	}
+}
+
+func TestLoadLocalSceneEnvelopeKeepsArtifactBytes(t *testing.T) {
+	program := minimalProgram(t)
+	_, programDigest := canvasEnvelope(program)
+	lsml := []byte(`{"root":{"kind":"frame"}}`)
+	render := []byte(`{"root":{"kind":"frame"},"defaults":{}}`)
+	digest := func(value []byte) string {
+		sum := sha256.Sum256(value)
+		return "sha256:" + hex.EncodeToString(sum[:])
+	}
+	lsmlDigest := digest(lsml)
+	renderDigest := digest(render)
+	root := t.TempDir()
+	artifactDir := filepath.Join(root, "artifacts")
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range []struct {
+		digest string
+		bytes  []byte
+	}{
+		{strings.TrimPrefix(programDigest, "sha256:"), program},
+		{strings.TrimPrefix(lsmlDigest, "sha256:"), lsml},
+		{strings.TrimPrefix(renderDigest, "sha256:"), render},
+	} {
+		if err := os.WriteFile(filepath.Join(artifactDir, artifact.digest+".bin"), artifact.bytes, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "scene-index"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	index, err := json.Marshal(localSceneIndex{
+		SceneID:          "scene-raw",
+		RevisionID:       "revision-raw",
+		LSMLBundleDigest: lsmlDigest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "scene-index", "scene-raw--revision-raw.json"), index, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := loadLocalSceneEnvelope(root, &attestation.Claims{
+		SceneID:            "scene-raw",
+		RevisionID:         "revision-raw",
+		BlueProgramDigest:  programDigest,
+		RenderBundleDigest: renderDigest,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if envelope.BlueProgram != "" || envelope.LSMLBundle != "" || envelope.RenderBundle != "" {
+		t.Fatal("local bytes were copied into the base64 envelope fields")
+	}
+	if !bytes.Equal(envelope.blueProgramBytes, program) || !bytes.Equal(envelope.lsmlBundleBytes, lsml) || !bytes.Equal(envelope.renderBundleBytes, render) {
+		t.Fatal("local artifact bytes were changed while loading")
+	}
+	if err := verifyNoProgramEnvelopeValue(resolvedSceneEnvelope{blueProgramBytes: program}); err == nil {
+		t.Fatal("a local Blue program must not pass the no-program contract")
+	}
+	verifiedProgram, err := decodeAndVerifyProgramEnvelopeCached(envelope, programDigest, NewVerifiedProgramCache())
+	if err != nil || !bytes.Equal(verifiedProgram, program) {
+		t.Fatalf("local Blue program verification: err=%v", err)
+	}
+	verifiedLSML, err := decodeAndVerifyBundleEnvelope(envelope)
+	if err != nil || !bytes.Equal(verifiedLSML, lsml) {
+		t.Fatalf("local LSML bundle verification: err=%v", err)
+	}
+	verifiedRender, err := decodeAndVerifyRenderBundleEnvelope(envelope, renderDigest)
+	if err != nil || !bytes.Equal(verifiedRender, render) {
+		t.Fatalf("local render bundle verification: err=%v", err)
+	}
+}
+
+// BenchmarkLoadLocalSceneEnvelope measures local reads plus representation
+// construction; the common digest-verification path is deliberately excluded.
+func BenchmarkLoadLocalSceneEnvelope(b *testing.B) {
+	const (
+		sceneID    = "scene-bench"
+		revisionID = "revision-bench"
+	)
+	root := b.TempDir()
+	artifactDir := filepath.Join(root, "artifacts")
+	indexDir := filepath.Join(root, "scene-index")
+	if err := os.MkdirAll(artifactDir, 0o700); err != nil {
+		b.Fatal(err)
+	}
+	if err := os.MkdirAll(indexDir, 0o700); err != nil {
+		b.Fatal(err)
+	}
+	programDigest := strings.Repeat("a", 64)
+	lsmlDigest := "sha256:" + strings.Repeat("b", 64)
+	renderDigest := strings.Repeat("c", 64)
+	program := bytes.Repeat([]byte("p"), 1<<20)
+	lsml := bytes.Repeat([]byte("l"), 512<<10)
+	render := bytes.Repeat([]byte("r"), 2<<20)
+	for digest, data := range map[string][]byte{
+		programDigest: program,
+		strings.TrimPrefix(lsmlDigest, "sha256:"): lsml,
+		renderDigest: render,
+	} {
+		if err := os.WriteFile(filepath.Join(artifactDir, digest+".bin"), data, 0o600); err != nil {
+			b.Fatal(err)
+		}
+	}
+	index, err := json.Marshal(localSceneIndex{
+		SceneID:          sceneID,
+		RevisionID:       revisionID,
+		LSMLBundleDigest: lsmlDigest,
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	indexPath := filepath.Join(indexDir, sceneID+"--"+revisionID+".json")
+	if err := os.WriteFile(indexPath, index, 0o600); err != nil {
+		b.Fatal(err)
+	}
+	claims := &attestation.Claims{
+		SceneID:            sceneID,
+		RevisionID:         revisionID,
+		BlueProgramDigest:  "sha256:" + programDigest,
+		RenderBundleDigest: "sha256:" + renderDigest,
+	}
+	b.SetBytes(int64(len(program) + len(lsml) + len(render)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		result, err := loadLocalSceneEnvelope(root, claims)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if result.blueProgramBytes == nil || result.lsmlBundleBytes == nil || result.renderBundleBytes == nil {
+			b.Fatal("local artifacts were not loaded")
+		}
 	}
 }

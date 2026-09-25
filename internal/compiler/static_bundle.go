@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -222,6 +223,13 @@ func addAllowedHost(raw json.RawMessage, assetBaseURL string) (json.RawMessage, 
 
 func rewriteJSON(raw json.RawMessage, assetBaseURL string) (json.RawMessage, bool, error) {
 	if len(raw) == 0 {
+		return raw, false, nil
+	}
+	// Most static properties and defaults contain neither asset references nor
+	// JSON escapes. Keep those fragments as-is rather than materializing a
+	// generic Go value and marshaling it back. Any escape forces the established
+	// path so escaped spellings of asset references are still recognized.
+	if bytes.IndexByte(raw, '\\') < 0 && !bytes.Contains(raw, []byte("assets/")) && json.Valid(raw) {
 		return raw, false, nil
 	}
 	var value any
