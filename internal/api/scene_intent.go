@@ -329,16 +329,19 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		// Always validate and activate through the normal loading path. A
 		// loaded Host slot is not proof that its scene still owns the Preview
 		// wire: an editable clone can have selected another scene meanwhile.
+		var envelope resolvedSceneEnvelope
+		var envelopeReady bool
 		var envelopeBody []byte
 		var delegation *workload.Delegation
 		var inlineAdmissionDone chan error
 		switch {
 		case localArtifacts:
-			envelopeBody, err = loadLocalSceneEnvelope(deps.LocalArtifactRoot, claims)
+			envelope, err = loadLocalSceneEnvelope(deps.LocalArtifactRoot, claims)
 			if err != nil {
 				writeJSON(w, http.StatusConflict, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "LOCAL_SCENE_ARTIFACT_UNAVAILABLE", Message: err.Error()})
 				return
 			}
+			envelopeReady = true
 		case inlineArtifacts:
 			if !deps.EmbeddedLocal {
 				switch inlinePortal, ok := deps.Workload.(InlineAdmissionPortal); {
@@ -364,18 +367,15 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			// ZabGate's validated capsule is already the result of Canvas
 			// validation and bundle creation. Do not dereference Canvas again
 			// on activation.
-			envelopeBody, err = json.Marshal(resolvedSceneEnvelope{
+			envelope = resolvedSceneEnvelope{
 				BlueProgram:        req.BlueProgram,
 				BlueProgramDigest:  req.BlueProgramDigest,
 				LSMLBundle:         req.LSMLBundle,
 				LSMLBundleDigest:   req.LSMLBundleDigest,
 				RenderBundle:       req.RenderBundle,
 				RenderBundleDigest: req.RenderBundleDigest,
-			})
-			if err != nil {
-				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_UNAVAILABLE", Message: err.Error()})
-				return
 			}
+			envelopeReady = true
 		default:
 			// Legacy path: mint and consume a one-shot Canvas delegation before
 			// accepting the fetched artifact envelope.
@@ -413,10 +413,11 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		// chain that fetched it, not a second signed digest. Documented
 		// gap, not silently assumed equal to the program's guarantee.
 		//
-		var envelope resolvedSceneEnvelope
-		if err := json.Unmarshal(envelopeBody, &envelope); err != nil {
-			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
-			return
+		if !envelopeReady {
+			if err := json.Unmarshal(envelopeBody, &envelope); err != nil {
+				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
+				return
+			}
 		}
 
 		// A ref whose SIGNED claims declare NO program (empty

@@ -37,6 +37,12 @@ type resolvedSceneEnvelope struct {
 	// bytes verbatim and skips StaticBundleCompiler.
 	RenderBundle       string `json:"render_bundle,omitempty"`
 	RenderBundleDigest string `json:"render_bundle_digest,omitempty"`
+
+	// Embedded-local activations keep artifact files as bytes instead of
+	// converting them to the wire envelope's base64 strings and back.
+	blueProgramBytes  []byte `json:"-"`
+	lsmlBundleBytes   []byte `json:"-"`
+	renderBundleBytes []byte `json:"-"`
 }
 
 type localSceneIndex struct {
@@ -47,48 +53,48 @@ type localSceneIndex struct {
 
 const maxLocalSceneArtifactBytes = 1 << 30
 
-func loadLocalSceneEnvelope(root string, claims *attestation.Claims) ([]byte, error) {
+func loadLocalSceneEnvelope(root string, claims *attestation.Claims) (resolvedSceneEnvelope, error) {
 	if root == "" {
-		return nil, errors.New("local artifact root is not configured")
+		return resolvedSceneEnvelope{}, errors.New("local artifact root is not configured")
 	}
 	if !safeLocalComponent(claims.SceneID) || !safeLocalComponent(claims.RevisionID) {
-		return nil, errors.New("scene or revision id is not a safe local cache key")
+		return resolvedSceneEnvelope{}, errors.New("scene or revision id is not a safe local cache key")
 	}
 	indexPath := filepath.Join(root, "scene-index", claims.SceneID+"--"+claims.RevisionID+".json")
 	indexRaw, err := os.ReadFile(indexPath)
 	if err != nil {
-		return nil, fmt.Errorf("read local scene index: %w", err)
+		return resolvedSceneEnvelope{}, fmt.Errorf("read local scene index: %w", err)
 	}
 	var index localSceneIndex
 	if err := json.Unmarshal(indexRaw, &index); err != nil || index.SceneID != claims.SceneID || index.RevisionID != claims.RevisionID {
-		return nil, errors.New("local scene index does not match the attested scene")
+		return resolvedSceneEnvelope{}, errors.New("local scene index does not match the attested scene")
 	}
 	envelope := resolvedSceneEnvelope{}
 	if claims.BlueProgramDigest != "" {
 		program, err := readLocalArtifact(root, claims.BlueProgramDigest)
 		if err != nil {
-			return nil, fmt.Errorf("read local Blue program: %w", err)
+			return resolvedSceneEnvelope{}, fmt.Errorf("read local Blue program: %w", err)
 		}
-		envelope.BlueProgram = base64.StdEncoding.EncodeToString(program)
+		envelope.blueProgramBytes = program
 		envelope.BlueProgramDigest = claims.BlueProgramDigest
 	}
 	if index.LSMLBundleDigest != "" {
 		bundle, err := readLocalArtifact(root, index.LSMLBundleDigest)
 		if err != nil {
-			return nil, fmt.Errorf("read local LSML bundle: %w", err)
+			return resolvedSceneEnvelope{}, fmt.Errorf("read local LSML bundle: %w", err)
 		}
-		envelope.LSMLBundle = base64.StdEncoding.EncodeToString(bundle)
+		envelope.lsmlBundleBytes = bundle
 		envelope.LSMLBundleDigest = index.LSMLBundleDigest
 	}
 	if claims.RenderBundleDigest != "" {
 		render, err := readLocalArtifact(root, claims.RenderBundleDigest)
 		if err != nil {
-			return nil, fmt.Errorf("read local render bundle: %w", err)
+			return resolvedSceneEnvelope{}, fmt.Errorf("read local render bundle: %w", err)
 		}
-		envelope.RenderBundle = base64.StdEncoding.EncodeToString(render)
+		envelope.renderBundleBytes = render
 		envelope.RenderBundleDigest = claims.RenderBundleDigest
 	}
-	return json.Marshal(envelope)
+	return envelope, nil
 }
 
 func readLocalArtifact(root, digest string) ([]byte, error) {
@@ -108,7 +114,20 @@ func readLocalArtifact(root, digest string) ([]byte, error) {
 	if info.Size() <= 0 || info.Size() > maxLocalSceneArtifactBytes {
 		return nil, errors.New("local artifact size is outside the allowed range")
 	}
-	return io.ReadAll(io.LimitReader(file, maxLocalSceneArtifactBytes+1))
+	data := make([]byte, int(info.Size()))
+	if _, err := io.ReadFull(file, data); err != nil {
+		return nil, fmt.Errorf("read local artifact: %w", err)
+	}
+	var extra [1]byte
+	if n, err := file.Read(extra[:]); n != 0 {
+		return nil, errors.New("local scene artifact changed while reading")
+	} else if err != io.EOF {
+		if err != nil {
+			return nil, err
+		}
+		return nil, io.ErrNoProgress
+	}
+	return data, nil
 }
 
 func safeLocalComponent(value string) bool {
@@ -134,7 +153,7 @@ func decodeAndVerifyProgramEnvelopeCached(envelope resolvedSceneEnvelope, expect
 	if envelope.BlueProgramDigest != expectedDigest {
 		return nil, errors.New("scene-intent: envelope blue_program_digest does not match the attested claim")
 	}
-	program, err := base64.StdEncoding.DecodeString(envelope.BlueProgram)
+	program, err := decodeSceneArtifact(envelope.BlueProgram, envelope.blueProgramBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -206,13 +225,13 @@ func decodeAndVerifyBundle(body json.RawMessage) ([]byte, error) {
 }
 
 func decodeAndVerifyBundleEnvelope(envelope resolvedSceneEnvelope) ([]byte, error) {
-	if envelope.LSMLBundle == "" {
+	if envelope.LSMLBundle == "" && envelope.lsmlBundleBytes == nil {
 		return nil, nil
 	}
 	if envelope.LSMLBundleDigest == "" {
 		return nil, errors.New("scene-intent: lsml_bundle present without lsml_bundle_digest")
 	}
-	bundle, err := base64.StdEncoding.DecodeString(envelope.LSMLBundle)
+	bundle, err := decodeSceneArtifact(envelope.LSMLBundle, envelope.lsmlBundleBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +246,7 @@ func decodeAndVerifyBundleEnvelope(envelope resolvedSceneEnvelope) ([]byte, erro
 // produced by POST /validate/render-bundle. The expected digest comes from
 // signed Canvas claims, so the envelope cannot substitute another artifact.
 func decodeAndVerifyRenderBundleEnvelope(envelope resolvedSceneEnvelope, expectedDigest string) ([]byte, error) {
-	if envelope.RenderBundle == "" {
+	if envelope.RenderBundle == "" && envelope.renderBundleBytes == nil {
 		if expectedDigest != "" {
 			return nil, errors.New("scene-intent: signed render_bundle_digest has no render_bundle")
 		}
@@ -236,7 +255,7 @@ func decodeAndVerifyRenderBundleEnvelope(envelope resolvedSceneEnvelope, expecte
 	if expectedDigest == "" || envelope.RenderBundleDigest == "" || envelope.RenderBundleDigest != expectedDigest {
 		return nil, errors.New("scene-intent: render bundle digest is not signed consistently")
 	}
-	bundle, err := base64.StdEncoding.DecodeString(envelope.RenderBundle)
+	bundle, err := decodeSceneArtifact(envelope.RenderBundle, envelope.renderBundleBytes)
 	if err != nil || len(bundle) == 0 || !json.Valid(bundle) {
 		return nil, errors.New("scene-intent: render bundle is not valid base64 JSON")
 	}
@@ -261,10 +280,20 @@ func decodeRenderBundleDefaults(bundle []byte) (map[string]json.RawMessage, erro
 // verifyNoProgramEnvelopeValue enforces the no-program contract on the
 // decoded envelope: bytes absent from signed claims must not enter Orion.
 func verifyNoProgramEnvelopeValue(envelope resolvedSceneEnvelope) error {
-	if envelope.BlueProgram != "" || envelope.BlueProgramDigest != "" {
+	if envelope.BlueProgram != "" || envelope.BlueProgramDigest != "" || envelope.blueProgramBytes != nil {
 		return errors.New("scene-intent: envelope carries a program the attestation did not sign")
 	}
 	return nil
+}
+
+func decodeSceneArtifact(encoded string, localBytes []byte) ([]byte, error) {
+	if localBytes != nil {
+		if encoded != "" {
+			return nil, errors.New("scene-intent: artifact is present in both encoded and local form")
+		}
+		return localBytes, nil
+	}
+	return base64.StdEncoding.DecodeString(encoded)
 }
 
 // getHostRenderBundle serves the LSML render-bundle bytes attached to a
