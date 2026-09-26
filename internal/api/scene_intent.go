@@ -17,6 +17,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/attestation"
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
+	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
@@ -80,6 +81,9 @@ type SceneIntentDeps struct {
 	// supplies the compiler; nil keeps legacy test doubles and old envelopes
 	// byte-compatible until the stateless surface is enabled there.
 	StaticBundleCompiler func(raw []byte, sceneID, sceneVersion string) ([]byte, map[string]json.RawMessage, error)
+	// StaticRenderBundleCompiler avoids a JSON roundtrip for in-process Preview.
+	// Optional: byte-only integrations keep the existing decode/error behavior.
+	StaticRenderBundleCompiler func(raw []byte, sceneID, sceneVersion string) (*compiler.RenderBundle, map[string]json.RawMessage, error)
 
 	// Providers is the Zab capability-provider catalogue (internal/providers
 	// .Registry()) passed to bluehost.Host.Prepare/Take so a program

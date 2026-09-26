@@ -1,0 +1,26 @@
+goos: windows
+goarch: amd64
+pkg: github.com/ZabLaboratory/Orion/internal/compiler
+cpu: AMD Ryzen 7 3800X 8-Core Processor
+BenchmarkStaticPreviewCompilation/images25/typedfalse-16         	     609	   2056987 ns/op	  51.25 MB/s	  582832 B/op	    2554 allocs/op
+BenchmarkStaticPreviewCompilation/images25/typedfalse-16         	     590	   2029613 ns/op	  51.94 MB/s	  589396 B/op	    2554 allocs/op
+BenchmarkStaticPreviewCompilation/images25/typedfalse-16         	     583	   1979033 ns/op	  53.27 MB/s	  589040 B/op	    2554 allocs/op
+BenchmarkStaticPreviewCompilation/images25/typedfalse-16         	     621	   1958791 ns/op	  53.82 MB/s	  591384 B/op	    2554 allocs/op
+BenchmarkStaticPreviewCompilation/images25/typedfalse-16         	     620	   1969156 ns/op	  53.54 MB/s	  590615 B/op	    2554 allocs/op
+BenchmarkStaticPreviewCompilation/images25/typedtrue-16          	    1300	    964699 ns/op	 109.28 MB/s	  394310 B/op	    1802 allocs/op
+BenchmarkStaticPreviewCompilation/images25/typedtrue-16          	    1222	    979242 ns/op	 107.66 MB/s	  394313 B/op	    1802 allocs/op
+BenchmarkStaticPreviewCompilation/images25/typedtrue-16          	    1262	    953421 ns/op	 110.57 MB/s	  394317 B/op	    1802 allocs/op
+BenchmarkStaticPreviewCompilation/images25/typedtrue-16          	    1282	    955595 ns/op	 110.32 MB/s	  394320 B/op	    1802 allocs/op
+BenchmarkStaticPreviewCompilation/images25/typedtrue-16          	    1234	    957962 ns/op	 110.05 MB/s	  394314 B/op	    1802 allocs/op
+BenchmarkStaticPreviewCompilation/images250/typedfalse-16        	      63	  18353027 ns/op	  57.45 MB/s	 8553302 B/op	   24649 allocs/op
+BenchmarkStaticPreviewCompilation/images250/typedfalse-16        	      64	  18494055 ns/op	  57.02 MB/s	 8438641 B/op	   24648 allocs/op
+BenchmarkStaticPreviewCompilation/images250/typedfalse-16        	      54	  18538807 ns/op	  56.88 MB/s	 8220118 B/op	   24646 allocs/op
+BenchmarkStaticPreviewCompilation/images250/typedfalse-16        	      63	  18575343 ns/op	  56.77 MB/s	 8419987 B/op	   24648 allocs/op
+BenchmarkStaticPreviewCompilation/images250/typedfalse-16        	      67	  18519242 ns/op	  56.94 MB/s	 8554137 B/op	   24649 allocs/op
+BenchmarkStaticPreviewCompilation/images250/typedtrue-16         	     130	   9162798 ns/op	 115.08 MB/s	 3932287 B/op	   17346 allocs/op
+BenchmarkStaticPreviewCompilation/images250/typedtrue-16         	     133	   9132384 ns/op	 115.47 MB/s	 3932363 B/op	   17346 allocs/op
+BenchmarkStaticPreviewCompilation/images250/typedtrue-16         	     133	   8815453 ns/op	 119.62 MB/s	 3932313 B/op	   17346 allocs/op
+BenchmarkStaticPreviewCompilation/images250/typedtrue-16         	     132	   9058686 ns/op	 116.40 MB/s	 3932368 B/op	   17346 allocs/op
+BenchmarkStaticPreviewCompilation/images250/typedtrue-16         	     100	  10176139 ns/op	 103.62 MB/s	 3932319 B/op	   17346 allocs/op
+PASS
+ok  	github.com/ZabLaboratory/Orion/internal/compiler	30.674s
