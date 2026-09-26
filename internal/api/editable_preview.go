@@ -72,7 +72,7 @@ func applyEditablePreviewPatch(deps PublicDeps, body editablePreviewPatchRequest
 
 func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
-		if !deps.Config.Profile.IsEmbeddedLocal() || deps.Preview == nil || deps.SceneIntent == nil || deps.SceneIntent.StaticBundleCompiler == nil {
+		if !deps.Config.Profile.IsEmbeddedLocal() || deps.Preview == nil || deps.SceneIntent == nil || (deps.SceneIntent.StaticBundleCompiler == nil && deps.SceneIntent.StaticRenderBundleCompiler == nil) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND"})
 			return
 		}
@@ -86,14 +86,13 @@ func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_BODY"})
 			return
 		}
-		compiled, defaults, err := deps.SceneIntent.StaticBundleCompiler(body.LSMLBundle, body.SceneID, body.SceneVersion)
-		if err != nil {
-			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "STATIC_BUNDLE_COMPILE_FAILED", "message": err.Error()})
+		bundle, defaults, err := compileEditablePreview(deps.SceneIntent, body)
+		if errors.Is(err, compiler.ErrInvalidStaticRenderBundle) {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "STATIC_BUNDLE_INVALID"})
 			return
 		}
-		var bundle compiler.RenderBundle
-		if json.Unmarshal(compiled, &bundle) != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "STATIC_BUNDLE_INVALID"})
+		if err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "STATIC_BUNDLE_COMPILE_FAILED", "message": err.Error()})
 			return
 		}
 		graph := &compiler.Graph{
@@ -101,7 +100,7 @@ func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 			SceneVersion: body.SceneVersion,
 			Defaults:     defaults,
 		}
-		deps.Preview.ActivateEditableWithBundle(body.SceneID, graph, &bundle, body.EditSeq, rawBundleCopy(body.LSMLBundle))
+		deps.Preview.ActivateEditableWithBundle(body.SceneID, graph, bundle, body.EditSeq, rawBundleCopy(body.LSMLBundle))
 		writeJSON(w, http.StatusOK, map[string]any{
 			"scene_id":      body.SceneID,
 			"scene_version": body.SceneVersion,
@@ -109,6 +108,25 @@ func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 			"paths":         len(defaults),
 		})
 	})
+}
+
+func compileEditablePreview(deps *SceneIntentDeps, body editablePreviewOpenRequest) (*compiler.RenderBundle, map[string]json.RawMessage, error) {
+	if deps.StaticRenderBundleCompiler != nil {
+		bundle, defaults, err := deps.StaticRenderBundleCompiler(body.LSMLBundle, body.SceneID, body.SceneVersion)
+		if err == nil && bundle == nil {
+			err = compiler.ErrInvalidStaticRenderBundle
+		}
+		return bundle, defaults, err
+	}
+	compiled, defaults, err := deps.StaticBundleCompiler(body.LSMLBundle, body.SceneID, body.SceneVersion)
+	if err != nil {
+		return nil, nil, err
+	}
+	var bundle compiler.RenderBundle
+	if json.Unmarshal(compiled, &bundle) != nil {
+		return nil, nil, compiler.ErrInvalidStaticRenderBundle
+	}
+	return &bundle, defaults, nil
 }
 
 func rawBundleCopy(raw json.RawMessage) []byte {

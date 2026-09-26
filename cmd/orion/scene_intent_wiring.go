@@ -135,6 +135,9 @@ func wireSceneIntent(cfg config.Config, logger *slog.Logger, effectDeps bluehost
 		StaticBundleCompiler: func(raw []byte, sceneID, sceneVersion string) ([]byte, map[string]json.RawMessage, error) {
 			return compiler.CompileStaticLSML(raw, sceneID, sceneVersion, assetBaseURL)
 		},
+		StaticRenderBundleCompiler: func(raw []byte, sceneID, sceneVersion string) (*compiler.RenderBundle, map[string]json.RawMessage, error) {
+			return compiler.CompileStaticRenderBundle(raw, sceneID, sceneVersion, assetBaseURL)
+		},
 		Providers: providers.Registry(),
 		Policy:    providers.Policy(httpEgressAllowed),
 		Effects:   effectDeps,

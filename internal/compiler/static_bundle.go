@@ -19,6 +19,49 @@ import (
 // them separate from the render bundle is intentional: Solar resolves
 // bindings from the scene snapshot, while the bundle describes the tree.
 func CompileStaticLSML(raw []byte, _ string, sceneVersion, assetBaseURL string) ([]byte, map[string]json.RawMessage, error) {
+	bundle, passthrough, defaults, err := compileStaticLSML(raw, sceneVersion, assetBaseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	if passthrough != nil {
+		return passthrough, defaults, nil
+	}
+	encoded, err := json.Marshal(bundle)
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode static RenderBundle: %w", err)
+	}
+	return encoded, defaults, nil
+}
+
+// ErrInvalidStaticRenderBundle distinguishes an invalid already-compiled root
+// from an authoring compilation failure, preserving the Preview HTTP contract.
+var ErrInvalidStaticRenderBundle = errors.New("invalid static RenderBundle")
+
+// CompileStaticRenderBundle is the in-process counterpart of CompileStaticLSML.
+// It avoids encoding then decoding the complete tree for editable Preview. The
+// byte API remains authoritative for persisted artifacts and their digests.
+func CompileStaticRenderBundle(raw []byte, _ string, sceneVersion, assetBaseURL string) (*RenderBundle, map[string]json.RawMessage, error) {
+	bundle, passthrough, defaults, err := compileStaticLSML(raw, sceneVersion, assetBaseURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	if passthrough != nil {
+		bundle = new(RenderBundle)
+		if err := json.Unmarshal(passthrough, bundle); err != nil {
+			return nil, nil, fmt.Errorf("%w: %v", ErrInvalidStaticRenderBundle, err)
+		}
+	} else if defaults != nil {
+		// The former JSON roundtrip gave the immutable bundle and mutable scene
+		// seeds independent ownership, including each RawMessage byte slice.
+		bundle.Defaults = make(map[string]json.RawMessage, len(defaults))
+		for path, value := range defaults {
+			bundle.Defaults[path] = bytes.Clone(value)
+		}
+	}
+	return bundle, defaults, nil
+}
+
+func compileStaticLSML(raw []byte, sceneVersion, assetBaseURL string) (*RenderBundle, []byte, map[string]json.RawMessage, error) {
 	var source struct {
 		Layout           json.RawMessage            `json:"layout"`
 		Root             json.RawMessage            `json:"root"`
@@ -30,7 +73,7 @@ func CompileStaticLSML(raw []byte, _ string, sceneVersion, assetBaseURL string) 
 		Animations       json.RawMessage            `json:"animations"`
 	}
 	if err := json.Unmarshal(raw, &source); err != nil {
-		return nil, nil, fmt.Errorf("decode static LSML bundle: %w", err)
+		return nil, nil, nil, fmt.Errorf("decode static LSML bundle: %w", err)
 	}
 	// Accept an already compiled bundle for forward compatibility. The
 	// current ZabCanvas producer sends layout; this branch avoids a needless
@@ -38,12 +81,12 @@ func CompileStaticLSML(raw []byte, _ string, sceneVersion, assetBaseURL string) 
 	if len(source.Layout) == 0 && len(source.Root) != 0 {
 		defaults, _, err := rewriteDefaults(source.Defaults, assetBaseURL)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return raw, defaults, nil
+		return nil, raw, defaults, nil
 	}
 	if len(source.Layout) == 0 {
-		return nil, nil, errors.New("static LSML bundle has neither layout nor compiled root")
+		return nil, nil, nil, errors.New("static LSML bundle has neither layout nor compiled root")
 	}
 
 	var rawRoot map[string]json.RawMessage
@@ -51,13 +94,13 @@ func CompileStaticLSML(raw []byte, _ string, sceneVersion, assetBaseURL string) 
 		if err == nil {
 			err = errors.New("layout is not an object")
 		}
-		return nil, nil, fmt.Errorf("decode static LSML layout: %w", err)
+		return nil, nil, nil, fmt.Errorf("decode static LSML layout: %w", err)
 	}
 
 	assetsTouched := false
 	root, err := adaptStaticNode(rawRoot, assetBaseURL, &assetsTouched)
 	if err != nil {
-		return nil, nil, fmt.Errorf("adapt static LSML layout: %w", err)
+		return nil, nil, nil, fmt.Errorf("adapt static LSML layout: %w", err)
 	}
 	animations := source.Animations
 	if len(animations) == 0 {
@@ -67,12 +110,12 @@ func CompileStaticLSML(raw []byte, _ string, sceneVersion, assetBaseURL string) 
 
 	defaults, defaultsTouched, err := rewriteDefaults(source.Defaults, assetBaseURL)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	assetsTouched = assetsTouched || defaultsTouched
 	assets, err := rewriteAssets(source.Assets, assetBaseURL, &assetsTouched)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	bundle := RenderBundle{
@@ -84,11 +127,7 @@ func CompileStaticLSML(raw []byte, _ string, sceneVersion, assetBaseURL string) 
 		LSMLAssets:       assets,
 		Defaults:         defaults,
 	}
-	encoded, err := json.Marshal(bundle)
-	if err != nil {
-		return nil, nil, fmt.Errorf("encode static RenderBundle: %w", err)
-	}
-	return encoded, defaults, nil
+	return &bundle, nil, defaults, nil
 }
 
 var staticAssetRef = regexp.MustCompile(`^assets/([0-9a-fA-F]{64})(?:\.[A-Za-z0-9]+)?$`)

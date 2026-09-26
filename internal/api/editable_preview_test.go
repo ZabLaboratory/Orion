@@ -31,7 +31,7 @@ func (w *editableAPIWire) MirrorFor(string, string, *compiler.RenderBundle) runt
 func (w *editableAPIWire) SetActive(sceneID string) { w.active = sceneID }
 func (w *editableAPIWire) Drop(string)              {}
 
-func editableAPIFixture(t *testing.T, profile config.Profile) (*http.ServeMux, *editableAPIWire) {
+func editableAPIFixture(t *testing.T, profile config.Profile, configure ...func(*SceneIntentDeps)) (*http.ServeMux, *editableAPIWire) {
 	t.Helper()
 	wire := &editableAPIWire{}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -45,13 +45,15 @@ func editableAPIFixture(t *testing.T, profile config.Profile) (*http.ServeMux, *
 		}, err
 	}
 	mux := http.NewServeMux()
+	intent := &SceneIntentDeps{StaticBundleCompiler: staticCompiler}
+	for _, apply := range configure {
+		apply(intent)
+	}
 	RegisterPublic(mux, PublicDeps{
-		Logger:  logger,
-		Config:  config.Config{Profile: profile, LocalEditorToken: "editor-capability"},
-		Preview: preview,
-		SceneIntent: &SceneIntentDeps{
-			StaticBundleCompiler: staticCompiler,
-		},
+		Logger:      logger,
+		Config:      config.Config{Profile: profile, LocalEditorToken: "editor-capability"},
+		Preview:     preview,
+		SceneIntent: intent,
 	})
 	return mux, wire
 }
