@@ -338,10 +338,11 @@ func (s *Scene) gatherInputs(ce computeEntry) map[string]json.RawMessage {
 		}
 		return out
 	}
-	out := make(map[string]json.RawMessage, len(ce.upstream))
-	for i, up := range ce.upstream {
+	upstreamCount := ce.upstreamCount()
+	out := make(map[string]json.RawMessage, upstreamCount)
+	for i := 0; i < upstreamCount; i++ {
 		name := portNames[i%len(portNames)]
-		if v, ok := s.state.Get(s.upstreamPath(up)); ok {
+		if v, ok := s.state.Get(s.upstreamPath(ce.upstreamID(i))); ok {
 			out[name] = v
 		}
 	}
