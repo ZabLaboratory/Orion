@@ -140,7 +140,9 @@ func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assets
 		}
 		return LayoutNode{}, err
 	}
-	_ = json.Unmarshal(raw["id"], &node.ID)
+	if id := raw["id"]; len(id) != 0 {
+		_ = json.Unmarshal(id, &node.ID)
+	}
 
 	for key, value := range raw {
 		switch key {
@@ -162,8 +164,12 @@ func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assets
 	}
 
 	for _, bindingKey := range []string{"bind", "bindStyle", "bindUniversal"} {
+		bindingRaw := raw[bindingKey]
+		if len(bindingRaw) == 0 {
+			continue
+		}
 		var bindings map[string]string
-		if err := json.Unmarshal(raw[bindingKey], &bindings); err != nil {
+		if err := json.Unmarshal(bindingRaw, &bindings); err != nil {
 			continue
 		}
 		if node.Bindings == nil {
@@ -176,19 +182,36 @@ func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assets
 	if len(node.Bindings) == 0 {
 		node.Bindings = nil
 	}
-	_ = json.Unmarshal(raw["bindAnimate"], &node.AnimateBindings)
+	if bindings := raw["bindAnimate"]; len(bindings) != 0 {
+		_ = json.Unmarshal(bindings, &node.AnimateBindings)
+	}
 	if len(node.AnimateBindings) == 0 {
 		node.AnimateBindings = nil
 	}
-	if err := json.Unmarshal(raw["animate"], &node.Transitions); err != nil {
-		node.Transitions = nil
+	if transitions := raw["animate"]; len(transitions) != 0 {
+		if err := json.Unmarshal(transitions, &node.Transitions); err != nil {
+			node.Transitions = nil
+		}
 	}
 
-	var children []json.RawMessage
-	if err := json.Unmarshal(raw["children"], &children); err == nil {
-		for _, childRaw := range children {
-			var child map[string]json.RawMessage
-			if err := json.Unmarshal(childRaw, &child); err != nil || child == nil {
+	if childrenRaw := raw["children"]; len(childrenRaw) != 0 {
+		var children []map[string]json.RawMessage
+		if err := json.Unmarshal(childrenRaw, &children); err != nil {
+			// Keep the old tolerant behavior for malformed arrays: valid object
+			// siblings still compile while non-object entries are ignored.
+			var childRaws []json.RawMessage
+			if json.Unmarshal(childrenRaw, &childRaws) == nil {
+				children = make([]map[string]json.RawMessage, 0, len(childRaws))
+				for _, childRaw := range childRaws {
+					var child map[string]json.RawMessage
+					if err := json.Unmarshal(childRaw, &child); err == nil && child != nil {
+						children = append(children, child)
+					}
+				}
+			}
+		}
+		for _, child := range children {
+			if child == nil {
 				continue
 			}
 			childNode, err := adaptStaticNode(child, assetBaseURL, assetsTouched)

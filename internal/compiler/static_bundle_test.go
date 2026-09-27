@@ -60,6 +60,21 @@ func TestCompileStaticLSMLRejectsMissingRenderTree(t *testing.T) {
 	}
 }
 
+func TestCompileStaticLSMLKeepsValidChildrenAroundMalformedEntries(t *testing.T) {
+	raw := []byte(`{"layout":{"kind":"frame","children":[{"kind":"text","id":"before"},17,{"kind":"shape","id":"after"}]}}`)
+	encoded, _, err := CompileStaticLSML(raw, "scene", "sha256:scene", staticTestAssetBase)
+	if err != nil {
+		t.Fatalf("compile static LSML: %v", err)
+	}
+	var bundle RenderBundle
+	if err := json.Unmarshal(encoded, &bundle); err != nil {
+		t.Fatalf("decode RenderBundle: %v", err)
+	}
+	if len(bundle.Root.Children) != 2 || bundle.Root.Children[0].ID != "before" || bundle.Root.Children[1].ID != "after" {
+		t.Fatalf("children = %#v; want valid siblings around ignored scalar", bundle.Root.Children)
+	}
+}
+
 func TestCompileStaticLSMLPreservesEditableBindAnimate(t *testing.T) {
 	raw := []byte(`{
   "layout":{"kind":"shape","id":"panel","position":{"x":0,"y":0},"bindAnimate":{"transform.translate":"__editable.70616e656c.translate"},"animate":{"transition":{"duration":0,"easing":"linear"}}},
