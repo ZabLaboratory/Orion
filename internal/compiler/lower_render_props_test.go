@@ -269,6 +269,84 @@ func TestLowerRenderProps_Pure(t *testing.T) {
 	}
 }
 
+func TestSplitSizeFastPathParity(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		fastPath bool
+	}{
+		{
+			name:     "ordinary object with nested unrelated values",
+			raw:      " { \"w\" : 320, \"h\" : 48, \"other\" : [1,{\"x\":\"brace } and bracket ]\"}] } ",
+			fastPath: true,
+		},
+		{name: "duplicate dimensions keep last values", raw: "{\"w\":1,\"h\":2,\"w\":3,\"h\":4}", fastPath: true},
+		{name: "property names remain case sensitive", raw: "{\"W\":5,\"H\":6}", fastPath: true},
+		{name: "escaped property name uses compatibility path", raw: "{\"\\u0077\":7}", fastPath: false},
+		{name: "escaped value uses compatibility path", raw: "{\"h\":\"line\\nheight\"}", fastPath: false},
+		{name: "unknown escaped value uses compatibility path", raw: "{\"other\":\"line\\nvalue\",\"w\":8}", fastPath: false},
+		{name: "empty object", raw: "{}", fastPath: true},
+		{name: "null", raw: "null", fastPath: true},
+		{name: "array", raw: "[1]", fastPath: true},
+		{name: "scalar", raw: "24", fastPath: true},
+		{name: "malformed member", raw: "{\"w\":}", fastPath: false},
+		{name: "malformed member after dimension", raw: "{\"w\":10,\"h\":}", fastPath: false},
+		{name: "trailing data", raw: "{\"w\":10} invalid", fastPath: false},
+		{name: "empty input", raw: "", fastPath: false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw := json.RawMessage(test.raw)
+			fastOutput := make(map[string]json.RawMessage)
+			fast := splitSizeFast(raw, fastOutput)
+			if fast != test.fastPath {
+				t.Fatalf("fast-path=%v, want %v", fast, test.fastPath)
+			}
+			legacyOutput := splitSizeViaMap(raw)
+			if fast && !reflect.DeepEqual(fastOutput, legacyOutput) {
+				t.Fatalf("fast output %v differs from map output %v", fastOutput, legacyOutput)
+			}
+			got := make(map[string]json.RawMessage)
+			splitSize(raw, got)
+			if !reflect.DeepEqual(got, legacyOutput) {
+				t.Fatalf("splitSize output %v differs from map output %v", got, legacyOutput)
+			}
+		})
+	}
+}
+
+func splitSizeViaMap(raw json.RawMessage) map[string]json.RawMessage {
+	var size map[string]json.RawMessage
+	out := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(raw, &size); err != nil {
+		return out
+	}
+	if w, ok := size["w"]; ok {
+		out["width"] = w
+	}
+	if h, ok := size["h"]; ok {
+		out["height"] = h
+	}
+	return out
+}
+
+func TestSplitSizeFastPathOwnsRawMessages(t *testing.T) {
+	raw := json.RawMessage("{\"w\":{\"x\":1},\"h\":[2]}")
+	got := make(map[string]json.RawMessage)
+	if !splitSizeFast(raw, got) {
+		t.Fatal("ordinary size JSON should use the fast path")
+	}
+	index := bytes.Index(raw, []byte("{\"x\":1}"))
+	if index < 0 {
+		t.Fatal("test size object missing")
+	}
+	raw[index+2] = 'y'
+	if value := string(got["width"]); value != "{\"x\":1}" {
+		t.Fatalf("output aliases the input size: got %q", value)
+	}
+}
+
 func TestLowerTextStyleFastPathParity(t *testing.T) {
 	tests := []struct {
 		name     string
