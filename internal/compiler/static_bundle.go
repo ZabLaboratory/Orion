@@ -149,7 +149,7 @@ func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assets
 		case "kind", "id", "children", "animate", "animations", "bind", "bindStyle", "bindUniversal", "bindAnimate":
 			continue
 		default:
-			rewritten, touched, err := rewriteJSON(value, assetBaseURL)
+			rewritten, touched, err := rewriteJSONValidatedParent(value, assetBaseURL)
 			if err != nil {
 				return LayoutNode{}, fmt.Errorf("property %q: %w", key, err)
 			}
@@ -231,7 +231,7 @@ func rewriteDefaults(defaults map[string]json.RawMessage, assetBaseURL string) (
 	out := make(map[string]json.RawMessage, len(defaults))
 	touched := false
 	for path, value := range defaults {
-		rewritten, valueTouched, err := rewriteJSON(value, assetBaseURL)
+		rewritten, valueTouched, err := rewriteJSONValidatedParent(value, assetBaseURL)
 		if err != nil {
 			return nil, false, fmt.Errorf("default %q: %w", path, err)
 		}
@@ -248,7 +248,7 @@ func rewriteAssets(raw json.RawMessage, assetBaseURL string, assetsTouched *bool
 		}
 		return addAllowedHost([]byte(`{}`), assetBaseURL)
 	}
-	rewritten, touched, err := rewriteJSON(raw, assetBaseURL)
+	rewritten, touched, err := rewriteJSONValidatedParent(raw, assetBaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("assets: %w", err)
 	}
@@ -284,6 +284,17 @@ func addAllowedHost(raw json.RawMessage, assetBaseURL string) (json.RawMessage, 
 }
 
 func rewriteJSON(raw json.RawMessage, assetBaseURL string) (json.RawMessage, bool, error) {
+	return rewriteJSONFragment(raw, assetBaseURL, false)
+}
+
+// rewriteJSONValidatedParent is for fragments taken from a document that has
+// already passed json.Unmarshal. It preserves rewriteJSON's defensive contract
+// while avoiding a second full validity scan on large untouched fragments.
+func rewriteJSONValidatedParent(raw json.RawMessage, assetBaseURL string) (json.RawMessage, bool, error) {
+	return rewriteJSONFragment(raw, assetBaseURL, true)
+}
+
+func rewriteJSONFragment(raw json.RawMessage, assetBaseURL string, parentValidated bool) (json.RawMessage, bool, error) {
 	if len(raw) == 0 {
 		return raw, false, nil
 	}
@@ -291,8 +302,10 @@ func rewriteJSON(raw json.RawMessage, assetBaseURL string) (json.RawMessage, boo
 	// JSON escapes. Keep those fragments as-is rather than materializing a
 	// generic Go value and marshaling it back. Any escape forces the established
 	// path so escaped spellings of asset references are still recognized.
-	if bytes.IndexByte(raw, '\\') < 0 && !bytes.Contains(raw, []byte("assets/")) && json.Valid(raw) {
-		return raw, false, nil
+	if bytes.IndexByte(raw, '\\') < 0 && !bytes.Contains(raw, []byte("assets/")) {
+		if parentValidated || json.Valid(raw) {
+			return raw, false, nil
+		}
 	}
 	var value any
 	if err := json.Unmarshal(raw, &value); err != nil {

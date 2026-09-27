@@ -85,3 +85,56 @@ figures are a regression control, not a stable latency claim.
 The CI PostgreSQL E2E and race jobs remain authoritative; this Windows checkout
 has no `ORION_E2E_DATABASE_URL` and `CGO_ENABLED=0`, so neither was claimed as a
 local validation.
+
+## Follow-up profile: avoid revalidating trusted JSON fragments
+
+A follow-up CPU profile of `BenchmarkStaticPreviewCompilation/images250/typedtrue`
+showed `encoding/json.checkValid` at 31.2% flat CPU. `compileStaticLSML` has
+already validated the complete source document with `json.Unmarshal`, but the
+unchanged large default fragments were then scanned again by `rewriteJSON`.
+The compiler now uses a separate fast path only for `RawMessage` fragments
+extracted from that validated source; the defensive `rewriteJSON` entry point
+still validates standalone input. Escaped asset references still take the
+existing decode/rewrite path, and tests cover both entry points plus rejection
+of invalid standalone JSON.
+
+The isolated benchmark used the same Windows host and fixture on both commits:
+
+```text
+go test ./internal/compiler -run '^$' -bench '^BenchmarkStaticPreviewCompilation/images250/typedtrue$' -benchmem -benchtime=3s -count=3
+```
+
+| Measure | First optimization (`652fd84`) | Candidate with follow-up | Change |
+|---|---:|---:|---:|
+| Time/op (median) | 9.715 ms | 8.096 ms | −16.7% |
+| Bytes/op (median) | 3,630,880 | 3,628,144 | −0.08% |
+| Allocs/op | 12,830 | 12,826 | −0.03% |
+
+For context, the same 3-second benchmark on `main` measured 11.656 ms,
+3,932,278 bytes/op and 17,346 allocs/op. The final candidate is therefore
+30.5% faster with 7.7% fewer bytes and 26.1% fewer allocations in this synthetic
+inline-image fixture versus `main`; this is not a claim about every scene.
+
+The final candidate was then exercised through the real local Prism → Orion →
+Solar preview harness (same merged Prism/Solar trees, browser, and fixture as the
+baseline). Candidate report:
+
+`D:\Documents\Zab\Prism\.worktrees\local-20260927-prism-inline-image-cost\evidence\local-20260926-preview-pipeline\eleven\20260927T041142Z-run\report.json`
+
+Its Orion binary SHA-256 is
+`5c1cbd987e3dadb9166ff2e11e302a0385beca02b94c90ba516babeeeb711de0`. Ten PNG
+files—25- and 100-image fresh/patched/converged outputs, the 100-distinct-source
+fresh/live outputs, and the customer-fixture fresh/live outputs—were compared
+byte-for-byte against the `main` Orion baseline. All matched; the browser error
+list was empty and the owned Orion process stopped. The 25/100-image output
+hashes were respectively
+`b87820c9bc6b2f2c46e6500747cd67f9def03a4a865ae69502d8edb68541371f` and
+`7bf28e734e0cc63086d312024a526f9bba64b70541f8afd7e5593e548fa4eb3c`; the
+distinct-source and customer-fixture hashes also matched the baseline. Runtime
+readiness timings remain descriptive single-run measurements only.
+
+After the follow-up change, these local checks passed: `go test ./... -count=1`,
+`go vet ./...`, `go build ./...`, `staticcheck ./...`,
+`golangci-lint run --timeout=5m`, and both file-size guard commands. The preview
+pipeline typecheck and end-to-end run also passed. Remote CI results are tracked
+separately in the PR and remain required before merge.
