@@ -60,6 +60,21 @@ func TestCompileStaticLSMLRejectsMissingRenderTree(t *testing.T) {
 	}
 }
 
+func TestCompileStaticLSMLKeepsValidChildrenAroundMalformedEntries(t *testing.T) {
+	raw := []byte(`{"layout":{"kind":"frame","children":[{"kind":"text","id":"before"},17,{"kind":"shape","id":"after"}]}}`)
+	encoded, _, err := CompileStaticLSML(raw, "scene", "sha256:scene", staticTestAssetBase)
+	if err != nil {
+		t.Fatalf("compile static LSML: %v", err)
+	}
+	var bundle RenderBundle
+	if err := json.Unmarshal(encoded, &bundle); err != nil {
+		t.Fatalf("decode RenderBundle: %v", err)
+	}
+	if len(bundle.Root.Children) != 2 || bundle.Root.Children[0].ID != "before" || bundle.Root.Children[1].ID != "after" {
+		t.Fatalf("children = %#v; want valid siblings around ignored scalar", bundle.Root.Children)
+	}
+}
+
 func TestCompileStaticLSMLPreservesEditableBindAnimate(t *testing.T) {
 	raw := []byte(`{
   "layout":{"kind":"shape","id":"panel","position":{"x":0,"y":0},"bindAnimate":{"transform.translate":"__editable.70616e656c.translate"},"animate":{"transition":{"duration":0,"easing":"linear"}}},
@@ -86,15 +101,25 @@ func TestCompileStaticLSMLPreservesEditableBindAnimate(t *testing.T) {
 
 func TestRewriteJSONFastPathPreservesUnchangedFragment(t *testing.T) {
 	raw := json.RawMessage(` { "label" : "Match intro", "large" : 9007199254740993 } `)
-	got, touched, err := rewriteJSON(raw, "https://zabgate.test/canvas/api/v1/scene-assets")
-	if err != nil {
-		t.Fatalf("rewriteJSON: %v", err)
-	}
-	if touched {
-		t.Fatal("rewriteJSON marked a fragment without asset references as touched")
-	}
-	if string(got) != string(raw) {
-		t.Fatalf("rewriteJSON changed untouched raw JSON:\n got: %s\nwant: %s", got, raw)
+	for _, test := range []struct {
+		name    string
+		rewrite func(json.RawMessage, string) (json.RawMessage, bool, error)
+	}{
+		{name: "defensive", rewrite: rewriteJSON},
+		{name: "parent validated", rewrite: rewriteJSONValidatedParent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, touched, err := test.rewrite(raw, "https://zabgate.test/canvas/api/v1/scene-assets")
+			if err != nil {
+				t.Fatalf("rewrite: %v", err)
+			}
+			if touched {
+				t.Fatal("rewrite marked a fragment without asset references as touched")
+			}
+			if string(got) != string(raw) {
+				t.Fatalf("rewrite changed untouched raw JSON:\n got: %s\nwant: %s", got, raw)
+			}
+		})
 	}
 }
 
@@ -105,20 +130,30 @@ func TestRewriteJSONFastPathFallsBackForEscapedAssetReferences(t *testing.T) {
 		"escaped prefix": []byte(`{"src":"\u0061ssets/` + assetHash + `.png"}`),
 	} {
 		t.Run(name, func(t *testing.T) {
-			got, touched, err := rewriteJSON(raw, "https://zabgate.test/canvas/api/v1/scene-assets")
-			if err != nil {
-				t.Fatalf("rewriteJSON: %v", err)
-			}
-			if !touched {
-				t.Fatal("rewriteJSON did not recognize escaped asset reference")
-			}
-			var value map[string]string
-			if err := json.Unmarshal(got, &value); err != nil {
-				t.Fatalf("decode rewritten JSON: %v", err)
-			}
-			want := "https://zabgate.test/canvas/api/v1/scene-assets/" + strings.ToLower(assetHash) + "/bytes"
-			if value["src"] != want {
-				t.Fatalf("rewritten source = %q, want %q", value["src"], want)
+			for _, rewrite := range []struct {
+				name     string
+				function func(json.RawMessage, string) (json.RawMessage, bool, error)
+			}{
+				{name: "defensive", function: rewriteJSON},
+				{name: "parent validated", function: rewriteJSONValidatedParent},
+			} {
+				t.Run(rewrite.name, func(t *testing.T) {
+					got, touched, err := rewrite.function(raw, "https://zabgate.test/canvas/api/v1/scene-assets")
+					if err != nil {
+						t.Fatalf("rewrite: %v", err)
+					}
+					if !touched {
+						t.Fatal("rewrite did not recognize escaped asset reference")
+					}
+					var value map[string]string
+					if err := json.Unmarshal(got, &value); err != nil {
+						t.Fatalf("decode rewritten JSON: %v", err)
+					}
+					want := "https://zabgate.test/canvas/api/v1/scene-assets/" + strings.ToLower(assetHash) + "/bytes"
+					if value["src"] != want {
+						t.Fatalf("rewritten source = %q, want %q", value["src"], want)
+					}
+				})
 			}
 		})
 	}

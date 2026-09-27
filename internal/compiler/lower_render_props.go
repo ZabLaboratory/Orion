@@ -120,6 +120,19 @@ var textKeep = map[string]struct{}{
 	"fontStyle":      {},
 }
 
+// textBindingRenames is derived once from the static prop mapping. Binding
+// names follow the same authoring-to-render renames, but unlike static props
+// the corresponding value may not exist in the node's props map.
+var textBindingRenames = func() map[string]string {
+	rename := make(map[string]string, len(textRenames)*2+1)
+	for authoredKey, renderKey := range textRenames {
+		rename["style."+authoredKey] = renderKey
+		rename[authoredKey] = renderKey
+	}
+	rename[textContentAuthoringKey] = textContentRenderKey
+	return rename
+}()
+
 func lowerText(props map[string]json.RawMessage, bindings map[string]string) (map[string]json.RawMessage, map[string]string) {
 	out := make(map[string]json.RawMessage)
 	// Text geometry is intentionally stored in LSML's advisory
@@ -128,20 +141,6 @@ func lowerText(props map[string]json.RawMessage, bindings map[string]string) (ma
 	// width/height pair to wrap text inside its panel. Lower the metadata
 	// fallback here, without trusting metadata as a runtime prop.
 	lowerTextMetadataGeometry(props["metadata"], out)
-
-	// The binding-rename table is derived from the static mapping
-	// UNCONDITIONALLY — a bound prop has no static counterpart in
-	// `props`, so the rename must not depend on the static key being
-	// present. Both the nested `style.<k>` form and the flat `<k>` form
-	// map to the render key.
-	rename := make(map[string]string)
-	for ak, rk := range textRenames {
-		rename["style."+ak] = rk
-		rename[ak] = rk
-	}
-	// Content key : an authored-as-`text` binding re-keys to `value`
-	// (the render vocab the runtime reads). See textContentRename above.
-	rename[textContentAuthoringKey] = textContentRenderKey
 
 	for k, v := range props {
 		switch k {
@@ -189,7 +188,7 @@ func lowerText(props map[string]json.RawMessage, bindings map[string]string) (ma
 			}
 		}
 	}
-	return out, rekeyBindings(bindings, rename)
+	return out, rekeyBindings(bindings, textBindingRenames)
 }
 
 // lowerTextMetadataGeometry extracts only the typed numeric fields Solar
