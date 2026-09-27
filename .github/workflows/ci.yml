@@ -13,7 +13,7 @@ concurrency:
 
 # ---------------------------------------------------------------------------
 # Self-hosted runners on vps-ovh (org GitHub Actions billing frozen).
-# All jobs run on the shared org-scoped ephemeral pool (label `vps-ovh`).
+# `zab-orion` selects the repo-scoped fast rediscovery path for this public repo.
 # No Docker daemon in the runner:
 #   - the `e2e` job uses PostgreSQL natively (no `services: postgres`
 #     container is possible without a Docker socket). It is idempotent +
@@ -30,7 +30,7 @@ concurrency:
 jobs:
   build:
     name: build-test
-    runs-on: [self-hosted, vps-ovh]
+    runs-on: [self-hosted, vps-ovh, zab-orion]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     # The org pool runs jobs concurrently in one host container. Keep Go's
     # module/build caches job-scoped so one job cannot delete or reuse another
@@ -127,7 +127,7 @@ jobs:
 
   e2e:
     name: e2e (Postgres)
-    runs-on: [self-hosted, vps-ovh]
+    runs-on: [self-hosted, vps-ovh, zab-orion]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     needs: build
     env:
@@ -320,7 +320,7 @@ jobs:
     # 20 k-node performance regression gate (issue #80, ADR 003 §3.1.5).
     # HARD-FAILS if cold-start > 2 s or single-input→delta p95 > 50 ms.
     name: perf-20k gate
-    runs-on: [self-hosted, vps-ovh]
+    runs-on: [self-hosted, vps-ovh, zab-orion]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
       GOMODCACHE: /tmp/orion-go-mod-${{ github.run_id }}-${{ github.job }}
@@ -361,7 +361,7 @@ jobs:
     # allowlist grows, the id→executor classification drifts, or any served
     # executor fails through the real engine.
     name: conformance-matrix gate
-    runs-on: [self-hosted, vps-ovh]
+    runs-on: [self-hosted, vps-ovh, zab-orion]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
       GOMODCACHE: /tmp/orion-go-mod-${{ github.run_id }}-${{ github.job }}
@@ -403,7 +403,7 @@ jobs:
     # runtime hardcodes for a served node is absent from that node's Blue seed
     # signature, or a seed EXEC pin is dropped by the runtime.
     name: exec-port-parity gate
-    runs-on: [self-hosted, vps-ovh]
+    runs-on: [self-hosted, vps-ovh, zab-orion]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
       GOMODCACHE: /tmp/orion-go-mod-${{ github.run_id }}-${{ github.job }}
@@ -442,7 +442,7 @@ jobs:
 
   staticcheck:
     name: staticcheck
-    runs-on: [self-hosted, vps-ovh]
+    runs-on: [self-hosted, vps-ovh, zab-orion]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
       GOMODCACHE: /tmp/orion-go-mod-${{ github.run_id }}-${{ github.job }}
@@ -481,7 +481,7 @@ jobs:
 
   govulncheck:
     name: govulncheck
-    runs-on: [self-hosted, vps-ovh]
+    runs-on: [self-hosted, vps-ovh, zab-orion]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
       GOMODCACHE: /tmp/orion-go-mod-${{ github.run_id }}-${{ github.job }}
@@ -520,7 +520,7 @@ jobs:
 
   golangci-lint:
     name: golangci-lint
-    runs-on: [self-hosted, vps-ovh]
+    runs-on: [self-hosted, vps-ovh, zab-orion]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     env:
       GOMODCACHE: /tmp/orion-go-mod-${{ github.run_id }}-${{ github.job }}
@@ -563,7 +563,7 @@ jobs:
 
   secret-scan:
     name: secret-scan
-    runs-on: [self-hosted, vps-ovh]
+    runs-on: [self-hosted, vps-ovh, zab-orion]
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v5

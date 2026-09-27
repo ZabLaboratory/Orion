@@ -130,23 +130,21 @@ func compileStaticLSML(raw []byte, sceneVersion, assetBaseURL string) (*RenderBu
 
 var staticAssetRef = regexp.MustCompile(`^assets/([0-9a-fA-F]{64})(?:\.[A-Za-z0-9]+)?$`)
 
-func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assetsTouched *bool) (LayoutNode, error) {
+func adaptStaticNodeFields(fields staticNodeFields, assetBaseURL string, assetsTouched *bool) (LayoutNode, error) {
 	var node LayoutNode
-	if err := json.Unmarshal(raw["kind"], &node.Kind); err != nil || node.Kind == "" {
+	if err := json.Unmarshal(fields.kind, &node.Kind); err != nil || node.Kind == "" {
 		if err == nil {
 			err = errors.New("node kind is empty")
 		}
 		return LayoutNode{}, err
 	}
-	if id := raw["id"]; len(id) != 0 {
+	if id := fields.id; len(id) != 0 {
 		_ = json.Unmarshal(id, &node.ID)
 	}
 
-	for key, value := range raw {
-		switch key {
-		case "kind", "id", "children", "animate", "animations", "bind", "bindStyle", "bindUniversal", "bindAnimate":
-			continue
-		default:
+	if fields.props != nil {
+		node.Props = fields.props
+		for key, value := range node.Props {
 			rewritten, touched, err := rewriteJSONValidatedParent(value, assetBaseURL)
 			if err != nil {
 				return LayoutNode{}, fmt.Errorf("property %q: %w", key, err)
@@ -154,15 +152,11 @@ func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assets
 			if touched {
 				*assetsTouched = true
 			}
-			if node.Props == nil {
-				node.Props = make(map[string]json.RawMessage)
-			}
 			node.Props[key] = rewritten
 		}
 	}
 
-	for _, bindingKey := range []string{"bind", "bindStyle", "bindUniversal"} {
-		bindingRaw := raw[bindingKey]
+	for _, bindingRaw := range []json.RawMessage{fields.bind, fields.bindStyle, fields.bindUniversal} {
 		if len(bindingRaw) == 0 {
 			continue
 		}
@@ -180,24 +174,27 @@ func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assets
 	if len(node.Bindings) == 0 {
 		node.Bindings = nil
 	}
-	if bindings := raw["bindAnimate"]; len(bindings) != 0 {
+	if bindings := fields.bindAnimate; len(bindings) != 0 {
 		_ = json.Unmarshal(bindings, &node.AnimateBindings)
 	}
 	if len(node.AnimateBindings) == 0 {
 		node.AnimateBindings = nil
 	}
-	if transitions := raw["animate"]; len(transitions) != 0 {
+	if transitions := fields.animate; len(transitions) != 0 {
 		if err := json.Unmarshal(transitions, &node.Transitions); err != nil {
 			node.Transitions = nil
 		}
 	}
 
-	if childrenRaw := raw["children"]; len(childrenRaw) != 0 {
+	if childrenRaw := fields.children; len(childrenRaw) != 0 {
 		originalChildren := len(node.Children)
 		originalAssetsTouched := *assetsTouched
 		fast, fastErr := scanJSONArrayElements(childrenRaw, func(childRaw []byte) error {
-			child, ok := scanJSONObjectFields(childRaw)
-			if !ok {
+			childNode, scanned, err := adaptStaticNodeJSON(childRaw, assetBaseURL, assetsTouched)
+			if err != nil {
+				return err
+			}
+			if !scanned {
 				// Preserve the encoding/json behavior for non-object entries and
 				// retain its compatibility fallback if a valid object uses a
 				// form this scanner does not recognize.
@@ -205,11 +202,10 @@ func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assets
 				if err := json.Unmarshal(childRaw, &decoded); err != nil || decoded == nil {
 					return nil
 				}
-				child = decoded
-			}
-			childNode, err := adaptStaticNode(child, assetBaseURL, assetsTouched)
-			if err != nil {
-				return err
+				childNode, err = adaptStaticNode(decoded, assetBaseURL, assetsTouched)
+				if err != nil {
+					return err
+				}
 			}
 			node.Children = append(node.Children, childNode)
 			return nil
