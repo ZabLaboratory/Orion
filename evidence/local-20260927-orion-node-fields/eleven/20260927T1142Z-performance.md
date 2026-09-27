@@ -34,6 +34,12 @@ vary; allocation and byte reductions are the more stable result.
 
 ## Correctness and integration evidence
 
+- Every Orion CI job requests the `zab-orion` repository label. This public
+  repository is served by repo-scoped JIT runners; the label opts into the
+  orchestrator's faster queued-job rediscovery instead of relying only on its
+  slower backstop poll. This changes dispatch only, not test coverage or code
+  execution semantics.
+
 - `go test ./... -count=1`: pass.
 - `go vet ./...`: pass.
 - `staticcheck ./...`: pass.
