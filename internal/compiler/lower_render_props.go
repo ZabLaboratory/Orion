@@ -245,7 +245,7 @@ func lowerTextStyleFast(raw []byte, out map[string]json.RawMessage) bool {
 		if i >= len(data) {
 			return false
 		}
-		key := string(data[keyStart:i])
+		keyEnd := i
 		i = skipJSONWhitespace(data, i+1)
 		if i >= len(data) || data[i] != ':' {
 			return false
@@ -255,7 +255,7 @@ func lowerTextStyleFast(raw []byte, out map[string]json.RawMessage) bool {
 		if !ok {
 			return false
 		}
-		if renderKey, mapped := textRenames[key]; mapped {
+		if renderKey, mapped := textRenames[string(data[keyStart:keyEnd])]; mapped {
 			fieldIndex := -1
 			for index := 0; index < fieldCount; index++ {
 				if fields[index].renderKey == renderKey {
