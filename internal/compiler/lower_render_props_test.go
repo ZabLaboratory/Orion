@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
@@ -265,6 +266,139 @@ func TestLowerRenderProps_Pure(t *testing.T) {
 	outP2, _ := lowerRenderProps("text", props, bindings)
 	if !reflect.DeepEqual(outP, outP2) {
 		t.Fatalf("non-deterministic: %v != %v", outP, outP2)
+	}
+}
+
+func TestLowerTextStyleFastPathParity(t *testing.T) {
+	tests := []struct {
+		name     string
+		raw      string
+		fastPath bool
+		want     map[string]string
+	}{
+		{
+			name:     "ordinary nested values",
+			raw:      ` { "fontSize" : 24, "fontFamily":"Inter", "fontWeight":700, "color":"#abc", "textAlign":"center", "textTransform":"uppercase", "textDecoration":"underline", "fontStyle":"italic", "letterSpacing":1.2, "shadow":{"offset":[1,2],"label":"brace } and bracket ]"}, "lineHeight":1.2 } `,
+			fastPath: true,
+			want: map[string]string{
+				"size":           "24",
+				"font":           `"Inter"`,
+				"weight":         "700",
+				"colour":         `"#abc"`,
+				"align":          `"center"`,
+				"textTransform":  `"uppercase"`,
+				"textDecoration": `"underline"`,
+				"fontStyle":      `"italic"`,
+				"letterSpacing":  "1.2",
+				"lineHeight":     "1.2",
+			},
+		},
+		{
+			name:     "duplicate mapped key keeps last value",
+			raw:      `{"fontSize":24,"fontSize":32}`,
+			fastPath: true,
+			want:     map[string]string{"size": "32"},
+		},
+		{
+			name:     "property names remain case sensitive",
+			raw:      `{"FontSize":24}`,
+			fastPath: true,
+			want:     map[string]string{},
+		},
+		{
+			name:     "escaped property name uses compatibility path",
+			raw:      `{"font\u0053ize":24}`,
+			fastPath: false,
+			want:     map[string]string{"size": "24"},
+		},
+		{
+			name:     "escaped value uses compatibility path",
+			raw:      `{"fontFamily":"Line\nOne"}`,
+			fastPath: false,
+			want:     map[string]string{"font": `"Line\nOne"`},
+		},
+		{name: "null", raw: `null`, fastPath: true, want: map[string]string{}},
+		{name: "array", raw: `[1]`, fastPath: true, want: map[string]string{}},
+		{name: "malformed", raw: `{"fontSize":}`, fastPath: false, want: map[string]string{}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			raw := json.RawMessage(test.raw)
+			fastOutput := make(map[string]json.RawMessage)
+			fast := lowerTextStyleFast(raw, fastOutput)
+			if fast != test.fastPath {
+				t.Fatalf("fast-path=%v, want %v", fast, test.fastPath)
+			}
+			legacyOutput := lowerTextStyleViaMap(raw)
+			if fast && !reflect.DeepEqual(fastOutput, legacyOutput) {
+				t.Fatalf("fast output %v differs from map output %v", fastOutput, legacyOutput)
+			}
+			got := make(map[string]json.RawMessage)
+			lowerTextStyle(raw, got)
+			if !reflect.DeepEqual(got, legacyOutput) {
+				t.Fatalf("lowerTextStyle output %v differs from map output %v", got, legacyOutput)
+			}
+			if len(got) != len(test.want) {
+				t.Fatalf("got keys %v, want %v", got, test.want)
+			}
+			for key, want := range test.want {
+				if value := string(got[key]); value != want {
+					t.Errorf("%s = %q, want %q", key, value, want)
+				}
+			}
+		})
+	}
+}
+
+func lowerTextStyleViaMap(raw json.RawMessage) map[string]json.RawMessage {
+	var style map[string]json.RawMessage
+	out := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(raw, &style); err != nil {
+		return out
+	}
+	for key, value := range style {
+		if renderKey, ok := textRenames[key]; ok {
+			out[renderKey] = value
+		}
+	}
+	return out
+}
+
+func TestLowerTextStyleFastGeneratedValuesParity(t *testing.T) {
+	values := []string{
+		`null`, `true`, `false`, `0`, `-2.5e3`, `"plain text"`, `"brace } bracket ]"`,
+		`[]`, `[1,{"nested":[true,false]}]`, `{}`, `{"nested":{"x":1}}`,
+	}
+	for authoredKey := range textRenames {
+		for _, value := range values {
+			t.Run(authoredKey+"/"+value, func(t *testing.T) {
+				raw := json.RawMessage(`{"` + authoredKey + `":` + value + `}`)
+				got := make(map[string]json.RawMessage)
+				if !lowerTextStyleFast(raw, got) {
+					t.Fatal("valid unescaped object should use the fast path")
+				}
+				if want := lowerTextStyleViaMap(raw); !reflect.DeepEqual(got, want) {
+					t.Fatalf("fast output %v differs from map output %v for %s", got, want, raw)
+				}
+			})
+		}
+	}
+}
+
+func TestLowerTextStyleFastPathOwnsMappedRawMessages(t *testing.T) {
+	raw := json.RawMessage(`{"color":"#abc"}`)
+	got := make(map[string]json.RawMessage)
+	if !lowerTextStyleFast(raw, got) {
+		t.Fatal("ordinary style JSON should use the fast path")
+	}
+	index := bytes.Index(raw, []byte("#abc"))
+	if index < 0 {
+		t.Fatal("test style color missing")
+	}
+	raw[index] = 'x'
+	if value := string(got["colour"]); value != `"#abc"` {
+		t.Fatalf("output aliases the input style: got %q", value)
 	}
 }
 

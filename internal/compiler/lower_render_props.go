@@ -1,6 +1,9 @@
 package compiler
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // lowerRenderProps translates one LayoutNode's authoring-vocab props
 // (and any bindings keyed on those props) into the FLAT render vocab the
@@ -147,16 +150,7 @@ func lowerText(props map[string]json.RawMessage, bindings map[string]string) (ma
 		case "style":
 			// Flatten the nested style object, applying textRenames to
 			// each inner key and dropping inner keys the runtime ignores.
-			var style map[string]json.RawMessage
-			if err := json.Unmarshal(v, &style); err == nil {
-				for sk, sv := range style {
-					if rk, ok := textRenames[sk]; ok {
-						out[rk] = sv
-					}
-					// inner keys the runtime never reads (fontFamily, …)
-					// are silently dropped — survive in LSML, no render slot.
-				}
-			}
+			lowerTextStyle(v, out)
 		case "metadata":
 			// Authoring metadata is consumed above only for text geometry and
 			// truncation. It is not a Solar text prop and must not reach the
@@ -189,6 +183,174 @@ func lowerText(props map[string]json.RawMessage, bindings map[string]string) (ma
 		}
 	}
 	return out, rekeyBindings(bindings, textBindingRenames)
+}
+
+type loweredTextStyleField struct {
+	renderKey string
+	value     []byte
+}
+
+// lowerTextStyle avoids allocating a temporary map for the common, validated
+// object form emitted by the authoring compiler. Escaped JSON falls back to
+// encoding/json so escaped property names and all permissive legacy cases
+// retain their established behavior.
+func lowerTextStyle(raw json.RawMessage, out map[string]json.RawMessage) {
+	if lowerTextStyleFast(raw, out) {
+		return
+	}
+	var style map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &style); err != nil {
+		return
+	}
+	for key, value := range style {
+		if renderKey, ok := textRenames[key]; ok {
+			out[renderKey] = value
+		}
+	}
+}
+
+// lowerTextStyleFast recognizes the ordinary JSON object form without
+// materializing a map of every nested style property. The caller still gets
+// owned RawMessages for mapped values, matching json.Unmarshal's ownership.
+// The fixed scratch buffer avoids a temporary collection allocation; if the
+// vocabulary ever grows beyond it, the compatibility path handles the input.
+func lowerTextStyleFast(raw []byte, out map[string]json.RawMessage) bool {
+	if len(raw) == 0 || bytes.IndexByte(raw, '\\') >= 0 || !json.Valid(raw) {
+		return false
+	}
+	data := bytes.TrimSpace(raw)
+	if len(data) == 0 {
+		return true
+	}
+	if data[0] != '{' {
+		// JSON null and other valid non-object values produce no style map.
+		return true
+	}
+
+	var fields [16]loweredTextStyleField
+	fieldCount := 0
+	i := skipJSONWhitespace(data, 1)
+	if i < len(data) && data[i] == '}' {
+		return true
+	}
+	for i < len(data) {
+		if data[i] != '"' {
+			return false
+		}
+		keyStart := i + 1
+		i = keyStart
+		for i < len(data) && data[i] != '"' {
+			i++
+		}
+		if i >= len(data) {
+			return false
+		}
+		key := string(data[keyStart:i])
+		i = skipJSONWhitespace(data, i+1)
+		if i >= len(data) || data[i] != ':' {
+			return false
+		}
+		valueStart := skipJSONWhitespace(data, i+1)
+		valueEnd, ok := scanJSONValueWithoutEscapes(data, valueStart)
+		if !ok {
+			return false
+		}
+		if renderKey, mapped := textRenames[key]; mapped {
+			fieldIndex := -1
+			for index := 0; index < fieldCount; index++ {
+				if fields[index].renderKey == renderKey {
+					fieldIndex = index
+					break
+				}
+			}
+			if fieldIndex == -1 {
+				if fieldCount == len(fields) {
+					return false
+				}
+				fieldIndex = fieldCount
+				fieldCount++
+				fields[fieldIndex].renderKey = renderKey
+			}
+			fields[fieldIndex].value = data[valueStart:valueEnd]
+		}
+		i = skipJSONWhitespace(data, valueEnd)
+		if i >= len(data) {
+			return false
+		}
+		if data[i] == '}' {
+			if i != len(data)-1 {
+				return false
+			}
+			for index := 0; index < fieldCount; index++ {
+				field := fields[index]
+				out[field.renderKey] = bytes.Clone(field.value)
+			}
+			return true
+		}
+		if data[i] != ',' {
+			return false
+		}
+		i = skipJSONWhitespace(data, i+1)
+	}
+	return false
+}
+
+func skipJSONWhitespace(data []byte, i int) int {
+	for i < len(data) {
+		switch data[i] {
+		case ' ', '\t', '\r', '\n':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+func scanJSONValueWithoutEscapes(data []byte, start int) (int, bool) {
+	if start >= len(data) {
+		return 0, false
+	}
+	switch data[start] {
+	case '"':
+		for i := start + 1; i < len(data); i++ {
+			if data[i] == '"' {
+				return i + 1, true
+			}
+		}
+		return 0, false
+	case '{', '[':
+		depth := 0
+		inString := false
+		for i := start; i < len(data); i++ {
+			if inString {
+				if data[i] == '"' {
+					inString = false
+				}
+				continue
+			}
+			switch data[i] {
+			case '"':
+				inString = true
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if depth == 0 {
+					return i + 1, true
+				}
+			}
+		}
+		return 0, false
+	default:
+		for i := start; i < len(data); i++ {
+			switch data[i] {
+			case ',', '}', ']', ' ', '\t', '\r', '\n':
+				return i, i > start
+			}
+		}
+		return len(data), len(data) > start
+	}
 }
 
 // lowerTextMetadataGeometry extracts only the typed numeric fields Solar
