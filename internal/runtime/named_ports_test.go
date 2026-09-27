@@ -327,8 +327,8 @@ func TestScene_NamedPorts_MissingUpstreamNotInState(t *testing.T) {
 // upstream of a NAMED-PORT node becomes dirty, recompute fires for that
 // node. Concretely: after cold start the sum is 3+4=7; we push x=10 and
 // assert the sum leaf changes to 14. This pins that the dirty-check path
-// in `recompute` (which uses ce.upstream, rebuilt from Inputs[i].From in
-// NewScene) correctly tracks named-port upstreams.
+// in `recompute` (which resolves upstreamID from Inputs[i].From when
+// present) correctly tracks named-port upstreams.
 func TestScene_NamedPorts_DirtyCheckTriggersRecompute(t *testing.T) {
 	graph := &compiler.Graph{
 		SceneID:      "scene-dirty",

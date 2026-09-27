@@ -439,7 +439,7 @@ func (s *Scene) demandValue(t *execTask, from, fromPort string, memo map[string]
 	}
 	// Pure compute: gather inputs recursively under the same named /
 	// positional convention as gatherInputs, then run the same fn.
-	args := make(map[string]json.RawMessage, len(ce.upstream))
+	args := make(map[string]json.RawMessage, ce.upstreamCount())
 	if ins := ce.node.Inputs; len(ins) > 0 {
 		for i, in := range ins {
 			name := in.Port
@@ -455,8 +455,8 @@ func (s *Scene) demandValue(t *execTask, from, fromPort string, memo map[string]
 			}
 		}
 	} else {
-		for i, up := range ce.upstream {
-			if v := s.demandValue(t, up, "", memo); v != nil {
+		for i := 0; i < ce.upstreamCount(); i++ {
+			if v := s.demandValue(t, ce.upstreamID(i), "", memo); v != nil {
 				args[positionalPort(i)] = v
 			}
 		}

@@ -419,8 +419,24 @@ type Scene struct {
 }
 
 type computeEntry struct {
-	node     compiler.GraphNode
-	upstream []string // upstream node ids — from node.Inputs when carried (issue #79), else node.Upstream
+	node compiler.GraphNode
+}
+
+// upstreamCount and upstreamID preserve the named-wiring preference for
+// current artefacts without copying every Input.From into a second slice.
+// Pre-#79 artefacts have no Inputs and continue to use Upstream.
+func (ce computeEntry) upstreamCount() int {
+	if len(ce.node.Inputs) > 0 {
+		return len(ce.node.Inputs)
+	}
+	return len(ce.node.Upstream)
+}
+
+func (ce computeEntry) upstreamID(i int) string {
+	if len(ce.node.Inputs) > 0 {
+		return ce.node.Inputs[i].From
+	}
+	return ce.node.Upstream[i]
 }
 
 // NewScene constructs a Scene from compiled artefacts and seeds its
@@ -490,20 +506,14 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 	// O(1) node-id → computeOrder index, for the exec layer's
 	// demand-driven data pulls (issue #82).
 	s.nodeIdx = make(map[string]int, len(graph.Nodes))
+	s.computeOrder = make([]computeEntry, 0, len(graph.Nodes))
+	consumerCapacity := 0
 	for _, n := range graph.Nodes {
-		// The dirty-check upstream set derives from the NAMED wiring when
-		// the artefact carries it (issue #79) — Inputs is authoritative;
-		// the compiler keeps Upstream zipped 1:1 with it, so for compiled
-		// graphs the two are identical. Pre-#79 artefacts carry only
-		// Upstream and keep working unchanged.
-		up := n.Upstream
-		if len(n.Inputs) > 0 {
-			up = make([]string, len(n.Inputs))
-			for i, in := range n.Inputs {
-				up[i] = in.From
-			}
+		entry := computeEntry{node: n}
+		if n.Kind != "input" {
+			consumerCapacity += entry.upstreamCount()
 		}
-		s.computeOrder = append(s.computeOrder, computeEntry{node: n, upstream: up})
+		s.computeOrder = append(s.computeOrder, entry)
 		s.nodeIdx[n.ID] = len(s.computeOrder) - 1
 	}
 	// Reverse-adjacency index (issue #80, ADR 003 §3.1.5): for each
@@ -512,19 +522,44 @@ func NewScene(id string, graph *compiler.Graph, bundle *compiler.RenderBundle, r
 	// follows this index downstream — cost proportional to the affected
 	// cone, never the scene. Input-kind nodes never recompute, so they
 	// take no consumer entry.
-	s.consumers = make(map[string][]int)
+	if consumerCapacity > len(graph.Nodes) {
+		consumerCapacity = len(graph.Nodes)
+	}
+	s.consumers = make(map[string][]int, consumerCapacity)
 	s.pending = make(map[string]struct{})
 	for idx, ce := range s.computeOrder {
 		if ce.node.Kind == "input" {
 			continue
 		}
-		seen := make(map[string]struct{}, len(ce.upstream))
-		for _, up := range ce.upstream {
-			p := s.upstreamPath(up)
-			if _, dup := seen[p]; dup {
-				continue // two ports off the same upstream — index once
+		// Compute nodes normally have only a handful of ports. A per-node
+		// hash map is unnecessary for these small fan-ins and otherwise adds
+		// one allocation per computed node in large scenes. Keep the map path
+		// for unusually wide nodes to bound the deduplication work.
+		var seen map[string]struct{}
+		var smallSeen [8]string
+		if ce.upstreamCount() > 8 {
+			seen = make(map[string]struct{}, ce.upstreamCount())
+		}
+		for upstreamIndex := 0; upstreamIndex < ce.upstreamCount(); upstreamIndex++ {
+			p := s.upstreamPath(ce.upstreamID(upstreamIndex))
+			if seen != nil {
+				if _, dup := seen[p]; dup {
+					continue // two ports off the same upstream — index once
+				}
+				seen[p] = struct{}{}
+			} else {
+				duplicate := false
+				for _, previousPath := range smallSeen[:upstreamIndex] {
+					if previousPath == p {
+						duplicate = true
+						break
+					}
+				}
+				if duplicate {
+					continue // two ports off the same upstream — index once
+				}
+				smallSeen[upstreamIndex] = p
 			}
-			seen[p] = struct{}{}
 			s.consumers[p] = append(s.consumers[p], idx)
 		}
 	}
