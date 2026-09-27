@@ -170,13 +170,23 @@ func canonicalJSON(v any) ([]byte, error) {
 
 func marshalCanonical(v any) ([]byte, error) {
 	buf := &bytes.Buffer{}
-	if err := writeCanonical(buf, v); err != nil {
+	encoder := json.NewEncoder(buf)
+	if err := writeCanonical(buf, encoder, v); err != nil {
 		return nil, err
 	}
 	return buf.Bytes(), nil
 }
 
-func writeCanonical(buf *bytes.Buffer, v any) error {
+func writeCanonicalJSONValue(buf *bytes.Buffer, encoder *json.Encoder, v any) error {
+	if err := encoder.Encode(v); err != nil {
+		return err
+	}
+	// Encoder.Encode appends a newline that is not part of canonical JSON.
+	buf.Truncate(buf.Len() - 1)
+	return nil
+}
+
+func writeCanonical(buf *bytes.Buffer, encoder *json.Encoder, v any) error {
 	switch t := v.(type) {
 	case map[string]any:
 		buf.WriteByte('{')
@@ -189,10 +199,11 @@ func writeCanonical(buf *bytes.Buffer, v any) error {
 			if i > 0 {
 				buf.WriteByte(',')
 			}
-			kb, _ := json.Marshal(k)
-			buf.Write(kb)
+			if err := writeCanonicalJSONValue(buf, encoder, k); err != nil {
+				return err
+			}
 			buf.WriteByte(':')
-			if err := writeCanonical(buf, t[k]); err != nil {
+			if err := writeCanonical(buf, encoder, t[k]); err != nil {
 				return err
 			}
 		}
@@ -203,17 +214,13 @@ func writeCanonical(buf *bytes.Buffer, v any) error {
 			if i > 0 {
 				buf.WriteByte(',')
 			}
-			if err := writeCanonical(buf, item); err != nil {
+			if err := writeCanonical(buf, encoder, item); err != nil {
 				return err
 			}
 		}
 		buf.WriteByte(']')
 	default:
-		raw, err := json.Marshal(t)
-		if err != nil {
-			return err
-		}
-		buf.Write(raw)
+		return writeCanonicalJSONValue(buf, encoder, t)
 	}
 	return nil
 }
