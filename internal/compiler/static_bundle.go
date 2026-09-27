@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // CompileStaticLSML converts the authoring LSML bundle emitted by ZabCanvas
@@ -89,11 +90,8 @@ func compileStaticLSML(raw []byte, sceneVersion, assetBaseURL string) (*RenderBu
 		return nil, nil, nil, errors.New("static LSML bundle has neither layout nor compiled root")
 	}
 
-	var rawRoot map[string]json.RawMessage
-	if err := json.Unmarshal(source.Layout, &rawRoot); err != nil || rawRoot == nil {
-		if err == nil {
-			err = errors.New("layout is not an object")
-		}
+	rawRoot, err := decodeStaticObjectFields(source.Layout)
+	if err != nil {
 		return nil, nil, nil, fmt.Errorf("decode static LSML layout: %w", err)
 	}
 
@@ -195,33 +193,231 @@ func adaptStaticNode(raw map[string]json.RawMessage, assetBaseURL string, assets
 	}
 
 	if childrenRaw := raw["children"]; len(childrenRaw) != 0 {
-		var children []map[string]json.RawMessage
-		if err := json.Unmarshal(childrenRaw, &children); err != nil {
-			// Keep the old tolerant behavior for malformed arrays: valid object
-			// siblings still compile while non-object entries are ignored.
-			var childRaws []json.RawMessage
-			if json.Unmarshal(childrenRaw, &childRaws) == nil {
-				children = make([]map[string]json.RawMessage, 0, len(childRaws))
-				for _, childRaw := range childRaws {
-					var child map[string]json.RawMessage
-					if err := json.Unmarshal(childRaw, &child); err == nil && child != nil {
-						children = append(children, child)
-					}
+		originalChildren := len(node.Children)
+		originalAssetsTouched := *assetsTouched
+		fast, fastErr := scanJSONArrayElements(childrenRaw, func(childRaw []byte) error {
+			child, ok := scanJSONObjectFields(childRaw)
+			if !ok {
+				// Preserve the encoding/json behavior for non-object entries and
+				// retain its compatibility fallback if a valid object uses a
+				// form this scanner does not recognize.
+				var decoded map[string]json.RawMessage
+				if err := json.Unmarshal(childRaw, &decoded); err != nil || decoded == nil {
+					return nil
 				}
-			}
-		}
-		for _, child := range children {
-			if child == nil {
-				continue
+				child = decoded
 			}
 			childNode, err := adaptStaticNode(child, assetBaseURL, assetsTouched)
 			if err != nil {
-				return LayoutNode{}, err
+				return err
 			}
 			node.Children = append(node.Children, childNode)
+			return nil
+		})
+		if fastErr != nil {
+			return LayoutNode{}, fastErr
+		}
+		if !fast {
+			// Keep the old tolerant behavior for non-array or malformed values:
+			// valid object siblings still compile while non-object entries are
+			// ignored.
+			node.Children = node.Children[:originalChildren]
+			*assetsTouched = originalAssetsTouched
+			var children []map[string]json.RawMessage
+			if err := json.Unmarshal(childrenRaw, &children); err != nil {
+				var childRaws []json.RawMessage
+				if json.Unmarshal(childrenRaw, &childRaws) == nil {
+					children = make([]map[string]json.RawMessage, 0, len(childRaws))
+					for _, childRaw := range childRaws {
+						var child map[string]json.RawMessage
+						if err := json.Unmarshal(childRaw, &child); err == nil && child != nil {
+							children = append(children, child)
+						}
+					}
+				}
+			}
+			for _, child := range children {
+				if child == nil {
+					continue
+				}
+				childNode, err := adaptStaticNode(child, assetBaseURL, assetsTouched)
+				if err != nil {
+					return LayoutNode{}, err
+				}
+				node.Children = append(node.Children, childNode)
+			}
 		}
 	}
 	return node, nil
+}
+
+// decodeStaticObjectFields scans already-validated JSON into RawMessage views
+// instead of asking encoding/json to allocate a byte copy for every property.
+// source.Layout was validated by the enclosing bundle unmarshal, and the
+// returned views keep that owned RawMessage backing array alive.
+func decodeStaticObjectFields(raw []byte) (map[string]json.RawMessage, error) {
+	if fields, ok := scanJSONObjectFields(raw); ok {
+		return fields, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	if fields == nil {
+		return nil, errors.New("layout is not an object")
+	}
+	return fields, nil
+}
+
+// scanJSONObjectFields returns values as views into raw. Escaped keys are
+// decoded by encoding/json; ordinary keys and all values stay on the
+// allocation-light scanner path. Duplicate keys retain encoding/json's
+// last-value-wins map semantics.
+func scanJSONObjectFields(raw []byte) (map[string]json.RawMessage, bool) {
+	data := bytes.TrimSpace(raw)
+	if len(data) == 0 || data[0] != '{' {
+		return nil, false
+	}
+	fields := make(map[string]json.RawMessage, 8)
+	i := skipJSONWhitespace(data, 1)
+	if i < len(data) && data[i] == '}' {
+		return fields, i == len(data)-1
+	}
+	for i < len(data) {
+		keyStart := i
+		keyEnd, ok := scanJSONStringEnd(data, keyStart)
+		if !ok {
+			return nil, false
+		}
+		keyRaw := data[keyStart:keyEnd]
+		var key string
+		if bytes.IndexByte(keyRaw, '\\') >= 0 || !utf8.Valid(keyRaw[1:len(keyRaw)-1]) {
+			if err := json.Unmarshal(keyRaw, &key); err != nil {
+				return nil, false
+			}
+		} else {
+			key = string(keyRaw[1 : len(keyRaw)-1])
+		}
+		i = skipJSONWhitespace(data, keyEnd)
+		if i >= len(data) || data[i] != ':' {
+			return nil, false
+		}
+		valueStart := skipJSONWhitespace(data, i+1)
+		valueEnd, ok := scanJSONValueEnd(data, valueStart)
+		if !ok {
+			return nil, false
+		}
+		fields[key] = json.RawMessage(data[valueStart:valueEnd])
+		i = skipJSONWhitespace(data, valueEnd)
+		if i >= len(data) {
+			return nil, false
+		}
+		if data[i] == '}' {
+			return fields, i == len(data)-1
+		}
+		if data[i] != ',' {
+			return nil, false
+		}
+		i = skipJSONWhitespace(data, i+1)
+	}
+	return nil, false
+}
+
+func scanJSONArrayElements(raw []byte, visit func([]byte) error) (bool, error) {
+	data := bytes.TrimSpace(raw)
+	if len(data) == 0 || data[0] != '[' {
+		return false, nil
+	}
+	i := skipJSONWhitespace(data, 1)
+	if i < len(data) && data[i] == ']' {
+		return i == len(data)-1, nil
+	}
+	for i < len(data) {
+		valueStart := skipJSONWhitespace(data, i)
+		valueEnd, ok := scanJSONValueEnd(data, valueStart)
+		if !ok {
+			return false, nil
+		}
+		if err := visit(data[valueStart:valueEnd]); err != nil {
+			return true, err
+		}
+		i = skipJSONWhitespace(data, valueEnd)
+		if i >= len(data) {
+			return false, nil
+		}
+		if data[i] == ']' {
+			return i == len(data)-1, nil
+		}
+		if data[i] != ',' {
+			return false, nil
+		}
+		i++
+	}
+	return false, nil
+}
+
+func scanJSONStringEnd(data []byte, start int) (int, bool) {
+	if start >= len(data) || data[start] != '"' {
+		return 0, false
+	}
+	for i := start + 1; i < len(data); i++ {
+		switch data[i] {
+		case '\\':
+			i++
+			if i >= len(data) {
+				return 0, false
+			}
+		case '"':
+			return i + 1, true
+		default:
+			if data[i] < 0x20 {
+				return 0, false
+			}
+		}
+	}
+	return 0, false
+}
+
+func scanJSONValueEnd(data []byte, start int) (int, bool) {
+	if start >= len(data) {
+		return 0, false
+	}
+	switch data[start] {
+	case '"':
+		return scanJSONStringEnd(data, start)
+	case '{', '[':
+		depth := 0
+		for i := start; i < len(data); {
+			switch data[i] {
+			case '"':
+				end, ok := scanJSONStringEnd(data, i)
+				if !ok {
+					return 0, false
+				}
+				i = end
+			case '{', '[':
+				depth++
+				i++
+			case '}', ']':
+				depth--
+				i++
+				if depth == 0 {
+					return i, true
+				}
+			default:
+				i++
+			}
+		}
+		return 0, false
+	default:
+		for i := start; i < len(data); i++ {
+			switch data[i] {
+			case ',', '}', ']', ' ', '\t', '\r', '\n':
+				return i, i > start
+			}
+		}
+		return len(data), len(data) > start
+	}
 }
 
 func rewriteDefaults(defaults map[string]json.RawMessage, assetBaseURL string) (map[string]json.RawMessage, bool, error) {

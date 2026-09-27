@@ -1,6 +1,7 @@
 package compiler
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -72,6 +73,161 @@ func TestCompileStaticLSMLKeepsValidChildrenAroundMalformedEntries(t *testing.T)
 	}
 	if len(bundle.Root.Children) != 2 || bundle.Root.Children[0].ID != "before" || bundle.Root.Children[1].ID != "after" {
 		t.Fatalf("children = %#v; want valid siblings around ignored scalar", bundle.Root.Children)
+	}
+}
+
+func TestScanStaticJSONFieldsMatchesEncodingJSON(t *testing.T) {
+	const raw = ` {
+  "kind":"frame",
+  "kind":"text",
+  "n\u0061me":"escaped key",
+  "children":[{"value":"quotes: \" ; delimiters: ] }","meta":{"slash":"\\\\","close":"\u007d"}}],
+  "enabled":true,
+  "nil":null
+ } `
+	var want map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &want); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	got, ok := scanJSONObjectFields([]byte(raw))
+	if !ok {
+		t.Fatal("scanner rejected valid JSON object")
+	}
+	if len(got) != len(want) {
+		t.Fatalf("scanner returned %d fields; encoding/json returned %d", len(got), len(want))
+	}
+	for key, expected := range want {
+		if actual, exists := got[key]; !exists || !bytes.Equal(actual, expected) {
+			t.Errorf("field %q = %q (exists %v), want %q", key, actual, exists, expected)
+		}
+	}
+}
+
+func FuzzScanStaticJSONObjectFieldsParity(f *testing.F) {
+	for _, seed := range []string{
+		`{}`,
+		`{"kind":"frame","children":[{"value":"}\" ]"}]}`,
+		`{"duplicate":1,"duplicate":2,"escaped\u006bey":true}`,
+	} {
+		f.Add(seed)
+	}
+	f.Add(string([]byte{'{', '"', 0xff, '"', ':', '1', '}'}))
+	f.Fuzz(func(t *testing.T, input string) {
+		var want map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(input), &want); err != nil || want == nil {
+			return
+		}
+		got, ok := scanJSONObjectFields([]byte(input))
+		if !ok {
+			t.Fatalf("scanner rejected valid object %q", input)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("field count = %d, want %d", len(got), len(want))
+		}
+		for key, expected := range want {
+			if actual, exists := got[key]; !exists || !bytes.Equal(actual, expected) {
+				t.Fatalf("field %q = %q (exists %v), want %q", key, actual, exists, expected)
+			}
+		}
+	})
+}
+
+func TestScanStaticJSONArrayElementsMatchesEncodingJSON(t *testing.T) {
+	const raw = `[ {"kind":"text"}, 17, null, "quoted ] } and escaped quote: \\\"", {"kind":"frame","children":[]} ]`
+	var want []json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &want); err != nil {
+		t.Fatalf("unmarshal fixture: %v", err)
+	}
+	var got []string
+	ok, err := scanJSONArrayElements([]byte(raw), func(value []byte) error {
+		got = append(got, string(value))
+		return nil
+	})
+	if err != nil || !ok {
+		t.Fatalf("scanner result = (%v, %v), want (true, nil)", ok, err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("scanner returned %d elements; encoding/json returned %d", len(got), len(want))
+	}
+	for index, expected := range want {
+		if got[index] != string(expected) {
+			t.Errorf("element %d = %q, want %q", index, got[index], expected)
+		}
+	}
+	if ok, err := scanJSONArrayElements([]byte(`{"not":"an array"}`), func([]byte) error { return nil }); ok || err != nil {
+		t.Fatalf("object input result = (%v, %v), want (false, nil)", ok, err)
+	}
+}
+
+func FuzzScanStaticJSONArrayElementsParity(f *testing.F) {
+	for _, seed := range []string{
+		`[]`,
+		`[1,null,{"kind":"frame"}]`,
+		`["escaped quote: \\\" and bracket ]",[1,{"v":2}]]`,
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, input string) {
+		data := []byte(input)
+		trimmed := bytes.TrimSpace(data)
+		if len(trimmed) == 0 || trimmed[0] != '[' {
+			return
+		}
+		var want []json.RawMessage
+		if err := json.Unmarshal(data, &want); err != nil {
+			return
+		}
+		var got []string
+		ok, err := scanJSONArrayElements(data, func(value []byte) error {
+			got = append(got, string(value))
+			return nil
+		})
+		if err != nil || !ok {
+			t.Fatalf("scanner result = (%v, %v), want (true, nil)", ok, err)
+		}
+		if len(got) != len(want) {
+			t.Fatalf("element count = %d, want %d", len(got), len(want))
+		}
+		for index, expected := range want {
+			if got[index] != string(expected) {
+				t.Fatalf("element %d = %q, want %q", index, got[index], expected)
+			}
+		}
+	})
+}
+
+func TestCompileStaticLSMLFastNodeDecoderPreservesDuplicateAndEscapedKeys(t *testing.T) {
+	raw := []byte(`{"layout":{"kind":"frame","children":[{"k\u0069nd":"shape","kind":"text","id":"before","id":"after","value":"closing } ] and quote: \""}]}}`)
+	encoded, _, err := CompileStaticLSML(raw, "scene", "sha256:scene", staticTestAssetBase)
+	if err != nil {
+		t.Fatalf("compile static LSML: %v", err)
+	}
+	var bundle RenderBundle
+	if err := json.Unmarshal(encoded, &bundle); err != nil {
+		t.Fatalf("decode render bundle: %v", err)
+	}
+	if len(bundle.Root.Children) != 1 {
+		t.Fatalf("children = %#v, want one", bundle.Root.Children)
+	}
+	child := bundle.Root.Children[0]
+	if child.Kind != "text" || child.ID != "after" || string(child.Props["value"]) != `"closing } ] and quote: \""` {
+		t.Fatalf("child = %#v, want last duplicate fields and escaped value", child)
+	}
+}
+
+func TestCompileStaticRenderBundleOwnsInputLayoutBytes(t *testing.T) {
+	raw := []byte(`{"layout":{"kind":"text","value":"original"}}`)
+	bundle, _, err := CompileStaticRenderBundle(raw, "scene", "sha256:scene", staticTestAssetBase)
+	if err != nil {
+		t.Fatalf("compile static render bundle: %v", err)
+	}
+	index := bytes.Index(raw, []byte("original"))
+	if index < 0 {
+		t.Fatal("test input value missing")
+	}
+	raw[index] = 'm'
+	if got := string(bundle.Root.Props["value"]); got != `"original"` {
+		t.Fatalf("compiled value aliases caller input: got %q", got)
 	}
 }
 
