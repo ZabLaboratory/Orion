@@ -499,6 +499,9 @@ func sizeBindingRenames() map[string]string {
 // dropped — the runtime has no nested `size` slot, so passing it through
 // would be dead weight.
 func splitSize(v json.RawMessage, out map[string]json.RawMessage) {
+	if splitSizeFast(v, out) {
+		return
+	}
 	var size map[string]json.RawMessage
 	if err := json.Unmarshal(v, &size); err != nil {
 		return
@@ -509,6 +512,78 @@ func splitSize(v json.RawMessage, out map[string]json.RawMessage) {
 	if h, ok := size["h"]; ok {
 		out["height"] = h
 	}
+}
+
+// splitSizeFast handles ordinary unescaped size objects without allocating a
+// temporary map. Escaped or invalid JSON stays on the encoding/json
+// compatibility path, and copied values retain RawMessage ownership.
+func splitSizeFast(raw []byte, out map[string]json.RawMessage) bool {
+	if len(raw) == 0 || bytes.IndexByte(raw, '\\') >= 0 || !json.Valid(raw) {
+		return false
+	}
+	data := bytes.TrimSpace(raw)
+	if data[0] != '{' {
+		// Valid non-object values produce no usable size map.
+		return true
+	}
+
+	var width, height []byte
+	hasWidth, hasHeight := false, false
+	i := skipJSONWhitespace(data, 1)
+	if i < len(data) && data[i] == '}' {
+		return true
+	}
+	for i < len(data) {
+		if data[i] != '"' {
+			return false
+		}
+		keyStart := i + 1
+		i = keyStart
+		for i < len(data) && data[i] != '"' {
+			i++
+		}
+		if i >= len(data) {
+			return false
+		}
+		keyEnd := i
+		i = skipJSONWhitespace(data, i+1)
+		if i >= len(data) || data[i] != ':' {
+			return false
+		}
+		valueStart := skipJSONWhitespace(data, i+1)
+		valueEnd, ok := scanJSONValueWithoutEscapes(data, valueStart)
+		if !ok {
+			return false
+		}
+		key := data[keyStart:keyEnd]
+		if len(key) == 1 && key[0] == 'w' {
+			width, hasWidth = data[valueStart:valueEnd], true
+		} else if len(key) == 1 && key[0] == 'h' {
+			height, hasHeight = data[valueStart:valueEnd], true
+		}
+
+		i = skipJSONWhitespace(data, valueEnd)
+		if i >= len(data) {
+			return false
+		}
+		if data[i] == '}' {
+			if i != len(data)-1 {
+				return false
+			}
+			if hasWidth {
+				out["width"] = bytes.Clone(width)
+			}
+			if hasHeight {
+				out["height"] = bytes.Clone(height)
+			}
+			return true
+		}
+		if data[i] != ',' {
+			return false
+		}
+		i = skipJSONWhitespace(data, i+1)
+	}
+	return false
 }
 
 // splitStroke turns a nested {"color":..,"width":..} stroke into flat
