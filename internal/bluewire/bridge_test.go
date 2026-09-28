@@ -3,6 +3,7 @@ package bluewire
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"os"
@@ -28,6 +29,95 @@ type fakeSteps struct {
 	calls      int
 	tickDeltas []float64
 	tickSlots  []bluehost.Slot
+}
+
+func TestProjectionDigest_MatchesMarshalAndKeepsRetainedBuffer(t *testing.T) {
+	projection := blueproject.Projection{
+		SchemaVersion:     "orion.blue-solar-projection.v1",
+		SceneDigest:       "sha256:scene<&>",
+		RuntimeInstanceID: "instance-1",
+		Target:            blueproject.TargetPreview,
+		RenderRevision:    "revision-1",
+		CorrelationID:     "correlation-1",
+	}
+	patches := []protocol.Patch{
+		{Path: "z", Value: json.RawMessage(`"<tag>&"`), Transition: json.RawMessage(`{"duration_ms":12}`)},
+		{Path: "a", Value: json.RawMessage(`[1,true,null]`)},
+	}
+	identity := projectionIdentity{
+		SchemaVersion:     projection.SchemaVersion,
+		SceneID:           "scene-1",
+		SceneDigest:       projection.SceneDigest,
+		RuntimeInstanceID: projection.RuntimeInstanceID,
+		Target:            projection.Target,
+		RenderRevision:    projection.RenderRevision,
+		CorrelationID:     projection.CorrelationID,
+		Patches:           patches,
+	}
+	expected, err := json.Marshal(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	buffer, digest, err := projectionDigest(projection, "scene-1", patches)
+	if err != nil {
+		t.Fatalf("projectionDigest: %v", err)
+	}
+	bridge := &Bridge{}
+	sequence, duplicate, err := bridge.sequenceFor(1, digest, buffer)
+	if err != nil || duplicate || sequence != 1 {
+		t.Fatalf("first sequenceFor = (%d, %t, %v), want (1, false, nil)", sequence, duplicate, err)
+	}
+	if !bytes.Equal(bridge.lastProjectionDigest, expected) {
+		t.Fatalf("encoded digest differs from json.Marshal:\n got %s\nwant %s", bridge.lastProjectionDigest, expected)
+	}
+	firstDigest := bytes.Clone(bridge.lastProjectionDigest)
+
+	duplicateBuffer, duplicateDigest, err := projectionDigest(projection, "scene-1", patches)
+	if err != nil {
+		t.Fatalf("duplicate projectionDigest: %v", err)
+	}
+	sequence, duplicate, err = bridge.sequenceFor(1, duplicateDigest, duplicateBuffer)
+	if err != nil || !duplicate || sequence != 0 {
+		t.Fatalf("duplicate sequenceFor = (%d, %t, %v), want (0, true, nil)", sequence, duplicate, err)
+	}
+	if !bytes.Equal(bridge.lastProjectionDigest, firstDigest) {
+		t.Fatal("encoding a duplicate mutated the bridge's retained comparison key")
+	}
+
+	projection.SceneDigest = "sha256:changed"
+	changedIdentity := identity
+	changedIdentity.SceneDigest = projection.SceneDigest
+	changedDigest, err := json.Marshal(changedIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedBuffer, changedBytes, err := projectionDigest(projection, "scene-1", patches)
+	if err != nil {
+		t.Fatalf("changed projectionDigest: %v", err)
+	}
+	sequence, duplicate, err = bridge.sequenceFor(2, changedBytes, changedBuffer)
+	if err != nil || duplicate || sequence != 2 {
+		t.Fatalf("changed sequenceFor = (%d, %t, %v), want (2, false, nil)", sequence, duplicate, err)
+	}
+	if !bytes.Equal(bridge.lastProjectionDigest, changedDigest) {
+		t.Fatal("changed projection digest was not retained byte-for-byte")
+	}
+
+	staleProjection := projection
+	staleProjection.CorrelationID = "correlation-stale"
+	staleBuffer, staleDigest, err := projectionDigest(staleProjection, "scene-1", patches)
+	if err != nil {
+		t.Fatalf("stale projectionDigest: %v", err)
+	}
+	_, _, err = bridge.sequenceFor(1, staleDigest, staleBuffer)
+	var stale *SequenceStaleError
+	if !errors.As(err, &stale) {
+		t.Fatalf("expected stale sequence error, got %v", err)
+	}
+	if !bytes.Equal(bridge.lastProjectionDigest, changedDigest) {
+		t.Fatal("rejecting a stale projection mutated the bridge's retained comparison key")
+	}
 }
 
 func (f *fakeSteps) Step(_ bluehost.Slot) (StepResult, error) {
