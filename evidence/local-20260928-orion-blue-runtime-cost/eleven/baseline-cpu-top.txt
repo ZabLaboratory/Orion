@@ -1,0 +1,39 @@
+File: api.test.exe
+Build ID: C:\Users\Mathias\AppData\Local\Temp\go-build2084439835\b001\api.test.exe2026-09-28 02:50:34.160536 +0200 CEST
+Type: cpu
+Time: 2026-09-28 02:50:34 CEST
+Duration: 6.76s, Total samples = 8.16s (120.64%)
+Showing nodes accounting for 4.23s, 51.84% of 8.16s total
+Dropped 281 nodes (cum <= 0.04s)
+Showing top 30 nodes out of 226
+      flat  flat%   sum%        cum   cum%
+     0.41s  5.02%  5.02%      0.84s 10.29%  runtime.tryDeferToSpanScan
+     0.37s  4.53%  9.56%      0.37s  4.53%  runtime.spanClass.sizeclass (inline)
+     0.24s  2.94% 12.50%      0.24s  2.94%  aeshashbody
+     0.19s  2.33% 14.83%      0.22s  2.70%  internal/runtime/maps.(*Iter).Next
+     0.19s  2.33% 17.16%      0.19s  2.33%  runtime.memmove
+     0.17s  2.08% 19.24%      0.67s  8.21%  encoding/json.(*Decoder).readValue
+     0.17s  2.08% 21.32%      0.17s  2.08%  runtime.nextFreeFast (inline)
+     0.16s  1.96% 23.28%      0.41s  5.02%  internal/runtime/maps.(*Map).getWithoutKeySmallFastStr
+     0.16s  1.96% 25.25%      1.49s 18.26%  runtime.mallocgc
+     0.16s  1.96% 27.21%      0.81s  9.93%  runtime.mallocgcSmallScanNoHeader
+     0.16s  1.96% 29.17%      0.16s  1.96%  runtime.memclrNoHeapPointers
+     0.15s  1.84% 31.00%      0.19s  2.33%  encoding/json.unquoteBytes
+     0.13s  1.59% 32.60%      0.36s  4.41%  regexp.(*Regexp).doOnePass
+     0.12s  1.47% 34.07%      0.99s 12.13%  runtime.scanObject
+     0.11s  1.35% 35.42%      0.29s  3.55%  bytes.(*Buffer).WriteByte
+     0.11s  1.35% 36.76%      0.13s  1.59%  encoding/json.(*decodeState).rescanLiteral
+     0.11s  1.35% 38.11%      0.11s  1.35%  encoding/json.stateInString
+     0.11s  1.35% 39.46%      0.11s  1.35%  memeqbody
+     0.11s  1.35% 40.81%      0.11s  1.35%  regexp/syntax.(*Inst).MatchRunePos
+     0.10s  1.23% 42.03%      0.12s  1.47%  runtime.(*mspan).writeHeapBitsSmall
+     0.10s  1.23% 43.26%      0.14s  1.72%  runtime.mallocgcTiny
+     0.10s  1.23% 44.49%      0.11s  1.35%  runtime.unlock2
+     0.09s  1.10% 45.59%      0.86s 10.54%  runtime.mapassign_faststr
+     0.09s  1.10% 46.69%      0.09s  1.10%  unicode/utf8.DecodeRuneInString (inline)
+     0.08s  0.98% 47.67%      0.50s  6.13%  runtime.mapaccess1_faststr
+     0.07s  0.86% 48.53%      0.07s  0.86%  bytes.(*Buffer).tryGrowByReslice (inline)
+     0.07s  0.86% 49.39%      0.07s  0.86%  golang.org/x/text/unicode/norm.(*input).skipASCII
+     0.07s  0.86% 50.25%      0.07s  0.86%  runtime.acquirem (inline)
+     0.07s  0.86% 51.10%      0.07s  0.86%  runtime.getMCache (inline)
+     0.06s  0.74% 51.84%      0.19s  2.33%  bytes.(*Buffer).WriteRune
