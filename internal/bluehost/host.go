@@ -44,6 +44,8 @@ var (
 
 const maxCachedProgramHandles = 64
 
+var blueWireSideEffectVariableProjection = [...]string{showEmitBag, overlayAppSetBag}
+
 // entry pairs a running instance with the program handle it was started
 // from, so Step/Stop never need the caller to keep the handle around.
 type entry struct {
@@ -656,6 +658,17 @@ func (h *Host) Dispatch(slot Slot, data []byte) (blueruntime.Receipt, error) {
 // real HTTP call (when wired via SetHTTPEffects) runs on the worker pool
 // and reports back through Runtime.Complete on its own goroutine.
 func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
+	return h.step(slot, false)
+}
+
+// StepProjected advances the slot like Step but snapshots only the cumulative
+// local-effect bags consumed by this host. It is intended for adapters such
+// as bluewire that forward Outputs and do not expose arbitrary runtime state.
+func (h *Host) StepProjected(slot Slot) (blueruntime.StepResult, error) {
+	return h.step(slot, true)
+}
+
+func (h *Host) step(slot Slot, projected bool) (blueruntime.StepResult, error) {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
 	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
@@ -666,7 +679,13 @@ func (h *Host) Step(slot Slot) (blueruntime.StepResult, error) {
 	h.mu.Unlock()
 
 	h.runtimeMu.Lock()
-	result, err := h.runtime.Step(instance)
+	var result blueruntime.StepResult
+	var err error
+	if projected {
+		result, err = h.runtime.StepProjected(instance, blueWireSideEffectVariableProjection[:])
+	} else {
+		result, err = h.runtime.Step(instance)
+	}
 	h.runtimeMu.Unlock()
 	if err != nil {
 		return result, err
@@ -762,6 +781,17 @@ func (h *Host) Take(instanceID, sceneID, digest string, program []byte, provider
 // responsible for calling this at a steady rate; the Host itself owns no
 // clock or goroutine of its own.
 func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, error) {
+	return h.tick(slot, deltaSeconds, false)
+}
+
+// TickProjected advances the slot like Tick but snapshots only the cumulative
+// local-effect bags consumed by this host. Output projection and clock
+// behavior are unchanged.
+func (h *Host) TickProjected(slot Slot, deltaSeconds float64) (blueruntime.StepResult, error) {
+	return h.tick(slot, deltaSeconds, true)
+}
+
+func (h *Host) tick(slot Slot, deltaSeconds float64, projected bool) (blueruntime.StepResult, error) {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
 	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
@@ -772,7 +802,13 @@ func (h *Host) Tick(slot Slot, deltaSeconds float64) (blueruntime.StepResult, er
 	h.mu.Unlock()
 
 	h.runtimeMu.Lock()
-	result, err := h.runtime.Tick(instance, deltaSeconds)
+	var result blueruntime.StepResult
+	var err error
+	if projected {
+		result, err = h.runtime.TickProjected(instance, deltaSeconds, blueWireSideEffectVariableProjection[:])
+	} else {
+		result, err = h.runtime.Tick(instance, deltaSeconds)
+	}
 	h.runtimeMu.Unlock()
 	if err != nil {
 		return result, err
@@ -823,6 +859,16 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 // inbound platform event (Quasar/Twitch) arms Engine A and Engine B
 // identically.
 func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (blueruntime.StepResult, error) {
+	return h.writePlatformEvent(slot, leaf, payload, false)
+}
+
+// WritePlatformEventProjected preserves WritePlatformEvent behavior while
+// snapshotting only the cumulative local-effect bags consumed by this host.
+func (h *Host) WritePlatformEventProjected(slot Slot, leaf string, payload any) (blueruntime.StepResult, error) {
+	return h.writePlatformEvent(slot, leaf, payload, true)
+}
+
+func (h *Host) writePlatformEvent(slot Slot, leaf string, payload any, projected bool) (blueruntime.StepResult, error) {
 	h.mu.Lock()
 	e, ok := h.slots[slot]
 	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
@@ -833,7 +879,13 @@ func (h *Host) WritePlatformEvent(slot Slot, leaf string, payload any) (bluerunt
 	h.mu.Unlock()
 
 	h.runtimeMu.Lock()
-	result, err := h.runtime.WritePlatformEvent(instance, leaf, payload)
+	var result blueruntime.StepResult
+	var err error
+	if projected {
+		result, err = h.runtime.WritePlatformEventProjected(instance, leaf, payload, blueWireSideEffectVariableProjection[:])
+	} else {
+		result, err = h.runtime.WritePlatformEvent(instance, leaf, payload)
+	}
 	h.runtimeMu.Unlock()
 	if err != nil {
 		return result, err

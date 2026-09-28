@@ -53,7 +53,7 @@ type StepResult struct {
 type hostAdapter struct{ host *bluehost.Host }
 
 func (a hostAdapter) Step(slot bluehost.Slot) (StepResult, error) {
-	r, err := a.host.Step(slot)
+	r, err := a.host.StepProjected(slot)
 	if err != nil {
 		return StepResult{}, err
 	}
@@ -61,7 +61,7 @@ func (a hostAdapter) Step(slot bluehost.Slot) (StepResult, error) {
 }
 
 func (a hostAdapter) Tick(slot bluehost.Slot, deltaSeconds float64) (StepResult, error) {
-	r, err := a.host.Tick(slot, deltaSeconds)
+	r, err := a.host.TickProjected(slot, deltaSeconds)
 	if err != nil {
 		return StepResult{}, err
 	}
