@@ -47,11 +47,16 @@ replace github.com/ZabLaboratory/Blue/runtime/go => ../../../Blue/runtime/go
 Orion has since passed `go test -mod=readonly ./...` and
 `go vet -mod=readonly ./...` with `GOWORK=off` and the merged Blue
 pseudo-version in go.mod; no local replacement was active. The first CI run on
-head `a11b6a3df791c1b74ed933f13ac8d739f7de48aa` failed only because
+head `a11b6a3df791c1b74ed933f13ac8d739f7de48aa` failed because
 `internal/bluehost/host.go` had 1,024 lines. The refactor extracts existing
 metadata/contract functions without changing their logic or lowering the gate;
-the local size guard and complete tests now pass. The corrective commit and
-fresh CI run are still pending. The projection code is in signed commit
+the local size guard and complete tests now pass. On the next head,
+`218b91fd2c2ce2556ecdb374a0e2bca52958d2f0`, `file-sizes` passed but
+`build-test` and `staticcheck` failed during their private-module preparation
+step. A local `go mod tidy -diff` reproduced a go.sum mismatch from two stale
+checksums for the prior Blue version; `go mod tidy` removed only those entries,
+`go mod tidy -diff` is now clean, and full tests/vet pass. The fresh CI rerun
+for this correction is pending. The projection code is in signed commit
 `5d8d785863ce10695af945eba86de278684992dd`; the dependency pin and final
 evidence are in the follow-up commit. No Orion deployment was performed.
 
@@ -134,4 +139,5 @@ claimed. Each chat operation continued to emit exactly one wire delta.
   Compose; the workflow did not delete or replace that data volume.
 - Orion's code commit is `5d8d785863ce10695af945eba86de278684992dd`; this PR
   adds the verified Blue dependency pin, final evidence, and the file-size
-  extraction. A fresh Orion CI and merge are still separate required gates.
+  extraction plus tidy go.sum. A fresh Orion CI and merge are still separate
+  required gates.
