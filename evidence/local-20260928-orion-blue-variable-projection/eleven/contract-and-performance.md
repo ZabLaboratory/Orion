@@ -27,6 +27,9 @@ unchanged cumulative records remain deduplicated.
 - `git diff --check` — pass in Orion. Blue has no whitespace defects; Git emits
   a CRLF-to-LF warning for the refreshed runtime manifest in this Windows
   checkout.
+- `python scripts/check_file_sizes.py` — pass after splitting static contract
+  parsing/type validation into `internal/bluehost/program_metadata.go`;
+  `host.go` is now 778 lines, under the existing 1,000-line gate.
 - `go test -race` was attempted for Blue and the Orion host/bridge/API packages,
   but Go refused because `CGO_ENABLED=0`; no C compiler is installed here.
 
@@ -43,10 +46,14 @@ replace github.com/ZabLaboratory/Blue/runtime/go => ../../../Blue/runtime/go
 
 Orion has since passed `go test -mod=readonly ./...` and
 `go vet -mod=readonly ./...` with `GOWORK=off` and the merged Blue
-pseudo-version in go.mod; no local replacement was active. The projection code
-is in signed commit `5d8d785863ce10695af945eba86de278684992dd`, followed by
-the tested dependency-pin/evidence update described below. No Orion deployment
-was performed.
+pseudo-version in go.mod; no local replacement was active. The first CI run on
+head `a11b6a3df791c1b74ed933f13ac8d739f7de48aa` failed only because
+`internal/bluehost/host.go` had 1,024 lines. The refactor extracts existing
+metadata/contract functions without changing their logic or lowering the gate;
+the local size guard and complete tests now pass. The corrective commit and
+fresh CI run are still pending. The projection code is in signed commit
+`5d8d785863ce10695af945eba86de278684992dd`; the dependency pin and final
+evidence are in the follow-up commit. No Orion deployment was performed.
 
 ## Final matched benchmark evidence
 
@@ -126,5 +133,5 @@ claimed. Each chat operation continued to emit exactly one wire delta.
   non-fatal warning that the existing `blue_pg_data` volume was not created by
   Compose; the workflow did not delete or replace that data volume.
 - Orion's code commit is `5d8d785863ce10695af945eba86de278684992dd`; this PR
-  adds the verified Blue dependency pin and final evidence. Orion CI and merge
-  are still separate required gates.
+  adds the verified Blue dependency pin, final evidence, and the file-size
+  extraction. A fresh Orion CI and merge are still separate required gates.
