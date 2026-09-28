@@ -9,6 +9,7 @@
 package bluewire
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -100,7 +101,7 @@ type Bridge struct {
 	mu                   sync.Mutex
 	lastRuntimeSequence  uint64
 	lastOutputSequence   uint64
-	lastProjectionDigest string
+	lastProjectionDigest []byte
 }
 
 // NewBridge wires host's slot onto mirror. target should be
@@ -335,7 +336,7 @@ func (b *Bridge) recordRuntimeSequence(sequence uint64) {
 	b.mu.Unlock()
 }
 
-func (b *Bridge) sequenceFor(runtimeSequence uint64, digest string) (uint64, bool, error) {
+func (b *Bridge) sequenceFor(runtimeSequence uint64, digest []byte) (uint64, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
@@ -344,7 +345,7 @@ func (b *Bridge) sequenceFor(runtimeSequence uint64, digest string) (uint64, boo
 			return 0, false, &SequenceStaleError{Received: runtimeSequence, Last: b.lastRuntimeSequence}
 		}
 		if runtimeSequence == b.lastRuntimeSequence {
-			if digest == b.lastProjectionDigest {
+			if bytes.Equal(digest, b.lastProjectionDigest) {
 				return 0, true, nil
 			}
 			return 0, false, &SequenceStaleError{Received: runtimeSequence, Last: b.lastRuntimeSequence}
@@ -355,7 +356,7 @@ func (b *Bridge) sequenceFor(runtimeSequence uint64, digest string) (uint64, boo
 	// The host Tick ABI deliberately returns no runtime sequence. The bridge
 	// therefore owns the wire sequence for clock-driven projections. It also
 	// suppresses a repeated projection before allocating a new wire sequence.
-	if digest == b.lastProjectionDigest {
+	if bytes.Equal(digest, b.lastProjectionDigest) {
 		return 0, true, nil
 	}
 	sequence := runtimeSequence
@@ -378,7 +379,7 @@ type projectionIdentity struct {
 	Patches           []protocol.Patch
 }
 
-func projectionDigest(proj blueproject.Projection, sceneID string, patches []protocol.Patch) (string, error) {
+func projectionDigest(proj blueproject.Projection, sceneID string, patches []protocol.Patch) ([]byte, error) {
 	identity := projectionIdentity{
 		SchemaVersion:     proj.SchemaVersion,
 		SceneID:           sceneID,
@@ -391,9 +392,11 @@ func projectionDigest(proj blueproject.Projection, sceneID string, patches []pro
 	}
 	data, err := json.Marshal(identity)
 	if err != nil {
-		return "", fmt.Errorf("bluewire: fingerprint projection: %w", err)
+		return nil, fmt.Errorf("bluewire: fingerprint projection: %w", err)
 	}
-	return string(data), nil
+	// Keep json.Marshal's owned buffer so sequenceFor can retain the exact
+	// comparison key without the copy performed by []byte-to-string conversion.
+	return data, nil
 }
 
 // Run steps the bridge every interval until ctx is cancelled. A step
