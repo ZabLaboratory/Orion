@@ -1,0 +1,44 @@
+File: api.test.exe
+Build ID: C:\Users\Mathias\AppData\Local\Temp\go-build3627454318\b001\api.test.exe2026-09-28 02:54:40.5216276 +0200 CEST
+Type: cpu
+Time: 2026-09-28 02:54:40 CEST
+Duration: 7.77s, Total samples = 8.66s (111.39%)
+Showing nodes accounting for 0.65s, 7.51% of 8.66s total
+Dropped 266 nodes (cum <= 0.04s)
+Showing top 35 nodes out of 219
+      flat  flat%   sum%        cum   cum%
+         0     0%     0%      7.45s 86.03%  testing.(*B).launch
+         0     0%     0%      7.45s 86.03%  testing.(*B).runN
+     0.01s  0.12%  0.12%      7.44s 85.91%  github.com/ZabLaboratory/Orion/internal/api.BenchmarkOrion181BlueChatToProjection
+     0.01s  0.12%  0.23%      4.88s 56.35%  github.com/ZabLaboratory/Orion/internal/providers.InjectActivePlatform
+         0     0%  0.23%      4.87s 56.24%  github.com/ZabLaboratory/Orion/internal/providers.(*ActiveIngress).InjectPlatform
+         0     0%  0.23%      3.19s 36.84%  github.com/ZabLaboratory/Blue/runtime/go.ParseEvent (inline)
+     0.02s  0.23%  0.46%      3.19s 36.84%  github.com/ZabLaboratory/Blue/runtime/go.parseEvent
+         0     0%  0.46%      3.19s 36.84%  github.com/ZabLaboratory/Orion/internal/providers.parseEvent
+     0.12s  1.39%  1.85%      1.69s 19.52%  runtime.mallocgc
+         0     0%  1.85%      1.59s 18.36%  github.com/ZabLaboratory/Blue/runtime/go.parseEnvelope
+         0     0%  1.85%      1.59s 18.36%  github.com/ZabLaboratory/Orion/internal/providers.(*ActiveIngress).inject
+         0     0%  1.85%      1.48s 17.09%  github.com/ZabLaboratory/Blue/runtime/go.decodeStrict
+     0.01s  0.12%  1.96%      1.46s 16.86%  github.com/ZabLaboratory/Orion/internal/bluehost.(*Host).WritePlatformEvent
+         0     0%  1.96%      1.45s 16.74%  github.com/ZabLaboratory/Blue/runtime/go.(*Runtime).WritePlatformEvent
+     0.01s  0.12%  2.08%      1.44s 16.63%  github.com/ZabLaboratory/Blue/runtime/go.(*Runtime).runEntrypointsWithOutputs
+     0.01s  0.12%  2.19%      1.44s 16.63%  github.com/ZabLaboratory/Blue/runtime/go.decodeValue
+         0     0%  2.19%      1.35s 15.59%  github.com/ZabLaboratory/Orion/internal/bluewire.(*Bridge).TickOnce (inline)
+         0     0%  2.19%      1.35s 15.59%  github.com/ZabLaboratory/Orion/internal/bluewire.(*Bridge).step
+     0.06s  0.69%  2.89%      1.29s 14.90%  encoding/json.(*Decoder).Token
+     0.01s  0.12%  3.00%      1.20s 13.86%  github.com/ZabLaboratory/Orion/internal/api.benchmarkBlueChatEvent
+         0     0%  3.00%      1.17s 13.51%  github.com/ZabLaboratory/Orion/internal/providers.BuildEvent
+     0.04s  0.46%  3.46%      1.09s 12.59%  encoding/json.(*Decoder).Decode
+     0.18s  2.08%  5.54%      0.97s 11.20%  runtime.mallocgcSmallScanNoHeader
+     0.02s  0.23%  5.77%      0.96s 11.09%  runtime.systemstack
+     0.11s  1.27%  7.04%      0.90s 10.39%  runtime.mapassign_faststr
+     0.01s  0.12%  7.16%      0.89s 10.28%  github.com/ZabLaboratory/Blue/runtime/go.digestValue
+     0.01s  0.12%  7.27%      0.88s 10.16%  github.com/ZabLaboratory/Orion/internal/bluewire.(*Bridge).advance
+     0.01s  0.12%  7.39%      0.87s 10.05%  github.com/ZabLaboratory/Orion/internal/bluehost.(*Host).Tick
+         0     0%  7.39%      0.87s 10.05%  github.com/ZabLaboratory/Orion/internal/bluewire.hostAdapter.Tick
+     0.01s  0.12%  7.51%      0.83s  9.58%  github.com/ZabLaboratory/Blue/runtime/go.(*Runtime).Tick
+         0     0%  7.51%      0.80s  9.24%  github.com/ZabLaboratory/Blue/runtime/go.digestWithout
+         0     0%  7.51%      0.70s  8.08%  encoding/json.Marshal
+         0     0%  7.51%      0.70s  8.08%  github.com/ZabLaboratory/Orion/internal/canonical.Digest
+         0     0%  7.51%      0.70s  8.08%  github.com/ZabLaboratory/Orion/internal/providers.Digest (inline)
+         0     0%  7.51%      0.68s  7.85%  github.com/ZabLaboratory/Blue/runtime/go.canonicalBytes

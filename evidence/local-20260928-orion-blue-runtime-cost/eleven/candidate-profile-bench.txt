@@ -1,0 +1,7 @@
+goos: windows
+goarch: amd64
+pkg: github.com/ZabLaboratory/Orion/internal/api
+cpu: AMD Ryzen 7 3800X 8-Core Processor
+BenchmarkOrion181BlueChatToProjection-16    	   99838	     58543 ns/op	         1.000 wire-delta/op	   28961 B/op	     382 allocs/op
+PASS
+ok  	github.com/ZabLaboratory/Orion/internal/api	7.921s

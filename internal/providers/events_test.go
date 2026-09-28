@@ -26,6 +26,31 @@ func TestBuildEvent_ParsesAsCanonicalEnvelope(t *testing.T) {
 	}
 }
 
+func TestParseEventPreservesStrictJSONNumbers(t *testing.T) {
+	data, err := BuildEvent(
+		"evt-numeric", "quasar.twitch.channel_1", "quasar.twitch.chat", "corr-1",
+		1, 1734000000001,
+		map[string]any{"count": json.Number("3")},
+	)
+	if err != nil {
+		t.Fatalf("BuildEvent: %v", err)
+	}
+	event, err := parseEvent(data)
+	if err != nil {
+		t.Fatalf("parseEvent: %v", err)
+	}
+	if _, ok := event["source_sequence"].(json.Number); !ok {
+		t.Fatalf("source_sequence lost its strict number type: %T", event["source_sequence"])
+	}
+	payload, ok := event["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload has unexpected type %T", event["payload"])
+	}
+	if count, ok := payload["count"].(json.Number); !ok || count.String() != "3" {
+		t.Fatalf("payload numeric value was not preserved: %#v", payload["count"])
+	}
+}
+
 func TestBuildEvent_TamperedPayloadFailsDigest(t *testing.T) {
 	data, err := BuildEvent("evt-1", "quasar.twitch.channel-42", "quasar.twitch.chat-message", "corr-1", 7, 1734000000000, map[string]any{"message": "gg"})
 	if err != nil {

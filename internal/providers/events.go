@@ -223,16 +223,7 @@ func (i *ActiveIngress) inject(leaf string, event map[string]any) (blueruntime.R
 }
 
 func parseEvent(data []byte) (map[string]any, error) {
-	if _, err := blueruntime.ParseEvent(data); err != nil {
-		return nil, err
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.UseNumber()
-	var event map[string]any
-	if err := decoder.Decode(&event); err != nil {
-		return nil, ingressError("EVENT_MALFORMED", "event envelope cannot be decoded")
-	}
-	return event, nil
+	return blueruntime.ParseEvent(data)
 }
 
 func sourceSequenceOf(event map[string]any) (uint64, error) {
