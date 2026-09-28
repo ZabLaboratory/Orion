@@ -102,6 +102,7 @@ type Bridge struct {
 	lastRuntimeSequence  uint64
 	lastOutputSequence   uint64
 	lastProjectionDigest []byte
+	lastProjectionBuffer *projectionDigestBuffer
 }
 
 // NewBridge wires host's slot onto mirror. target should be
@@ -225,11 +226,11 @@ func (b *Bridge) ForwardResult(result StepResult) error {
 		patches = append(patches, protocol.Patch{Path: path, Value: proj.Patches[path]})
 	}
 
-	projectionDigest, err := projectionDigest(proj, b.sceneID, patches)
+	digestBuffer, projectionDigest, err := projectionDigest(proj, b.sceneID, patches)
 	if err != nil {
 		return err
 	}
-	sequence, duplicate, err := b.sequenceFor(result.RuntimeSequence, projectionDigest)
+	sequence, duplicate, err := b.sequenceFor(result.RuntimeSequence, projectionDigest, digestBuffer)
 	if err != nil || duplicate {
 		return err
 	}
@@ -336,18 +337,21 @@ func (b *Bridge) recordRuntimeSequence(sequence uint64) {
 	b.mu.Unlock()
 }
 
-func (b *Bridge) sequenceFor(runtimeSequence uint64, digest []byte) (uint64, bool, error) {
+func (b *Bridge) sequenceFor(runtimeSequence uint64, digest []byte, digestBuffer *projectionDigestBuffer) (uint64, bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if runtimeSequence > 0 {
 		if runtimeSequence < b.lastRuntimeSequence {
+			releaseProjectionDigestBuffer(digestBuffer)
 			return 0, false, &SequenceStaleError{Received: runtimeSequence, Last: b.lastRuntimeSequence}
 		}
 		if runtimeSequence == b.lastRuntimeSequence {
 			if bytes.Equal(digest, b.lastProjectionDigest) {
+				releaseProjectionDigestBuffer(digestBuffer)
 				return 0, true, nil
 			}
+			releaseProjectionDigestBuffer(digestBuffer)
 			return 0, false, &SequenceStaleError{Received: runtimeSequence, Last: b.lastRuntimeSequence}
 		}
 		b.lastRuntimeSequence = runtimeSequence
@@ -357,6 +361,7 @@ func (b *Bridge) sequenceFor(runtimeSequence uint64, digest []byte) (uint64, boo
 	// therefore owns the wire sequence for clock-driven projections. It also
 	// suppresses a repeated projection before allocating a new wire sequence.
 	if bytes.Equal(digest, b.lastProjectionDigest) {
+		releaseProjectionDigestBuffer(digestBuffer)
 		return 0, true, nil
 	}
 	sequence := runtimeSequence
@@ -365,6 +370,9 @@ func (b *Bridge) sequenceFor(runtimeSequence uint64, digest []byte) (uint64, boo
 	}
 	b.lastOutputSequence = sequence
 	b.lastProjectionDigest = digest
+	previousDigestBuffer := b.lastProjectionBuffer
+	b.lastProjectionBuffer = digestBuffer
+	releaseProjectionDigestBuffer(previousDigestBuffer)
 	return sequence, false, nil
 }
 
@@ -379,7 +387,30 @@ type projectionIdentity struct {
 	Patches           []protocol.Patch
 }
 
-func projectionDigest(proj blueproject.Projection, sceneID string, patches []protocol.Patch) ([]byte, error) {
+const maxPooledProjectionDigestBytes = 1 << 20
+
+type projectionDigestBuffer struct {
+	buffer  bytes.Buffer
+	encoder *json.Encoder
+}
+
+var projectionDigestBufferPool = sync.Pool{
+	New: func() any {
+		buffer := &projectionDigestBuffer{}
+		buffer.encoder = json.NewEncoder(&buffer.buffer)
+		return buffer
+	},
+}
+
+func releaseProjectionDigestBuffer(buffer *projectionDigestBuffer) {
+	if buffer == nil || buffer.buffer.Cap() > maxPooledProjectionDigestBytes {
+		return
+	}
+	buffer.buffer.Reset()
+	projectionDigestBufferPool.Put(buffer)
+}
+
+func projectionDigest(proj blueproject.Projection, sceneID string, patches []protocol.Patch) (*projectionDigestBuffer, []byte, error) {
 	identity := projectionIdentity{
 		SchemaVersion:     proj.SchemaVersion,
 		SceneID:           sceneID,
@@ -390,13 +421,21 @@ func projectionDigest(proj blueproject.Projection, sceneID string, patches []pro
 		CorrelationID:     proj.CorrelationID,
 		Patches:           patches,
 	}
-	data, err := json.Marshal(identity)
-	if err != nil {
-		return nil, fmt.Errorf("bluewire: fingerprint projection: %w", err)
+	digestBuffer := projectionDigestBufferPool.Get().(*projectionDigestBuffer)
+	digestBuffer.buffer.Reset()
+	if err := digestBuffer.encoder.Encode(identity); err != nil {
+		releaseProjectionDigestBuffer(digestBuffer)
+		return nil, nil, fmt.Errorf("bluewire: fingerprint projection: %w", err)
 	}
-	// Keep json.Marshal's owned buffer so sequenceFor can retain the exact
-	// comparison key without the copy performed by []byte-to-string conversion.
-	return data, nil
+	data := digestBuffer.buffer.Bytes()
+	if len(data) == 0 || data[len(data)-1] != '\n' {
+		releaseProjectionDigestBuffer(digestBuffer)
+		return nil, nil, errors.New("bluewire: fingerprint projection encoder omitted trailing newline")
+	}
+	// Encoder.Encode uses the same JSON encoding as Marshal and appends one
+	// newline. Keep the reusable buffer owned by this bridge after trimming it
+	// from the comparison view; the next encoder workspace can then be pooled.
+	return digestBuffer, data[:len(data)-1], nil
 }
 
 // Run steps the bridge every interval until ctx is cancelled. A step
