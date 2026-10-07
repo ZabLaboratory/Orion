@@ -109,7 +109,9 @@ func TestOperatorExecutionDiscoversEveryCommandAcrossScopes(t *testing.T) {
 				var doc struct {
 					Digest string `json:"program_digest"`
 				}
-				json.Unmarshal(program, &doc)
+				if err := json.Unmarshal(program, &doc); err != nil {
+					t.Fatal(err)
+				}
 				if err := plane.Promote("arbitrary-rule", doc.Digest, program); err != nil {
 					t.Fatal(err)
 				}
@@ -117,7 +119,11 @@ func TestOperatorExecutionDiscoversEveryCommandAcrossScopes(t *testing.T) {
 				if err := loadEngineBSlot(host, slot, program); err != nil {
 					t.Fatal(err)
 				}
-				defer host.Release(slot, "test")
+				defer func() {
+					if err := host.Release(slot, "test"); err != nil {
+						t.Error(err)
+					}
+				}()
 				if _, err := host.Step(slot); err != nil {
 					t.Fatal(err)
 				}
@@ -190,7 +196,9 @@ func TestOperatorExecutionPreservesRuntimeFailure(t *testing.T) {
 		var identity struct {
 			Digest string `json:"program_digest"`
 		}
-		json.Unmarshal(program, &identity)
+		if err := json.Unmarshal(program, &identity); err != nil {
+			t.Fatal(err)
+		}
 		plane := bluehost.NewRulePlane(nil, nil, bluehost.EffectDeps{}, 1, testLogger())
 		defer plane.Stop()
 		if err := plane.Promote("arbitrary-rule", identity.Digest, program); err != nil {

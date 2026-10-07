@@ -83,7 +83,11 @@ func TestRealNativeBlueAnimation(t *testing.T) {
 		if err = host.Take("animation-"+phase, document["scene_id"].(string), document["scene_version"].(string), program, providers.Registry(), providers.Policy(false), nil); err != nil {
 			t.Fatal(err)
 		}
-		defer host.Release(bluehost.SlotOnAir, "proof-end")
+		defer func() {
+			if err := host.Release(bluehost.SlotOnAir, "proof-end"); err != nil {
+				t.Error(err)
+			}
+		}()
 		if _, err = host.Step(bluehost.SlotOnAir); err != nil {
 			t.Fatal(err)
 		}

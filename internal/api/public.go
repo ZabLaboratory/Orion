@@ -126,7 +126,7 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// its local Orion sidecar. This is not the remote Blue authoring service.
 	mux.HandleFunc("GET /api/v1/runtime/descriptor", getRuntimeDescriptor)
 	mux.HandleFunc("GET /api/v1/runtime/host-surface", getHostSurface(deps))
-	mux.HandleFunc("GET /api/v1/show/overlay-apps", requireOperator(func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("GET /api/v1/show/overlay-apps", requireOperator(func(w http.ResponseWriter, _ *http.Request) {
 		status := map[string]streamcontrol.AppStatus{}
 		if deps.OverlayStatus != nil {
 			status = deps.OverlayStatus()

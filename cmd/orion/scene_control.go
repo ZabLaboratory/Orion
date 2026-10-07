@@ -18,11 +18,12 @@ func wireSceneControl(cfg config.Config, deps *api.SceneIntentDeps, reception *l
 	}
 	// Orion owns this subtree. It never writes Prism's immutable artifact cache.
 	root := ""
-	if cfg.StreamIntentPath != "" {
+	switch {
+	case cfg.StreamIntentPath != "":
 		root = filepath.Dir(cfg.StreamIntentPath)
-	} else if cfg.ServiceTokenStatePath != "" {
+	case cfg.ServiceTokenStatePath != "":
 		root = filepath.Dir(cfg.ServiceTokenStatePath)
-	} else {
+	default:
 		root = cfg.AssetRoot
 	}
 	identity := sha256.Sum256([]byte(cfg.OwnerID + "\x00" + cfg.TenantID + "\x00" + cfg.LocalAuthUser))

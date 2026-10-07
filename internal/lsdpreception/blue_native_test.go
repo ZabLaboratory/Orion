@@ -47,7 +47,9 @@ func outputProgram(t *testing.T, path string, value any) []byte {
 	raw, _ = json.Marshal(program)
 	decoder = json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
-	decoder.Decode(&program)
+	if err := decoder.Decode(&program); err != nil {
+		t.Fatal(err)
+	}
 	digest, err := canonical.Digest(program)
 	if err != nil {
 		t.Fatal(err)
@@ -110,23 +112,28 @@ func TestRealNativeVisual(t *testing.T) {
 		if phase == "document" {
 			doc["layout"].(map[string]any)["children"].([]any)[1].(map[string]any)["background"] = "#203248"
 		}
-		if phase == "patch" {
+		switch phase {
+		case "patch":
 			raw, _ = json.Marshal(doc)
 			mirror := h.MirrorForLSML(id, version, "on-air", raw)
 			host := bluehost.NewHost()
 			if e = host.Take("cef-blue-instance", id, "sha256:cef-blue-test", outputProgram(t, "__lit.text.text_msxz43eh_1", "Orion + Blue + LSDP natif"), nil, nil, nil); e != nil {
 				t.Fatal(e)
 			}
-			defer host.Release(bluehost.SlotOnAir, "visual-test-end")
+			defer func() {
+				if err := host.Release(bluehost.SlotOnAir, "visual-test-end"); err != nil {
+					t.Error(err)
+				}
+			}()
 			bridge := bluewire.NewBridge(host, bluehost.SlotOnAir, mirror, id, "sha256:cef-blue-test", "cef-blue-instance", blueproject.TargetProgram, "local-source-only", "cef-native-proof")
 			if e = bridge.TickOnce(0); e != nil {
 				t.Fatal(e)
 			}
-		} else if phase == "document" {
+		case "document":
 			// Send the complete desired state to the real native state route.
 			// Rust computes the structural diff, preserving unrelated generations.
 			p.Replace("solar/generations", snapshot.State)
-		} else {
+		default:
 			t.Fatal("unknown visual phase")
 		}
 	}

@@ -50,7 +50,9 @@ func TestSceneCatalogPreservesClosureAndReverifiesAfterReopen(t *testing.T) {
 	source := []byte(`{"lsml":"1.2","scene_id":"scene-1","scene_version":"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","layout":{"type":"frame"},"defaults":{}}`)
 	raw, digest := canvasEnvelopeWithBundle(minimalProgram(t), source)
 	var envelope resolvedSceneEnvelope
-	json.Unmarshal(raw, &envelope)
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
 	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionTakeOnAir, time.Now(), "scene-1", digest)
 	trust := attestation.TrustSet{"canvas-key-1": pub}
 	options := attestation.Options{Principal: "operator-1", OwnerID: "owner-1", TenantID: "tenant-1", StreamID: "stream-1", Action: attestation.ActionTakeOnAir, LocatorPrefix: "scenes/"}
@@ -129,7 +131,9 @@ func TestSceneControlFileValidationAndDesiredOnlyPersistence(t *testing.T) {
 		t.Fatal("desired selection lost", err)
 	}
 	for _, raw := range []string{`{}`, `{"lsml":"1.2","schema":"wrong"}`} {
-		os.WriteFile(path, []byte(raw), 0600)
+		if err := os.WriteFile(path, []byte(raw), 0600); err != nil {
+			t.Fatal(err)
+		}
 		if _, err = OpenSceneControl(deps, nil, path, nil); err == nil {
 			t.Fatal("corrupt control admitted")
 		}

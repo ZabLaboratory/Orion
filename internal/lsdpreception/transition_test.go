@@ -25,7 +25,9 @@ func TestLaneFreezesCameraAndBlueProjectionAndRestoresLatestAuthority(t *testing
 		finish(restore)
 		job := <-p.queue
 		var document map[string]any
-		json.Unmarshal(job.document.(json.RawMessage), &document)
+		if err := json.Unmarshal(job.document.(json.RawMessage), &document); err != nil {
+			t.Fatal(err)
+		}
 		if document["defaults"].(map[string]any)["__cam.slots.host"] != "new-camera" {
 			t.Fatal("latest camera authority lost")
 		}

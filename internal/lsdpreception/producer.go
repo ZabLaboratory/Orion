@@ -84,14 +84,14 @@ func (p *Producer) transient(err error) {
 
 // A dropped transport has an unknown outcome. Replay exactly the same request
 // on the same receiver, never mint a fresh mutation identity during recovery.
-func (p *Producer) exchange(client *producerClient, request any) (json.RawMessage, error, bool) {
+func (p *Producer) exchange(client *producerClient, request any) (json.RawMessage, bool, error) {
 	retried := false
 	for {
 		p.mu.Lock()
 		terminal, failure := p.terminal, p.failure
 		p.mu.Unlock()
 		if terminal {
-			return nil, failure, retried
+			return nil, retried, failure
 		}
 		ctx, cancel := context.WithTimeout(p.ctx, 5*time.Second)
 		var result json.RawMessage
@@ -105,15 +105,15 @@ func (p *Producer) exchange(client *producerClient, request any) (json.RawMessag
 		cancel()
 		if err == nil {
 			p.transient(nil)
-			return result, nil, retried
+			return result, retried, nil
 		}
 		var wireError *native.WireError
 		if errors.As(err, &wireError) {
-			return nil, err, retried
+			return nil, retried, err
 		}
 		var transport net.Error
 		if !errors.As(err, &transport) && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.DeadlineExceeded) && p.ctx.Err() == nil {
-			return nil, err, retried
+			return nil, retried, err
 		}
 		if *client != nil {
 			(*client).Close()
@@ -128,7 +128,7 @@ func (p *Producer) exchange(client *producerClient, request any) (json.RawMessag
 		select {
 		case <-p.ctx.Done():
 			timer.Stop()
-			return nil, p.ctx.Err(), retried
+			return nil, retried, p.ctx.Err()
 		case <-timer.C:
 		}
 	}
@@ -234,7 +234,7 @@ func (p *Producer) run() {
 				before, ok := states[job.target]
 				if !ok {
 					var raw json.RawMessage
-					raw, err, _ = p.exchange(&client, map[string]any{"kind": "state.read", "target": job.target})
+					raw, _, err = p.exchange(&client, map[string]any{"kind": "state.read", "target": job.target})
 					if err == nil {
 						var snapshot struct {
 							State any `json:"state"`
@@ -253,20 +253,22 @@ func (p *Producer) run() {
 			if err == nil {
 				var result json.RawMessage
 				var uncertain bool
-				result, err, uncertain = p.exchange(&client, request)
+				result, uncertain, err = p.exchange(&client, request)
+			rebaseLoop:
 				for rebase := 0; err != nil && rebase < 8; rebase++ {
 					var wireError *native.WireError
-					if errors.As(err, &wireError) && wireError.Code == "BASE_MISMATCH" && job.operations != nil && uncertain {
+					switch {
+					case errors.As(err, &wireError) && wireError.Code == "BASE_MISMATCH" && job.operations != nil && uncertain:
 						// A receiver restart may have lost deduplication receipts. Do not
 						// rebase an array insertion or another possibly committed operation.
 						err = errors.New("NATIVE_TRANSACTION_OUTCOME_UNKNOWN")
-						break
-					} else if errors.As(err, &wireError) && wireError.Code == "BASE_MISMATCH" && job.operations != nil {
+						break rebaseLoop
+					case errors.As(err, &wireError) && wireError.Code == "BASE_MISMATCH" && job.operations != nil:
 						// A concurrent explicit LSML edit may have changed another field.
 						// Read its acknowledged baseline; preserve it, then retry only our
 						// declared leaves with a NEW ID after a proven rejection.
 						var raw json.RawMessage
-						raw, err, _ = p.exchange(&client, map[string]any{"kind": "state.read", "target": job.target})
+						raw, _, err = p.exchange(&client, map[string]any{"kind": "state.read", "target": job.target})
 						var snapshot struct {
 							State any `json:"state"`
 						}
@@ -280,11 +282,11 @@ func (p *Producer) run() {
 							id, err = native.NewID()
 							if err == nil {
 								request = map[string]any{"format": "lsdp.apply/1", "id": id, "target": job.target, "beforeHash": treeHash(snapshot.State), "operations": job.operations, "require": "applied"}
-								result, err, uncertain = p.exchange(&client, request)
+								result, uncertain, err = p.exchange(&client, request)
 							}
 						}
-					} else {
-						break
+					default:
+						break rebaseLoop
 					}
 				}
 				if err == nil {

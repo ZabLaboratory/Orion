@@ -23,7 +23,7 @@ func TestShowEventRouterBoundsReentrantCycles(t *testing.T) {
 func TestLocalInvocationsRouteMutationsToTheirOwnSlot(t *testing.T) {
 	host := NewHost()
 	var slots []Slot
-	host.SetSceneMutationSink(func(slot Slot, operations []map[string]any) error { slots = append(slots, slot); return nil })
+	host.SetSceneMutationSink(func(slot Slot, _ []map[string]any) error { slots = append(slots, slot); return nil })
 	for _, slot := range []Slot{SlotPreview, SlotOnAir} {
 		result := host.runLocalInvocation(slot, map[string]any{"capability": "core.lsml", "operation": "mutate", "request": map[string]any{"operations": []any{map[string]any{"op": "add", "path": "/layout/children/-", "value": map[string]any{"kind": "frame"}}}}})
 		if result.Err != "" {
@@ -43,7 +43,7 @@ func TestAnimationDispatchReplaysOnlyNewCausation(t *testing.T) {
 	instance := &blueruntime.InstanceHandle{}
 	host.slots[SlotPreview] = &entry{instance: instance}
 	count := 0
-	host.SetSceneMutationSink(func(slot Slot, operations []map[string]any) error {
+	host.SetSceneMutationSink(func(slot Slot, _ []map[string]any) error {
 		if slot != SlotPreview {
 			t.Fatal("wrong slot")
 		}

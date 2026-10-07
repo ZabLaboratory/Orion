@@ -75,7 +75,11 @@ func TestRealNativeOperatorVisual(t *testing.T) {
 	if err = host.Take(instance, id, digest, program, nil, nil, handlers); err != nil {
 		t.Fatal(err)
 	}
-	defer host.Release(bluehost.SlotOnAir, "visual-test-end")
+	defer func() {
+		if err := host.Release(bluehost.SlotOnAir, "visual-test-end"); err != nil {
+			t.Error(err)
+		}
+	}()
 	bridges := bluewire.NewRegistry()
 	bridge := bluewire.NewBridge(host, bluehost.SlotOnAir, mirror, id, digest, instance, blueproject.TargetProgram, "local-source-only", "cef-operator-native")
 	bridge.SetLogger(testLogger())

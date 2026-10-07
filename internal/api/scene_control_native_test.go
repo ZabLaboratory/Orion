@@ -36,7 +36,9 @@ func TestRealNativeSceneControlVisual(t *testing.T) {
 		t.Fatal(err)
 	}
 	var original map[string]any
-	json.Unmarshal(source, &original)
+	if err := json.Unmarshal(source, &original); err != nil {
+		t.Fatal(err)
+	}
 	id, version := original["scene_id"].(string), original["scene_version"].(string)
 	program, err := os.ReadFile("testdata/scene-lec-lck.program.json")
 	if err != nil {
@@ -44,7 +46,9 @@ func TestRealNativeSceneControlVisual(t *testing.T) {
 	}
 	envelopeBytes, digest := canvasEnvelopeWithBundle(program, source)
 	var envelope resolvedSceneEnvelope
-	json.Unmarshal(envelopeBytes, &envelope)
+	if err := json.Unmarshal(envelopeBytes, &envelope); err != nil {
+		t.Fatal(err)
+	}
 	reception, err := lsdpreception.New(os.Getenv("ORION_TEST_LSDP_NATIVE_ADDRESS"), "orion/state")
 	if err != nil {
 		t.Fatal(err)
@@ -58,7 +62,9 @@ func TestRealNativeSceneControlVisual(t *testing.T) {
 		parts := strings.Split(token, ".")
 		raw, _ := base64.RawURLEncoding.DecodeString(parts[1])
 		var claims map[string]any
-		json.Unmarshal(raw, &claims)
+		if err := json.Unmarshal(raw, &claims); err != nil {
+			t.Fatal(err)
+		}
 		claims["artifact_set_digest"] = version
 		claims["scene_digest"] = digest
 		raw, _ = json.Marshal(claims)
@@ -82,15 +88,19 @@ func TestRealNativeSceneControlVisual(t *testing.T) {
 	deps.MirrorFor = func(id, version string, slot bluehost.Slot, source []byte) runtime.SceneMirror {
 		return laneFor(slot).MirrorForLSML(id, version, source)
 	}
-	deps.Activate = func(id, version string, slot bluehost.Slot) { laneFor(slot).SetActive(id) }
+	deps.Activate = func(id, _ string, slot bluehost.Slot) { laneFor(slot).SetActive(id) }
 	deps.BeginLaneTransition = func(slot bluehost.Slot) func(bool) { return laneFor(slot).BeginTransition() }
 	deps.PresentScene = NativeScenePresenter(reception, func(slot bluehost.Slot, id, version string, raw []byte) (map[string]any, error) {
 		return laneFor(slot).PrepareSource(id, version, raw)
 	})
 	defer func() {
 		deps.Bridges.StopAll()
-		deps.Host.Release(bluehost.SlotOnAir, "test")
-		deps.Host.Release(bluehost.SlotPreview, "test")
+		if err := deps.Host.Release(bluehost.SlotOnAir, "test"); err != nil {
+			t.Fatal(err)
+		}
+		if err := deps.Host.Release(bluehost.SlotPreview, "test"); err != nil {
+			t.Fatal(err)
+		}
 	}()
 	headers := http.Header{"X-Authenticated-User": []string{"operator-1"}, "X-Authenticated-Role": []string{"operator"}}
 	makeReq := func(action, version string) sceneIntentRequest {
@@ -243,7 +253,9 @@ func TestRealNativeSceneControlVisual(t *testing.T) {
 			}
 			phase := fmt.Sprintf("%s-command-%d", lane, index)
 			var receipt any
-			json.Unmarshal(response.Body.Bytes(), &receipt)
+			if err := json.Unmarshal(response.Body.Bytes(), &receipt); err != nil {
+				t.Fatal(err)
+			}
 			actual, _ := json.Marshal(map[string]any{"phase": phase, "lane": lane, "entrypoint": command.EntrypointID, "path": path, "receipt": receipt, "nativeStateRead": true, "projection": doc["x-orion"]})
 			t.Log("REAL_OPERATOR_NATIVE_PROOF " + string(actual))
 			publishPhase(phase)
@@ -275,8 +287,12 @@ func TestRealNativeSceneControlVisual(t *testing.T) {
 	stopControl()
 	<-controlDone
 	deps.Bridges.StopAll()
-	deps.Host.Release(bluehost.SlotOnAir, "restart")
-	deps.Host.Release(bluehost.SlotPreview, "restart")
+	if err := deps.Host.Release(bluehost.SlotOnAir, "restart"); err != nil {
+		t.Fatal(err)
+	}
+	if err := deps.Host.Release(bluehost.SlotPreview, "restart"); err != nil {
+		t.Fatal(err)
+	}
 	deps.Host = bluehost.NewHost()
 	deps.Bridges = bluewire.NewRegistry()
 	deps.Catalog, err = OpenSceneCatalog(filepath.Join(root, "catalog"))

@@ -4,6 +4,6 @@ package streamcontrol
 
 import "os/exec"
 
-func configureProcess(cmd *exec.Cmd) {}
+func configureProcess(_ *exec.Cmd) {}
 
-func terminateProcess(cmd *exec.Cmd) error { return cmd.Process.Kill() }
+func terminateProcess(_ *exec.Cmd) error { return cmd.Process.Kill() }

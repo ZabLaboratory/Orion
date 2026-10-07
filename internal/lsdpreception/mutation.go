@@ -70,12 +70,12 @@ func (m *Mirror) ApplyLSML(operations []map[string]any) error {
 	}
 	scoped := make([]map[string]any, 0, len(operations))
 	for _, operation := range operations {
-		copy := map[string]any{}
+		scopedOperation := map[string]any{}
 		for k, v := range operation {
-			copy[k] = v
+			scopedOperation[k] = v
 		}
-		copy["path"] = "/" + pointer(m.key) + operation["path"].(string)
-		scoped = append(scoped, copy)
+		scopedOperation["path"] = "/" + pointer(m.key) + operation["path"].(string)
+		scoped = append(scoped, scopedOperation)
 	}
 	h.producer.Apply(target, scoped)
 	return nil

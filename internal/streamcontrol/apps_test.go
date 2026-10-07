@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func TestOverlayChild(t *testing.T) {
+func TestOverlayChild(_ *testing.T) {
 	if os.Getenv("ORION_OVERLAY_CHILD") != "1" {
 		return
 	}

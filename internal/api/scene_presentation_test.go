@@ -50,7 +50,11 @@ func TestSceneIntentCompensatesEachPreFinalizationFailure(t *testing.T) {
 			oldBridge := bluewire.NewBridge(host, bluehost.SlotPreview, oldMirror, "old-scene", "old-digest", "old", "preview", "rev", "intent")
 			bridges.Start(bluehost.SlotPreview, oldBridge, time.Hour, nil)
 			defer bridges.StopAll()
-			defer host.Release(bluehost.SlotPreview, "test")
+			defer func() {
+				if err := host.Release(bluehost.SlotPreview, "test"); err != nil {
+					t.Error(err)
+				}
+			}()
 			presentation := &rejectedPresentation{phase: phase}
 			laneRestored := false
 			wireCalls := 0

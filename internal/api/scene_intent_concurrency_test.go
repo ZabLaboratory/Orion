@@ -21,7 +21,9 @@ func TestSceneIntentLaneCommitSerializesReplayButNotOtherLane(t *testing.T) {
 	program := minimalProgram(t)
 	var envelope resolvedSceneEnvelope
 	raw, digest := canvasEnvelope(program)
-	json.Unmarshal(raw, &envelope)
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		t.Fatal(err)
+	}
 	firstFlush := make(chan struct{})
 	release := make(chan struct{})
 	var flushes atomic.Int32

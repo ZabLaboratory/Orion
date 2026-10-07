@@ -46,8 +46,12 @@ func TestReplacementRetainsExactInstanceAndBlocksNewExecutions(t *testing.T) {
 	if _, err = h.Step(SlotOnAir); err != nil {
 		t.Fatalf("retained instance no longer usable: %v", err)
 	}
-	h.Release(SlotOnAir, "test")
-	h.Release(SlotPreview, "test")
+	if err := h.Release(SlotOnAir, "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.Release(SlotPreview, "test"); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestReplacementFinalizationAndFailedProgramPreserveLane(t *testing.T) {

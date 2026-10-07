@@ -172,7 +172,9 @@ func TestRealNativeProducers(t *testing.T) {
 	// Switching Preview does not retarget an immutable generation or Program.
 	other := map[string]any{}
 	raw, _ := json.Marshal(original)
-	json.Unmarshal(raw, &other)
+	if err := json.Unmarshal(raw, &other); err != nil {
+		t.Fatal(err)
+	}
 	other["scene_id"] = "other-preview"
 	otherRaw, _ := json.Marshal(other)
 	preview.MirrorForLSML("other-preview", version, otherRaw)

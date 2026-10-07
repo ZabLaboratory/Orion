@@ -41,8 +41,14 @@ func TestRealNativeTransportRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	var original struct{ State any }
-	json.Unmarshal(raw, &original)
-	defer func() { client.SendPort(context.Background(), "", "orion/state", "orion.state/1", original.State) }()
+	if err := json.Unmarshal(raw, &original); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := client.SendPort(context.Background(), "", "orion/state", "orion.state/1", original.State); err != nil {
+			t.Error(err)
+		}
+	}()
 	reception, err := New(address, "orion/state")
 	if err != nil {
 		t.Fatal(err)
@@ -70,7 +76,9 @@ func TestRealNativeTransportRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	var observed struct{ State struct{ Items []string } }
-	json.Unmarshal(raw, &observed)
+	if err := json.Unmarshal(raw, &observed); err != nil {
+		t.Fatal(err)
+	}
 	if len(observed.State.Items) != 1 || observed.State.Items[0] != "one" || !lost.Load() || p.Status().Reconnects != 1 {
 		t.Fatalf("committed insertion replayed: %s %+v", raw, p.Status())
 	}

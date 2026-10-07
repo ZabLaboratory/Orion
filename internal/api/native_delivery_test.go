@@ -24,7 +24,11 @@ func TestNativeOperatorCallWaitsForPublicationAndRejectsACKFailure(t *testing.T)
 	if err := loadEngineBSlot(host, bluehost.SlotOnAir, buildEngineBOperatorProgram(t, "LEC", "called", "", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	defer host.Release(bluehost.SlotOnAir, "test-end")
+	defer func() {
+		if err := host.Release(bluehost.SlotOnAir, "test-end"); err != nil {
+			t.Error(err)
+		}
+	}()
 	mirror := &recordingMirror{}
 	bridges := bluewire.NewRegistry()
 	bridges.Start(bluehost.SlotOnAir, bluewire.NewBridge(host, bluehost.SlotOnAir, mirror, "scene-1", "sha256:scene", "instance-1", blueproject.TargetProgram, "revision-1", "intent-1"), time.Hour, nil)
@@ -63,7 +67,9 @@ func TestNativeEditableACKWaitsForScenePublication(t *testing.T) {
 		return errors.New("receiver unavailable")
 	}}
 	var body editablePreviewPatchRequest
-	json.Unmarshal([]byte(`{"scene_id":"editable","base_edit_seq":0,"edit_seq":1,"patches":[{"path":"__editable.node.x","value":42}]}`), &body)
+	if err := json.Unmarshal([]byte(`{"scene_id":"editable","base_edit_seq":0,"edit_seq":1,"patches":[{"path":"__editable.node.x","value":42}]}`), &body); err != nil {
+		t.Fatal(err)
+	}
 	status, code, err := applyEditablePreviewPatch(context.Background(), deps, body)
 	if !called || err == nil || status != http.StatusServiceUnavailable || code != "NATIVE_LSDP_DELIVERY_FAILED" {
 		t.Fatalf("false acknowledgement: %d %s %v; flushed=%v", status, code, err, called)

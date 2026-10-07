@@ -61,7 +61,11 @@ func TestRealNativeBlueStructuralMutation(t *testing.T) {
 	if err := host.PreparePreview("structural-blue", id, version, raw, providers.Registry(), providers.Policy(false), nil); err != nil {
 		t.Fatal(err)
 	}
-	defer host.Release(bluehost.SlotPreview, "proof-end")
+	defer func() {
+		if err := host.Release(bluehost.SlotPreview, "proof-end"); err != nil {
+			t.Error(err)
+		}
+	}()
 	if _, err := host.Step(bluehost.SlotPreview); err != nil {
 		t.Fatal(err)
 	}
