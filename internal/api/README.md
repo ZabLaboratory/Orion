@@ -79,3 +79,11 @@ its execution diagnostics: isolated, bounded runtime load/start/step, without
 external effects. Its `servable` field is the existing compatibility contract;
 Canvas owns the scene validation decision. Scene activation never calls this
 probe, simulates a Blue, or checks expected business outputs.
+
+Local editable Preview accepts `render_mode: source-only`: LSML identity and
+canonical content address are verified before installing the isolated clone, with
+no static tree lowering. `GET /api/v1/show/editable-preview/source` is embedded
+operator-only and requires exact scene/version; it returns the immutable LSML base
+and copied embedded assets, including after hot default changes. This authoring
+read does not grant Blue execution or publish a Canvas revision. Empty render mode
+retains compatibility compilation; unknown modes fail closed.

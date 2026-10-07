@@ -98,6 +98,7 @@ type previewClone struct {
 	scene        *Scene
 	bundle       []byte
 	lsmlBundle   []byte
+	assets       map[string][]byte
 	mirror       *sceneMirrorFanout
 	editable     bool
 	editSeq      uint64
@@ -162,7 +163,7 @@ func (p *PreviewSlot) SetEditableAirWire(wire EditableAirWire) {
 // Re-activating the same scene rebuilds a fresh clone (reseeds defaults +
 // fires on-start), matching a push-swap of the live scene on the antenne.
 func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, progs ...*ExecProgram) {
-	p.activate(sceneID, graph, bundle, false, 0, nil, progs...)
+	p.activate(sceneID, graph, bundle, false, 0, nil, nil, progs...)
 }
 
 // ActivateStatic installs a no-Blue render bundle in the editable preview
@@ -180,11 +181,11 @@ func (p *PreviewSlot) ActivateStatic(sceneID string, bundle *compiler.RenderBund
 		Bindings:       bundle.ExternalAdapters,
 		OperatorInputs: bundle.OperatorInputs,
 	}
-	p.activate(sceneID, graph, bundle, true, 0, nil)
+	p.activate(sceneID, graph, bundle, true, 0, nil, nil)
 	return nil
 }
 
-func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editable bool, editSeq uint64, lsmlBundle []byte, progs ...*ExecProgram) {
+func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editable bool, editSeq uint64, lsmlBundle []byte, assets map[string][]byte, progs ...*ExecProgram) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -248,6 +249,7 @@ func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *co
 		scene:        scene,
 		bundle:       bundleBytes,
 		lsmlBundle:   append([]byte(nil), lsmlBundle...),
+		assets:       cloneEditableAssets(assets),
 		mirror:       mirror,
 		editable:     editable,
 		editSeq:      editSeq,
@@ -293,18 +295,33 @@ func (p *PreviewSlot) Bundle(sceneID, sceneVersion string) ([]byte, bool) {
 	return append([]byte(nil), cur.bundle...), true
 }
 
+// EditableSource exposes only the immutable authoring base, never live defaults.
+func (p *PreviewSlot) EditableSource(sceneID, sceneVersion string) ([]byte, map[string][]byte, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	clone := p.editable[sceneID]
+	if sceneID == "" || sceneVersion == "" || clone == nil || clone.sceneVersion != sceneVersion || len(clone.lsmlBundle) == 0 {
+		return nil, nil, false
+	}
+	return append([]byte(nil), clone.lsmlBundle...), cloneEditableAssets(clone.assets), true
+}
+
 // ActivateEditable arms a no-Blue preview clone and records the durable
 // ZabCanvas edit sequence that subsequent hot patches must extend.
 func (p *PreviewSlot) ActivateEditable(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editSeq uint64) {
-	p.activate(sceneID, graph, bundle, true, editSeq, nil)
+	p.activate(sceneID, graph, bundle, true, editSeq, nil, nil)
 }
 
 // ActivateEditableWithBundle is the source-preserving variant used by the
 // HTTP editable-preview route. Generation wires need the original LSML bytes
 // to derive their bound leaf surface; the compiled RenderBundle alone is not
 // a valid LSML bundle.
-func (p *PreviewSlot) ActivateEditableWithBundle(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editSeq uint64, lsmlBundle []byte) {
-	p.activate(sceneID, graph, bundle, true, editSeq, lsmlBundle)
+func (p *PreviewSlot) ActivateEditableWithBundle(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editSeq uint64, lsmlBundle []byte, assets ...map[string][]byte) {
+	var sourceAssets map[string][]byte
+	if len(assets) > 0 {
+		sourceAssets = assets[0]
+	}
+	p.activate(sceneID, graph, bundle, true, editSeq, lsmlBundle, sourceAssets)
 }
 
 // PromoteEditable attaches the current no-Blue clone to its immutable
@@ -530,4 +547,12 @@ func (p *PreviewSlot) Close() {
 	}
 	p.current = nil
 	clear(p.editable)
+}
+
+func cloneEditableAssets(source map[string][]byte) map[string][]byte {
+	result := make(map[string][]byte, len(source))
+	for key, value := range source {
+		result[key] = append([]byte(nil), value...)
+	}
+	return result
 }

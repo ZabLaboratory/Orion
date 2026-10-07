@@ -19,10 +19,12 @@ const maxEditablePreviewBody = 4 << 20
 const maxEditablePreviewPatches = 256
 
 type editablePreviewOpenRequest struct {
-	SceneID      string          `json:"scene_id"`
-	SceneVersion string          `json:"scene_version"`
-	EditSeq      uint64          `json:"edit_seq"`
-	LSMLBundle   json.RawMessage `json:"lsml_bundle"`
+	SceneID      string            `json:"scene_id"`
+	SceneVersion string            `json:"scene_version"`
+	EditSeq      uint64            `json:"edit_seq"`
+	LSMLBundle   json.RawMessage   `json:"lsml_bundle"`
+	Assets       map[string][]byte `json:"assets,omitempty"`
+	RenderMode   string            `json:"render_mode,omitempty"`
 }
 
 type editablePreviewPatchRequest struct {
@@ -75,7 +77,7 @@ func applyEditablePreviewPatch(ctx context.Context, deps PublicDeps, body editab
 
 func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
-		if !deps.Config.Profile.IsEmbeddedLocal() || deps.Preview == nil || deps.SceneIntent == nil || (deps.SceneIntent.StaticBundleCompiler == nil && deps.SceneIntent.StaticRenderBundleCompiler == nil) {
+		if !deps.Config.Profile.IsEmbeddedLocal() || deps.Preview == nil || deps.SceneIntent == nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND"})
 			return
 		}
@@ -103,7 +105,7 @@ func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 			SceneVersion: body.SceneVersion,
 			Defaults:     defaults,
 		}
-		deps.Preview.ActivateEditableWithBundle(body.SceneID, graph, bundle, body.EditSeq, rawBundleCopy(body.LSMLBundle))
+		deps.Preview.ActivateEditableWithBundle(body.SceneID, graph, bundle, body.EditSeq, rawBundleCopy(body.LSMLBundle), body.Assets)
 		if err := flushNativeDelivery(r.Context(), deps, true); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
 			return
@@ -118,12 +120,21 @@ func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 }
 
 func compileEditablePreview(deps *SceneIntentDeps, body editablePreviewOpenRequest) (*compiler.RenderBundle, map[string]json.RawMessage, error) {
+	if body.RenderMode == "source-only" {
+		return editableSourceBundle(body)
+	}
+	if body.RenderMode != "" {
+		return nil, nil, errors.New("unsupported editable render mode")
+	}
 	if deps.StaticRenderBundleCompiler != nil {
 		bundle, defaults, err := deps.StaticRenderBundleCompiler(body.LSMLBundle, body.SceneID, body.SceneVersion)
 		if err == nil && bundle == nil {
 			err = compiler.ErrInvalidStaticRenderBundle
 		}
 		return bundle, defaults, err
+	}
+	if deps.StaticBundleCompiler == nil {
+		return nil, nil, errors.New("editable compatibility compiler unavailable")
 	}
 	compiled, defaults, err := deps.StaticBundleCompiler(body.LSMLBundle, body.SceneID, body.SceneVersion)
 	if err != nil {

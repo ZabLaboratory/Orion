@@ -138,6 +138,7 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// scenes_push.go. Superseded by POST /api/v1/host/scene-intent below.
 	mux.HandleFunc("GET /api/v1/scenes/{id}/render-bundle", getRenderBundle(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/lsml-bundle", getLSMLBundle(deps))
+	mux.HandleFunc("GET /api/v1/show/editable-preview/source", getEditablePreviewSource(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/operator-inputs", getOperatorInputs(deps))
 	// GET /api/v1/scenes/{id}/graph — RETIRED (#15, #331): see scenes_get.go.
 	// Preview→air state hand-off export seam (ADR Prism 005 Amendment 2
