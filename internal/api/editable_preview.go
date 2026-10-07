@@ -15,7 +15,9 @@ import (
 	"github.com/coder/websocket"
 )
 
-const maxEditablePreviewBody = 4 << 20
+// Includes base64 font/media assets; four standard Cambria faces alone exceed
+// 4 MiB. Keep a bounded envelope compatible with Prism's 8 MiB font budget.
+const maxEditablePreviewBody = 16 << 20
 const maxEditablePreviewPatches = 256
 
 type editablePreviewOpenRequest struct {
