@@ -21,7 +21,9 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
 
-const embeddedLocalAttestationClockSkew = 5 * time.Second
+// Remote Canvas and an embedded Windows runtime have independent wall clocks.
+// Bound only not-before tolerance; expired refs and readiness remain strict.
+const embeddedLocalAttestationClockSkew = 10 * time.Second
 
 // wireSceneIntent builds the additive stateless-cutover surface (#331,
 // ADR-BLUE-012). It returns (nil, nil) only when NONE of the workload
