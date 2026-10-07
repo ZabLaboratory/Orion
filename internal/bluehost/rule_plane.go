@@ -27,6 +27,11 @@ type ruleInstance struct {
 	digest string
 }
 
+type ruleTarget struct {
+	id   string
+	host *Host
+}
+
 // RulePlane owns the process-local stream-rule runtime. It is deliberately
 // orthogonal to Host's preview/on-air scene slots: a promoted rule has one
 // long-lived Engine B instance whose effects apply to the show-level overlay
@@ -34,17 +39,19 @@ type ruleInstance struct {
 // inside each private child Host is only the portable Execute-mode adapter;
 // it is not a third scene slot and is never exposed through the scene API.
 //
-// The plane has no durable store. Prism owns intent and replays it after an
-// Orion restart; Orion owns only reconstructible runtime state and therefore
-// remains stateless in the platform sense.
+// An optional Orion-owned LSML store preserves published rule programs and
+// enabled intent. Engine instances remain reconstructible runtime state.
 type RulePlane struct {
-	mu           sync.RWMutex
-	rules        map[string]*ruleInstance
-	providers    []map[string]any
-	policy       blueruntime.CapabilityPolicy
-	effects      EffectDeps
-	logger       *slog.Logger
-	showEmitSink ShowEmitSink
+	opMu              sync.Mutex
+	store             RuleStore
+	mu                sync.RWMutex
+	rules             map[string]*ruleInstance
+	providers         []map[string]any
+	policy            blueruntime.CapabilityPolicy
+	effects           EffectDeps
+	logger            *slog.Logger
+	showEmitSink      ShowEmitSink
+	sceneMutationSink SceneMutationSink
 
 	stopOnce sync.Once
 	stop     chan struct{}
@@ -52,7 +59,14 @@ type RulePlane struct {
 	interval time.Duration
 }
 
-// NewRulePlane constructs and starts a volatile stream-rule plane. tickHz is
+type RuleStore interface {
+	SetRule(string, string, []byte) error
+	RemoveRule(string) error
+}
+
+func (p *RulePlane) SetStore(store RuleStore) { p.opMu.Lock(); defer p.opMu.Unlock(); p.store = store }
+
+// NewRulePlane constructs and starts a stream-rule plane. tickHz is
 // shared with the scene runtime so on-tick/delay entrypoints advance at the
 // same cadence. A non-positive value uses the production default of 60 Hz.
 func NewRulePlane(providers []map[string]any, policy blueruntime.CapabilityPolicy, effects EffectDeps, tickHz int, logger *slog.Logger) *RulePlane {
@@ -119,9 +133,12 @@ func (p *RulePlane) Promote(ruleID, digest string, program []byte) error {
 	if ruleID == "" || digest == "" || len(program) == 0 {
 		return errors.New("bluehost: stream rule requires id, digest and program")
 	}
+	p.opMu.Lock()
+	defer p.opMu.Unlock()
 
 	p.mu.RLock()
 	current := p.rules[ruleID]
+	mutationSink := p.sceneMutationSink
 	if current != nil && current.digest == digest {
 		p.mu.RUnlock()
 		return nil
@@ -132,6 +149,7 @@ func (p *RulePlane) Promote(ruleID, digest string, program []byte) error {
 	host.SetHTTPEffects(p.effects, p.logger)
 	host.SetOverlayMirror(p.effects.OverlayMirror)
 	host.SetShowEmitSink(p.emitShowEvent)
+	host.SetSceneMutationSink(mutationSink)
 	if err := host.Take(
 		"stream-rule:"+ruleID,
 		ruleID,
@@ -143,11 +161,18 @@ func (p *RulePlane) Promote(ruleID, digest string, program []byte) error {
 	); err != nil {
 		return fmt.Errorf("bluehost: promote stream rule %s: %w", ruleID, err)
 	}
+
 	if _, err := host.Step(SlotOnAir); err != nil {
 		_ = host.Release(SlotOnAir, "stream-rule-start-failed")
 		return fmt.Errorf("bluehost: start stream rule %s: %w", ruleID, err)
 	}
 
+	if p.store != nil {
+		if err := p.store.SetRule(ruleID, digest, program); err != nil {
+			_ = host.Release(SlotOnAir, "stream-rule-persist-failed")
+			return err
+		}
+	}
 	p.mu.Lock()
 	current = p.rules[ruleID]
 	if current != nil && current.digest == digest {
@@ -168,8 +193,8 @@ func (p *RulePlane) Promote(ruleID, digest string, program []byte) error {
 
 // SetShowEmitSink wires the stream rule's core.show.emit@1 output to the
 // embedding's active scene-intent targets. Existing rules are updated and
-// future promotions inherit the same seam. The rule plane remains stateless;
-// the caller owns which slots are active and how the event is admitted.
+// future promotions inherit the same seam. The caller owns which slots are
+// active and how the event is admitted.
 func (p *RulePlane) SetShowEmitSink(sink ShowEmitSink) {
 	if p == nil {
 		return
@@ -202,6 +227,13 @@ func (p *RulePlane) emitShowEvent(topic string, payload any) {
 func (p *RulePlane) Demote(ruleID string) error {
 	if p == nil {
 		return nil
+	}
+	p.opMu.Lock()
+	defer p.opMu.Unlock()
+	if p.store != nil {
+		if err := p.store.RemoveRule(ruleID); err != nil {
+			return err
+		}
 	}
 	p.mu.Lock()
 	rule := p.rules[ruleID]
@@ -282,8 +314,8 @@ func (p *RulePlane) Call(ruleID, callID string, payload any) (blueruntime.StepRe
 		return blueruntime.StepResult{}, ErrRuleNotActive
 	}
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 	rule := p.rules[ruleID]
+	p.mu.RUnlock()
 	if rule == nil {
 		return blueruntime.StepResult{}, ErrRuleNotActive
 	}
@@ -310,12 +342,43 @@ func (p *RulePlane) Resolve(ruleID, awaitName string, value any) (blueruntime.St
 		return blueruntime.StepResult{}, ErrRuleNotActive
 	}
 	p.mu.RLock()
-	defer p.mu.RUnlock()
 	rule := p.rules[ruleID]
+	p.mu.RUnlock()
 	if rule == nil {
 		return blueruntime.StepResult{}, ErrRuleNotActive
 	}
 	return rule.host.Resolve(SlotOnAir, awaitName, value)
+}
+
+// activeRules snapshots the target set in deterministic order. Runtime calls
+// can emit back into the plane, so no plane lock may surround those calls.
+func (p *RulePlane) activeRules() []ruleTarget {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	rules := make([]ruleTarget, 0, len(p.rules))
+	for id, rule := range p.rules {
+		rules = append(rules, ruleTarget{id, rule.host})
+	}
+	sort.Slice(rules, func(i, j int) bool { return rules[i].id < rules[j].id })
+	return rules
+}
+
+// EmitEvent admits a show topic independently into each enabled global rule.
+// Undeclared topics are irrelevant to a rule, not a fault. Rejected payloads
+// and execution errors remain visible and cannot stop other listeners.
+func (p *RulePlane) EmitEvent(topic string, payload any) {
+	if p == nil {
+		return
+	}
+	for _, rule := range p.activeRules() {
+		if err := rule.host.EmitEvent(SlotOnAir, topic, payload); err != nil {
+			var runtimeErr *blueruntime.Error
+			if errors.Is(err, ErrNotLoaded) || (errors.As(err, &runtimeErr) && runtimeErr.Code == "EVENT_TOPIC_UNKNOWN") {
+				continue
+			}
+			p.logger.Warn("stream rule topic event failed", "rule_id", rule.id, "topic", topic, "err", err)
+		}
+	}
 }
 
 // WritePlatformEvent fans one canonical platform leaf to every global rule.
@@ -325,11 +388,9 @@ func (p *RulePlane) WritePlatformEvent(leaf string, payload any) {
 	if p == nil {
 		return
 	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	for id, rule := range p.rules {
+	for _, rule := range p.activeRules() {
 		if _, err := rule.host.WritePlatformEvent(SlotOnAir, leaf, payload); err != nil {
-			p.logger.Warn("stream rule platform event failed", "rule_id", id, "err", err)
+			p.logger.Warn("stream rule platform event failed", "rule_id", rule.id, "err", err)
 		}
 	}
 }
@@ -340,11 +401,20 @@ func (p *RulePlane) TickAll(deltaSeconds float64) {
 	if p == nil {
 		return
 	}
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	for id, rule := range p.rules {
+	for _, rule := range p.activeRules() {
 		if _, err := rule.host.Tick(SlotOnAir, deltaSeconds); err != nil && !errors.Is(err, ErrNotLoaded) {
-			p.logger.Warn("stream rule tick failed", "rule_id", id, "err", err)
+			p.logger.Warn("stream rule tick failed", "rule_id", rule.id, "err", err)
 		}
+	}
+}
+
+func (p *RulePlane) SetSceneMutationSink(sink SceneMutationSink) {
+	p.opMu.Lock()
+	defer p.opMu.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.sceneMutationSink = sink
+	for _, rule := range p.rules {
+		rule.host.SetSceneMutationSink(sink)
 	}
 }

@@ -59,6 +59,12 @@ func CompileStaticRenderBundle(raw []byte, _ string, sceneVersion, assetBaseURL 
 			bundle.Defaults[path] = bytes.Clone(value)
 		}
 	}
+	var source struct {
+		LSML string `json:"lsml"`
+	}
+	if json.Unmarshal(raw, &source) == nil && source.LSML != "" {
+		bundle.SourceLSML = bytes.Clone(raw)
+	}
 	return bundle, defaults, nil
 }
 

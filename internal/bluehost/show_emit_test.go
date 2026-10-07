@@ -9,7 +9,7 @@ import (
 func TestDispatchShowEmitUsesCausationIdentityAndPreservesIdenticalPayloads(t *testing.T) {
 	h := NewHost()
 	instance := &blueruntime.InstanceHandle{}
-	h.slots[SlotOnAir] = &entry{instance: instance, showEmitSeen: map[string]struct{}{}}
+	h.slots[SlotOnAir] = &entry{instance: instance, showEmitSeen: map[string]string{}}
 	var calls []showEmitCall
 	h.SetShowEmitSink(func(topic string, payload any) {
 		calls = append(calls, showEmitCall{topic: topic, payload: payload})

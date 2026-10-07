@@ -27,18 +27,19 @@ func getRenderBundle(deps PublicDeps) http.HandlerFunc {
 	}
 }
 
-// getOperatorInputs serves the operator_inputs slice from the bundle to
-// non-Solar adapters (Companion, mPrism).
-//
-// Migrated off Store (#15, #331), same posture as getRenderBundle. The
-// bundle bytes now come from ZabCanvas's lsml_bundle (§6.3), whose exact
-// JSON schema for an "operator_inputs" field has NOT been confirmed
-// against Orion's legacy compiler.RenderBundle.OperatorInputs shape —
-// unmarshalled here as a generic top-level key, best-effort, rather than
-// a typed struct that could silently mismatch. Absent key ⇒ empty array,
-// never an error (an authored scene may declare none).
+// getOperatorInputs serves the admitted source interface to Companion/mPrism.
+// Both exact scene id and scene digest remain required. Native source-only
+// slots need no bundle; legacy preview consumers retain bundle fallback.
 func getOperatorInputs(deps PublicDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		digest := r.URL.Query().Get("v")
+		if host := engineBHost(deps); host != nil {
+			if inputs, ok := host.SceneOperatorInputs(r.PathValue("id"), digest); ok {
+				writeImmutable(w, digest, http.StatusOK)
+				_ = json.NewEncoder(w).Encode(map[string]any{"scene_version": digest, "operator_inputs": inputs})
+				return
+			}
+		}
 		digest, bundle, ok := resolveHostBundle(deps, r)
 		if !ok {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "PUSHED_VERSION_NOT_FOUND"})
@@ -103,24 +104,12 @@ func serveHostBundle(w http.ResponseWriter, r *http.Request, deps PublicDeps) {
 //
 // host.Serving(slot, id, v) is the SAME (sceneID, digest) identity check
 // bluehost.Host already uses for its own idempotent-Prepare admission
-// (host.go) — no new identity concept invented here. Serves all three
-// consumers of this resolver identically (render-bundle, lsml-bundle,
-// operator-inputs — getOperatorInputs calls it directly), so none of the
-// three keeps the wider door open behind the other two.
+// (host.go) — no new identity concept invented here. Serves the
+// compatibility bundle consumers; source interface reads require the same
+// exact keys through SceneOperatorInputs.
 //
-// KNOWN GAP, NOT CLOSED HERE (clause 5, Amendment 3 territory,
-// bluehost/host.go:478-499): Host.Take never records a sceneID — only
-// Prepare does — so host.Serving(SlotOnAir, id, v) can only ever be true
-// for id=="". No legitimate on-air fetch through THIS route currently
-// succeeds anyway regardless of {id}/?v= — see the PR: the client-side
-// version check in @lumencast/runtime independently refuses every
-// response this branch could produce, because no occupation carries a
-// non-empty scene_version (clause 11's second half, also not closed
-// here). This fix closes the harvest (the ONLY consumer that extracted a
-// usable result from the prior fallback); it does not — and cannot,
-// without touching the reserved slot-identity surface — make an on-air
-// fetch through this resolver succeed. Diagnostic gain (silent client
-// failure → explicit 404), not a rendering fix.
+// Both slots record the scene identity. This compatibility resolver still
+// requires actual bundle bytes; source-only interfaces use SceneOperatorInputs.
 func resolveHostBundle(deps PublicDeps, r *http.Request) (digest string, bundle []byte, ok bool) {
 	sceneID := r.PathValue("id")
 	v := r.URL.Query().Get("v")

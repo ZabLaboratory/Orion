@@ -77,10 +77,6 @@ type ActiveIngress struct {
 	origins    map[string]uint64
 }
 
-// Ingress is a short compatibility alias for callers that do not need the
-// more explicit ActiveIngress name.
-type Ingress = ActiveIngress
-
 // NewActiveIngress creates an ingress bound to one host. The host remains the
 // owner of preview/on-air instances; this adapter stores no scene roster or
 // durable event state.
@@ -90,11 +86,6 @@ func NewActiveIngress(host *bluehost.Host) *ActiveIngress {
 		seen:    map[string]activeIngressState{},
 		origins: map[string]uint64{},
 	}
-}
-
-// NewIngress is an alias for NewActiveIngress.
-func NewIngress(host *bluehost.Host) *ActiveIngress {
-	return NewActiveIngress(host)
 }
 
 var activeIngresses sync.Map // map[*bluehost.Host]*ActiveIngress

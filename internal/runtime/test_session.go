@@ -14,13 +14,9 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 )
 
-// SessionWire is a per-test-session LSDP/1.1 endpoint — the PREVIEW wire.
-// Each test session gets its OWN isolated lumencast-go server whose sole,
-// always-active scene is this session's clone. Solar subscribes live-mode
-// against Handler() and follows ONLY the clone; it can neither observe nor
-// drive the global show's active scene. This is the structural isolation the
-// preview/antenne split needs: no shared active pointer, ever. Close tears
-// the kit scene down when the session dies.
+// SessionWire owns a clone's isolated render projection. Production publishes
+// one entry under the actual session ID in native solar/sessions. Handler is
+// retained for explicit compatibility adapters; native viewers use selectors.
 type SessionWire interface {
 	// Mirror is the output tap fed onto the session's kit scene — wired
 	// onto the clone via Scene.SetMirror before it runs.
@@ -127,8 +123,16 @@ func (m *TestSessionManager) Open(ctx context.Context, sceneID string, graph *co
 	wires := m.wires
 	m.mu.Unlock()
 	var wire SessionWire
+	nativeLease := false
 	if wires != nil {
-		wire = wires.NewSessionWire(sceneID, gcopy.SceneVersion, &bcopy)
+		if named, ok := wires.(interface {
+			NewSessionWireFor(string, string, string, *compiler.RenderBundle) SessionWire
+		}); ok {
+			nativeLease = true
+			wire = named.NewSessionWireFor(id, sceneID, gcopy.SceneVersion, &bcopy)
+		} else {
+			wire = wires.NewSessionWire(sceneID, gcopy.SceneVersion, &bcopy)
+		}
 		scene.SetMirror(wire.Mirror())
 	}
 
@@ -141,10 +145,53 @@ func (m *TestSessionManager) Open(ctx context.Context, sceneID string, graph *co
 		wire:     wire,
 		wsActive: false,
 	}
+	if nativeLease {
+		// Subscriptions terminate at the shared node; Orion needs an explicit lease.
+		sess.closeAt = time.Now().Add(m.graceWindow)
+	}
 	m.mu.Lock()
 	m.sessions[id] = sess
 	m.mu.Unlock()
 	return id, scene
+}
+
+// Renew extends a native session lease without marking a local WS connected.
+func (m *TestSessionManager) Renew(id string) (time.Time, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	sess := m.sessions[id]
+	if sess == nil || (!sess.closeAt.IsZero() && time.Now().After(sess.closeAt)) {
+		return time.Time{}, ErrTestSessionExpired
+	}
+	sess.closeAt = time.Now().Add(m.graceWindow)
+	return sess.closeAt, nil
+}
+
+// CloseSession tears down the clone and its native resource entry immediately.
+func (m *TestSessionManager) CloseSession(id string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if sess := m.sessions[id]; sess != nil {
+		sess.scene.Stop()
+		if sess.wire != nil {
+			sess.wire.Close()
+		}
+		delete(m.sessions, id)
+	}
+}
+
+// RunSweep reclaims expired native leases even without a local WS consumer.
+func (m *TestSessionManager) RunSweep(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			m.Sweep(now)
+		}
+	}
 }
 
 // ConnectWire marks a session WS-active (grace reset) and returns its

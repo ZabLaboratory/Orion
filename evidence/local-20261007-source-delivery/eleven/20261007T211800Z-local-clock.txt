@@ -1,0 +1,3 @@
+Observed: authenticated Canvas fresh ref issued_at 1791407535 against local Date.now epoch 1791407529 (six seconds ahead).
+Embedded-only not-before tolerance changed from five to ten seconds. Production default remains zero; expiry/readiness deadlines remain strict.
+Validation: go test ./internal/attestation ./cmd/orion passed.

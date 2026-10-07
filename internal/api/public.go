@@ -4,6 +4,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -11,22 +12,29 @@ import (
 
 	"github.com/ZabLaboratory/Orion/internal/adapters"
 	"github.com/ZabLaboratory/Orion/internal/auth"
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/config"
 	"github.com/ZabLaboratory/Orion/internal/effects"
 	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
+	"github.com/ZabLaboratory/Orion/internal/streamcontrol"
 	"github.com/ZabLaboratory/Orion/internal/ws"
 )
 
 // PublicDeps groups every dependency the public router needs.
 type PublicDeps struct {
-	Logger   *slog.Logger
-	Metrics  *obs.Metrics
-	Config   config.Config
-	Show     *runtime.Show
-	Inbox    *adapters.Inbox
-	Test     *runtime.TestSessionManager
-	WSServer *ws.Server
+	HostEffects      *bluehost.EffectDeps
+	OverlayStatus    func() map[string]streamcontrol.AppStatus
+	NativeLSDPCheck  func(context.Context) error
+	NativeLSDPFlush  func(context.Context) error
+	NativeLSDPStatus func() any
+	Logger           *slog.Logger
+	Metrics          *obs.Metrics
+	Config           config.Config
+	Show             *runtime.Show
+	Inbox            *adapters.Inbox
+	Test             *runtime.TestSessionManager
+	WSServer         *ws.Server
 
 	// Harness runs scene-validation campaigns (ADR 003 §3.2, issue #87) —
 	// still consumed by postSimulate (validate_simulate.go). The serialised
@@ -117,11 +125,20 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// Public descriptor used by Prism to verify the Blue runtime embedded in
 	// its local Orion sidecar. This is not the remote Blue authoring service.
 	mux.HandleFunc("GET /api/v1/runtime/descriptor", getRuntimeDescriptor)
+	mux.HandleFunc("GET /api/v1/runtime/host-surface", getHostSurface(deps))
+	mux.HandleFunc("GET /api/v1/show/overlay-apps", requireOperator(func(w http.ResponseWriter, _ *http.Request) {
+		status := map[string]streamcontrol.AppStatus{}
+		if deps.OverlayStatus != nil {
+			status = deps.OverlayStatus()
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"apps": status})
+	}))
 
 	// POST /api/v1/scenes/{id}/push — RETIRED (#15, #331): see the removed
 	// scenes_push.go. Superseded by POST /api/v1/host/scene-intent below.
 	mux.HandleFunc("GET /api/v1/scenes/{id}/render-bundle", getRenderBundle(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/lsml-bundle", getLSMLBundle(deps))
+	mux.HandleFunc("GET /api/v1/show/editable-preview/source", getEditablePreviewSource(deps))
 	mux.HandleFunc("GET /api/v1/scenes/{id}/operator-inputs", getOperatorInputs(deps))
 	// GET /api/v1/scenes/{id}/graph — RETIRED (#15, #331): see scenes_get.go.
 	// Preview→air state hand-off export seam (ADR Prism 005 Amendment 2
@@ -156,6 +173,10 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// scene-push.ts) — migration to scene-intent is a separate Prism-repo
 	// work stream, not implemented here; see the #331 final report.
 	mux.HandleFunc("POST /api/v1/show/test-sessions", postTestSession(deps))
+	if deps.NativeLSDPCheck != nil {
+		mux.HandleFunc("POST /api/v1/show/test-sessions/{session}/lease", renewNativeTestSession(deps))
+		mux.HandleFunc("DELETE /api/v1/show/test-sessions/{session}", closeNativeTestSession(deps))
+	}
 	// Preview/antenne split: the cockpit preview flips the PERSISTENT preview
 	// wire (a clone behind /show/preview.lsdp), never the antenne's active
 	// scene — so a preview switch no longer flips the live antenne. The
@@ -216,6 +237,7 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	// registered only once cmd/orion provisions Trust/Workload/Host.
 	if deps.SceneIntent != nil {
 		if deps.SceneIntent.EmbeddedLocal {
+			mux.HandleFunc("POST /api/v1/runtime/scene-catalog", postSceneCatalog(*deps.SceneIntent))
 			mux.HandleFunc("POST /api/v1/host/scene-intent/atomic", postLocalAtomicSceneIntent(*deps.SceneIntent))
 		}
 		mux.HandleFunc("POST /api/v1/host/scene-intent", postSceneIntent(*deps.SceneIntent))
@@ -237,7 +259,7 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 		mux.HandleFunc("POST /api/v1/validate/render-bundle", postValidateRenderBundle(*deps.SceneIntent))
 	}
 	if deps.CameraSlots != nil {
-		mux.HandleFunc("POST /api/v1/host/camera-slots", postCameraSlots(deps.CameraSlots))
+		mux.HandleFunc("POST /api/v1/host/camera-slots", postCameraSlots(deps.CameraSlots, deps.NativeLSDPFlush))
 	}
 	// WebSocket endpoints. coder/websocket lives behind these handlers.
 	mux.HandleFunc("/api/v1/show/stream", deps.WSServer.ServeShowStream)
@@ -300,11 +322,20 @@ func health(w http.ResponseWriter, _ *http.Request) {
 // the process is up (the show roster is in-memory, never a boot-blocking
 // external call).
 func ready(deps PublicDeps) http.HandlerFunc {
-	return func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, request *http.Request) {
+		if deps.NativeLSDPCheck != nil {
+			if err := deps.NativeLSDPCheck(request.Context()); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "unavailable", "service": "orion", "dependency": "native-lsdp"})
+				return
+			}
+		}
 		body := map[string]any{
 			"status":        "ok",
 			"service":       "orion",
 			"scenes_loaded": len(deps.Show.IDs()),
+		}
+		if deps.NativeLSDPCheck != nil {
+			body["native_lsdp"] = map[string]any{"ready": true, "wire": "LSDP-TCP/2.0-draft2", "address": deps.Config.NativeLSDPAddress, "resource": deps.Config.NativeLSDPResource}
 		}
 		writeJSON(w, http.StatusOK, body)
 	}

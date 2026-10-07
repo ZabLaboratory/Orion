@@ -1,19 +1,7 @@
-// effect_http.go wires `core.effect.invoke@1` invocations whose capability
-// is `core.http.request` (StepResult.Invocations, Blue PR #313 — the
-// blue.effect.invocation.v1 / blue.effect.completion.v1 async protocol,
-// runtime/go effects.go/runtime.go) to a real outbound HTTP call, and
-// reports the outcome back to the portable runtime via Runtime.Complete.
-//
-// Any other capability is left pending — this adapter only owns
-// core.http.request. A core.http.request invocation that cannot be dispatched
-// because its bundle is incomplete is completed through the same protocol
-// with EFFECT_PROVIDER_UNAVAILABLE; db.query@1/source.read@1 are explicitly
-// out of scope for this pass (Orion #336).
-//
-// MODE GATE (ORION-PREVIEW-EFFECT-GATE): dispatchInvocations only dials for
-// Execute-mode slots (the antenna). The direct Engine-B effect handlers own
-// the read-only preview data path; this generic async admission surface stays
-// silent in preview.
+// Generic Blue effects share the same configured adapters as direct opcodes.
+// HTTP uses the worker pool; local/data/scene adapters complete through Blue's
+// invocation protocol. Unsupported invocations receive an explicit failure.
+// The portable runtime synthesizes noop HTTP completion in Preview.
 package bluehost
 
 import (
@@ -45,6 +33,7 @@ func (h *Host) SetHTTPEffects(deps EffectDeps, logger *slog.Logger) {
 	defer h.mu.Unlock()
 	h.httpEgress = deps.Egress
 	h.httpRunner = deps.Runner
+	h.effectDeps = deps
 	if logger != nil {
 		h.logger = logger
 	}
@@ -63,7 +52,16 @@ func (h *Host) dispatchInvocations(slot Slot, instance *blueruntime.InstanceHand
 	if len(invocations) == 0 {
 		return
 	}
-	if modeFor(slot) != blueruntime.Execute {
+	httpInvocations := make([]map[string]any, 0, len(invocations))
+	for _, invocation := range invocations {
+		if stringField(invocation, "capability") == httpEffectCapability {
+			httpInvocations = append(httpInvocations, invocation)
+			continue
+		}
+		h.completeHTTPEffect(slot, instance, invocation, h.runLocalInvocation(slot, invocation))
+	}
+	invocations = httpInvocations
+	if modeFor(slot) != blueruntime.Execute || len(invocations) == 0 {
 		return
 	}
 	h.mu.Lock()
@@ -108,6 +106,15 @@ func (h *Host) dispatchInvocations(slot Slot, instance *blueruntime.InstanceHand
 // been Released/Take-superseded while the HTTP call was in flight (a stale
 // completion for a no-longer-current instance is dropped, not delivered).
 func (h *Host) completeHTTPEffect(slot Slot, instance *blueruntime.InstanceHandle, inv map[string]any, res effects.Result) {
+	// Report adapter execution independently of how the authored graph handles
+	// the completion. No request, result payload or business verdict is logged.
+	status := "succeeded"
+	if res.Err != "" {
+		status = "failed"
+	}
+	h.logger.Info("blue effect execution finished", "slot", slot,
+		"invocation_id", inv["invocation_id"], "capability", inv["capability"],
+		"operation", inv["operation"], "status", status, "error", res.Err)
 	completion, err := buildHTTPCompletion(inv, res)
 	if err != nil {
 		h.logger.Error("bluehost: failed to build effect completion", "invocation_id", inv["invocation_id"], "err", err)

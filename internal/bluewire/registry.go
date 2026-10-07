@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
 // Registry tracks the running Bridge, if any, for each bluehost.Slot and
@@ -36,17 +37,20 @@ type Registry struct {
 	mu      sync.Mutex
 	opMu    sync.Mutex
 	running map[bluehost.Slot]*bridgeRun
+	scenes  map[bluehost.Slot]runtime.SceneMirror
 }
 
 type bridgeRun struct {
-	cancel context.CancelFunc
-	done   chan struct{}
-	bridge *Bridge
+	cancel   context.CancelFunc
+	done     chan struct{}
+	bridge   *Bridge
+	interval time.Duration
+	onError  func(error)
 }
 
 // NewRegistry builds an empty Registry.
 func NewRegistry() *Registry {
-	return &Registry{running: map[bluehost.Slot]*bridgeRun{}}
+	return &Registry{running: map[bluehost.Slot]*bridgeRun{}, scenes: map[bluehost.Slot]runtime.SceneMirror{}}
 }
 
 // Start stops whatever bridge currently owns slot (if any) and starts
@@ -81,9 +85,10 @@ func (r *Registry) Start(slot bluehost.Slot, bridge *Bridge, interval time.Durat
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	run := &bridgeRun{cancel: cancel, done: make(chan struct{}), bridge: bridge}
+	run := &bridgeRun{cancel: cancel, done: make(chan struct{}), bridge: bridge, interval: interval, onError: onError}
 	r.mu.Lock()
 	r.running[slot] = run
+	r.scenes[slot] = bridge.mirror
 	r.mu.Unlock()
 	go func() {
 		defer close(run.done)
@@ -102,6 +107,7 @@ func (r *Registry) Stop(slot bluehost.Slot) {
 	r.mu.Lock()
 	run := r.running[slot]
 	delete(r.running, slot)
+	delete(r.scenes, slot)
 	if run != nil {
 		run.bridge.cancelStartup()
 		run.cancel()
@@ -147,12 +153,33 @@ func (r *Registry) Forward(slot bluehost.Slot, result StepResult) error {
 	return bridge.ForwardResult(result)
 }
 
+func (r *Registry) Mutate(slot bluehost.Slot, operations []map[string]any) error {
+	r.mu.Lock()
+	mirror := r.scenes[slot]
+	r.mu.Unlock()
+	if mirror == nil {
+		return fmt.Errorf("bluewire: no running scene for slot %s", slot)
+	}
+	mutable, ok := mirror.(interface{ ApplyLSML([]map[string]any) error })
+	if !ok {
+		return fmt.Errorf("bluewire: native LSML mutation is unavailable")
+	}
+	return mutable.ApplyLSML(operations)
+}
+
+func (r *Registry) SetSceneMirror(slot bluehost.Slot, mirror runtime.SceneMirror) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.scenes[slot] = mirror
+}
+
 // StopAll stops every running bridge. Intended for process shutdown.
 func (r *Registry) StopAll() {
 	r.opMu.Lock()
 	defer r.opMu.Unlock()
 
 	r.mu.Lock()
+	clear(r.scenes)
 	runs := make([]*bridgeRun, 0, len(r.running))
 	for slot, run := range r.running {
 		runs = append(runs, run)
@@ -163,5 +190,38 @@ func (r *Registry) StopAll() {
 	r.mu.Unlock()
 	for _, run := range runs {
 		<-run.done
+	}
+}
+
+// Pause joins the ticker but retains the bridge and its mirror for compensation.
+// Resuming does not call StepOnce/on-start again. Caller owns the lane commit lease.
+func (r *Registry) Pause(slot bluehost.Slot) func(bool) {
+	r.opMu.Lock()
+	r.mu.Lock()
+	run := r.running[slot]
+	mirror := r.scenes[slot]
+	delete(r.running, slot)
+	delete(r.scenes, slot)
+	if run != nil {
+		run.cancel()
+	}
+	r.mu.Unlock()
+	if run != nil {
+		<-run.done
+	}
+	r.opMu.Unlock()
+	return func(restore bool) {
+		if !restore {
+			if run != nil {
+				run.bridge.cancelStartup()
+			}
+			return
+		}
+		r.Stop(slot)
+		if run != nil {
+			r.Start(slot, run.bridge, run.interval, run.onError)
+		} else if mirror != nil {
+			r.SetSceneMirror(slot, mirror)
+		}
 	}
 }
