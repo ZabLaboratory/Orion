@@ -6,4 +6,4 @@ import "os/exec"
 
 func configureProcess(_ *exec.Cmd) {}
 
-func terminateProcess(_ *exec.Cmd) error { return cmd.Process.Kill() }
+func terminateProcess(cmd *exec.Cmd) error { return cmd.Process.Kill() }
