@@ -18,12 +18,12 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
-	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -75,11 +75,11 @@ type SceneIntentDeps struct {
 	// read by the embedded-local path after the signed scene ref has passed
 	// attestation verification.
 	LocalArtifactRoot string
+	Catalog           *SceneCatalog
 
-	// StaticBundleCompiler converts ZabCanvas authoring LSML into the Solar
-	// RenderBundle and returns its initial literal state. Production wiring
-	// supplies the compiler; nil keeps legacy test doubles and old envelopes
-	// byte-compatible until the stateless surface is enabled there.
+	// StaticBundleCompiler serves explicit render validation and editable
+	// preview compatibility. Scene-intent never invokes it: Solar loads pinned
+	// LSMLZ from ZabCanvas and Vision renders the source directly.
 	StaticBundleCompiler func(raw []byte, sceneID, sceneVersion string) ([]byte, map[string]json.RawMessage, error)
 	// StaticRenderBundleCompiler avoids a JSON roundtrip for in-process Preview.
 	// Optional: byte-only integrations keep the existing decode/error behavior.
@@ -134,36 +134,27 @@ type SceneIntentDeps struct {
 	// regardless of flux: a prepare-preview projected its deltas onto the
 	// antenne, silently.
 	//
-	// sceneVersion is required too (ORION-TAKE-SLOT-IDENTITY, Blue#345):
-	// startBridge passes claims.SceneDigest, the SAME digest Prepare/Take
-	// committed on the slot. Before this, the call site hardcoded "" here,
-	// so whatever the LSDP kit told the client its scene_version was (""),
-	// the client would echo back as ?v= on GET .../render-bundle — a value
-	// that, post-#401, can never match host.Digest(slot). Keying the
-	// resolver correctly (#401, this unit's Take fix) is necessary but not
-	// sufficient on its own: the client also has to be TOLD the value that
-	// will actually match. For a NO-PROGRAM ref (#398, Decision A) this
-	// value is the bundle hash (scene_digest == artifact_set_digest), so
-	// it also equals the scene_version the bundle itself carries — the
-	// client-side lumencast check passes by construction. For a
-	// with-program ref the bundle-side mismatch remains, out of this
-	// unit's scope (separate chantier).
+	// sceneVersion is the admitted artifact-set digest used to key generations.
+	// The native mirror preserves source.scene_version for Solar's exact Canvas
+	// fetch and carries this artifact-set identity in x-orion-artifact-set.
+	// Blue runtime lookup remains keyed by SceneDigest.
 	//
-	// bundle is the slot's LSML render-bundle bytes (deps.Host.Bundle(slot),
-	// the value SetBundle stored for the Prepare/Take that is starting this
-	// bridge) — the ONLY render-bundle artefact this path ever holds;
-	// startBridge passes it through so the bound-leaf gate
+	// bundle is the validated LSML source bytes. startBridge passes them to
+	// MirrorForLSML so the bound-leaf gate
 	// (internal/lsdp.boundLeafSet, #396) actually executes on the stateless
-	// path instead of running permanently disabled on a hardcoded nil. May
-	// be nil (no lsml_bundle in the envelope), which correctly disables the
-	// gate — same fail-open posture as the legacy path's binding-less
-	// bundle.
+	// path instead of running permanently disabled on a hardcoded nil. It may
+	// be nil when the envelope carries no source, which preserves the existing
+	// fail-open behavior for source-less scenes.
 	MirrorFor func(sceneID, sceneVersion string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror
 	// Activate flips the selected LSDP wire after the first real snapshot has
 	// been applied. Registration and activation stay separate so a connected
 	// client never receives an empty keyframe before the validated bundle is
 	// seeded.
 	Activate func(sceneID, sceneVersion string, slot bluehost.Slot)
+	// WireFlush requires the native receiver's application ACK before success.
+	WireFlush           func(context.Context) error
+	PresentScene        ScenePresenter
+	BeginLaneTransition func(bluehost.Slot) func(bool)
 	// Bridges tracks the running bridge per bluehost.Slot so a superseding
 	// Take (or a re-Prepare) stops the previous one instead of leaking a
 	// goroutine stepping an instance the Host has already released.
@@ -171,11 +162,9 @@ type SceneIntentDeps struct {
 	// bluewire.NewRegistry().
 	Bridges *bluewire.Registry
 	// EmitRoster publishes a short-lived, slot-scoped preload hint to the
-	// matching LSDP wire. It is deliberately not persisted and does not
-	// activate or prepare a future scene: it only lets an already-connected
-	// Solar client fetch the exact validated bundle while the keyframe and
-	// Blue projection are being assembled. Nil keeps minimal/bespoke embeds
-	// unchanged.
+	// matching LSDP wire. It lets an already-connected Solar client warm the
+	// exact validated source and Blue manifest while the keyframe is assembled.
+	// Nil keeps minimal/bespoke embeds unchanged.
 	EmitRoster func(slot bluehost.Slot, entries []runtime.RosterEntry)
 	// ProjectionInterval paces the bridge's injected Tick loop. <= 0 defaults to
 	// 100ms.
@@ -204,20 +193,21 @@ type SceneIntentDeps struct {
 // the intent's values (deadline among them) into the ticket and any
 // reconstruction risks AUTH_CONTEXT_MISMATCH.
 type sceneIntentRequest struct {
-	SchemaVersion      string `json:"schema_version"`
-	IntentID           string `json:"intent_id"`
-	IdempotencyKey     string `json:"idempotency_key"`
-	StreamID           string `json:"stream_id"`
-	Target             string `json:"target"` // preview | on-air
-	Action             string `json:"action"` // prepare-preview | take-on-air
-	ResolvedSceneRef   string `json:"resolved_scene_ref"`
-	BlueProgram        string `json:"blue_program,omitempty"`
-	BlueProgramDigest  string `json:"blue_program_digest,omitempty"`
-	LSMLBundle         string `json:"lsml_bundle,omitempty"`
-	LSMLBundleDigest   string `json:"lsml_bundle_digest,omitempty"`
-	RenderBundle       string `json:"render_bundle,omitempty"`
-	RenderBundleDigest string `json:"render_bundle_digest,omitempty"`
-	LocalArtifacts     bool   `json:"local_artifacts,omitempty"`
+	SchemaVersion      string          `json:"schema_version"`
+	IntentID           string          `json:"intent_id"`
+	IdempotencyKey     string          `json:"idempotency_key"`
+	StreamID           string          `json:"stream_id"`
+	Target             string          `json:"target"` // preview | on-air
+	Action             string          `json:"action"` // prepare-preview | take-on-air
+	ResolvedSceneRef   string          `json:"resolved_scene_ref"`
+	BlueProgram        string          `json:"blue_program,omitempty"`
+	BlueProgramDigest  string          `json:"blue_program_digest,omitempty"`
+	LSMLBundle         string          `json:"lsml_bundle,omitempty"`
+	LSMLBundleDigest   string          `json:"lsml_bundle_digest,omitempty"`
+	RenderBundle       string          `json:"render_bundle,omitempty"`
+	RenderBundleDigest string          `json:"render_bundle_digest,omitempty"`
+	LocalArtifacts     bool            `json:"local_artifacts,omitempty"`
+	BlueManifest       json.RawMessage `json:"blue_manifest,omitempty"`
 }
 
 // maxSceneIntentBytes bounds the raw intent body kept for the verbatim
@@ -372,6 +362,7 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			// validation and bundle creation. Do not dereference Canvas again
 			// on activation.
 			envelope = resolvedSceneEnvelope{
+				BlueManifest:       req.BlueManifest,
 				BlueProgram:        req.BlueProgram,
 				BlueProgramDigest:  req.BlueProgramDigest,
 				LSMLBundle:         req.LSMLBundle,
@@ -408,14 +399,11 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 
 		// artifact.Body is `zabcanvas.resolved-scene.v1` (§6.3). The
 		markPhase("artifacts")
-		// blue_program bytes are verified against the SIGNED
-		// claims.BlueProgramDigest before Load — §6.2: "Orion revérifie
-		// tous les digests sur les bytes reçus avant Load." The LSML
-		// render-bundle has NO equivalent signed claim in §6.2's claim
-		// set (only blue_program_digest is covered) — its integrity here
-		// rests on envelope self-consistency plus the mTLS/delegation
-		// chain that fetched it, not a second signed digest. Documented
-		// gap, not silently assumed equal to the program's guarantee.
+		// Blue program bytes are verified against the signed
+		// claims.BlueProgramDigest before Load. The LSML source is separately
+		// checked against the envelope digest and forwarded to LSDP; it is not
+		// compiled or stored as Solar's former RenderBundle. An explicitly
+		// attached compatibility capsule is checked against its signed digest.
 		//
 		if !envelopeReady {
 			if err := json.Unmarshal(envelopeBody, &envelope); err != nil {
@@ -424,118 +412,62 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			}
 		}
 
-		// A ref whose SIGNED claims declare NO program (empty
-		// blue_program_digest, ORION-NOBLUE-AND-VERSION-ALIGN #398) skips
-		// program decode/verify and never Loads anything — but an envelope
-		// that then DOES carry program bytes is refused: unattested program
-		// bytes never ride into Orion, even unexecuted. The bundle path is
-		// identical in both cases (fetch, self-integrity, SetBundle).
-		noProgram := claims.BlueProgramDigest == ""
-		var program []byte
-		if noProgram {
-			if err := verifyNoProgramEnvelopeValue(envelope); err != nil {
-				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
-				return
-			}
-		} else {
-			var err error
-			program, err = decodeAndVerifyProgramEnvelopeCached(envelope, claims.BlueProgramDigest, deps.ProgramVerificationCache)
-			if err != nil {
-				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
-				return
-			}
-		}
-		bundle, bundleErr := decodeAndVerifyBundleEnvelope(envelope)
-		if bundleErr != nil {
+		// A ref whose signed claims declare no program skips program
+		// decode/verify and never Loads a Blue instance. Unexpected program
+		// bytes are still refused; source bytes follow the same verified LSDP
+		// path for programmed and static scenes.
+		artifacts, artifactErr := verifySceneArtifacts(envelope, claims, deps.ProgramVerificationCache)
+		if artifactErr != nil {
 			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 			return
 		}
-		mirrorBundle := []byte(nil)
-		var staticState map[string]json.RawMessage
-		if bundle != nil {
-			mirrorBundle = append([]byte(nil), bundle...)
-		}
-		precompiledBundle, precompiledErr := decodeAndVerifyRenderBundleEnvelope(envelope, claims.RenderBundleDigest)
-		if precompiledErr != nil {
+		// The mirror receives source bytes, never the current-backend capsule.
+		bundle, staticState, renderErr := prepareCurrentRender(artifacts)
+		if renderErr != nil {
 			writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
 			return
-		}
-		if precompiledBundle != nil {
-			bundle = precompiledBundle
-			staticState, precompiledErr = decodeRenderBundleDefaults(bundle)
-			if precompiledErr != nil {
-				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "CANVAS_ARTIFACT_DIGEST_MISMATCH"})
-				return
-			}
-		} else if bundle != nil && deps.StaticBundleCompiler != nil {
-			compiledBundle, defaults, err := deps.StaticBundleCompiler(bundle, claims.SceneID, claims.SceneDigest)
-			if err != nil {
-				if deps.Logger != nil {
-					deps.Logger.Error("static scene bundle compilation failed", "scene_id", claims.SceneID, "err", err)
-				}
-				writeJSON(w, http.StatusBadGateway, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "STATIC_BUNDLE_COMPILE_FAILED"})
-				return
-			}
-			bundle = compiledBundle
-			// Legacy refs compile at click time; validated refs carry the same
-			// defaults inside the precompiled bundle instead.
-			staticState = defaults
 		}
 
-		// The serving identity stays claims.SceneDigest for BOTH shapes —
-		// the with-program path is byte-identical to before this unit.
-		// M6 note (#398, porteur's Decision A): for a NO-PROGRAM ref,
-		// ZabCanvas mints scene_digest == artifact_set_digest == the hash
-		// of the bundle, and stamps that same value as the bundle's own
-		// scene_version — so the version announced to Solar (startBridge →
-		// MirrorFor), matched by resolveHostBundle and returned as ETag
-		// equals the value @lumencast/runtime compares ?v= against, BY
-		// CONSTRUCTION, with no re-keying here. The with-program
-		// misalignment (scene_digest is a program-family hash, not the
-		// bundle's own scene_version) is real and intentionally NOT
-		// touched by this unit — separate chantier.
-		var opErr error
+		if deps.Catalog != nil {
+			if err := deps.Catalog.put(principal, claims, req, envelope); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "SCENE_CATALOG_WRITE_FAILED", Message: err.Error()})
+				return
+			}
+		}
+		// Blue host preparation remains keyed by SceneDigest; mirror generation
+		// keys use ArtifactSetDigest. The native source document separately
+		// preserves its LSML address for Solar's Canvas fetch and renderer ACK.
+		releaseCommit, err := deps.Host.AcquireSceneCommit(ctx, slot)
+		if err != nil {
+			writeJSON(w, http.StatusRequestTimeout, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "INTENT_CANCELLED"})
+			return
+		}
+		defer releaseCommit()
+		if dedupKey != "" {
+			if cached, ok := deps.Idempotency.lookup(dedupKey); ok {
+				writeJSON(w, http.StatusOK, cached)
+				return
+			}
+		}
 		markPhase("verification")
-		switch action {
-		case attestation.ActionPreparePreview:
-			if noProgram {
-				opErr = deps.Host.PreparePreviewStatic(claims.SceneID, claims.SceneDigest)
-			} else {
-				opErr = deps.Host.PreparePreview(claims.RefID, claims.SceneID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Preview))
+		if err := replaceAdmittedScene(ctx, deps, slot, claims, req, artifacts, bundle, staticState); err != nil {
+			reason := "NATIVE_LSDP_DELIVERY_FAILED"
+			if strings.Contains(err.Error(), "HOST_PREPARE_FAILED") {
+				reason = "HOST_PREPARE_FAILED"
 			}
-			if errors.Is(opErr, bluehost.ErrAlreadyLoaded) {
-				if deps.Host.Serving(slot, claims.SceneID, claims.SceneDigest) {
-					opErr = nil // idempotent re-prepare: same scene, same digest already running
-				}
+			if strings.Contains(err.Error(), "SOLAR_") {
+				reason = "SOLAR_PRESENTATION_FAILED"
 			}
-		case attestation.ActionTakeOnAir:
-			// claims.SceneID now threaded through (ORION-TAKE-SLOT-IDENTITY,
-			// Blue#345) — Take used to be the one caller of the two that left
-			// the on-air slot's sceneID empty, silently making it unmatchable
-			// by resolveHostBundle's (scene_id, v) check (#401).
-			if noProgram {
-				opErr = deps.Host.TakeStatic(claims.SceneID, claims.SceneDigest)
-			} else {
-				opErr = deps.Host.Take(claims.RefID, claims.SceneID, claims.SceneDigest, program, deps.Providers, deps.Policy, bluehost.NewEffectHandlers(deps.Effects, blueruntime.Execute))
+			if strings.Contains(err.Error(), "SCENE_COMPENSATION_FAILED") {
+				reason = "SCENE_COMPENSATION_FAILED"
 			}
-		}
-		if opErr != nil {
-			writeJSON(w, http.StatusInternalServerError, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: "HOST_PREPARE_FAILED"})
+			status := http.StatusServiceUnavailable
+			if reason == "HOST_PREPARE_FAILED" {
+				status = http.StatusInternalServerError
+			}
+			writeJSON(w, status, sceneIntentResponse{Status: "failed", IntentID: req.IntentID, Reason: reason, Message: err.Error()})
 			return
 		}
-		if bundle != nil {
-			deps.Host.SetBundle(slot, bundle)
-		}
-		markPhase("host")
-		deps.Host.SetArtifactSetDigest(slot, claims.ArtifactSetDigest)
-		if slot == bluehost.SlotOnAir {
-			// A successful take is a new stateless generation, even when the
-			// scene digest is reused. Drop process-local ingress ordering from
-			// the previous instance before the new generation receives events.
-			providers.ResetActiveIngress(deps.Host)
-		}
-
-		startBridge(deps, slot, claims, req.IntentID, !noProgram, mirrorBundle, staticState)
 		markPhase("wire")
 
 		resp := sceneIntentResponse{

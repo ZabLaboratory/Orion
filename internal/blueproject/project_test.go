@@ -54,6 +54,14 @@ func TestProject_EmptyOutputsYieldsEmptyPatches(t *testing.T) {
 	}
 }
 
+func TestProjectNativePreservesStructuredRenderableValues(t *testing.T) {
+	step := StepOutputs{Outputs: map[string]any{"rows": []any{map[string]any{"name": "GIDEON", "score": 3}}, "object": map[string]any{"color": "orange"}}}
+	p := ProjectNative(step, "sha256:source", "native-instance", "rev", "intent", TargetProgram)
+	if len(p.Patches) != 2 || string(p.Patches["rows"]) != `[{"name":"GIDEON","score":3}]` {
+		t.Fatalf("structured projection: %+v", p.Patches)
+	}
+}
+
 func TestProject_ArrayOfArraysStillLegal(t *testing.T) {
 	step := StepOutputs{Outputs: map[string]any{"grid": []any{[]any{1.0, 2.0}, []any{3.0}}}}
 	p := Project(step, "sha256:abc", "instance-1", "rev-1", "corr-1", TargetPreview)

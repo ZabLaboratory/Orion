@@ -5,17 +5,11 @@ package api
 //
 //  1. A ResolvedSceneRef whose SIGNED claims declare NO program (empty
 //     blue_program_digest — the ONLY claims relaxation) is accepted: the
-//     slot is occupied with (scene_id, scene_digest) and the bundle is
-//     served, with NO runtime instance ever Loaded/Started/Stepped.
-//  2. M6, no-program case only: ZabCanvas mints scene_digest ==
-//     artifact_set_digest == the bundle hash and stamps that same value
-//     as the bundle's own scene_version — so the version announced on
-//     the LSDP wire (claims.SceneDigest, unchanged threading), the value
-//     the public resolver matches, the ETag, and the scene_version
-//     @lumencast/runtime compares ?v= against are ONE value by
-//     construction. The with-program misalignment is intentionally NOT
-//     touched (separate chantier); the with-program path is asserted
-//     byte-identical elsewhere in this package.
+//     slot is occupied and the source is announced over LSDP, with NO
+//     runtime instance ever Loaded/Started/Stepped.
+//  2. The LSDP source identity is artifact_set_digest. For these no-program
+//     fixtures it happens to equal scene_digest, while programmed-scene
+//     coverage proves the identities stay distinct.
 
 import (
 	"bytes"
@@ -35,18 +29,11 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
-// noblueDigest is the single content address of the no-program fixtures
-// (Decision A): the claims' scene_digest AND artifact_set_digest AND the
-// scene_version embedded in the bundle bytes. Orion never recomputes it
-// over the bundle (documented gap — the signed claim is the authority);
-// what matters here is the END-TO-END EQUALITY of the announced /
-// matched / embedded values.
+// noblueDigest is the shared scene and artifact identity of these
+// no-program fixtures.
 func noblueDigest() string { return "sha256:" + strings.Repeat("f", 64) }
 
-// alignedBundle builds LSML-bundle bytes carrying their OWN
-// scene_version equal to the claims' digest — exactly what the ZabCanvas
-// twin emits for a no-program scene. The client-side lumencast check
-// compares this embedded field against the ?v= it fetched with.
+// alignedBundle builds the source bytes used by the fixture.
 func alignedBundle(t *testing.T) []byte {
 	t.Helper()
 	bundle, err := json.Marshal(map[string]any{
@@ -111,10 +98,16 @@ func signedRefNoProgram(t *testing.T, priv ed25519.PrivateKey, kid string, now t
 	return h64 + "." + p64 + "." + s64
 }
 
-func noblueDeps(t *testing.T, pub ed25519.PublicKey, body json.RawMessage) (SceneIntentDeps, *string, *int) {
+type noBlueObservation struct {
+	sceneVersion string
+	mirrorCalls  int
+	source       []byte
+	mirror       *recordingMirror
+}
+
+func noblueDeps(t *testing.T, pub ed25519.PublicKey, body json.RawMessage) (SceneIntentDeps, *noBlueObservation) {
 	t.Helper()
-	var gotVersion string
-	var mirrorCalls int
+	observed := &noBlueObservation{mirror: &recordingMirror{}}
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
 		LocatorPrefix: "scenes/",
@@ -122,15 +115,16 @@ func noblueDeps(t *testing.T, pub ed25519.PublicKey, body json.RawMessage) (Scen
 		TenantID:      "tenant-1",
 		Workload:      &fakeWorkload{body: body},
 		Host:          bluehost.NewHost(),
-		MirrorFor: func(_, sceneVersion string, _ bluehost.Slot, _ []byte) runtime.SceneMirror {
-			gotVersion = sceneVersion
-			mirrorCalls++
-			return &recordingMirror{}
+		MirrorFor: func(_, sceneVersion string, _ bluehost.Slot, source []byte) runtime.SceneMirror {
+			observed.sceneVersion = sceneVersion
+			observed.mirrorCalls++
+			observed.source = append([]byte(nil), source...)
+			return observed.mirror
 		},
 		Bridges:            bluewire.NewRegistry(),
 		ProjectionInterval: time.Hour,
 	}
-	return deps, &gotVersion, &mirrorCalls
+	return deps, observed
 }
 
 func sendIntent(t *testing.T, deps SceneIntentDeps, ref string, action attestation.Action, target, intentID string) *httptest.ResponseRecorder {
@@ -151,9 +145,7 @@ func sendIntent(t *testing.T, deps SceneIntentDeps, ref string, action attestati
 	return rec
 }
 
-// fetchBundle exercises the PUBLIC resolver (resolveHostBundle via
-// getRenderBundle) with an explicit (scene_id, v) pair — the same door
-// Solar comes through after learning (sceneID, version) off the wire.
+// fetchBundle exercises the former compiled-renderer compatibility route.
 func fetchBundle(deps SceneIntentDeps, sceneID, v string) *httptest.ResponseRecorder {
 	pub := PublicDeps{SceneIntent: &deps}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/scenes/"+sceneID+"/render-bundle?v="+v, nil)
@@ -163,19 +155,18 @@ func fetchBundle(deps SceneIntentDeps, sceneID, v string) *httptest.ResponseReco
 	return rec
 }
 
-// TestPostSceneIntent_NoProgram_PrepareOccupiesAndServes_NoInstance is
-// proof (a): a no-program ref passes Verify, occupies the preview slot
-// with (scene_id, scene_digest), serves its bundle through the public
-// resolver — and holds NO runtime instance (every instance-consuming
+// TestPostSceneIntent_NoProgram_PrepareStreamsSource_NoInstance is proof (a):
+// a no-program ref passes Verify, occupies the preview slot, publishes its
+// exact source identity to LSDP, and holds NO runtime instance (every instance-consuming
 // door answers "not loaded"; no program bytes ever existed to Load, and
 // had the handler attempted one, the empty program would have failed the
 // intent with HOST_PREPARE_FAILED instead of this 200 — Bastion req 3).
-func TestPostSceneIntent_NoProgram_PrepareOccupiesAndServes_NoInstance(t *testing.T) {
+func TestPostSceneIntent_NoProgram_PrepareStreamsSource_NoInstance(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	bundle := alignedBundle(t)
 	now := time.Now()
 	ref := signedRefNoProgram(t, priv, "canvas-key-1", now, "scene-1")
-	deps, gotVersion, _ := noblueDeps(t, pub, noProgramEnvelope(bundle))
+	deps, observed := noblueDeps(t, pub, noProgramEnvelope(bundle))
 
 	rec := sendIntent(t, deps, ref, attestation.ActionPreparePreview, "preview", "intent-nb-1")
 	if rec.Code != http.StatusOK {
@@ -193,12 +184,14 @@ func TestPostSceneIntent_NoProgram_PrepareOccupiesAndServes_NoInstance(t *testin
 	if !deps.Host.Serving(bluehost.SlotPreview, "scene-1", noblueDigest()) {
 		t.Fatalf("expected preview slot serving (scene-1, %s)", noblueDigest())
 	}
-	// Bundle attached and served through the public resolver.
-	if got := deps.Host.Bundle(bluehost.SlotPreview); string(got) != string(bundle) {
-		t.Fatalf("bundle not attached: %q", got)
+	if string(observed.source) != string(bundle) {
+		t.Fatalf("LSDP source = %q, want exact ZabCanvas bytes %q", observed.source, bundle)
 	}
-	if fetched := fetchBundle(deps, "scene-1", noblueDigest()); fetched.Code != http.StatusOK || fetched.Body.String() != string(bundle) {
-		t.Fatalf("public resolver must serve the bundle for v=scene_digest: %d %q", fetched.Code, fetched.Body.String())
+	if got := deps.Host.Bundle(bluehost.SlotPreview); len(got) != 0 {
+		t.Fatalf("source-only scene switch must not populate the legacy render-bundle slot: %q", got)
+	}
+	if fetched := fetchBundle(deps, "scene-1", noblueDigest()); fetched.Code != http.StatusNotFound {
+		t.Fatalf("source-only scene must not be served by the legacy render-bundle route: %d %q", fetched.Code, fetched.Body.String())
 	}
 	// NO instance: every instance door answers not-loaded, never a panic
 	// or a silent no-op (Bastion req 3 — no Load/Start/Step/Stop).
@@ -213,8 +206,8 @@ func TestPostSceneIntent_NoProgram_PrepareOccupiesAndServes_NoInstance(t *testin
 	}
 	// The scene IS registered on the wire (Solar must learn what to
 	// fetch) — but no bridge is stepping.
-	if *gotVersion != noblueDigest() {
-		t.Fatalf("MirrorFor announced %q, want %q", *gotVersion, noblueDigest())
+	if observed.sceneVersion != noblueDigest() || observed.mirror.snapshotVersion != noblueDigest() {
+		t.Fatalf("LSDP source version/snapshot = %q/%q, want %q", observed.sceneVersion, observed.mirror.snapshotVersion, noblueDigest())
 	}
 	if deps.Bridges.Running(bluehost.SlotPreview) {
 		t.Fatal("no bridge may run for a program-less occupation")
@@ -230,7 +223,7 @@ func TestPostSceneIntent_NoProgram_TakeSupersedesProgrammedInstance(t *testing.T
 	program := minimalProgram(t)
 	envelope, digest := canvasEnvelopeWithBundle(program, []byte(`{"scene":"old"}`))
 	now := time.Now()
-	deps, gotVersion, _ := noblueDeps(t, pub, envelope)
+	deps, observed := noblueDeps(t, pub, envelope)
 	t.Cleanup(func() {
 		deps.Bridges.StopAll()
 		_ = deps.Host.Release(bluehost.SlotOnAir, "test-cleanup")
@@ -266,11 +259,11 @@ func TestPostSceneIntent_NoProgram_TakeSupersedesProgrammedInstance(t *testing.T
 	if deps.Bridges.Running(bluehost.SlotOnAir) {
 		t.Fatal("superseded bridge must be STOPPED — no goroutine may keep stepping a released instance")
 	}
-	if *gotVersion != noblueDigest() {
-		t.Fatalf("MirrorFor announced %q, want %q", *gotVersion, noblueDigest())
+	if observed.sceneVersion != noblueDigest() || string(observed.source) != string(bundle) {
+		t.Fatalf("LSDP source version/source = %q/%q, want version %q and exact source", observed.sceneVersion, observed.source, noblueDigest())
 	}
-	if fetched := fetchBundle(deps, "scene-2", noblueDigest()); fetched.Code != http.StatusOK {
-		t.Fatalf("on-air static occupation must resolve through the public route, got %d", fetched.Code)
+	if fetched := fetchBundle(deps, "scene-2", noblueDigest()); fetched.Code != http.StatusNotFound {
+		t.Fatalf("source-only occupation must not use the legacy render-bundle route, got %d", fetched.Code)
 	}
 }
 
@@ -283,7 +276,7 @@ func TestPostSceneIntent_NoProgram_RefusesEnvelopeCarryingProgram(t *testing.T) 
 	envelope, _ := canvasEnvelope(program) // envelope WITH program fields
 	now := time.Now()
 	ref := signedRefNoProgram(t, priv, "canvas-key-1", now, "scene-1")
-	deps, _, _ := noblueDeps(t, pub, envelope)
+	deps, _ := noblueDeps(t, pub, envelope)
 
 	rec := sendIntent(t, deps, ref, attestation.ActionPreparePreview, "preview", "intent-nb-evil")
 	if rec.Code != http.StatusBadGateway {
@@ -301,20 +294,15 @@ func TestPostSceneIntent_NoProgram_RefusesEnvelopeCarryingProgram(t *testing.T) 
 	}
 }
 
-// TestPostSceneIntent_NoProgram_VersionAlignedEndToEnd is proof (c) for
-// the no-program case (Decision A): the v announced on the wire == the
-// scene_version the bundle itself carries == the ?v= the public resolver
-// accepts (and serves as ETag) — one value end to end, with NO re-keying
-// in Orion (the announced value is claims.SceneDigest, same threading as
-// a programmed ref; the equality holds because ZabCanvas mints
-// scene_digest as the bundle's content address). A non-matching v must
-// still miss.
-func TestPostSceneIntent_NoProgram_VersionAlignedEndToEnd(t *testing.T) {
+// TestPostSceneIntent_NoProgram_UsesPinnedArtifactSetVersion proves the
+// LSDP scene version pins the source and snapshot without consulting the
+// retired Solar render-bundle route.
+func TestPostSceneIntent_NoProgram_UsesPinnedArtifactSetVersion(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	now := time.Now()
 	bundle := alignedBundle(t)
 	ref := signedRefNoProgram(t, priv, "canvas-key-1", now, "scene-1")
-	deps, gotVersion, mirrorCalls := noblueDeps(t, pub, noProgramEnvelope(bundle))
+	deps, observed := noblueDeps(t, pub, noProgramEnvelope(bundle))
 	t.Cleanup(func() {
 		deps.Bridges.StopAll()
 		_ = deps.Host.Release(bluehost.SlotPreview, "test-cleanup")
@@ -323,37 +311,23 @@ func TestPostSceneIntent_NoProgram_VersionAlignedEndToEnd(t *testing.T) {
 	if rec := sendIntent(t, deps, ref, attestation.ActionPreparePreview, "preview", "intent-align"); rec.Code != http.StatusOK {
 		t.Fatalf("prepare-preview: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if *mirrorCalls != 1 {
-		t.Fatalf("expected exactly one wire registration, got %d", *mirrorCalls)
+	if observed.mirrorCalls != 1 {
+		t.Fatalf("expected exactly one wire registration, got %d", observed.mirrorCalls)
 	}
 
-	// (1) announced on the wire.
-	announced := *gotVersion
+	announced := observed.sceneVersion
 	if announced != noblueDigest() {
-		t.Fatalf("wire announced %q, want the scene_digest/bundle hash %q", announced, noblueDigest())
+		t.Fatalf("wire announced %q, want the artifact_set_digest %q", announced, noblueDigest())
 	}
-	// (2) == the bundle's OWN scene_version (the field lumencast compares
-	// ?v= against client-side).
-	var served struct {
-		SceneVersion string `json:"scene_version"`
+	if observed.mirror.snapshotVersion != announced || string(observed.source) != string(bundle) {
+		t.Fatalf("snapshot/source identity = %q/%q, want version %q and exact bytes", observed.mirror.snapshotVersion, observed.source, announced)
 	}
-	fetched := fetchBundle(deps, "scene-1", announced)
-	if fetched.Code != http.StatusOK {
-		t.Fatalf("resolver must accept the announced v %q, got %d", announced, fetched.Code)
+	if fetched := fetchBundle(deps, "scene-1", announced); fetched.Code != http.StatusNotFound {
+		t.Fatalf("source-only scene unexpectedly reached legacy render-bundle route: %d", fetched.Code)
 	}
-	if err := json.Unmarshal(fetched.Body.Bytes(), &served); err != nil {
-		t.Fatal(err)
-	}
-	if served.SceneVersion != announced {
-		t.Fatalf("bundle scene_version %q != announced/fetched v %q — the client-side lumencast check would refuse this bundle", served.SceneVersion, announced)
-	}
-	// (3) ETag is the same value (immutable-cache identity).
-	if etag := fetched.Header().Get("ETag"); etag != `"`+announced+`"` {
-		t.Fatalf("ETag %q != announced v %q", etag, announced)
-	}
-	// A non-matching v still misses — the resolver guard is intact.
+	// The old bundle resolver stays empty, whatever version is supplied.
 	if miss := fetchBundle(deps, "scene-1", "sha256:"+strings.Repeat("a", 64)); miss.Code != http.StatusNotFound {
-		t.Fatalf("a non-matching v must 404, got %d", miss.Code)
+		t.Fatalf("legacy render-bundle route must remain empty, got %d", miss.Code)
 	}
 }
 
@@ -365,7 +339,7 @@ func TestPostSceneIntent_NoProgram_PreviewOnAirSymmetry(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	bundle := alignedBundle(t)
 	now := time.Now()
-	deps, _, _ := noblueDeps(t, pub, noProgramEnvelope(bundle))
+	deps, _ := noblueDeps(t, pub, noProgramEnvelope(bundle))
 
 	refPrep := signedRefNoProgram(t, priv, "canvas-key-1", now, "scene-1")
 	if rec := sendIntent(t, deps, refPrep, attestation.ActionPreparePreview, "preview", "i-prev"); rec.Code != http.StatusOK {
@@ -380,14 +354,14 @@ func TestPostSceneIntent_NoProgram_PreviewOnAirSymmetry(t *testing.T) {
 		if !deps.Host.Serving(slot, "scene-1", noblueDigest()) {
 			t.Fatalf("%s: expected (scene-1, %s)", slot, noblueDigest())
 		}
-		if got := deps.Host.Bundle(slot); string(got) != string(bundle) {
-			t.Fatalf("%s: bundle mismatch", slot)
+		if got := deps.Host.Bundle(slot); len(got) != 0 {
+			t.Fatalf("%s: source-only switch populated the legacy bundle slot: %q", slot, got)
 		}
 		if deps.Bridges.Running(slot) {
 			t.Fatalf("%s: no bridge may run for a program-less occupation", slot)
 		}
 	}
-	if fetched := fetchBundle(deps, "scene-1", noblueDigest()); fetched.Code != http.StatusOK {
-		t.Fatalf("resolver: %d", fetched.Code)
+	if fetched := fetchBundle(deps, "scene-1", noblueDigest()); fetched.Code != http.StatusNotFound {
+		t.Fatalf("legacy resolver must not serve source-only scenes, got %d", fetched.Code)
 	}
 }

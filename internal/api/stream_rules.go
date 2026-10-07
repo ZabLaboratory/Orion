@@ -21,10 +21,11 @@ const maxStreamRuleBlueResponse = 16 << 20
 const maxStreamRuleBlueErrorResponse = 64 << 10
 
 // StreamRulesDeps wires the restored ADR 009 HTTP surface to Orion's
-// volatile Engine B RulePlane. BlueBaseURL is the existing Blue edge (the
+// Engine B RulePlane. BlueBaseURL is the existing Blue edge (the
 // gateway in production). TokenFunc mints the service bearer for the two
 // synchronous Blue reads needed to resolve and compile the published program.
-// No credential or program is persisted.
+// Orion persists the validated published program in stream-control.lsml for
+// restart. Credentials and transient Engine state are never persisted there.
 type StreamRulesDeps struct {
 	Plane       *bluehost.RulePlane
 	BlueBaseURL string
@@ -103,12 +104,17 @@ func postStreamRule(deps PublicDeps) http.HandlerFunc {
 			writeOperatorError(w, http.StatusUnprocessableEntity, "PROGRAM_REJECTED", "Blue program was rejected by the runtime")
 			return
 		}
+		if err := flushNativeDelivery(r.Context(), deps, false); err != nil {
+			writeOperatorError(w, http.StatusServiceUnavailable, "NATIVE_DELIVERY_FAILED", "stream rule startup effects were not acknowledged by the native receiver")
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"stream_rule_id": body.BlueprintID})
 	})
 }
 
-// getStreamRules lists the volatile active set. Prism compares it with its
-// durable intent and replays missing ids after an Orion restart.
+// getStreamRules lists the active set, restored by Orion from its durable
+// program store at startup. The response remains compatible with existing
+// clients that reconcile their selected rule IDs.
 func getStreamRules(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, _ *http.Request) {
 		ids := []string{}

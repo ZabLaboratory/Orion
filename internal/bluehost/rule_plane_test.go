@@ -157,4 +157,15 @@ func TestRulePlane_MarkerOnOffAcrossSceneSlots(t *testing.T) {
 	if len(calls) != 2 || calls[1].appID != markerAppID || calls[1].running == nil || *calls[1].running || calls[1].onAir == nil || *calls[1].onAir {
 		t.Fatalf("Marker OFF mirror calls = %#v", calls)
 	}
+	if _, err := plane.Call(markerRuleID, "marker_overlay_on", nil); err != nil {
+		t.Fatalf("marker_overlay_on repeated: %v", err)
+	}
+	calls = mirror.snapshot()
+	if len(calls) != 3 || calls[2].running == nil || !*calls[2].running || calls[2].onAir == nil || !*calls[2].onAir {
+		t.Fatalf("Marker ON after OFF = %#v", calls)
+	}
+	plane.TickAll(1)
+	if got := len(mirror.snapshot()); got != 3 {
+		t.Fatalf("idle tick replayed cumulative effects: %d calls", got)
+	}
 }

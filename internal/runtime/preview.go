@@ -13,15 +13,9 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/protocol"
 )
 
-// PreviewWire is the persistent LSDP/1.1 wire dedicated to the cockpit
-// preview — a SECOND wire beside the antenne's /show/stream.lsdp. The cockpit
-// Solar connects to it ONCE (a fixed URL); switching the previewed scene swaps
-// the wire's active clone via SetActive (the proven antenne switch path —
-// scene_changed + fresh snapshot over the EXISTING socket, no client reload),
-// so a preview switch never reconnects and never touches the antenne. The
-// scenes mirrored here are PREVIEW CLONES, fully isolated from the global show.
-// *lsdp.Wire satisfies this interface (MirrorFor/SetActive/Drop already exist);
-// the interface lives in runtime to keep the import direction lsdp → runtime.
+// PreviewWire projects isolated Preview clones through a role-stable resource.
+// Production uses the native solar/preview lane; compatibility adapters also
+// implement this lifecycle seam. Switching never touches Program's active scene.
 type PreviewWire interface {
 	MirrorFor(sceneID, sceneVersion string, bundle *compiler.RenderBundle) SceneMirror
 	SetActive(sceneID string)
@@ -201,6 +195,9 @@ func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *co
 	// inputs — the antenne instance of the same scene is untouched.
 	gcopy := *graph
 	bcopy := *bundle
+	if len(lsmlBundle) > 0 {
+		bcopy.SourceLSML = append([]byte(nil), lsmlBundle...)
+	}
 	scene := NewScene(sceneID, &gcopy, &bcopy, p.registry, p.logger.With("preview_scene", sceneID))
 	scene.InstallExec(progs...)
 	// Install the world-effect ops (db.query, http.request, …) on the clone
@@ -488,6 +485,18 @@ func (p *PreviewSlot) CurrentSceneID() string {
 		return ""
 	}
 	return p.current.sceneID
+}
+
+// Flush waits until the active clone has forwarded its queued inputs to its
+// mirrors. The API then waits for the native receiver's application ACK.
+func (p *PreviewSlot) Flush(ctx context.Context) error {
+	p.mu.Lock()
+	cur := p.current
+	p.mu.Unlock()
+	if cur == nil {
+		return nil
+	}
+	return cur.scene.Flush(ctx)
 }
 
 // Current is the live preview clone scene, or nil when none is open. It is the

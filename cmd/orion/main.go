@@ -27,6 +27,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/config"
 	"github.com/ZabLaboratory/Orion/internal/effects"
 	"github.com/ZabLaboratory/Orion/internal/lsdp"
+	"github.com/ZabLaboratory/Orion/internal/lsdpreception"
 	"github.com/ZabLaboratory/Orion/internal/obs"
 	"github.com/ZabLaboratory/Orion/internal/providers"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
@@ -63,6 +64,19 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if cfg.NativeLSDPAddress == "" {
+		return errors.New("ORION_LSDP_NATIVE_ADDRESS_REQUIRED")
+	}
+	reception, err := lsdpreception.New(cfg.NativeLSDPAddress, cfg.NativeLSDPResource)
+	if err != nil {
+		return err
+	}
+	if err := reception.Check(ctx); err != nil {
+		return fmt.Errorf("shared native LSDP not ready: %w", err)
+	}
+	producer := lsdpreception.NewProducer(ctx, reception)
+	defer producer.Close()
+	nativeHub := lsdpreception.NewHub(producer, logger)
 
 	// Orion has one executable posture now: the Prism-embedded local sidecar.
 	// config.Load rejects the retired remote profile; keep this guard at the
@@ -95,93 +109,36 @@ func run() error {
 	show.SetWSMetrics(metrics)
 	defer show.Stop()
 
-	// LSDP/1.1 wire (ADR 007 §C.3b) — built and installed on the show
-	// only in dual/lsdp mode, before cold-start so every loaded scene is
-	// paired with a kit scene. In bespoke mode the wire is nil: the kit
-	// is never constructed and the bespoke WS is the only wire (no-op
-	// deploy). Gateway-first holds by construction — the wire derives
-	// identity from the SAME local operator AuthSource as the HTTP gates and
-	// the bespoke WS; no JWT, no token.
-	var lsdpHandler http.Handler
-	var sessionWires runtime.SessionWireFactory
-	var previewLSDPHandler http.Handler
-	var generationLSDPHandler http.Handler
-	var previewSlot *runtime.PreviewSlot
-	var antenneWire *lsdp.Wire
-	var previewWire *lsdp.Wire
-	var generationWires *lsdp.GenerationWires
-	if cfg.LSDPMode == config.LSDPModeDual || cfg.LSDPMode == config.LSDPModeLSDP {
-		wire, err := lsdp.NewWire(logger, authSource)
-		if err != nil {
+	// One native receiver is supervised by Prism. Orion publishes source LSML,
+	// authored leaf mutations and isolated generations; it owns no LSDP listener.
+	antenneWire := nativeHub.Lane("program")
+	streamStore, streamControl, closeApps, err := wireStreamControl(cfg, antenneWire)
+	if err != nil {
+		return err
+	}
+	defer closeApps()
+	nativeFlush := func(ctx context.Context) error {
+		if err := producer.Flush(ctx); err != nil {
 			return err
 		}
-		// LSDP Snapshot identity-gap observability (ADR-BLUE-012 §16.1,
-		// B3-R6-16-ORION-PGM): orion_lsdp_snapshot_identity_gap_total{scene_id}
-		// counts a reseed that drops a KNOWN projection identity because the
-		// Snapshot frame has no metadata field — never a fix, just makes the
-		// wire-schema limitation observable instead of silent.
-		wire.SetSnapshotMetrics(metrics)
-		show.SetMirrors(wire)
-		antenneWire = wire
-		lsdpHandler = wire.Handler()
-		if cfg.Profile.IsEmbeddedLocal() && cfg.LocalViewerToken != "" {
-			lsdpHandler = lsdp.AllowLoopbackBrowserOrigin(lsdpHandler)
-			lsdpHandler = auth.LocalViewerQuery(
-				cfg.LocalViewerToken,
-				cfg.LocalAuthSecret,
-				lsdpHandler,
-			)
-		}
-		// Per-session preview LSDP wire (preview/antenne split): each test
-		// session gets its OWN isolated kit server so the preview Solar
-		// runtime follows only the session clone, never the antenne's
-		// active scene. Wired onto the TestSessionManager below.
-		sessionWires = lsdp.NewSessionWireFactory(logger, authSource)
-
-		// Persistent PREVIEW wire (preview/antenne split, the working model):
-		// a SECOND lsdp.Wire beside the antenne's. The cockpit preview Solar
-		// connects here ONCE (fixed /show/preview.lsdp); switching the previewed
-		// scene swaps this wire's active clone via PreviewSlot.Activate →
-		// previewWire.SetActive (scene_changed + snapshot over the existing
-		// socket, no reload). The antenne wire above is never touched, so a
-		// preview switch can never flip the live antenne.
-		var pwErr error
-		previewWire, pwErr = lsdp.NewWire(logger, authSource)
-		if pwErr != nil {
-			return pwErr
-		}
-		previewWire.SetSnapshotMetrics(metrics)
-		previewLSDPHandler = previewWire.Handler()
-		generationWires = lsdp.NewGenerationWires(logger, authSource)
-		generationLSDPHandler = generationWires.Handler()
-		if cfg.Profile.IsEmbeddedLocal() && cfg.LocalViewerToken != "" {
-			previewLSDPHandler = lsdp.AllowLoopbackBrowserOrigin(previewLSDPHandler)
-			previewLSDPHandler = auth.LocalViewerQuery(
-				cfg.LocalViewerToken,
-				cfg.LocalAuthSecret,
-				previewLSDPHandler,
-			)
-			generationLSDPHandler = lsdp.AllowLoopbackBrowserOrigin(generationLSDPHandler)
-			generationLSDPHandler = auth.LocalViewerQuery(
-				cfg.LocalViewerToken,
-				cfg.LocalAuthSecret,
-				generationLSDPHandler,
-			)
-		}
-		previewSlot = runtime.NewPreviewSlot(ctx, registry, previewWire, logger)
-		// Editable Preview → live uses the immutable generation registry only.
-		// The antenne/Program wire remains owned by the regular scene-intent
-		// path; hot editable patches fan out to this generation mirror after an
-		// explicit operator hand-off.
-		previewSlot.SetEditableAirWire(generationWires)
-		defer previewSlot.Close()
-		logger.Info("lsdp wire enabled", "mode", string(cfg.LSDPMode))
+		return streamControl.Error()
 	}
+	receptionCheck := func(ctx context.Context) error {
+		if err := producer.Check(ctx); err != nil {
+			return err
+		}
+		return streamControl.Error()
+	}
+	previewWire := nativeHub.Lane("preview")
+	generationWires := nativeHub
+	show.SetMirrors(streamMirrors{MirrorRegistry: antenneWire, controller: streamControl})
+	previewSlot := runtime.NewPreviewSlot(ctx, registry, previewWire, logger)
+	previewSlot.SetEditableAirWire(generationWires)
+	defer previewSlot.Close()
 
 	testMgr := runtime.NewTestSessionManager(registry, logger, 5*time.Minute)
-	if sessionWires != nil {
-		testMgr.SetSessionWires(sessionWires)
-	}
+	testMgr.SetSessionWires(nativeHub)
+	go testMgr.RunSweep(ctx)
 	defer testMgr.Close()
 
 	// Scene-validation harness (ADR 003 §3.2, issue #87). CPU-bound and
@@ -194,8 +151,6 @@ func run() error {
 	tick := runtime.NewTick(cfg.TickHz, show)
 	tick.Run()
 	defer tick.Stop()
-
-	_ = auth.NewValidator(cfg.ZabAuthValidateURL, cfg.ServiceToken, cfg.AuthCacheTTL)
 
 	// Engine B egress uses a durable family only to obtain exact, short-lived
 	// route tokens. The family bearer is never sent to a data route, and an
@@ -280,8 +235,7 @@ func run() error {
 		Logger:              logger,
 	}
 	// Editor-authored Meet slots and Blue assign-slot effects share the same
-	// bounded projection fan-out. The preview wire is a separate consumer lane;
-	// Pulsar/Program is deliberately not part of this mirror.
+	// bounded native projection fan-out to separate Program and Preview resources.
 	cameraSlots := newCameraSlotMirror(previewWire, antenneWire)
 	effectDeps.SlotMirror = cameraSlots
 	// Curated service-egress (ADR Blue 002 §3.3) no longer uses a standing
@@ -299,14 +253,8 @@ func run() error {
 	// blueprint/_query surface) and is never logged. Antenne wire only —
 	// preview keeps the Prism global.
 	if antenneWire != nil {
-		// core.overlay-app.set@1's real effector for Engine B
-		// (ENGINE-B-PARITY-ORION, internal/bluehost/effect_overlay.go):
-		// the SAME show-level wire Engine A's show.SetMirrors(wire) above
-		// already drives. Assigned only inside this guard — antenneWire is
-		// a *lsdp.Wire and assigning a nil one to the OverlayAppMirror
-		// interface field would store a non-nil interface wrapping a nil
-		// pointer, defeating dispatchOverlayAppSet's nil check.
-		effectDeps.OverlayMirror = antenneWire
+		// Both Blue execution paths publish overlay control to native orion/state.
+		effectDeps.OverlayMirror = streamControl
 		credsFetcher := lsdp.NewZabCamCredsFetcher(cfg.ZabGateURL, serviceTokenMinter.Token, logger)
 		antenneWire.EnableViewerCreds(ctx,
 			credsFetcher, time.Duration(cfg.ViewerCredsRefreshS)*time.Second)
@@ -437,9 +385,22 @@ func run() error {
 			// path even though the SAME mechanism is already proven safe on
 			// the legacy Show-backed path.
 			sceneIntent.MirrorFor = sceneIntentMirrorFor(lsdpWires{preview: previewWire, antenne: antenneWire, generation: generationWires})
+			sceneIntent.WireFlush = nativeFlush
 			sceneIntent.Activate = sceneIntentActivate(lsdpWires{preview: previewWire, antenne: antenneWire, generation: generationWires})
 			sceneIntent.EmitRoster = sceneIntentEmitRoster(lsdpWires{preview: previewWire, antenne: antenneWire})
 			sceneIntent.Bridges = bluewire.NewRegistry()
+			sceneIntent.BeginLaneTransition = func(slot bluehost.Slot) func(bool) {
+				if slot == bluehost.SlotOnAir {
+					return antenneWire.BeginTransition()
+				}
+				return previewWire.BeginTransition()
+			}
+			sceneIntent.PresentScene = api.NativeScenePresenter(reception, func(slot bluehost.Slot, id, version string, raw []byte) (map[string]any, error) {
+				if slot == bluehost.SlotOnAir {
+					return antenneWire.PrepareSource(id, version, raw)
+				}
+				return previewWire.PrepareSource(id, version, raw)
+			})
 			sceneIntent.Logger = logger
 		}
 		if sceneIntent.Host != nil {
@@ -451,12 +412,13 @@ func run() error {
 		}
 	}
 
-	// Global stream-rule runtime (ADR 009): one volatile Engine B plane,
-	// independent of the preview/on-air scene Host. Prism remains the durable
-	// intent owner and replays missing rules after restart. The plane receives
-	// the same providers, capability policy and effect dependencies as scene
-	// instances, including the show-level overlay mirror, but no Canvas
-	// artefact or Orion store participates in promotion.
+	sceneControl, sceneControlErr := wireSceneControl(cfg, sceneIntent, reception)
+	if sceneControlErr != nil {
+		return fmt.Errorf("scene control startup: %w", sceneControlErr)
+	}
+	// Global Engine B rules run independently of the preview/on-air scenes.
+	// Orion persists their published programs and overlay intent in one LSML;
+	// restart restores them without compiling or contacting an upstream service.
 	rulePlane := bluehost.NewRulePlane(
 		providers.Registry(),
 		providers.Policy(len(cfg.HTTPEgressAllowHosts) > 0),
@@ -465,20 +427,51 @@ func run() error {
 		logger,
 	)
 	defer rulePlane.Stop()
+	rulePlane.SetStore(streamStore)
 	if sceneIntent != nil && sceneIntent.Host != nil {
-		rulePlane.SetShowEmitSink(func(topic string, payload any) {
+		showEvents := bluehost.NewShowEventRouter(func(topic string, payload any) {
+			rulePlane.EmitEvent(topic, payload)
 			for _, slot := range []bluehost.Slot{bluehost.SlotPreview, bluehost.SlotOnAir} {
-				if err := sceneIntent.Host.EmitEvent(slot, topic, payload); err != nil && !errors.Is(err, bluehost.ErrNotLoaded) {
+				result, err := sceneIntent.Host.EmitEventProjected(slot, topic, payload)
+				if err == nil && sceneIntent.Bridges != nil {
+					err = sceneIntent.Bridges.Forward(slot, bluewire.StepResult{RuntimeSequence: result.RuntimeSequence, Outputs: result.Outputs})
+				}
+				if err != nil && !errors.Is(err, bluehost.ErrNotLoaded) {
 					logger.Warn("stateless show.emit delivery failed", "slot", slot, "topic", topic, "error", err)
 				}
 			}
-		})
+		}, func() { logger.Error("Blue show event cascade exceeded budget") })
+		rulePlane.SetShowEmitSink(showEvents)
+		sceneIntent.Host.SetShowEmitSink(showEvents)
+		if sceneIntent.Bridges != nil {
+			sceneIntent.Host.SetSceneMutationSink(sceneIntent.Bridges.Mutate)
+			rulePlane.SetSceneMutationSink(sceneIntent.Bridges.Mutate)
+		}
 	}
 	inbox.SetStreamRulePlatformSink(rulePlane)
+	startupIntent := streamStore.Snapshot()
+	for id, rule := range startupIntent.Rules {
+		if err := rulePlane.Promote(id, rule.Digest, rule.Program); err != nil {
+			return fmt.Errorf("restore stream rule %s: %w", id, err)
+		}
+	}
+	for id, app := range startupIntent.Apps {
+		streamControl.EmitOverlayApp(id, &app.Running, &app.OnAir)
+	}
+	if err := streamControl.Error(); err != nil {
+		logger.Error("overlay intent restore failed", "error", err)
+	}
+	controlCtx, stopControl := context.WithCancel(ctx)
+	controlDone := make(chan struct{})
+	go func() { defer close(controlDone); streamControl.Run(controlCtx) }()
+	defer func() { stopControl(); <-controlDone }()
 
 	// Public mux: HTTP + WS surface routed through ZabGate.
 	publicMux := http.NewServeMux()
 	api.RegisterPublic(publicMux, api.PublicDeps{
+		NativeLSDPCheck:    receptionCheck,
+		NativeLSDPFlush:    nativeFlush,
+		NativeLSDPStatus:   func() any { return producer.Status() },
 		Logger:             logger,
 		Metrics:            metrics,
 		Config:             cfg,
@@ -489,15 +482,17 @@ func run() error {
 		Harness:            harness,
 		StaticDir:          http.Dir(cfg.SolarRoot),
 		QuasarBaseURL:      cfg.QuasarBaseURL,
-		LSDPHandler:        lsdpHandler,
+		LSDPHandler:        nil,
 		Preview:            previewSlot,
 		EditablePreview:    previewSlot,
 		LocalEditorToken:   cfg.LocalEditorToken,
 		StaticAssetBaseURL: strings.TrimRight(cfg.CanvasBaseURL, "/") + "/api/v1/scene-assets",
-		PreviewLSDP:        previewLSDPHandler,
-		GenerationLSDP:     generationLSDPHandler,
+		PreviewLSDP:        nil,
+		GenerationLSDP:     nil,
 		CameraSlots:        effectDeps,
 		AuthSource:         authSource,
+		OverlayStatus:      streamControl.Status,
+		HostEffects:        &effectDeps,
 		// Read-only DB catalog (ADR Blue 008 §3.4): same gateway as the
 		// db.query client; both use the same exact-route exchange callback.
 		SchemaClient: effects.NewSchemaClientWithPathTokenFunc(cfg.ZabGateURL, serviceTokenMinter.Token, nil),
@@ -543,6 +538,11 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
+	go func() {
+		if err := sceneControl.Run(ctx); err != nil && ctx.Err() == nil {
+			logger.Error("native scene control stopped", "err", err)
+		}
+	}()
 	errs := make(chan error, 2)
 	go func() {
 		logger.Info("public server listening", "addr", cfg.ListenAddr)

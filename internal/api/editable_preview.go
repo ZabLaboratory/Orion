@@ -47,7 +47,7 @@ type editablePreviewActivateRequest struct {
 	EditSeq uint64 `json:"edit_seq"`
 }
 
-func applyEditablePreviewPatch(deps PublicDeps, body editablePreviewPatchRequest) (int, string, error) {
+func applyEditablePreviewPatch(ctx context.Context, deps PublicDeps, body editablePreviewPatchRequest) (int, string, error) {
 	if body.SceneID == "" || len(body.Patches) == 0 || len(body.Patches) > maxEditablePreviewPatches {
 		return http.StatusBadRequest, "INVALID_BODY", errors.New("invalid editable preview patch body")
 	}
@@ -66,6 +66,9 @@ func applyEditablePreviewPatch(deps PublicDeps, body editablePreviewPatchRequest
 			status, code = http.StatusServiceUnavailable, "EDITABLE_PREVIEW_BUSY"
 		}
 		return status, code, err
+	}
+	if err := flushNativeDelivery(ctx, deps, true); err != nil {
+		return http.StatusServiceUnavailable, "NATIVE_LSDP_DELIVERY_FAILED", err
 	}
 	return http.StatusAccepted, "", nil
 }
@@ -101,6 +104,10 @@ func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 			Defaults:     defaults,
 		}
 		deps.Preview.ActivateEditableWithBundle(body.SceneID, graph, bundle, body.EditSeq, rawBundleCopy(body.LSMLBundle))
+		if err := flushNativeDelivery(r.Context(), deps, true); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"scene_id":      body.SceneID,
 			"scene_version": body.SceneVersion,
@@ -168,6 +175,10 @@ func postEditablePreviewAir(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, status, map[string]string{"code": code, "message": err.Error()})
 			return
 		}
+		if err := flushNativeDelivery(r.Context(), deps, true); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"scene_id":      body.SceneID,
 			"scene_version": version,
@@ -199,6 +210,10 @@ func postEditablePreviewActivate(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusConflict, map[string]string{"code": code, "message": err.Error()})
 			return
 		}
+		if err := flushNativeDelivery(r.Context(), deps, true); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"scene_id": body.SceneID, "edit_seq": body.EditSeq, "reused": true})
 	})
 }
@@ -214,7 +229,7 @@ func putEditablePreviewPatch(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_BODY"})
 			return
 		}
-		status, code, err := applyEditablePreviewPatch(deps, body)
+		status, code, err := applyEditablePreviewPatch(r.Context(), deps, body)
 		if err != nil {
 			writeJSON(w, status, map[string]string{"code": code, "message": err.Error()})
 			return
@@ -364,6 +379,12 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 				}
 				applyErr := deps.Preview.ApplyPreviewInput(input.Path, input.Value, "service:prism-local-quasar")
 				code := ""
+				if applyErr == nil {
+					applyErr = flushNativeDelivery(r.Context(), deps, true)
+					if applyErr != nil {
+						code = "NATIVE_LSDP_DELIVERY_FAILED"
+					}
+				}
 				switch {
 				case errors.Is(applyErr, runtime.ErrPreviewEditPath):
 					code = "PREVIEW_PATH_UNKNOWN"
@@ -392,7 +413,7 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 				_ = writeEditableSocketJSON(r.Context(), conn, map[string]any{"type": "error", "code": "INVALID_BODY"})
 				return
 			}
-			_, code, applyErr := applyEditablePreviewPatch(deps, body)
+			_, code, applyErr := applyEditablePreviewPatch(r.Context(), deps, body)
 			if applyErr != nil {
 				_ = writeEditableSocketJSON(r.Context(), conn, map[string]any{"type": "error", "code": code, "message": applyErr.Error()})
 				return

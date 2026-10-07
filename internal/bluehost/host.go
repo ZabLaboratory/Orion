@@ -40,7 +40,7 @@ var (
 
 const maxCachedProgramHandles = 64
 
-var blueWireSideEffectVariableProjection = [...]string{showEmitBag, overlayAppSetBag}
+var blueWireSideEffectVariableProjection = [...]string{showEmitBag, overlayAppSetBag, animationBag}
 
 // entry pairs a running instance with the program handle it was started
 // from, so Step/Stop never need the caller to keep the handle around.
@@ -64,6 +64,7 @@ type entry struct {
 	digest            string            // scene_digest this slot is serving (for a no-program ref: the bundle hash, #398 Decision A); see Serving
 	artifactSetDigest string            // attested artifact_set_digest associated with this slot admission
 	bundle            []byte            // optional LSML render-bundle bytes for this slot, set via SetBundle
+	operatorInputs    []byte            // source LSML interface; non-nil, including [], overrides legacy bundle
 	awaitTypes        map[string]string // compiler-declared operator.await value types
 
 	// overlaySeen dedupes core.overlay-app.set@1 dispatch (effect_overlay.go)
@@ -73,7 +74,8 @@ type entry struct {
 	// fresh instance from Prepare/Take starts with a clean slate for free —
 	// the old entry, and its stale seen-set, is simply discarded, never
 	// explicitly invalidated.
-	overlaySeen map[string]string
+	overlaySeen   map[string]string
+	animationSeen map[string]string
 
 	// showEmitOrigin and showEmitSequence scope topic-event ordering to the
 	// current slot generation. showEmitSeen deduplicates the cumulative Blue
@@ -81,7 +83,7 @@ type entry struct {
 	// dispatches.
 	showEmitOrigin   string
 	showEmitSequence uint64
-	showEmitSeen     map[string]struct{}
+	showEmitSeen     map[string]string
 
 	triggers []TriggerDecl // declared core.operator.on-call@1 entrypoints (operator rail, #335)
 	awaits   []AwaitDecl   // declared core.operator.await-value@1 suspend points (operator rail, #335)
@@ -95,7 +97,9 @@ type entry struct {
 // Release first, keeping "no on-air effect before commit" structurally
 // true: there is never a moment with two live on-air instances.
 type Host struct {
-	mu sync.Mutex
+	mu           sync.Mutex
+	sceneCommits map[Slot]chan struct{}
+	transitions  map[Slot]bool
 
 	// runtimeMu serializes calls into Blue's stateful InstanceHandle. It is
 	// deliberately separate from mu: direct EffectHandlers may perform I/O,
@@ -117,7 +121,7 @@ type Host struct {
 	// Invocations + Runtime.Complete) to a real outbound HTTP executor for
 	// `core.http.request` invocations — see effect_http.go. Both nil by
 	// default: HTTP invocations receive an explicit provider-unavailable
-	// completion, while unsupported capabilities remain pending. Set once via
+	// completion, and unsupported capabilities fail explicitly. Set once via
 	// SetHTTPEffects.
 	httpEgress *effects.EgressPolicy
 	httpRunner *effects.Runner
@@ -133,7 +137,9 @@ type Host struct {
 	// showEmitSink is the Engine-B host seam for core.show.emit@1. Blue's
 	// portable runtime records local side effects in StepResult.Variables;
 	// Orion projects that record into the active scene-intent slot.
-	showEmitSink ShowEmitSink
+	showEmitSink      ShowEmitSink
+	effectDeps        EffectDeps
+	sceneMutationSink SceneMutationSink
 }
 
 // NewHost builds an empty Host. One Host per Orion process — it is the
@@ -141,6 +147,7 @@ type Host struct {
 // grants Orion.
 func NewHost() *Host {
 	return &Host{
+		sceneCommits:    map[Slot]chan struct{}{SlotPreview: make(chan struct{}, 1), SlotOnAir: make(chan struct{}, 1)},
 		runtime:         blueruntime.NewRuntime(),
 		slots:           map[Slot]*entry{},
 		programHandles:  map[string]blueruntime.ProgramHandle{},
@@ -481,6 +488,10 @@ func (h *Host) StepProjected(slot Slot) (blueruntime.StepResult, error) {
 
 func (h *Host) step(slot Slot, projected bool) (blueruntime.StepResult, error) {
 	h.mu.Lock()
+	if h.transitions[slot] {
+		h.mu.Unlock()
+		return blueruntime.StepResult{}, ErrSceneChanging
+	}
 	e, ok := h.slots[slot]
 	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
@@ -490,6 +501,10 @@ func (h *Host) step(slot Slot, projected bool) (blueruntime.StepResult, error) {
 	h.mu.Unlock()
 
 	h.runtimeMu.Lock()
+	if h.executionBlocked(slot, instance) {
+		h.runtimeMu.Unlock()
+		return blueruntime.StepResult{}, ErrSceneChanging
+	}
 	var result blueruntime.StepResult
 	var err error
 	if projected {
@@ -505,6 +520,7 @@ func (h *Host) step(slot Slot, projected bool) (blueruntime.StepResult, error) {
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
+	h.dispatchAnimation(slot, instance, result.Variables)
 	return result, nil
 }
 
@@ -604,6 +620,10 @@ func (h *Host) TickProjected(slot Slot, deltaSeconds float64) (blueruntime.StepR
 
 func (h *Host) tick(slot Slot, deltaSeconds float64, projected bool) (blueruntime.StepResult, error) {
 	h.mu.Lock()
+	if h.transitions[slot] {
+		h.mu.Unlock()
+		return blueruntime.StepResult{}, ErrSceneChanging
+	}
 	e, ok := h.slots[slot]
 	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
@@ -613,6 +633,10 @@ func (h *Host) tick(slot Slot, deltaSeconds float64, projected bool) (blueruntim
 	h.mu.Unlock()
 
 	h.runtimeMu.Lock()
+	if h.executionBlocked(slot, instance) {
+		h.runtimeMu.Unlock()
+		return blueruntime.StepResult{}, ErrSceneChanging
+	}
 	var result blueruntime.StepResult
 	var err error
 	if projected {
@@ -628,6 +652,7 @@ func (h *Host) tick(slot Slot, deltaSeconds float64, projected bool) (blueruntim
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
+	h.dispatchAnimation(slot, instance, result.Variables)
 	return result, nil
 }
 
@@ -638,6 +663,10 @@ func (h *Host) tick(slot Slot, deltaSeconds float64, projected bool) (blueruntim
 // returns ErrNotLoaded, never a silent no-op.
 func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
+	if h.transitions[slot] {
+		h.mu.Unlock()
+		return blueruntime.StepResult{}, ErrSceneChanging
+	}
 	e, ok := h.slots[slot]
 	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
@@ -647,6 +676,10 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 	h.mu.Unlock()
 
 	h.runtimeMu.Lock()
+	if h.executionBlocked(slot, instance) {
+		h.runtimeMu.Unlock()
+		return blueruntime.StepResult{}, ErrSceneChanging
+	}
 	result, err := h.runtime.Call(instance, callID, payload)
 	h.runtimeMu.Unlock()
 	if err != nil {
@@ -659,6 +692,7 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
+	h.dispatchAnimation(slot, instance, result.Variables)
 	return result, nil
 }
 
@@ -681,6 +715,10 @@ func (h *Host) WritePlatformEventProjected(slot Slot, leaf string, payload any) 
 
 func (h *Host) writePlatformEvent(slot Slot, leaf string, payload any, projected bool) (blueruntime.StepResult, error) {
 	h.mu.Lock()
+	if h.transitions[slot] {
+		h.mu.Unlock()
+		return blueruntime.StepResult{}, ErrSceneChanging
+	}
 	e, ok := h.slots[slot]
 	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
@@ -690,6 +728,10 @@ func (h *Host) writePlatformEvent(slot Slot, leaf string, payload any, projected
 	h.mu.Unlock()
 
 	h.runtimeMu.Lock()
+	if h.executionBlocked(slot, instance) {
+		h.runtimeMu.Unlock()
+		return blueruntime.StepResult{}, ErrSceneChanging
+	}
 	var result blueruntime.StepResult
 	var err error
 	if projected {
@@ -705,6 +747,7 @@ func (h *Host) writePlatformEvent(slot Slot, leaf string, payload any, projected
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
+	h.dispatchAnimation(slot, instance, result.Variables)
 	return result, nil
 }
 
@@ -713,6 +756,10 @@ func (h *Host) writePlatformEvent(slot Slot, leaf string, payload any, projected
 // `POST /operator/resolve/{await_name}` (Blue ADR 008 §3.3).
 func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.StepResult, error) {
 	h.mu.Lock()
+	if h.transitions[slot] {
+		h.mu.Unlock()
+		return blueruntime.StepResult{}, ErrSceneChanging
+	}
 	e, ok := h.slots[slot]
 	if !ok || e.instance == nil { // nil instance: static occupation (#398), nothing to step
 		h.mu.Unlock()
@@ -736,6 +783,10 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 	}
 
 	h.runtimeMu.Lock()
+	if h.executionBlocked(slot, instance) {
+		h.runtimeMu.Unlock()
+		return blueruntime.StepResult{}, ErrSceneChanging
+	}
 	result, err := h.runtime.Resolve(instance, awaitName, value)
 	h.runtimeMu.Unlock()
 	if err != nil {
@@ -745,6 +796,7 @@ func (h *Host) Resolve(slot Slot, awaitName string, value any) (blueruntime.Step
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
+	h.dispatchAnimation(slot, instance, result.Variables)
 	return result, nil
 }
 
