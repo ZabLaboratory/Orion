@@ -1,0 +1,18 @@
+{
+  "kind": "AGENT_REPORT",
+  "owner": "Eleven",
+  "scope": "User-authorized capability audit corrections without ADR or agents",
+  "changes": [
+    "One current authoring clone; no inactive editable runtime/socket cache",
+    "Serial retirement on Preview takeover",
+    "One separately active editable Program; preserved while Preview changes and stopped when Program retires",
+    "Current and active Program bundles remain readable, inactive heads cannot reactivate"
+  ],
+  "validation": {
+    "integratedOrionSha256": "36951109f0e7f0e9d50177ea851b95f2af6aa0e54050f9c4e55494cba4dd8cb2",
+    "blueSourceDigest": "sha256:0c3176acd35937294ba71fa1b09a44d1edcdc80b7e2b1fd8ff6d7b56ad4e9fed",
+    "goAllPackages": "passed",
+    "programRetirementAndPreviewTests": "passed"
+  },
+  "handoff": "Source fixes are isolated on eleven/local-20261009-capability-audit. Shared Prism uses a current integration snapshot preserving concurrent work; that build is distinct from a clean Git checkout. No real Live or recording was started."
+}

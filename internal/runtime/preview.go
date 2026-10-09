@@ -13,15 +13,9 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/protocol"
 )
 
-// PreviewWire is the persistent LSDP/1.1 wire dedicated to the cockpit
-// preview — a SECOND wire beside the antenne's /show/stream.lsdp. The cockpit
-// Solar connects to it ONCE (a fixed URL); switching the previewed scene swaps
-// the wire's active clone via SetActive (the proven antenne switch path —
-// scene_changed + fresh snapshot over the EXISTING socket, no client reload),
-// so a preview switch never reconnects and never touches the antenne. The
-// scenes mirrored here are PREVIEW CLONES, fully isolated from the global show.
-// *lsdp.Wire satisfies this interface (MirrorFor/SetActive/Drop already exist);
-// the interface lives in runtime to keep the import direction lsdp → runtime.
+// PreviewWire projects isolated Preview clones through a role-stable resource.
+// Production uses the native solar/preview lane; compatibility adapters also
+// implement this lifecycle seam. Switching never touches Program's active scene.
 type PreviewWire interface {
 	MirrorFor(sceneID, sceneVersion string, bundle *compiler.RenderBundle) SceneMirror
 	SetActive(sceneID string)
@@ -86,12 +80,9 @@ type PreviewSlot struct {
 	mu      sync.Mutex
 	ctx     context.Context
 	current *previewClone
-	// editable keeps already-compiled no-Blue clones warm while a regular
-	// scene temporarily owns the Preview wire. Re-selecting an editable scene
-	// is therefore only a Wire.SetActive operation: no LSML compilation, no
-	// clone restart and no Solar/Pulsar reconnection.
-	editable map[string]*previewClone
-	effects  *SceneEffects
+	// Only the current Preview and an explicitly active on-air generation live.
+	airCurrent *previewClone
+	effects    *SceneEffects
 	// editableAir is deliberately separate from the persistent Preview wire.
 	// A promotion adds a generation mirror to the clone's fan-out; it never
 	// reuses or retargets the Program/antenne wire.
@@ -104,6 +95,7 @@ type previewClone struct {
 	scene        *Scene
 	bundle       []byte
 	lsmlBundle   []byte
+	assets       map[string][]byte
 	mirror       *sceneMirrorFanout
 	editable     bool
 	editSeq      uint64
@@ -134,7 +126,6 @@ func NewPreviewSlot(ctx context.Context, registry *ComputeRegistry, wire Preview
 		logger:   logger.With("component", "preview-slot"),
 		wire:     wire,
 		ctx:      ctx,
-		editable: make(map[string]*previewClone),
 	}
 }
 
@@ -168,7 +159,7 @@ func (p *PreviewSlot) SetEditableAirWire(wire EditableAirWire) {
 // Re-activating the same scene rebuilds a fresh clone (reseeds defaults +
 // fires on-start), matching a push-swap of the live scene on the antenne.
 func (p *PreviewSlot) Activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, progs ...*ExecProgram) {
-	p.activate(sceneID, graph, bundle, false, 0, nil, progs...)
+	p.activate(sceneID, graph, bundle, false, 0, nil, nil, progs...)
 }
 
 // ActivateStatic installs a no-Blue render bundle in the editable preview
@@ -186,21 +177,23 @@ func (p *PreviewSlot) ActivateStatic(sceneID string, bundle *compiler.RenderBund
 		Bindings:       bundle.ExternalAdapters,
 		OperatorInputs: bundle.OperatorInputs,
 	}
-	p.activate(sceneID, graph, bundle, true, 0, nil)
+	p.activate(sceneID, graph, bundle, true, 0, nil, nil)
 	return nil
 }
 
-func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editable bool, editSeq uint64, lsmlBundle []byte, progs ...*ExecProgram) {
+func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editable bool, editSeq uint64, lsmlBundle []byte, assets map[string][]byte, progs ...*ExecProgram) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	prev := p.current
-	replaced := p.editable[sceneID]
 
 	// Clone the compiled artefacts so the preview's reactive loop owns private
 	// inputs — the antenne instance of the same scene is untouched.
 	gcopy := *graph
 	bcopy := *bundle
+	if len(lsmlBundle) > 0 {
+		bcopy.SourceLSML = append([]byte(nil), lsmlBundle...)
+	}
 	scene := NewScene(sceneID, &gcopy, &bcopy, p.registry, p.logger.With("preview_scene", sceneID))
 	scene.InstallExec(progs...)
 	// Install the world-effect ops (db.query, http.request, …) on the clone
@@ -251,30 +244,21 @@ func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *co
 		scene:        scene,
 		bundle:       bundleBytes,
 		lsmlBundle:   append([]byte(nil), lsmlBundle...),
+		assets:       cloneEditableAssets(assets),
 		mirror:       mirror,
 		editable:     editable,
 		editSeq:      editSeq,
 	}
 	p.current = next
-	if editable {
-		p.editable[sceneID] = next
-	} else {
-		delete(p.editable, sceneID)
-	}
-
-	// Tear disposable clones down AFTER the flip (no preview gap). An editable
-	// clone with another id deliberately stays alive in p.editable so a later
-	// switch back is compilation-free. A same-id cached clone is replaced by
-	// the fresh structural build above and must be stopped exactly once.
-	if replaced != nil && replaced != next {
-		replaced.scene.Stop()
-	}
-	if prev != nil && prev != replaced && !prev.editable {
-		prev.scene.Stop()
+	if prev != nil {
+		if prev != p.airCurrent {
+			prev.scene.Stop()
+		}
 		if prev.sceneID != sceneID {
 			p.wire.Drop(prev.sceneID)
 		}
 	}
+
 }
 
 // Bundle returns the exact compiled render tree owned by the persistent
@@ -288,26 +272,44 @@ func (p *PreviewSlot) Bundle(sceneID, sceneVersion string) ([]byte, bool) {
 	defer p.mu.Unlock()
 	cur := p.current
 	if cur == nil || cur.sceneID != sceneID {
-		cur = p.editable[sceneID]
+		cur = p.airCurrent
 	}
-	if cur == nil || cur.sceneVersion != sceneVersion || len(cur.bundle) == 0 {
+	if cur == nil || cur.sceneID != sceneID || cur.sceneVersion != sceneVersion || len(cur.bundle) == 0 {
 		return nil, false
 	}
 	return append([]byte(nil), cur.bundle...), true
 }
 
+// EditableSource exposes only the immutable authoring base, never live defaults.
+func (p *PreviewSlot) EditableSource(sceneID, sceneVersion string) ([]byte, map[string][]byte, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	clone := p.current
+	if clone == nil || clone.sceneID != sceneID {
+		clone = p.airCurrent
+	}
+	if sceneID == "" || sceneVersion == "" || clone == nil || clone.sceneID != sceneID || clone.sceneVersion != sceneVersion || len(clone.lsmlBundle) == 0 {
+		return nil, nil, false
+	}
+	return append([]byte(nil), clone.lsmlBundle...), cloneEditableAssets(clone.assets), true
+}
+
 // ActivateEditable arms a no-Blue preview clone and records the durable
 // ZabCanvas edit sequence that subsequent hot patches must extend.
 func (p *PreviewSlot) ActivateEditable(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editSeq uint64) {
-	p.activate(sceneID, graph, bundle, true, editSeq, nil)
+	p.activate(sceneID, graph, bundle, true, editSeq, nil, nil)
 }
 
 // ActivateEditableWithBundle is the source-preserving variant used by the
 // HTTP editable-preview route. Generation wires need the original LSML bytes
 // to derive their bound leaf surface; the compiled RenderBundle alone is not
 // a valid LSML bundle.
-func (p *PreviewSlot) ActivateEditableWithBundle(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editSeq uint64, lsmlBundle []byte) {
-	p.activate(sceneID, graph, bundle, true, editSeq, lsmlBundle)
+func (p *PreviewSlot) ActivateEditableWithBundle(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editSeq uint64, lsmlBundle []byte, assets ...map[string][]byte) {
+	var sourceAssets map[string][]byte
+	if len(assets) > 0 {
+		sourceAssets = assets[0]
+	}
+	p.activate(sceneID, graph, bundle, true, editSeq, lsmlBundle, sourceAssets)
 }
 
 // PromoteEditable attaches the current no-Blue clone to its immutable
@@ -318,8 +320,8 @@ func (p *PreviewSlot) ActivateEditableWithBundle(sceneID string, graph *compiler
 func (p *PreviewSlot) PromoteEditable(sceneID, owner string) (string, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	clone := p.editable[sceneID]
-	if clone == nil || !clone.editable {
+	clone := p.current
+	if clone == nil || clone.sceneID != sceneID || !clone.editable {
 		return "", ErrPreviewCacheMiss
 	}
 	if p.editableAir == nil || len(clone.lsmlBundle) == 0 {
@@ -342,47 +344,52 @@ func (p *PreviewSlot) PromoteEditable(sceneID, owner string) (string, error) {
 		State:        state,
 	})
 	p.editableAir.SetActive(sceneID, version)
+	if p.airCurrent != nil && p.airCurrent != clone {
+		p.airCurrent.scene.Stop()
+	}
+	p.airCurrent = clone
 	clone.airPromoted = true
 	return version, nil
 }
 
-// ReactivateEditable flips Preview back to an already-compiled editable
-// clone. expectedEditSeq binds Prism's durable ZabCanvas head to the cached
-// runtime instance so stale UI state can never silently reactivate. The clone
-// and its scene mirror stay alive while Blue owns Preview; only the preview
-// wire's active scene changes here.
+// ReactivateEditable is a compatibility validation for the current head only.
+// It cannot restore a scene that no longer owns Preview.
 func (p *PreviewSlot) ReactivateEditable(sceneID string, expectedEditSeq uint64) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	next := p.editable[sceneID]
-	if next == nil {
+	next := p.current
+	if next == nil || next.sceneID != sceneID || !next.editable {
 		return ErrPreviewCacheMiss
 	}
 	if next.editSeq != expectedEditSeq {
 		return ErrPreviewEditSequence
 	}
-	prev := p.current
-	if prev == next {
-		// Blue scene-intent uses the same persistent Preview wire but is
-		// intentionally owned by bluehost rather than PreviewSlot.  In that
-		// path p.current still points at this warm clone while the wire has
-		// moved to Blue, so returning early would acknowledge activation
-		// without emitting the scene_changed/snapshot pair Solar needs.
-		// Reassert the wire even when the cached clone is already current;
-		// this is idempotent for an actually-active editable scene and closes
-		// the external-owner hand-off gap without rebuilding the clone.
-		p.wire.SetActive(sceneID)
-		return nil
-	}
-	p.wire.SetActive(sceneID)
-	p.current = next
-	if prev != nil && !prev.editable {
-		prev.scene.Stop()
-		if prev.sceneID != sceneID {
-			p.wire.Drop(prev.sceneID)
+	return nil
+}
+
+// ReleasePreview drops the authoring clone when another owner commits Preview.
+// An explicitly promoted Program generation is independent and remains active.
+func (p *PreviewSlot) ReleasePreview(incoming ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.current != nil {
+		if p.current != p.airCurrent {
+			p.current.scene.Stop()
+		}
+		if len(incoming) == 0 || incoming[0] != p.current.sceneID {
+			p.wire.Drop(p.current.sceneID)
 		}
 	}
-	return nil
+	p.current = nil
+}
+
+func (p *PreviewSlot) ReleaseEditableAir() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.airCurrent != nil && p.airCurrent != p.current {
+		p.airCurrent.scene.Stop()
+	}
+	p.airCurrent = nil
 }
 
 // ApplyEditablePatches queues one atomic hot edit on the live preview clone.
@@ -490,6 +497,18 @@ func (p *PreviewSlot) CurrentSceneID() string {
 	return p.current.sceneID
 }
 
+// Flush waits until the active clone has forwarded its queued inputs to its
+// mirrors. The API then waits for the native receiver's application ACK.
+func (p *PreviewSlot) Flush(ctx context.Context) error {
+	p.mu.Lock()
+	cur := p.current
+	p.mu.Unlock()
+	if cur == nil {
+		return nil
+	}
+	return cur.scene.Flush(ctx)
+}
+
 // Current is the live preview clone scene, or nil when none is open. It is the
 // operator-surface target in preview mode: firing an on-call / resolving an
 // await against the preview clone drives the PREVIEW, never the antenne's
@@ -507,18 +526,21 @@ func (p *PreviewSlot) Current() *Scene {
 func (p *PreviewSlot) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	stopped := make(map[*previewClone]struct{}, len(p.editable)+1)
 	if p.current != nil {
 		p.current.scene.Stop()
 		p.wire.Drop(p.current.sceneID)
-		stopped[p.current] = struct{}{}
 	}
-	for sceneID, clone := range p.editable {
-		if _, ok := stopped[clone]; !ok {
-			clone.scene.Stop()
-			p.wire.Drop(sceneID)
-		}
+	if p.airCurrent != nil && p.airCurrent != p.current {
+		p.airCurrent.scene.Stop()
 	}
 	p.current = nil
-	clear(p.editable)
+	p.airCurrent = nil
+}
+
+func cloneEditableAssets(source map[string][]byte) map[string][]byte {
+	result := make(map[string][]byte, len(source))
+	for key, value := range source {
+		result[key] = append([]byte(nil), value...)
+	}
+	return result
 }

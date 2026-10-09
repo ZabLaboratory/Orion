@@ -40,7 +40,7 @@ func TestStartBridge_StaticSceneSeedsInitialSnapshot(t *testing.T) {
 		},
 		Bridges: bluewire.NewRegistry(),
 	}
-	claims := &attestation.Claims{SceneID: "scene-1", SceneDigest: "sha256:scene"}
+	claims := &attestation.Claims{SceneID: "scene-1", SceneDigest: "sha256:scene", ArtifactSetDigest: "sha256:scene"}
 	startBridge(deps, bluehost.SlotPreview, claims, "intent-1", false, raw, defaults)
 	if mirror.snapshot == nil {
 		t.Fatal("static scene did not emit its initial snapshot")

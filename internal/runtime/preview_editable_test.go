@@ -170,99 +170,33 @@ func TestPreviewSlotInputUpdatesEditableCloneWithoutAdvancingEditSequence(t *tes
 	}
 }
 
-func TestPreviewSlotReactivatesWarmEditableCloneAcrossRegularScene(t *testing.T) {
-	wire := &editablePreviewWire{out: make(chan SubscriberMsg, 8)}
-	slot := NewPreviewSlot(
-		context.Background(),
-		NewComputeRegistry(),
-		wire,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-	)
+func TestPreviewSlotReleasesInactiveEditableClone(t *testing.T) {
+	wire := &editablePreviewWire{out: make(chan SubscriberMsg, 128)}
+	slot := NewPreviewSlot(context.Background(), NewComputeRegistry(), wire, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer slot.Close()
-
-	editableGraph := &compiler.Graph{
-		SceneID:      "editable-a",
-		SceneVersion: "sha256:editable-a",
-		Defaults: map[string]json.RawMessage{
-			"__editable.61.x": json.RawMessage(`10`),
-		},
+	graph := &compiler.Graph{SceneID: "a", SceneVersion: "sha256:a"}
+	slot.ActivateEditable("a", graph, &compiler.RenderBundle{SceneVersion: graph.SceneVersion}, 0)
+	first := slot.Current()
+	slot.Activate("b", &compiler.Graph{SceneID: "b", SceneVersion: "sha256:b"}, &compiler.RenderBundle{SceneVersion: "sha256:b"})
+	if _, ok := slot.Bundle("a", graph.SceneVersion); ok {
+		t.Fatal("inactive bundle retained")
 	}
-	editableBundle := &compiler.RenderBundle{SceneVersion: editableGraph.SceneVersion}
-	slot.ActivateEditable("editable-a", editableGraph, editableBundle, 4)
-	warm := slot.Current()
-
-	if err := slot.ApplyEditablePatches("editable-a", 4, 5, []EditablePatch{{
-		Path: "__editable.61.x", Value: json.RawMessage(`35`),
-	}}); err != nil {
-		t.Fatalf("hot patch before switch: %v", err)
+	if err := slot.ReactivateEditable("a", 0); err != ErrPreviewCacheMiss {
+		t.Fatalf("reactivation = %v", err)
 	}
-
-	regularGraph := &compiler.Graph{SceneID: "blue-b", SceneVersion: "sha256:blue-b"}
-	regularBundle := &compiler.RenderBundle{SceneVersion: regularGraph.SceneVersion}
-	slot.Activate("blue-b", regularGraph, regularBundle)
-	if slot.CurrentSceneID() != "blue-b" {
-		t.Fatalf("current after regular activation = %q", slot.CurrentSceneID())
+	slot.ActivateEditable("a", graph, &compiler.RenderBundle{SceneVersion: graph.SceneVersion}, 0)
+	if slot.Current() == first {
+		t.Fatal("reused inactive clone")
 	}
-	if _, ok := slot.Bundle("editable-a", editableGraph.SceneVersion); !ok {
-		t.Fatal("warm editable bundle disappeared while Blue owned Preview")
+	slot.ReleasePreview()
+	if slot.Current() != nil {
+		t.Fatal("external takeover retained clone")
 	}
-	if err := slot.ReactivateEditable("editable-a", 4); err != ErrPreviewEditSequence {
-		t.Fatalf("stale durable head = %v, want %v", err, ErrPreviewEditSequence)
+	if err := slot.ReactivateEditable("a", 0); err != ErrPreviewCacheMiss {
+		t.Fatalf("external reactivation = %v", err)
 	}
-	if slot.CurrentSceneID() != "blue-b" {
-		t.Fatal("a rejected warm activation changed Preview")
-	}
-	if err := slot.ReactivateEditable("editable-a", 5); err != nil {
-		t.Fatalf("ReactivateEditable: %v", err)
-	}
-	if slot.Current() != warm {
-		t.Fatal("editable reactivation rebuilt the runtime clone")
-	}
-	if got := wire.mirrorIDs; len(got) != 2 || got[0] != "editable-a" || got[1] != "blue-b" {
-		t.Fatalf("MirrorFor calls = %#v, want exactly editable-a then blue-b", got)
-	}
-	if got := wire.activeIDs; len(got) != 3 || got[0] != "editable-a" || got[1] != "blue-b" || got[2] != "editable-a" {
-		t.Fatalf("active switches = %#v", got)
-	}
-	if got := wire.dropped; len(got) != 1 || got[0] != "blue-b" {
-		t.Fatalf("drops before close = %#v, want disposable Blue clone only", got)
-	}
-}
-
-func TestPreviewSlotReactivatesWarmCloneAfterExternalPreviewWireTakeover(t *testing.T) {
-	wire := &editablePreviewWire{out: make(chan SubscriberMsg, 8)}
-	slot := NewPreviewSlot(
-		context.Background(),
-		NewComputeRegistry(),
-		wire,
-		slog.New(slog.NewTextHandler(io.Discard, nil)),
-	)
-	defer slot.Close()
-
-	graph := &compiler.Graph{
-		SceneID:      "editable-external",
-		SceneVersion: "sha256:editable-external",
-		Defaults: map[string]json.RawMessage{
-			"__editable.61.x": json.RawMessage(`10`),
-		},
-	}
-	slot.ActivateEditable("editable-external", graph, &compiler.RenderBundle{SceneVersion: graph.SceneVersion}, 7)
-	// Blue's scene-intent path owns bluehost, but it switches this same wire
-	// directly; PreviewSlot.current deliberately remains the warm editable
-	// clone so returning must reassert SetActive instead of taking the no-op
-	// branch that caused the production switch regression.
-	wire.SetActive("blue-external")
-	if err := slot.ReactivateEditable("editable-external", 7); err != nil {
-		t.Fatalf("ReactivateEditable after external takeover: %v", err)
-	}
-	want := []string{"editable-external", "blue-external", "editable-external"}
-	if len(wire.activeIDs) != len(want) {
-		t.Fatalf("active switches = %#v, want %#v", wire.activeIDs, want)
-	}
-	for i, got := range wire.activeIDs {
-		if got != want[i] {
-			t.Fatalf("active switch %d = %q, want %q", i, got, want[i])
-		}
+	if len(wire.dropped) != 3 {
+		t.Fatalf("drops = %#v", wire.dropped)
 	}
 }
 
@@ -394,5 +328,49 @@ func TestPreviewSlotServiceInputFansOutToPromotedGeneration(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("generation mirror did not receive service input delta")
+	}
+}
+
+func TestPreviewSlotRetainsOnlyExplicitActiveProgramGeneration(t *testing.T) {
+	wire := &editablePreviewWire{out: make(chan SubscriberMsg, 128)}
+	air := &editableAirWire{out: make(chan SubscriberMsg, 128)}
+	slot := NewPreviewSlot(context.Background(), NewComputeRegistry(), wire, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	slot.SetEditableAirWire(air)
+	defer slot.Close()
+	graph := &compiler.Graph{SceneID: "program", SceneVersion: "sha256:program"}
+	slot.ActivateEditableWithBundle("program", graph, &compiler.RenderBundle{SceneVersion: graph.SceneVersion}, 0, []byte(`{"lsml":"1.1","scene_id":"program","scene_version":"sha256:program","layout":{"kind":"stack"}}`))
+	program := slot.Current()
+	if _, err := slot.PromoteEditable("program", "on-air"); err != nil {
+		t.Fatal(err)
+	}
+	slot.ActivateEditable("next", &compiler.Graph{SceneID: "next", SceneVersion: "sha256:next"}, &compiler.RenderBundle{SceneVersion: "sha256:next"}, 0)
+	select {
+	case <-program.done:
+		t.Fatal("Preview change stopped the active Program")
+	default:
+	}
+	if _, ok := slot.Bundle("program", "sha256:program"); !ok {
+		t.Fatal("active Program bundle was removed")
+	}
+	if err := slot.ReactivateEditable("program", 0); err != ErrPreviewCacheMiss {
+		t.Fatalf("inactive Preview reactivation = %v", err)
+	}
+	current := slot.Current()
+	slot.ReleaseEditableAir()
+	select {
+	case <-program.done:
+	case <-time.After(time.Second):
+		t.Fatal("retired Program did not stop")
+	}
+	if _, ok := slot.Bundle("program", "sha256:program"); ok {
+		t.Fatal("retired Program bundle retained")
+	}
+	if slot.Current() != current {
+		t.Fatal("Program release changed Preview")
+	}
+	select {
+	case <-current.done:
+		t.Fatal("Program release stopped Preview")
+	default:
 	}
 }

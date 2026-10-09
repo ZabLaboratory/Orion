@@ -33,21 +33,29 @@ func (h *Host) SetShowEmitSink(sink ShowEmitSink) {
 // adapters.Inbox.EmitToActive path: the event is admitted with the canonical
 // blue.runtime.event.v1 envelope, then the slot's own runtime consumes it.
 func (h *Host) EmitEvent(slot Slot, topic string, payload any) error {
+	_, err := h.EmitEventProjected(slot, topic, payload)
+	return err
+}
+
+// EmitEventProjected admits and consumes the event, returning its output for
+// the scene bridge. The caller must forward this result before acknowledging
+// the command; a later idle tick cannot stand in for this projection.
+func (h *Host) EmitEventProjected(slot Slot, topic string, payload any) (blueruntime.StepResult, error) {
 	if strings.TrimSpace(topic) == "" {
-		return fmt.Errorf("bluehost: show.emit topic is empty")
+		return blueruntime.StepResult{}, fmt.Errorf("bluehost: show.emit topic is empty")
 	}
 
 	h.mu.Lock()
 	e, ok := h.slots[slot]
 	if !ok || e.instance == nil {
 		h.mu.Unlock()
-		return fmt.Errorf("%w: %s", ErrNotLoaded, slot)
+		return blueruntime.StepResult{}, fmt.Errorf("%w: %s", ErrNotLoaded, slot)
 	}
 	sequence := e.showEmitSequence + 1
 	raw, err := buildShowEmitEvent(e.showEmitOrigin, topic, sequence, payload)
 	if err != nil {
 		h.mu.Unlock()
-		return err
+		return blueruntime.StepResult{}, err
 	}
 	instance := e.instance
 
@@ -55,7 +63,7 @@ func (h *Host) EmitEvent(slot Slot, topic string, payload any) error {
 	if _, err := h.runtime.Dispatch(instance, raw); err != nil {
 		h.runtimeMu.Unlock()
 		h.mu.Unlock()
-		return err
+		return blueruntime.StepResult{}, err
 	}
 	// Reserve the source sequence only after admission succeeds. A scene may
 	// legitimately not declare every topic emitted by a promoted rule (for
@@ -69,13 +77,14 @@ func (h *Host) EmitEvent(slot Slot, topic string, payload any) error {
 	result, err := h.runtime.Step(instance)
 	h.runtimeMu.Unlock()
 	if err != nil {
-		return err
+		return blueruntime.StepResult{}, err
 	}
 	result = normalizeRuntimeOutputs(result)
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchShowEmit(slot, instance, result.Variables)
 	h.dispatchOverlayAppSet(slot, instance, result.Variables)
-	return nil
+	h.dispatchAnimation(slot, instance, result.Variables)
+	return result, nil
 }
 
 func showEmitOrigin(instanceID string, slot Slot) string {
@@ -135,7 +144,7 @@ func (h *Host) dispatchShowEmit(slot Slot, instance *blueruntime.InstanceHandle,
 		return
 	}
 	if e.showEmitSeen == nil {
-		e.showEmitSeen = map[string]struct{}{}
+		e.showEmitSeen = map[string]string{}
 	}
 	nodeIDs := make([]string, 0, len(bag))
 	for nodeID := range bag {
@@ -149,11 +158,10 @@ func (h *Host) dispatchShowEmit(slot Slot, instance *blueruntime.InstanceHandle,
 		if !ok {
 			continue
 		}
-		key := nodeID + "\x00" + identity
-		if _, seen := e.showEmitSeen[key]; seen {
+		if e.showEmitSeen[nodeID] == identity {
 			continue
 		}
-		e.showEmitSeen[key] = struct{}{}
+		e.showEmitSeen[nodeID] = identity
 		calls = append(calls, showEmitCall{topic: topic, payload: payload})
 	}
 	h.mu.Unlock()

@@ -50,8 +50,8 @@ type EffectDeps struct {
 	// StepResult.Variables. Host.SetOverlayMirror (not this struct) is
 	// what actually wires a Host to read it; this field only carries the
 	// dependency from cmd/orion/main.go through to that call. Normally
-	// antenneWire (*lsdp.Wire — it implements EmitOverlayApp directly, the
-	// SAME show-level wire Engine A's Show.mirrors drives). nil = every
+	// the Orion stream controller persists desired intent, owns configured
+	// local processes and forwards native overlay control. nil = every
 	// core.overlay-app.set@1 firing is dropped (bag write still happens),
 	// same unwired-seam-still-fires-then posture as every other field here.
 	OverlayMirror OverlayAppMirror

@@ -2,7 +2,6 @@ package ws
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"sync/atomic"
@@ -199,15 +198,3 @@ func nonce() string {
 	}
 	return string(out)
 }
-
-// writeJSON is used by some tests to confirm bytes-on-wire match
-// envelope shape; kept for parity with api/public.go.
-func writeJSON(_ context.Context, w *websocket.Conn, v any) error {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	return w.Write(context.Background(), websocket.MessageText, raw)
-}
-
-var _ = writeJSON

@@ -99,6 +99,7 @@ type CredsFetcher interface {
 // mu; the goroutine is the only writer of lastEmit/rooms.
 type viewerArmer struct {
 	wire    *Wire
+	sink    interface{ EmitViewerPayload(string) }
 	fetch   CredsFetcher
 	refresh time.Duration
 	logger  *slog.Logger
@@ -231,10 +232,29 @@ func (a *viewerArmer) rearm() {
 // emit writes the serialised payload onto the active kit scene (the live
 // endpoint). No active scene yet ⇒ stored only; the next SetActive replays it.
 func (a *viewerArmer) emit(js string) {
-	if sc := a.wire.srv.ActiveScene(); sc != nil {
+	if a.sink != nil {
+		a.sink.EmitViewerPayload(js)
+		return
+	}
+	a.wire.EmitViewerPayload(js)
+}
+
+func (w *Wire) EmitViewerPayload(js string) {
+	if sc := w.srv.ActiveScene(); sc != nil {
 		_ = sc.Emit(map[string]any{viewerLeaf: js})
 	}
 }
+
+// ViewerCredentials reuses room resolution, deduplication and token rotation
+// for native sinks without constructing an LSDP/1 server.
+type ViewerCredentials struct{ armer *viewerArmer }
+
+func NewViewerCredentials(ctx context.Context, fetch CredsFetcher, refresh time.Duration, logger *slog.Logger, sink interface{ EmitViewerPayload(string) }) *ViewerCredentials {
+	a := &viewerArmer{sink: sink, fetch: fetch, refresh: refresh, logger: logger, ctx: ctx, dirty: make(chan struct{}, 1), peers: map[string]struct{}{}}
+	go a.loop()
+	return &ViewerCredentials{armer: a}
+}
+func (v *ViewerCredentials) SetPeers(labels []string) { v.armer.setPeers(labels) }
 
 // replay re-applies the last-emitted payload onto a freshly-activated scene so
 // the viewer creds persist across a scene switch (called from SetActive after

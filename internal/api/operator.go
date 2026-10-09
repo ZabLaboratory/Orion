@@ -6,8 +6,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"sort"
-	"strings"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
 
@@ -25,12 +23,9 @@ import (
 // a value INTO a running graph at the antenna, never a read-only surface
 // (the pending listing is operator-only too: it reveals the live UI prompts).
 //
-// ACTIVE-ONLY (ADR 008 invariant): all three operate against the live
-// antenna ONLY. A blueprint that is not part of the active scene is
-// dormant — its entrypoints cannot be called and its awaits do not exist —
-// answered 409 (call) / 410 (resolve) / empty (pending). This matches ADR
-// Orion 008: only the active scene executes, so only its operator surface
-// is live.
+// ACTIVE-ONLY: scene gestures address the selected Preview/Program slot;
+// rule gestures address an enabled global rule. Dormant entrypoints fail
+// closed (409 call, 410 resolve, empty pending list).
 //
 // ENGINE B (ORION-OPERATOR-RAIL-ENGINE-B #335, extended by
 // ORION-OPERATOR-PREVIEW-ENGINE-B): all three routes now target
@@ -45,9 +40,8 @@ import (
 // not PreviewSlot. Routing target=preview through Engine A therefore read a
 // slot nothing filled: every preview operator gesture 409/410'd
 // (BLUEPRINT_NOT_ACTIVE / AWAIT_GONE) even with a scene genuinely prepared
-// in preview. Only ?rule= (a stream-level rule selector) still resolves
-// through Show (Engine A) — see isEngineBRouted's doc for why that one
-// selector does not move.
+// in preview. Rule selectors address the independent Engine B RulePlane
+// when configured; legacy Show-backed fixtures retain compatibility.
 //
 // PreviewSlot/deps.Preview and POST /show/preview-active-scene are left in
 // place by this change (not this work unit's call to retire — a possible
@@ -169,26 +163,9 @@ func resolveOperatorScene(w http.ResponseWriter, deps PublicDeps, r *http.Reques
 	return scene, true
 }
 
-// isEngineBRouted reports whether r has no stream-rule selector — the only
-// case that decides Engine A vs Engine B for call/resolve/pending. Both the
-// antenna (no ?target, or any value but "preview") and the cockpit preview
-// (?target=preview) now route through Engine B (bluehost.Host) — see
-// engineBSlot for which slot. Only ?rule={rule_id} stays on Engine A
-// (runtime.Scene, resolveOperatorScene's Show.StreamRuleScene lookup):
-// stream-level rules capacity is paused (#15/#331: HTTP surface + handlers
-// removed with internal/store) and its successor — composing a rule INTO
-// the program a flow serves — is tracked but not yet built (Orion#332 R6
-// ledger + ZabCanvas durability). Engine B has no rule concept to route to
-// today, so leaving ?rule= on Engine A's (structurally empty in prod)
-// registry is the coherent choice: it degrades to a deterministic 409
-// RULE_NOT_ACTIVE, exactly the "no caller regression" posture public.go's
-// route-registration comment already documents, without inventing a new
-// slot/state on the Engine B side.
-//
-// ?rule and ?target=preview remain mutually exclusive (resolveOperatorScene
-// writes 400 SELECTOR_CONFLICT) — unchanged by this function's widened
-// scope, since a non-empty ?rule always short-circuits here regardless of
-// ?target.
+// isEngineBRouted selects the scene Host after the RulePlane branch has
+// priority. Program and Preview use independent native slots. A rule selector
+// never falls through to a scene; unconfigured legacy callers resolve via Show.
 func isEngineBRouted(r *http.Request) bool {
 	return r.URL.Query().Get("rule") == ""
 }
@@ -230,10 +207,8 @@ const (
 // This function only recognizes the two kinds; it does not decide which
 // engine or slot serves them — engineBSlot maps a validated kind to the
 // bluehost.Host slot for the three Engine-B routes (call/resolve/pending);
-// getCockpitContracts maps the same kind to its own two engines (its
-// ?target=preview leg is still Engine A, deps.Preview — see that function's
-// doc for why that is dead code in production today and deliberately out of
-// this work unit's scope to re-route).
+// getCockpitContracts maps the same kind to the same Host slots. Legacy
+// Preview is consulted only when the native Host is absent.
 func resolveTargetKind(w http.ResponseWriter, r *http.Request) (targetKind, bool) {
 	switch r.URL.Query().Get("target") {
 	case "":
@@ -347,11 +322,16 @@ func postOperatorCallRule(w http.ResponseWriter, r *http.Request, deps PublicDep
 	if !ok {
 		return
 	}
-	if _, err := plane.Call(ruleID, entrypointID, payload); err != nil {
-		writeOperatorError(w, http.StatusInternalServerError, "INTERNAL", "stream rule call failed")
+	result, err := plane.Call(ruleID, entrypointID, payload)
+	if err != nil {
+		writeOperatorExecutionError(w, err, "stream rule call failed")
 		return
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "fired"})
+	if err := flushNativeDelivery(r.Context(), deps, false); err != nil {
+		writeOperatorError(w, http.StatusServiceUnavailable, "NATIVE_DELIVERY_FAILED", "stream rule effects were not acknowledged by the native receiver")
+		return
+	}
+	writeOperatorExecution(w, http.StatusAccepted, "fired", result)
 }
 
 func postOperatorResolveRule(w http.ResponseWriter, deps PublicDeps, r *http.Request, blueprintID, awaitName string, rawValue json.RawMessage) {
@@ -367,16 +347,20 @@ func postOperatorResolveRule(w http.ResponseWriter, deps PublicDeps, r *http.Req
 	if !ok {
 		return
 	}
-	_, err := plane.Resolve(ruleID, awaitName, value)
+	result, err := plane.Resolve(ruleID, awaitName, value)
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+		if err := flushNativeDelivery(r.Context(), deps, false); err != nil {
+			writeOperatorError(w, http.StatusServiceUnavailable, "NATIVE_DELIVERY_FAILED", "stream rule effects were not acknowledged by the native receiver")
+			return
+		}
+		writeOperatorExecution(w, http.StatusOK, "resolved", result)
 	case isBlueRuntimeCode(err, "AWAIT_TYPE_MISMATCH"):
 		writeOperatorError(w, http.StatusUnprocessableEntity, "VALUE_TYPE_MISMATCH", "value does not match the await's value_type")
 	case isBlueRuntimeCode(err, "EVENT_MALFORMED"), errors.Is(err, bluehost.ErrRuleNotActive):
 		writeOperatorError(w, http.StatusGone, "AWAIT_GONE", "no live await by that name (already resolved or invalidated)")
 	default:
-		writeOperatorError(w, http.StatusInternalServerError, "INTERNAL", "resolve failed")
+		writeOperatorExecutionError(w, err, "resolve failed")
 	}
 }
 
@@ -499,45 +483,44 @@ func postOperatorCallEngineB(w http.ResponseWriter, r *http.Request, deps Public
 	}
 	result, err := host.Call(slot, entrypointID, payload)
 	if err != nil {
-		writeOperatorError(w, http.StatusInternalServerError, "INTERNAL", "call failed")
+		writeOperatorExecutionError(w, err, "call failed")
 		return
 	}
 	if deps.Logger != nil {
-		outputKeys := make([]string, 0, len(result.Outputs))
-		outputSample := make(map[string]any)
-		for key := range result.Outputs {
-			outputKeys = append(outputKeys, key)
-			if strings.HasSuffix(key, ".champ") || strings.HasSuffix(key, ".name") {
-				outputSample[key] = result.Outputs[key]
-			}
-		}
-		sort.Strings(outputKeys)
-		deps.Logger.Info("engine b operator call completed",
+		deps.Logger.Info("engine b operator dispatch returned",
 			"slot", slot,
 			"entrypoint_id", entrypointID,
 			"runtime_sequence", result.RuntimeSequence,
 			"output_count", len(result.Outputs),
-			"output_keys", outputKeys,
-			"output_sample", outputSample,
 			"variable_count", len(result.Variables),
 			"invocation_count", len(result.Invocations),
 		)
 	}
 	// The production stateless path owns a bridge for every scene slot. A
-	// direct forward is required here: the runtime result contains the LSML
-	// mutations caused by LEC, while the periodic bridge tick may have no
+	// direct forward is required here: the runtime result contains immediate
+	// scene outputs, while the periodic bridge tick may have no
 	// output to repeat. Keep old no-wire fixtures compatible, but never report
 	// success when the production bridge exists and cannot project the result.
+	if !forwardOperatorResult(w, r, deps, slot, bluewire.StepResult{RuntimeSequence: result.RuntimeSequence, Outputs: result.Outputs}) {
+		return
+	}
+	writeOperatorExecution(w, http.StatusAccepted, "fired", result)
+}
+
+// Calls and resolved awaits both return immediate outputs that a later tick
+// need not repeat. Publish those outputs before acknowledging either action.
+func forwardOperatorResult(w http.ResponseWriter, r *http.Request, deps PublicDeps, slot bluehost.Slot, result bluewire.StepResult) bool {
 	if deps.SceneIntent != nil && deps.SceneIntent.Bridges != nil {
-		if err := deps.SceneIntent.Bridges.Forward(slot, bluewire.StepResult{
-			RuntimeSequence: result.RuntimeSequence,
-			Outputs:         result.Outputs,
-		}); err != nil {
+		if err := deps.SceneIntent.Bridges.Forward(slot, result); err != nil {
 			writeOperatorError(w, http.StatusServiceUnavailable, "PROJECTION_FAILED", err.Error())
-			return
+			return false
 		}
 	}
-	writeJSON(w, http.StatusAccepted, map[string]string{"status": "fired"})
+	if err := flushNativeDelivery(r.Context(), deps, false); err != nil {
+		writeOperatorError(w, http.StatusServiceUnavailable, "NATIVE_LSDP_DELIVERY_FAILED", err.Error())
+		return false
+	}
+	return true
 }
 
 // postOperatorResolveEngineB serves the Engine B leg of POST
@@ -550,7 +533,7 @@ func postOperatorCallEngineB(w http.ResponseWriter, r *http.Request, deps Public
 // (runtime.go: "Resolving an unparked/already-resolved name is reported,
 // not silently dropped" — EVENT_MALFORMED) — no pre-check equivalent to
 // HasTrigger is needed here.
-func postOperatorResolveEngineB(w http.ResponseWriter, deps PublicDeps, slot bluehost.Slot, awaitName string, rawValue json.RawMessage) {
+func postOperatorResolveEngineB(w http.ResponseWriter, r *http.Request, deps PublicDeps, slot bluehost.Slot, awaitName string, rawValue json.RawMessage) {
 	host := engineBHost(deps)
 	live := host != nil && host.Digest(slot) != ""
 	if !live {
@@ -562,10 +545,13 @@ func postOperatorResolveEngineB(w http.ResponseWriter, deps PublicDeps, slot blu
 	if !ok {
 		return
 	}
-	_, err := host.Resolve(slot, awaitName, value)
+	result, err := host.Resolve(slot, awaitName, value)
 	switch {
 	case err == nil:
-		writeJSON(w, http.StatusOK, map[string]string{"status": "resolved"})
+		if !forwardOperatorResult(w, r, deps, slot, bluewire.StepResult{RuntimeSequence: result.RuntimeSequence, Outputs: result.Outputs}) {
+			return
+		}
+		writeOperatorExecution(w, http.StatusOK, "resolved", result)
 	case isBlueRuntimeCode(err, "AWAIT_TYPE_MISMATCH"):
 		writeOperatorError(w, http.StatusUnprocessableEntity, "VALUE_TYPE_MISMATCH",
 			"value does not match the await's value_type")
@@ -573,7 +559,7 @@ func postOperatorResolveEngineB(w http.ResponseWriter, deps PublicDeps, slot blu
 		writeOperatorError(w, http.StatusGone, "AWAIT_GONE",
 			"no live await by that name (already resolved or invalidated)")
 	default:
-		writeOperatorError(w, http.StatusInternalServerError, "INTERNAL", "resolve failed")
+		writeOperatorExecutionError(w, err, "resolve failed")
 	}
 }
 
@@ -653,8 +639,8 @@ func postOperatorCall(deps PublicDeps) http.HandlerFunc {
 // unloaded slot. blueprint_id plays no role on this leg, matching
 // call/resolve's "accepted but not routed on" stance.
 //
-// ?rule={rule_id}: unchanged, resolves through Engine A's promoted-rule
-// registry exactly as before this change.
+// A rule selector resolves through the global RulePlane when configured,
+// otherwise through the retained legacy fixture registry.
 func getRuntimePending(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("rule") != "" && deps.StreamRules != nil {
@@ -730,7 +716,7 @@ func postOperatorResolve(deps PublicDeps) http.HandlerFunc {
 			if !ok {
 				return
 			}
-			postOperatorResolveEngineB(w, deps, engineBSlot(kind), awaitName, body.Value)
+			postOperatorResolveEngineB(w, r, deps, engineBSlot(kind), awaitName, body.Value)
 			return
 		}
 

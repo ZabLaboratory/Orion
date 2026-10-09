@@ -2,7 +2,6 @@ package main
 
 import (
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
-	"github.com/ZabLaboratory/Orion/internal/lsdp"
 )
 
 // cameraSlotMirror fans one editor projection into the two non-Pulsar
@@ -14,7 +13,7 @@ type cameraSlotMirror struct {
 	mirrors []bluehost.SlotAssignmentMirror
 }
 
-func newCameraSlotMirror(preview, antenne *lsdp.Wire) bluehost.SlotAssignmentMirror {
+func newCameraSlotMirror(preview, antenne bluehost.SlotAssignmentMirror) bluehost.SlotAssignmentMirror {
 	mirrors := make([]bluehost.SlotAssignmentMirror, 0, 2)
 	if preview != nil {
 		mirrors = append(mirrors, preview)
