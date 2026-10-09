@@ -386,7 +386,16 @@ func run() error {
 			// the legacy Show-backed path.
 			sceneIntent.MirrorFor = sceneIntentMirrorFor(lsdpWires{preview: previewWire, antenne: antenneWire, generation: generationWires})
 			sceneIntent.WireFlush = nativeFlush
-			sceneIntent.Activate = sceneIntentActivate(lsdpWires{preview: previewWire, antenne: antenneWire, generation: generationWires})
+			activateWire := sceneIntentActivate(lsdpWires{preview: previewWire, antenne: antenneWire, generation: generationWires})
+			sceneIntent.Activate = func(sceneID, version string, slot bluehost.Slot) {
+				if slot == bluehost.SlotPreview {
+					previewSlot.ReleasePreview(sceneID)
+				}
+				if slot == bluehost.SlotOnAir {
+					previewSlot.ReleaseEditableAir()
+				}
+				activateWire(sceneID, version, slot)
+			}
 			sceneIntent.EmitRoster = sceneIntentEmitRoster(lsdpWires{preview: previewWire, antenne: antenneWire})
 			sceneIntent.Bridges = bluewire.NewRegistry()
 			sceneIntent.BeginLaneTransition = func(slot bluehost.Slot) func(bool) {

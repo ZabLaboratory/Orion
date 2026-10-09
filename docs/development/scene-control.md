@@ -67,3 +67,16 @@ restaure pas les derniers résultats dynamiques Blue.
 
 L'intégration d'un émetteur Prism reste hors de ce changement. Le contrat est
 déjà consommable par un client LSDP local autorisé. Aucune modification Prism.
+
+## Editable Preview lifetime
+
+Preview owns one current authoring clone. A regular scene activation or an
+external Blue Preview commit releases the prior authoring runtime and its wire
+entry. Returning to that scene admits a fresh authoritative head; the legacy
+activate endpoint only validates an already-current head and cannot restore an
+inactive scene. Current leaf edits retain ordered LSDP delivery.
+
+An explicitly promoted on-air generation is a separate active consumer. At most
+one such editable clone is retained; its replacement stops the former Program
+runtime. Preview switches never stop that active Program generation. Shutdown
+stops both owners once. Tests: internal/runtime/preview_editable_test.go.

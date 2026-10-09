@@ -1,0 +1,19 @@
+{
+  "owner": "Eleven",
+  "mandate": "Audit, sans ADR, sans agent, sans Computer Use. Aucun correctif produit dans cet incrément.",
+  "path": "D:/Documents/Zab/Orion/.worktrees/eleven-local-20261009-capability-audit",
+  "branch": "eleven/local-20261009-capability-audit",
+  "HEAD": "7f13e85f487e2bbfbcac304d29ecf36276197b0e",
+  "files": [
+    "?? .cache/",
+    "?? evidence/local-20261009-capability-audit/"
+  ],
+  "validation": {
+    "passedTestsAndSubtests": 1829,
+    "packages": 22,
+    "failed": 0,
+    "race": "non exécuté"
+  },
+  "remaining": "Correctifs non implémentés. Preuves et copies sources conservées dans les worktrees attribués, sans intégration Git. Préserver les sessions actives et ces preuves non intégrées.",
+  "aggregate": "D:\\Documents\\Zab\\Prism\\.worktrees\\eleven-local-20261009-capability-audit\\evidence\\local-20261009-capability-audit\\eleven\\20261009T090000Z-audit-report.json"
+}
