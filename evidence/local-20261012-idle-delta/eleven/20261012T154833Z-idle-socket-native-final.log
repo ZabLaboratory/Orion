@@ -1,0 +1,6 @@
+=== RUN   TestIdleSocketRecoveryNative
+    idle_recovery_native_test.go:64: CLOSED_SOCKET_TIMING {"configured_backoff_ms":250,"native_value_verified":true,"producer_ack_ms":1.058,"status":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":2},"step":0}
+    idle_recovery_native_test.go:64: CLOSED_SOCKET_TIMING {"configured_backoff_ms":250,"native_value_verified":true,"producer_ack_ms":0.776,"status":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":3},"step":1}
+--- PASS: TestIdleSocketRecoveryNative (0.01s)
+PASS
+ok  	github.com/ZabLaboratory/Orion/internal/lsdpreception	1.258s
