@@ -113,6 +113,10 @@ func (c *SceneControl) Run(ctx context.Context) error {
 		go func(lane string, queue chan SceneSelection) { defer workers.Done(); c.lane(ctx, lane, queue) }(lane, queue)
 	}
 	defer workers.Wait()
+	// Observation writes and reconnect snapshots are not new selection intent.
+	// Keep failed attempts admitted once as well: otherwise their own failed
+	// observation schedules another attempt and creates an unbounded write loop.
+	lastDesired := map[string]SceneSelection{}
 	c.reception.Watch(ctx, "orion/state", func(state any) {
 		root, _ := state.(map[string]any)
 		raw, err := json.Marshal(root["scene_control"])
@@ -133,7 +137,16 @@ func (c *SceneControl) Run(ctx context.Context) error {
 				}
 			}
 		}
+		for lane := range lastDesired {
+			if _, exists := d.Defaults.Desired[lane]; !exists {
+				delete(lastDesired, lane)
+			}
+		}
 		for lane, selection := range d.Defaults.Desired {
+			if previous, exists := lastDesired[lane]; exists && previous == selection {
+				continue
+			}
+			lastDesired[lane] = selection
 			queue := queues[lane]
 			select {
 			case queue <- selection:

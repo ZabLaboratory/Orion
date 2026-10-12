@@ -26,7 +26,8 @@ identity contract. `scene_intent_source_test.go` checks distinct identities and
 refuses mismatched source/revision even with a correct manifest transport digest.
 
 `scene_control.go` watches `/scene_control` in native `orion/state`. Only a
-changed desired selection starts an activation; observed updates/reconnects do
+changed desired selection starts an activation; failed admissions wait for a
+changed desired identity instead of retrying on their own observations. Observed updates/reconnects do
 not replay on-start. Each lane cancels and joins its predecessor before replacing
 it. Only desired selection is saved to Orion's owned `selection.lsml`; live
 mutated scene documents and runtime observations stay in RAM. On startup, absent

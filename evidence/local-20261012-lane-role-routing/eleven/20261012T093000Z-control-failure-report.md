@@ -1,0 +1,13 @@
+# Failed selection feedback loop
+
+Continuation in Orion/.worktrees/eleven-local-20261012-lane-role-routing, branch eleven/local-20261012-lane-role-routing, previous HEAD775f623b1dbb6f9b4e9d1563b6bab2335d213376. The common Prism test exposed repeated BASE_MISMATCH while applying lane_commit; native state contained a persisted desired Program and observed failed SCENE_CATALOG_UNAVAILABLE.
+
+SceneControl.Run previously queued every desired lane on every native notification. A failed catalog selection wrote preparing then failed, never set successful current, and thereby triggered itself again via its own observed writes. selection.lsml is only seeded at boot; the feedback loop was in the native watcher, not continuous disk reload.
+
+The watcher now queues each changed desired identity once, including failed admissions. Observed-only writes and reconnect snapshots do not retry failed intent. Removing a desired identity forgets it, so a later newly added identity may be admitted. Role commit still reconciles actual Sources/current/desired before queue comparison and never performs another admission. README documents this existing intended contract. No scene cache or runtime guard was disabled.
+
+New packaged executable .cache/orion-lane-routing-packaged.exe SHA25648ecd40ce06b6dc34d5125c9a85de70e186026a220c71a94136c8369eebe4045 supersedes E596. Normal pinned Blue SDK and standard packaging ldflags preserved. Actual private executable HTTP descriptor returned digest sha256:d377fa500620d9f9e1e4c725f97414a24e28dfff3fcda3b0f701fd5d89b25c41 and revisionff8b1dde0bad4f53e876651a0e0748cca3e9f622; graceful private shutdown0.
+
+Native Rust proof passed TestSceneControlFailedSelectionDoesNotLoopNative: absent catalog admits one failed attempt; four unrelated observed writes plus250ms do not change activation_id; changed desired version admits one new failed attempt, stable after another250ms. TestLaneCommitNative still passes the two mixed Blue/editable role transfers and isolation contract. Tests use only a disposable private receiver and synthetic sources; no common process control, physical capture, microphone, stream or recording. Go all packages and git diff --check pass. Native/descriptor/regression logs use the same20261012T093000Z prefix.
+
+This removes an observed uncontrolled writer. It does not prove every common BASE_MISMATCH was caused by that writer; coordinator Main1 additionally verifies native hash/error transport and owns real installation/restart, rendering and final three-Take qualification. Keep active worktrees and binaries while consumed by that integration.
