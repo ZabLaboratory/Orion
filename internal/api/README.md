@@ -118,6 +118,8 @@ and author sequence remain coherent; it publishes no mutation or snapshot.
 It never activates, compiles or retrieves an inactive actor. Embedded/operator
 guards remain mandatory. Service socket packets may explicitly bind the same
 target/scene/writer; omitted fields retain the warm Preview component contract.
+The compatibility `/air` generation actor is not a physical Program author;
+only the native Take or replacement on the active Program establishes that role.
 
 `editable_targets.go` owns target validation, active read-back and delivery;
 `runtime/editable_targets.go` owns actor selection and structural fencing under

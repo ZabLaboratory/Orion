@@ -28,6 +28,9 @@ func (p *PreviewSlot) SetEditableProgramWire(wire PreviewWire) {
 
 func (p *PreviewSlot) editableTargetLocked(target string) *previewClone {
 	if target == "program" {
+		if !p.nativeAir {
+			return nil
+		}
 		return p.airCurrent
 	}
 	if target == "preview" {

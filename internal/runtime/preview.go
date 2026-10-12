@@ -85,6 +85,7 @@ type PreviewSlot struct {
 	current *previewClone
 	// Only the current Preview and an explicitly active on-air generation live.
 	airCurrent *previewClone
+	nativeAir  bool
 	effects    *SceneEffects
 	// editableAir is deliberately separate from the persistent Preview wire.
 	// A promotion adds a generation mirror to the clone's fan-out; it never
@@ -263,6 +264,7 @@ func (p *PreviewSlot) activateLocked(target, sceneID string, graph *compiler.Gra
 	if target == "program" {
 		next.airPromoted = true
 		p.airCurrent = next
+		p.nativeAir = true
 	} else {
 		p.current = next
 	}
@@ -364,6 +366,7 @@ func (p *PreviewSlot) PromoteEditable(sceneID, owner string) (string, error) {
 		p.airCurrent.scene.Stop()
 	}
 	p.airCurrent = clone
+	p.nativeAir = false
 	clone.airPromoted = true
 	return version, nil
 }
@@ -406,6 +409,7 @@ func (p *PreviewSlot) ReleaseEditableAir() {
 		p.airCurrent.scene.Stop()
 	}
 	p.airCurrent = nil
+	p.nativeAir = false
 }
 
 // ApplyEditablePatches queues one atomic hot edit on the live preview clone.
@@ -565,6 +569,7 @@ func (p *PreviewSlot) Close() {
 	}
 	p.current = nil
 	p.airCurrent = nil
+	p.nativeAir = false
 }
 
 func cloneEditableAssets(source map[string][]byte) map[string][]byte {

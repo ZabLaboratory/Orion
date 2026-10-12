@@ -87,3 +87,22 @@ func TestEditableSnapshotFencesRoleSwapWithoutEditableActors(t *testing.T) {
 		t.Fatal("stale snapshot followed new physical role", err, called)
 	}
 }
+
+func TestLegacyEditableGenerationIsNotNativeProgramAuthor(t *testing.T) {
+	p := NewPreviewSlot(context.Background(), NewComputeRegistry(), &editablePreviewWire{out: make(chan SubscriberMsg, 16)}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	p.SetEditableProgramWire(&editablePreviewWire{out: make(chan SubscriberMsg, 16)})
+	p.SetEditableAirWire(&editableAirWire{out: make(chan SubscriberMsg, 16)})
+	defer p.Close()
+	g := &compiler.Graph{SceneID: "a", SceneVersion: "v1"}
+	p.ActivateEditableWithBundle("a", g, &compiler.RenderBundle{SceneVersion: "v1"}, 0, []byte(`{"scene_id":"a"}`))
+	if _, err := p.PromoteEditable("a", "legacy-generation"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := p.EditableTargetHead("program"); ok {
+		t.Fatal("generation exposed as physical Program")
+	}
+	p.ReleasePreview()
+	if _, _, err := p.EditableTargetState(context.Background(), "program", "a"); !errors.Is(err, ErrPreviewSceneMismatch) {
+		t.Fatal("generation read as active Program", err)
+	}
+}
