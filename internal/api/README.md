@@ -112,7 +112,9 @@ active `scene_id` and `writer_id`; a structural POST also requires
 writer ID. A Take preserves writer ID and sequence. Compiled snapshots are fenced
 against concurrent edits and physical role changes before Host or mirror mutation.
 `GET /api/v1/show/editable-preview/state?scene_id=...&target=...` returns only the
-active editable identity, version, edit sequence and writer ID, with `no-store`.
+active editable identity, version, edit sequence, writer ID and live `defaults`,
+with `no-store`. The read pins its lane and drains accepted actor inputs so values
+and author sequence remain coherent; it publishes no mutation or snapshot.
 It never activates, compiles or retrieves an inactive actor. Embedded/operator
 guards remain mandatory. Service socket packets may explicitly bind the same
 target/scene/writer; omitted fields retain the warm Preview component contract.

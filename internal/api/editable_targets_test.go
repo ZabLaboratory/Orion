@@ -74,6 +74,21 @@ func TestEditableSocketContinuesSameWriterOnProgramAfterTake(t *testing.T) {
 		t.Fatal(err)
 	}
 	finish(true)
+	for _, tc := range []struct {
+		query, role string
+		want        int
+	}{{"target=program&scene_id=a", "operator", http.StatusOK}, {"target=preview&scene_id=a", "operator", http.StatusConflict}, {"target=program&scene_id=retired", "operator", http.StatusConflict}, {"target=invalid&scene_id=a", "operator", http.StatusBadRequest}, {"target=program&scene_id=a", "", http.StatusForbidden}} {
+		r := httptest.NewRequest(http.MethodGet, "/api/v1/show/editable-preview/state?"+tc.query, nil)
+		if tc.role != "" {
+			r.Header.Set("X-Authenticated-User", "operator-1")
+			r.Header.Set("X-Authenticated-Role", tc.role)
+		}
+		out := httptest.NewRecorder()
+		mux.ServeHTTP(out, r)
+		if out.Code != tc.want {
+			t.Fatal("active read-back guard", tc, out.Code, out.Body.String())
+		}
+	}
 	if ack := send("program", head.WriterID, 5, 6); ack["type"] != "ack" || ack["target"] != "program" || ack["observer_count"] != float64(0) {
 		t.Fatal(ack)
 	}

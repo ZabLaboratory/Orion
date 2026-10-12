@@ -206,6 +206,15 @@ func TestLaneCommitNative(t *testing.T) {
 	if aNow.(map[string]any)["defaults"].(map[string]any)["__editable.width"] != float64(32) {
 		t.Fatal("Program patch did not reach native A", aNow)
 	}
+	readResponse = httptest.NewRecorder()
+	mux.ServeHTTP(readResponse, readRequest)
+	var readState struct {
+		EditSeq  uint64                     `json:"edit_seq"`
+		Defaults map[string]json.RawMessage `json:"defaults"`
+	}
+	if readResponse.Code != http.StatusOK || json.Unmarshal(readResponse.Body.Bytes(), &readState) != nil || readState.EditSeq != 1 || string(readState.Defaults["__editable.width"]) != "32" {
+		t.Fatal("active defaults do not match applied Program", readResponse.Body.String())
+	}
 	bBaseline, _ := json.Marshal(bNow)
 	patch["target"] = "preview"
 	patch["base_edit_seq"] = 1

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 )
 
@@ -52,6 +53,30 @@ func (p *PreviewSlot) EditableTargetSnapshot(target string) (EditableSnapshot, b
 	defer p.mu.Unlock()
 	cur := p.editableTargetLocked(target)
 	return EditableSnapshot{editableHead(cur), p.roleEpoch}, cur != nil && cur.editable
+}
+
+// EditableTargetState waits for accepted actor inputs before returning its live
+// defaults. Callers pin the Host lane against writes/Take during this read.
+func (p *PreviewSlot) EditableTargetState(ctx context.Context, target, sceneID string) (EditableHead, map[string]json.RawMessage, error) {
+	p.mu.Lock()
+	cur := p.editableTargetLocked(target)
+	if cur == nil || cur.sceneID != sceneID || !cur.editable {
+		p.mu.Unlock()
+		return EditableHead{}, nil, ErrPreviewSceneMismatch
+	}
+	head := editableHead(cur)
+	epoch := p.roleEpoch
+	p.mu.Unlock()
+	if err := cur.scene.Flush(ctx); err != nil {
+		return EditableHead{}, nil, err
+	}
+	_, _, state := cur.scene.SnapshotState()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.editableTargetLocked(target) != cur || editableHead(cur) != head || p.roleEpoch != epoch {
+		return EditableHead{}, nil, ErrPreviewEditSequence
+	}
+	return head, state, nil
 }
 
 // ReplaceEditableTarget fences compilation against the actor and sequence read

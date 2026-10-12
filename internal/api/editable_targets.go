@@ -48,13 +48,21 @@ func getEditableTargetState(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_TARGET"})
 			return
 		}
-		head, editable := deps.Preview.EditableTargetHead(target)
 		id := r.URL.Query().Get("scene_id")
-		if !editable || id == "" || id != head.SceneID {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		release, err := acquireEditableCommit(ctx, deps, target)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "SCENE_CHANGING"})
+			return
+		}
+		defer release()
+		head, defaults, err := deps.Preview.EditableTargetState(ctx, target, id)
+		if err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"code": "EDITABLE_PREVIEW_CONFLICT"})
 			return
 		}
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, map[string]any{"target": target, "scene_id": head.SceneID, "scene_version": head.SceneVersion, "edit_seq": head.EditSeq, "writer_id": head.WriterID})
+		writeJSON(w, http.StatusOK, map[string]any{"target": target, "scene_id": head.SceneID, "scene_version": head.SceneVersion, "edit_seq": head.EditSeq, "writer_id": head.WriterID, "defaults": defaults})
 	})
 }
