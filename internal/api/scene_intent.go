@@ -18,6 +18,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
+	"github.com/ZabLaboratory/Orion/internal/lsdpreception"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 	"io"
@@ -155,6 +156,7 @@ type SceneIntentDeps struct {
 	WireFlush           func(context.Context) error
 	PresentScene        ScenePresenter
 	BeginLaneTransition func(bluehost.Slot) func(bool)
+	CommitLaneRoles     func(context.Context, lsdpreception.LaneCommit) lsdpreception.LaneCommitReceipt
 	// Bridges tracks the running bridge per bluehost.Slot so a superseding
 	// Take (or a re-Prepare) stops the previous one instead of leaking a
 	// goroutine stepping an instance the Host has already released.
@@ -180,6 +182,9 @@ type SceneIntentDeps struct {
 	// verification for the same signed digest and exact raw bytes. Nil keeps
 	// tests and minimal embedders on the uncached fail-closed path.
 	ProgramVerificationCache *VerifiedProgramCache
+	// ObservePresentationPhase reports local phase durations without changing
+	// admission, presentation receipts or compensation semantics.
+	ObservePresentationPhase func(string, time.Duration)
 }
 
 // sceneIntentRequest is the slice of `orion.scene-intent.v1` (§6.4) this
@@ -450,7 +455,13 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			}
 		}
 		markPhase("verification")
-		if err := replaceAdmittedScene(ctx, deps, slot, claims, req, artifacts, bundle, staticState); err != nil {
+		presentationDeps := deps
+		if deps.EmbeddedLocal {
+			presentationDeps.ObservePresentationPhase = func(name string, duration time.Duration) {
+				w.Header().Add("Server-Timing", fmt.Sprintf("%s;dur=%.3f", name, float64(duration.Microseconds())/1000))
+			}
+		}
+		if err := replaceAdmittedScene(ctx, presentationDeps, slot, claims, req, artifacts, bundle, staticState); err != nil {
 			reason := "NATIVE_LSDP_DELIVERY_FAILED"
 			if strings.Contains(err.Error(), "HOST_PREPARE_FAILED") {
 				reason = "HOST_PREPARE_FAILED"

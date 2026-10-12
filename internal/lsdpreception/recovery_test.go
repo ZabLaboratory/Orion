@@ -39,6 +39,11 @@ func TestProducerRecoversWithoutDroppingOrChangingTransaction(t *testing.T) {
 			return nil, io.EOF
 		}
 		return recoveryClient{exchange: func(request any) (json.RawMessage, error) {
+			value := request.(map[string]any)
+			if value["kind"] == "route.forget" {
+				reply, _ := json.Marshal(map[string]any{"status": "forgotten", "id": value["id"]})
+				return reply, nil
+			}
 			raw, _ := json.Marshal(request)
 			mu.Lock()
 			defer mu.Unlock()
@@ -47,7 +52,8 @@ func TestProducerRecoversWithoutDroppingOrChangingTransaction(t *testing.T) {
 			if len(attempts) == 1 {
 				return nil, io.EOF
 			}
-			return json.RawMessage(`{"status":"completed"}`), nil
+			reply, _ := json.Marshal(map[string]any{"status": "completed", "id": value["id"]})
+			return reply, nil
 		}}, nil
 	}
 	p.Replace("solar/program", map[string]any{"value": "one"})

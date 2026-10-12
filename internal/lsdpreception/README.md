@@ -16,8 +16,22 @@ Transport interruptions retain queued outputs and replay the same transaction
 until the receiver responds or Orion shuts down. A verified success clears the
 transient readiness error. An uncertain commit followed by BASE_MISMATCH is
 terminal: it is never rebased into a potentially duplicated insertion.
+The native router retains each full assignment and its replay payload until its
+owner releases the completed record. Both `Producer` and `Reception.Replace`
+validate the exact completed route ID, then call `route.forget` with `force:false`.
+After completion, a lost release receipt retries only the release; `unknown` is
+an idempotent success. Replaying an already forgotten assignment could overwrite
+a newer edit. Unconfirmed/rejected routes are never released. This bounds retained
+router memory without increasing native quotas or removing another writer's records.
 `/runtime/host-surface.native_delivery` exposes backlog/reconnect/delivery counts.
 See `docs/runbooks/native-recovery.md` for process-restart limits.
+
+Editable scene resources include `x-solar-authoring` (`solar.authoring/1`):
+the immutable base, content-addressed non-font assets and font digests arrive by LSDP.
+Font bytes remain in the installation/host font bank; scene changes do not resend them.
+Only live root defaults change on edits; the base is preserved. Solar presentation
+feedback also returns through the native `orion/state` resource. No Orion–Solar
+HTTP source endpoint is registered.
 
 `mirror.go` retains the original LSML, including geometry/styles/assets. It
 projects runtime Blue output values only onto authored bindings, using the
@@ -70,7 +84,27 @@ Checks: `go test ./...`, `go vet ./...`; `TestRealSharedNative` and
 CEF proof also runs a real validated Blue output program through `bluewire` and
 the actual Rust receiver. Unit checks alone do not prove CEF or authenticated
 Prism startup.
+`TestRealNativeRouteRetention` requires `ORION_TEST_ROUTE_RETENTION_ADDRESS` for an
+owned disposable node with a 128 KiB routing budget. It first proves `ROUTE_BYTES`
+without release, then verifies 2,048 producer and 128 control replacements in the
+same budget. It must never run against the shared development receiver.
 `internal/api/TestRealNativeOperatorVisual` also invokes LEC and LCK using the
 unaltered program published for the real scene, with actual read-only ZabTruth
 and ZabRanking responses. The CEF report checks each roster, the native receipt,
 submitted Vision frame, full-scene screenshots and retained physical camera.
+
+## Persistent physical lanes
+
+When the native receiver advertises both `solar/lane-a` and `solar/lane-b`,
+startup enables physical routing. Logical Program/Preview Lane handles are stable;
+their targets, active writers and camera/viewer authority permute only on a
+validated `orion.lane-commit.v1` receipt. The Mirror and document remain on their
+physical resource. Commit publishes no full LSML assignment; camera changes are
+absolute leaf transactions. New Preview selection replaces only the outgoing
+physical lane. Legacy resources remain available for older explicit consumers.
+
+`lane_roles.go` owns correlation, revision/role validation, bounded exact replay,
+conflict/stale/runtime/busy refusal and source identities. `lane_roles_test.go`
+checks writer continuity and camera isolation. `api/lane_commit_native_test.go`
+checks receipts and untouched documents with a disposable Rust receiver. Actual
+Solar engine identity and rendered frames require Prism integration evidence.

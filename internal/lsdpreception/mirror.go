@@ -25,10 +25,16 @@ type Hub struct {
 	generations map[string]*Mirror
 	clock       uint64
 	lanes       map[string]*Lane
+	physical    bool
+	roles       RoleMap
+	lastCommit  *LaneCommitReceipt
+	commitCache map[string]LaneCommitReceipt
+	commitOrder []string
 }
 type Lane struct {
 	hub           *Hub
 	target        string
+	role          string
 	active        *Mirror
 	scenes        map[string]*Mirror
 	reserved      map[string]any
@@ -58,7 +64,14 @@ func (h *Hub) Lane(name string) *Lane {
 	if l := h.lanes[name]; l != nil {
 		return l
 	}
-	l := &Lane{hub: h, target: "solar/" + name, scenes: map[string]*Mirror{}, reserved: map[string]any{}}
+	target := "solar/" + name
+	if h.physical && name == "program" {
+		target = physicalTarget(h.roles.OnAir)
+	}
+	if h.physical && name == "preview" {
+		target = physicalTarget(h.roles.Preview)
+	}
+	l := &Lane{hub: h, role: name, target: target, scenes: map[string]*Mirror{}, reserved: map[string]any{}}
 	h.lanes[name] = l
 	return l
 }
@@ -147,7 +160,7 @@ func (h *Hub) MirrorForLSML(sceneID, version, owner string, raw []byte) runtime.
 	h.clock++
 	m := &Mirror{hub: h, key: key, owner: owner, sceneID: sceneID, version: version, document: document, surface: lsdp.RenderSurface(sceneID, raw, h.logger), touched: h.clock}
 	for _, lane := range h.lanes {
-		if ownerMatchesLane(owner, lane.target) {
+		if ownerMatchesLane(owner, "solar/"+lane.role) {
 			for key, value := range lane.reserved {
 				document["defaults"].(map[string]any)[key] = value
 			}
@@ -266,7 +279,7 @@ func (l *Lane) setReserved(key string, value any) {
 		h.producer.Apply(l.target, []map[string]any{{"op": "add", "path": "/defaults/" + pointer(key), "value": value}})
 	}
 	for k, m := range h.generations {
-		if ownerMatchesLane(m.owner, l.target) {
+		if ownerMatchesLane(m.owner, "solar/"+l.role) {
 			m.document["defaults"].(map[string]any)[key] = value
 			h.producer.Apply("solar/generations", []map[string]any{{"op": "add", "path": "/" + k + "/defaults/" + pointer(key), "value": value}})
 		}

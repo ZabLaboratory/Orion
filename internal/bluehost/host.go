@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
 	"github.com/ZabLaboratory/Orion/internal/effects"
@@ -675,19 +676,24 @@ func (h *Host) Call(slot Slot, callID string, payload any) (blueruntime.StepResu
 	instance := e.instance
 	h.mu.Unlock()
 
+	waitStarted := time.Now()
 	h.runtimeMu.Lock()
+	waitDuration := time.Since(waitStarted)
 	if h.executionBlocked(slot, instance) {
 		h.runtimeMu.Unlock()
 		return blueruntime.StepResult{}, ErrSceneChanging
 	}
+	executionStarted := time.Now()
 	result, err := h.runtime.Call(instance, callID, payload)
+	executionDuration := time.Since(executionStarted)
 	h.runtimeMu.Unlock()
 	if err != nil {
 		return result, err
 	}
 	result = normalizeRuntimeOutputs(result)
 	if h.logger != nil {
-		h.logger.Info("blue runtime operator call completed", "slot", slot, "call_id", callID, "status", result.Status, "output_count", len(result.Outputs))
+		h.logger.Info("blue runtime operator call completed", "slot", slot, "call_id", callID, "status", result.Status, "output_count", len(result.Outputs),
+			"runtime_wait_ms", float64(waitDuration.Microseconds())/1000, "runtime_ms", float64(executionDuration.Microseconds())/1000)
 	}
 	h.dispatchInvocations(slot, instance, result.Invocations)
 	h.dispatchShowEmit(slot, instance, result.Variables)

@@ -42,6 +42,19 @@ ticks are gated until acceptance. Cancellation/failure before finalization
 restores the actual old host/bridge/mirror; compensation errors are explicit.
 Global stream rules belong to `internal/streamcontrol` and remain independent.
 
+Prepare carries the accepted LSML root and candidate source. Commit/finalize
+carry the candidate once at the root with only request/phase metadata; a fresh
+Solar can reconstruct that stage without duplicating the full source. Cleanup
+still follows the renderer's matching active receipt before opening the Blue gate.
+Each phase watches accepted native feedback before publishing, eliminating the
+50 ms polling interval. Reception verifies/reconnects that bounded subscription;
+the phase still has its 15 second deadline and reasserts the same absolute source
+each second after interruption. Request, lane, phase and scene/version checks
+remain mandatory, and cleanup cancels and joins the watcher.
+Optional request-local timing callbacks distinguish Blue preparation, Solar
+read/replace/wait/cleanup and bridge flush. HTTP `Server-Timing` contains numeric
+durations only; no source, effect payload, credential or authorization changes.
+
 Tests cover admission and identity, catalog isolation/corruption/expired refs,
 desired-only persistence, staged replacement and compensation. Opt-in
 `TestRealNativeSceneControlVisual` requires real Rust, two CEF Solar renderers,
@@ -82,8 +95,46 @@ probe, simulates a Blue, or checks expected business outputs.
 
 Local editable Preview accepts `render_mode: source-only`: LSML identity and
 canonical content address are verified before installing the isolated clone, with
-no static tree lowering. `GET /api/v1/show/editable-preview/source` is embedded
-operator-only and requires exact scene/version; it returns the immutable LSML base
-and copied embedded assets, including after hot default changes. This authoring
-read does not grant Blue execution or publish a Canvas revision. Empty render mode
+no static tree lowering. The accepted document carries `x-solar-authoring` with
+format `solar.authoring/1`, the immutable `lsml_bundle` base, embedded non-font assets and font digest references.
+These travel atomically on the same native LSDP scene resource for Preview and
+promoted generations. Live default edits remain LSDP mutations. The former HTTP
+source GET is unregistered; Solar does not fetch editable sources from Orion.
+This delivery does not grant Blue execution or publish a Canvas revision. Empty render mode
 retains compatibility compilation; unknown modes fail closed.
+
+## Native lane authority handoff
+
+`lane_commit.go` consumes `/scene_control/defaults/lane_commit` on `orion/state`.
+The parent is the boot-seeded `orion.scene-control.v1` document. Payload fields
+are schema=`orion.lane-commit.v1`, runtime_instance_id, prepare_command_id,
+take_command_id, intent_id, frame_id, pts_ns, server_seq, previous_role_map,
+role_map, previous_revisions, revisions, scene_id and scene_version. Role maps
+use `{on_air:A|B,preview:A|B}`; revisions use `{program,preview,role_map}`.
+Both previous fields come directly from native TakeCommitted, after Prepare.
+scene_version is the accepted source LSML version, distinct from artifact-set.
+
+The response `/scene_control/defaults/observed/lane_commit` repeats the payload
+with status=`committed|refused`, optional reason, physical targets and actual
+sources `{scene_id,scene_version,artifact_set}`. Exact replay also reports
+`replayed:true` without changing authority. Main checks exact correlation before
+opening another preparation. Observe fields are applied atomically with logical
+desired/current reconciliation from the actual mirrors, never a new scene intent.
+Unknown runtime, stale/conflicting commit, busy preparation, mismatched Preview
+or a refused Blue authority transfer cannot silently succeed.
+
+Admission leases cover the two Host slots; bridge loops are cancelled/joined,
+the existing Blue actors re-admitted in their new modes, and their same bridges
+retargeted without Load/Start/Step/on-start. Editable Preview occupies a static
+Host slot and supplies its native mirror to stream-level LSML effects, stopping
+any older Preview Blue actor. Operator and platform-event execution/projection
+share the slot lease so a result cannot cross a simultaneous role transfer.
+Scene control serializes selection and role commit; a busy selection refuses the
+commit. `NativeScenePresenter` fixes the physical target per admission and marks
+all phase wrappers with their logical lane for Solar acknowledgments.
+
+Unit tests live beside these handlers; the opt-in native test requires
+ORION_TEST_PRIVATE_LANE_ADDRESS from an isolated synthetic receiver. It must
+never target the shared Prism runtime. This path covers native signed Blue and
+editable scenes; compatibility Engine A and standalone rule actors retain their
+own execution contracts.

@@ -225,7 +225,7 @@ func (p *Producer) run() {
 			var err error
 			if job.operations == nil {
 				kind := "solar.lsml/1"
-				if job.target != "solar/program" && job.target != "solar/preview" {
+				if !isSolarSceneTarget(job.target) {
 					kind = "orion.state/1"
 				}
 				request = map[string]any{"kind": "route", "id": id, "port": job.target, "type": kind, "payload": job.document}
@@ -295,11 +295,17 @@ func (p *Producer) run() {
 						TransactionID         string `json:"transactionId"`
 					}
 					err = json.Unmarshal(result, &receipt)
-					if err == nil && job.operations == nil && receipt.Status != "completed" {
-						err = fmt.Errorf("NATIVE_ROUTE_INCOMPLETE: %s", receipt.Status)
+					if err == nil && job.operations == nil {
+						err = completedRoute(result, id)
 					}
 					if err == nil && job.operations != nil && (receipt.Level != "applied" || receipt.Target != job.target || receipt.TransactionID != id) {
 						err = errors.New("NATIVE_APPLICATION_NOT_ACKNOWLEDGED")
+					}
+					if err == nil && job.operations == nil {
+						err = forgetCompletedRoute(func(request any) (json.RawMessage, error) {
+							raw, _, releaseErr := p.exchange(&client, request)
+							return raw, releaseErr
+						}, id)
 					}
 				}
 			}

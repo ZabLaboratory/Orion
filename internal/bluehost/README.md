@@ -55,7 +55,21 @@ read this declaration; an empty source interface suppresses legacy controls.
 The initial scene bridge executes one Step before periodic Ticks: Ticks alone
 do not run Blue on-start entrypoints or arm initial operator awaits.
 
+Operator completion diagnostics separate `runtime_wait_ms` (host serialization)
+from `runtime_ms` (the full portable call, including synchronous effects).
+The DB completion diagnostic's `transport_ms` includes authorization and the
+QueryMe round trip; it is not pure database execution time. These numeric fields
+do not alter outputs, effect authority or runtime admission.
+
 Limits: declaration discovery does not add a parameter-write API or a global
 rule parameter interface. Generic invocation adapters do not themselves create
 user-authorable Blue editor nodes. Native scene mutations cannot change scene
 identity; changing the selection of a scene still needs Orion admission.
+
+`authority.go` exchanges the same Preview/OnAir entries after both admission
+leases and bridge joins. Blue PrepareAuthority validates both prospective modes
+before either is committed. Static entries move with their scene interface and
+bundle. No on-start replay or duplicate actor is introduced; unresolved async
+effects refuse the handoff. `authority_test.go` covers exact handle identity and
+replacement refusal. Consumers are api NativeLaneCommitter and the BlueWire
+registry; their physical routing contract is in api/README.md.

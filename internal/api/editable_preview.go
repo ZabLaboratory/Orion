@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/coder/websocket"
@@ -107,7 +108,35 @@ func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 			SceneVersion: body.SceneVersion,
 			Defaults:     defaults,
 		}
-		deps.Preview.ActivateEditableWithBundle(body.SceneID, graph, bundle, body.EditSeq, rawBundleCopy(body.LSMLBundle), body.Assets)
+		nativeSource, err := editableNativeSource(body)
+		if err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "EDITABLE_SOURCE_INVALID"})
+			return
+		}
+		if deps.SceneIntent.Host != nil {
+			host := deps.SceneIntent.Host
+			release, err := host.AcquireSceneCommit(r.Context(), bluehost.SlotPreview)
+			if err != nil {
+				writeJSON(w, http.StatusConflict, map[string]string{"code": "SCENE_CHANGING"})
+				return
+			}
+			defer release()
+			if deps.SceneIntent.Bridges != nil {
+				deps.SceneIntent.Bridges.Stop(bluehost.SlotPreview)
+			}
+			if err = host.PreparePreviewStatic(body.SceneID, body.SceneVersion); err != nil && !errors.Is(err, bluehost.ErrAlreadyLoaded) {
+				writeJSON(w, http.StatusConflict, map[string]string{"code": "HOST_PREPARE_FAILED"})
+				return
+			}
+			bytes, _ := json.Marshal(bundle)
+			host.SetBundle(bluehost.SlotPreview, bytes)
+			host.SetSceneInterface(bluehost.SlotPreview, nativeSource)
+			host.SetArtifactSetDigest(bluehost.SlotPreview, body.SceneVersion)
+		}
+		deps.Preview.ActivateEditableWithBundle(body.SceneID, graph, bundle, body.EditSeq, nativeSource)
+		if deps.SceneIntent.Bridges != nil {
+			deps.SceneIntent.Bridges.SetSceneMirror(bluehost.SlotPreview, deps.Preview.CurrentMirror())
+		}
 		if err := flushNativeDelivery(r.Context(), deps, true); err != nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
 			return

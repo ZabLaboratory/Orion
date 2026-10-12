@@ -21,8 +21,19 @@ type ScenePresentation interface {
 }
 type ScenePresenter func(context.Context, bluehost.Slot, string, string, string, []byte) (ScenePresentation, error)
 
+type presentationTimings interface {
+	PresentationTimings() map[string]time.Duration
+}
+
 func replaceAdmittedScene(ctx context.Context, deps SceneIntentDeps, slot bluehost.Slot,
 	claims *attestation.Claims, req sceneIntentRequest, artifacts verifiedSceneArtifacts, bundle []byte, staticState map[string]json.RawMessage) (err error) {
+	phaseStarted := time.Now()
+	markPhase := func(name string) {
+		if deps.ObservePresentationPhase != nil {
+			deps.ObservePresentationPhase(name, time.Since(phaseStarted))
+		}
+		phaseStarted = time.Now()
+	}
 	mode := blueruntime.Preview
 	if slot == bluehost.SlotOnAir {
 		mode = blueruntime.Execute
@@ -31,6 +42,7 @@ func replaceAdmittedScene(ctx context.Context, deps SceneIntentDeps, slot blueho
 	if err != nil {
 		return fmt.Errorf("HOST_PREPARE_FAILED: %w", err)
 	}
+	markPhase("blueprepare")
 	var resumeBridge func(bool)
 	if deps.Bridges != nil {
 		resumeBridge = deps.Bridges.Pause(slot)
@@ -73,9 +85,11 @@ func replaceAdmittedScene(ctx context.Context, deps SceneIntentDeps, slot blueho
 		if err != nil {
 			return fmt.Errorf("SOLAR_PREPARATION_FAILED: %w", err)
 		}
+		markPhase("solarprepare")
 		if err = presentation.Commit(ctx); err != nil {
 			return fmt.Errorf("SOLAR_COMMIT_FAILED: %w", err)
 		}
+		markPhase("solarcommit")
 	}
 	if err = candidate.Commit(); err != nil {
 		return err
@@ -92,9 +106,16 @@ func replaceAdmittedScene(ctx context.Context, deps SceneIntentDeps, slot blueho
 			return fmt.Errorf("NATIVE_LSDP_DELIVERY_FAILED: %w", err)
 		}
 	}
+	markPhase("wireflush")
 	if presentation != nil {
 		if err = presentation.Finalize(ctx); err != nil {
 			return fmt.Errorf("SOLAR_FINALIZATION_FAILED: %w", err)
+		}
+		markPhase("solarfinalize")
+		if measured, ok := presentation.(presentationTimings); ok && deps.ObservePresentationPhase != nil {
+			for name, elapsed := range measured.PresentationTimings() {
+				deps.ObservePresentationPhase(name, elapsed)
+			}
 		}
 	}
 	if resumeLane != nil {

@@ -8,12 +8,16 @@ import (
 	"errors"
 	"net"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	native "github.com/ZabLaboratory/Orion/third_party/lsdpnative"
 )
 
-type Reception struct{ Address, Resource string }
+type Reception struct {
+	Address, Resource string
+	PhysicalLanes     atomic.Bool
+}
 
 func New(address, resource string) (*Reception, error) {
 	host, port, err := net.SplitHostPort(address)
@@ -58,7 +62,15 @@ func (r *Reception) Check(parent context.Context) error {
 		return errors.New("LSDP_RECEPTION_CAPABILITIES_INVALID")
 	}
 	_, err = client.Exchange(ctx, map[string]any{"kind": "state.read", "target": r.Resource})
-	for _, target := range []string{"solar/program", "solar/preview", "solar/generations", "solar/sessions"} {
+	physical := has(capabilities.Resources, "solar/lane-a") && has(capabilities.Resources, "solar/lane-b")
+	if physical {
+		r.PhysicalLanes.Store(true)
+	}
+	targets := []string{"solar/program", "solar/preview", "solar/generations", "solar/sessions"}
+	if physical {
+		targets = []string{"solar/lane-a", "solar/lane-b", "solar/generations", "solar/sessions"}
+	}
+	for _, target := range targets {
 		if !has(capabilities.Resources, target) {
 			return errors.New("LSDP_RECEPTION_SCENE_RESOURCES_MISSING")
 		}

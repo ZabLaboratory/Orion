@@ -1,0 +1,33 @@
+{
+  "base": "11334610a68c0e9bf7dcf27dc6f2075c6b5b2104",
+  "retained_active_snapshot_files": [
+    "internal/api/README.md",
+    "internal/api/editable_native_delivery_test.go",
+    "internal/api/editable_preview.go",
+    "internal/api/editable_preview_source.go",
+    "internal/api/editable_preview_source_test.go",
+    "internal/api/editable_preview_test.go",
+    "internal/api/native_scene_presentation.go",
+    "internal/api/native_scene_presentation_test.go",
+    "internal/api/operator.go",
+    "internal/api/public.go",
+    "internal/api/scene_intent.go",
+    "internal/api/scene_presentation.go",
+    "internal/bluehost/README.md",
+    "internal/bluehost/effects.go",
+    "internal/bluehost/host.go",
+    "internal/lsdpreception/README.md",
+    "internal/lsdpreception/control.go",
+    "internal/lsdpreception/producer.go",
+    "internal/lsdpreception/recovery_test.go",
+    "internal/lsdpreception/route_retention_test.go"
+  ],
+  "retained_base_fixes": [
+    "inactive editable retirement",
+    "ReleasePreview/ReleaseEditableAir"
+  ],
+  "blue_commit": "ff8b1dde0bad",
+  "blue_module": "v0.1.1-0.20261012083435-ff8b1dde0bad",
+  "integrated_binary": ".cache/orion-lane-routing.exe",
+  "integrated_binary_sha256": "54611b862d1ebcce486ffc8465b7d94ee7b62045c9c2251f36548003618a2df1"
+}

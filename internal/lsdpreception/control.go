@@ -32,6 +32,11 @@ func (r *Reception) Read(ctx context.Context, target string) (any, error) {
 // WriteLeaf preserves every other writer's fields and rebases only after a
 // proven BASE_MISMATCH rejection. The operation is an absolute assignment.
 func (r *Reception) WriteLeaf(ctx context.Context, target, path string, value any) error {
+	return r.WriteLeaves(ctx, target, []any{map[string]any{"op": "add", "path": path, "value": value}})
+}
+
+// WriteLeaves applies related absolute observations in one native transaction.
+func (r *Reception) WriteLeaves(ctx context.Context, target string, operations []any) error {
 	for attempt := 0; attempt < 8; attempt++ {
 		before, err := r.Read(ctx, target)
 		if err != nil {
@@ -46,7 +51,7 @@ func (r *Reception) WriteLeaf(ctx context.Context, target, path string, value an
 			client.Close()
 			return err
 		}
-		raw, err := client.Exchange(ctx, map[string]any{"format": "lsdp.apply/1", "id": id, "target": target, "beforeHash": treeHash(before), "operations": []any{map[string]any{"op": "add", "path": path, "value": value}}, "require": "applied"})
+		raw, err := client.Exchange(ctx, map[string]any{"format": "lsdp.apply/1", "id": id, "target": target, "beforeHash": treeHash(before), "operations": operations, "require": "applied"})
 		client.Close()
 		if err == nil {
 			var receipt struct{ Level, Target, TransactionID string }
@@ -155,8 +160,9 @@ func (r *Reception) Replace(ctx context.Context, target string, document any) er
 	if err != nil {
 		return err
 	}
+	completed := false
 	for ctx.Err() == nil {
-		err = r.replaceOnce(ctx, id, target, document)
+		completed, err = r.replaceOnce(ctx, id, target, document, completed)
 		if err == nil {
 			return nil
 		}
@@ -174,19 +180,57 @@ func (r *Reception) Replace(ctx context.Context, target string, document any) er
 	}
 	return ctx.Err()
 }
-func (r *Reception) replaceOnce(ctx context.Context, id, target string, document any) error {
+func (r *Reception) replaceOnce(ctx context.Context, id, target string, document any, completed bool) (bool, error) {
 	client, err := native.Dial(ctx, r.Address, "", nil)
 	if err != nil {
-		return err
+		return completed, err
 	}
 	defer client.Close()
 	kind := "orion.state/1"
-	if target == "solar/program" || target == "solar/preview" {
+	if isSolarSceneTarget(target) {
 		kind = "solar.lsml/1"
 	}
-	raw, err := client.SendPort(ctx, id, target, kind, document)
+	if !completed {
+		raw, err := client.SendPort(ctx, id, target, kind, document)
+		if err != nil {
+			return false, err
+		}
+		if err = completedRoute(raw, id); err != nil {
+			return false, err
+		}
+		completed = true
+	}
+	// After the route ACK is known, a lost release receipt can retry only the
+	// release. Replaying a forgotten full assignment could overwrite a newer edit.
+	return completed, forgetCompletedRoute(func(request any) (json.RawMessage, error) {
+		return client.Exchange(ctx, request)
+	}, id)
+}
+
+func completedRoute(raw json.RawMessage, id string) error {
+	if err := native.Completed(raw); err != nil {
+		return err
+	}
+	var receipt struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(raw, &receipt) != nil || receipt.ID != id {
+		return errors.New("NATIVE_ROUTE_RECEIPT_ID_INVALID")
+	}
+	return nil
+}
+
+// Routing retains full payload/packet memory for replay until its owner
+// explicitly releases the record. Only call after this exact route completed.
+func forgetCompletedRoute(exchange func(any) (json.RawMessage, error), id string) error {
+	raw, err := exchange(map[string]any{"kind": "route.forget", "id": id, "force": false})
 	if err != nil {
 		return err
 	}
-	return native.Completed(raw)
+	var receipt struct{ ID, Status string }
+	if json.Unmarshal(raw, &receipt) != nil ||
+		(receipt.Status != "unknown" && (receipt.Status != "forgotten" || receipt.ID != id)) {
+		return errors.New("NATIVE_ROUTE_RELEASE_NOT_ACKNOWLEDGED")
+	}
+	return nil
 }

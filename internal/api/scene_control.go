@@ -29,8 +29,9 @@ type SceneControlDocument struct {
 	SceneID  string         `json:"scene_id"`
 	Layout   map[string]any `json:"layout"`
 	Defaults struct {
-		Desired  map[string]SceneSelection `json:"desired"`
-		Observed map[string]any            `json:"observed"`
+		Desired    map[string]SceneSelection `json:"desired"`
+		Observed   map[string]any            `json:"observed"`
+		LaneCommit *lsdpreception.LaneCommit `json:"lane_commit,omitempty"`
 	} `json:"defaults"`
 }
 
@@ -42,19 +43,22 @@ func NewSceneControlDocument() SceneControlDocument {
 }
 
 type SceneControl struct {
-	deps      SceneIntentDeps
-	reception *lsdpreception.Reception
-	path      string
-	headers   http.Header
-	mu        sync.Mutex
-	desired   map[string]SceneSelection
+	deps       SceneIntentDeps
+	reception  *lsdpreception.Reception
+	path       string
+	headers    http.Header
+	mu         sync.Mutex
+	desired    map[string]SceneSelection
+	current    map[string]string
+	opMu       sync.Mutex
+	seenCommit string
 }
 
 func OpenSceneControl(deps SceneIntentDeps, reception *lsdpreception.Reception, path string, headers http.Header) (*SceneControl, error) {
 	if deps.Catalog == nil || !deps.EmbeddedLocal || !filepath.IsAbs(path) {
 		return nil, errors.New("SCENE_CONTROL_CONFIG_INVALID")
 	}
-	c := &SceneControl{deps: deps, reception: reception, path: path, headers: headers.Clone(), desired: map[string]SceneSelection{}}
+	c := &SceneControl{deps: deps, reception: reception, path: path, headers: headers.Clone(), desired: map[string]SceneSelection{}, current: map[string]string{}}
 	raw, err := os.ReadFile(path)
 	if err == nil {
 		if len(raw) > 65536 {
@@ -120,6 +124,15 @@ func (c *SceneControl) Run(ctx context.Context) error {
 		c.mu.Lock()
 		c.desired = d.Defaults.Desired
 		c.mu.Unlock()
+		if d.Defaults.LaneCommit != nil {
+			raw, _ := json.Marshal(d.Defaults.LaneCommit)
+			if string(raw) != c.seenCommit {
+				c.seenCommit = string(raw)
+				if desired, committed := c.commitLaneRoles(ctx, *d.Defaults.LaneCommit, d.Defaults.Desired, d.Defaults.Observed); committed {
+					d.Defaults.Desired = desired
+				}
+			}
+		}
 		for lane, selection := range d.Defaults.Desired {
 			queue := queues[lane]
 			select {
@@ -136,7 +149,6 @@ func (c *SceneControl) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 func (c *SceneControl) lane(ctx context.Context, lane string, queue chan SceneSelection) {
-	var current string
 	var cancel context.CancelFunc
 	var done chan struct{}
 	defer func() {
@@ -153,7 +165,11 @@ func (c *SceneControl) lane(ctx context.Context, lane string, queue chan SceneSe
 			return
 		case selection := <-queue:
 			key := selectionKey(selection)
-			if key == current {
+			c.mu.Lock()
+			current := c.current[lane]
+			desired := c.desired[lane]
+			c.mu.Unlock()
+			if key == current || selection != desired {
 				continue
 			}
 			if cancel != nil {
@@ -162,12 +178,22 @@ func (c *SceneControl) lane(ctx context.Context, lane string, queue chan SceneSe
 			if done != nil {
 				<-done
 			}
-			current = key
 			attempt, stopAttempt := context.WithTimeout(ctx, 40*time.Second)
 			cancel = stopAttempt
 			taskDone := make(chan struct{})
 			done = taskDone
-			go func() { defer close(taskDone); defer stopAttempt(); c.selectScene(attempt, lane, selection) }()
+			go func() {
+				defer close(taskDone)
+				defer stopAttempt()
+				c.opMu.Lock()
+				defer c.opMu.Unlock()
+				c.mu.Lock()
+				valid := c.desired[lane] == selection && c.current[lane] != key
+				c.mu.Unlock()
+				if valid {
+					c.selectScene(attempt, lane, selection)
+				}
+			}()
 		}
 	}
 }
@@ -243,6 +269,9 @@ func (c *SceneControl) selectScene(ctx context.Context, lane string, selection S
 		return
 	}
 	observe("active", "")
+	c.mu.Lock()
+	c.current[lane] = selectionKey(selection)
+	c.mu.Unlock()
 }
 func (c *SceneControl) log(message string, err error) {
 	if c.deps.Logger != nil {

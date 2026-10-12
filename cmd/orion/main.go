@@ -77,6 +77,9 @@ func run() error {
 	producer := lsdpreception.NewProducer(ctx, reception)
 	defer producer.Close()
 	nativeHub := lsdpreception.NewHub(producer, logger)
+	if reception.PhysicalLanes.Load() {
+		nativeHub.EnablePhysicalLanes()
+	}
 
 	// Orion has one executable posture now: the Prism-embedded local sidecar.
 	// config.Load rejects the retired remote profile; keep this guard at the
@@ -409,14 +412,21 @@ func run() error {
 					return antenneWire.PrepareSource(id, version, raw)
 				}
 				return previewWire.PrepareSource(id, version, raw)
+			}, func(slot bluehost.Slot) string {
+				if slot == bluehost.SlotOnAir {
+					return antenneWire.Target()
+				}
+				return previewWire.Target()
 			})
 			sceneIntent.Logger = logger
+			sceneIntent.CommitLaneRoles = api.NativeLaneCommitter(nativeHub, sceneIntent.Host, sceneIntent.Bridges, previewSlot)
 		}
 		if sceneIntent.Host != nil {
 			inbox.SetPlatformEventSink(newStatelessPlatformEventSink(
 				sceneIntent.Host.WritePlatformEvent,
 				sceneIntent.Bridges.Forward,
 				logger,
+				func(slot bluehost.Slot) (func(), error) { return sceneIntent.Host.AcquireSceneCommit(ctx, slot) },
 			))
 		}
 	}
@@ -441,6 +451,10 @@ func run() error {
 		showEvents := bluehost.NewShowEventRouter(func(topic string, payload any) {
 			rulePlane.EmitEvent(topic, payload)
 			for _, slot := range []bluehost.Slot{bluehost.SlotPreview, bluehost.SlotOnAir} {
+				release, leaseErr := sceneIntent.Host.AcquireSceneCommit(ctx, slot)
+				if leaseErr != nil {
+					continue
+				}
 				result, err := sceneIntent.Host.EmitEventProjected(slot, topic, payload)
 				if err == nil && sceneIntent.Bridges != nil {
 					err = sceneIntent.Bridges.Forward(slot, bluewire.StepResult{RuntimeSequence: result.RuntimeSequence, Outputs: result.Outputs})
@@ -448,6 +462,7 @@ func run() error {
 				if err != nil && !errors.Is(err, bluehost.ErrNotLoaded) {
 					logger.Warn("stateless show.emit delivery failed", "slot", slot, "topic", topic, "error", err)
 				}
+				release()
 			}
 		}, func() { logger.Error("Blue show event cascade exceeded budget") })
 		rulePlane.SetShowEmitSink(showEvents)

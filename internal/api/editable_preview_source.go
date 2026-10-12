@@ -2,9 +2,12 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/ZabLaboratory/Orion/internal/canonical"
@@ -39,20 +42,43 @@ func editableSourceBundle(body editablePreviewOpenRequest) (*compiler.RenderBund
 	return &compiler.RenderBundle{SceneVersion: body.SceneVersion, Defaults: source.Defaults, SourceLSML: rawBundleCopy(body.LSMLBundle)}, source.Defaults, nil
 }
 
-func getEditablePreviewSource(deps PublicDeps) http.HandlerFunc {
-	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
-		if !deps.Config.Profile.IsEmbeddedLocal() || deps.Preview == nil {
-			writeJSON(w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND"})
-			return
+// Native authoring delivery shares the scene's LSDP resource. The immutable
+// base remains addressable while live defaults evolve through native mutations.
+func editableNativeSource(body editablePreviewOpenRequest) ([]byte, error) {
+	var document map[string]json.RawMessage
+	if err := json.Unmarshal(body.LSMLBundle, &document); err != nil {
+		return nil, err
+	}
+	if document == nil {
+		return nil, errors.New("editable LSML object required")
+	}
+	if _, exists := document["x-solar-authoring"]; exists {
+		return nil, errors.New("nested editable authoring delivery is forbidden")
+	}
+	assets := map[string][]byte{}
+	fonts := []string{}
+	fontPath := regexp.MustCompile(`^assets/([a-f0-9]{64})\.(ttf|otf|ttc|woff|woff2)$`)
+	for path, bytes := range body.Assets {
+		if match := fontPath.FindStringSubmatch(path); match != nil {
+			digest := sha256.Sum256(bytes)
+			if hex.EncodeToString(digest[:]) != match[1] {
+				return nil, errors.New("editable font content address mismatch")
+			}
+			fonts = append(fonts, match[1])
+		} else {
+			assets[path] = bytes
 		}
-		raw, assets, ok := deps.Preview.EditableSource(r.URL.Query().Get("scene_id"), r.URL.Query().Get("v"))
-		if !ok {
-			writeJSON(w, http.StatusNotFound, map[string]string{"code": "EDITABLE_SOURCE_NOT_FOUND"})
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("X-Scene-Version", r.URL.Query().Get("v"))
-		writeJSON(w, http.StatusOK, map[string]any{"lsml_bundle": json.RawMessage(raw), "assets": assets})
+	}
+	sort.Strings(fonts)
+	envelope, err := json.Marshal(map[string]any{
+		"format":      "solar.authoring/1",
+		"lsml_bundle": json.RawMessage(body.LSMLBundle),
+		"assets":      assets,
+		"fonts":       fonts,
 	})
+	if err != nil {
+		return nil, err
+	}
+	document["x-solar-authoring"] = envelope
+	return json.Marshal(document)
 }

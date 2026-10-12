@@ -3,9 +3,11 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"time"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
 
@@ -467,6 +469,13 @@ func postOperatorCallEngineB(w http.ResponseWriter, r *http.Request, deps Public
 			"blueprint is not part of the active scene")
 		return
 	}
+	release, err := host.AcquireSceneCommit(r.Context(), slot)
+	if err != nil {
+		writeOperatorError(w, http.StatusConflict, "SCENE_CHANGING", "scene role is changing")
+		return
+	}
+	defer release()
+
 	if !host.HasTrigger(slot, entrypointID) {
 		writeOperatorError(w, http.StatusConflict, "ENTRYPOINT_UNKNOWN",
 			"no on-call entrypoint by that id on the active blueprint")
@@ -481,7 +490,9 @@ func postOperatorCallEngineB(w http.ResponseWriter, r *http.Request, deps Public
 	if !ok {
 		return
 	}
+	started := time.Now()
 	result, err := host.Call(slot, entrypointID, payload)
+	w.Header().Add("Server-Timing", fmt.Sprintf("bluecall;dur=%.3f", float64(time.Since(started).Microseconds())/1000))
 	if err != nil {
 		writeOperatorExecutionError(w, err, "call failed")
 		return
@@ -501,9 +512,11 @@ func postOperatorCallEngineB(w http.ResponseWriter, r *http.Request, deps Public
 	// scene outputs, while the periodic bridge tick may have no
 	// output to repeat. Keep old no-wire fixtures compatible, but never report
 	// success when the production bridge exists and cannot project the result.
+	started = time.Now()
 	if !forwardOperatorResult(w, r, deps, slot, bluewire.StepResult{RuntimeSequence: result.RuntimeSequence, Outputs: result.Outputs}) {
 		return
 	}
+	w.Header().Add("Server-Timing", fmt.Sprintf("blueforward;dur=%.3f", float64(time.Since(started).Microseconds())/1000))
 	writeOperatorExecution(w, http.StatusAccepted, "fired", result)
 }
 
@@ -541,6 +554,13 @@ func postOperatorResolveEngineB(w http.ResponseWriter, r *http.Request, deps Pub
 			"no live await for this blueprint (inactive or invalidated)")
 		return
 	}
+	release, err := host.AcquireSceneCommit(r.Context(), slot)
+	if err != nil {
+		writeOperatorError(w, http.StatusConflict, "SCENE_CHANGING", "scene role is changing")
+		return
+	}
+	defer release()
+
 	value, ok := decodeOperatorPayload(w, rawValue)
 	if !ok {
 		return
