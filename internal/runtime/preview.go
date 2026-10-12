@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -73,9 +74,11 @@ func (f *sceneMirrorFanout) Forward(message SubscriberMsg) {
 // preview/antenne split: a preview scene switch can no longer flip the live
 // antenne. nil in bespoke mode (no preview wire) — the preview routes degrade.
 type PreviewSlot struct {
-	registry *ComputeRegistry
-	logger   *slog.Logger
-	wire     PreviewWire
+	registry    *ComputeRegistry
+	logger      *slog.Logger
+	wire        PreviewWire
+	programWire PreviewWire
+	roleEpoch   uint64
 
 	mu      sync.Mutex
 	ctx     context.Context
@@ -100,6 +103,7 @@ type previewClone struct {
 	editable     bool
 	editSeq      uint64
 	airPromoted  bool
+	writerID     string
 }
 
 var (
@@ -184,8 +188,14 @@ func (p *PreviewSlot) ActivateStatic(sceneID string, bundle *compiler.RenderBund
 func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editable bool, editSeq uint64, lsmlBundle []byte, assets map[string][]byte, progs ...*ExecProgram) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.activateLocked("preview", sceneID, graph, bundle, editable, editSeq, lsmlBundle, assets, progs...)
+}
 
-	prev := p.current
+func (p *PreviewSlot) activateLocked(target, sceneID string, graph *compiler.Graph, bundle *compiler.RenderBundle, editable bool, editSeq uint64, lsmlBundle []byte, assets map[string][]byte, progs ...*ExecProgram) {
+	prev, wire := p.current, p.wire
+	if target == "program" {
+		prev, wire = p.airCurrent, p.programWire
+	}
 
 	// Clone the compiled artefacts so the preview's reactive loop owns private
 	// inputs — the antenne instance of the same scene is untouched.
@@ -221,14 +231,14 @@ func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *co
 	// Pair with the PREVIEW wire before Run (SetMirror seeds the kit scene with
 	// the clone's snapshot). MirrorFor registers the kit scene under sceneID on
 	// the preview wire ONLY — never the antenne wire (a different Server).
-	mirror := newSceneMirrorFanout(p.wire.MirrorFor(sceneID, gcopy.SceneVersion, &bcopy))
+	mirror := newSceneMirrorFanout(wire.MirrorFor(sceneID, gcopy.SceneVersion, &bcopy))
 	scene.SetMirror(mirror)
 	go scene.Run(p.ctx)
 	scene.FireOnStart("system:preview-activated")
 	// Flip the preview wire's live endpoint to this clone: the connected
 	// preview Solar migrates (scene_changed + fresh snapshot) over its EXISTING
 	// socket — no reload. Identical mechanism to the antenne's Show.SetActive.
-	p.wire.SetActive(sceneID)
+	wire.SetActive(sceneID)
 	bundleBytes, err := json.Marshal(&bcopy)
 	if err != nil {
 		// RenderBundle is composed entirely of JSON-backed fields and was
@@ -249,13 +259,19 @@ func (p *PreviewSlot) activate(sceneID string, graph *compiler.Graph, bundle *co
 		editable:     editable,
 		editSeq:      editSeq,
 	}
-	p.current = next
+	next.writerID = rand.Text()
+	if target == "program" {
+		next.airPromoted = true
+		p.airCurrent = next
+	} else {
+		p.current = next
+	}
 	if prev != nil {
-		if prev != p.airCurrent {
+		if prev != p.airCurrent && prev != p.current {
 			prev.scene.Stop()
 		}
 		if prev.sceneID != sceneID {
-			p.wire.Drop(prev.sceneID)
+			wire.Drop(prev.sceneID)
 		}
 	}
 
@@ -396,14 +412,21 @@ func (p *PreviewSlot) ReleaseEditableAir() {
 // All values travel through the existing scene mirror, so Solar receives a
 // real LSDP delta over its persistent socket; the antenna show is untouched.
 func (p *PreviewSlot) ApplyEditablePatches(sceneID string, baseSeq, editSeq uint64, patches []EditablePatch) error {
+	return p.ApplyEditableTargetPatches("preview", sceneID, "", baseSeq, editSeq, patches)
+}
+
+func (p *PreviewSlot) ApplyEditableTargetPatches(target, sceneID, writerID string, baseSeq, editSeq uint64, patches []EditablePatch) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	cur := p.current
+	cur := p.editableTargetLocked(target)
 	if cur == nil || cur.sceneID != sceneID {
 		return ErrPreviewSceneMismatch
 	}
 	if !cur.editable {
 		return ErrPreviewNotEditable
+	}
+	if (target == "program" && writerID == "") || (writerID != "" && writerID != cur.writerID) {
+		return ErrPreviewEditSequence
 	}
 	if cur.editSeq != baseSeq || editSeq != baseSeq+1 {
 		return ErrPreviewEditSequence
@@ -441,14 +464,21 @@ func (p *PreviewSlot) ApplyEditablePatches(sceneID string, baseSeq, editSeq uint
 // antenne Show or mutating a Blue/Program scene. The input is not an authoring
 // edit, so it does not advance ZabCanvas's edit sequence.
 func (p *PreviewSlot) ApplyPreviewInput(path string, value json.RawMessage, source string) error {
+	return p.ApplyEditableTargetInput("preview", "", "", path, value, source)
+}
+
+func (p *PreviewSlot) ApplyEditableTargetInput(target, sceneID, writerID, path string, value json.RawMessage, source string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	cur := p.current
-	if cur == nil {
+	cur := p.editableTargetLocked(target)
+	if cur == nil || (sceneID != "" && cur.sceneID != sceneID) {
 		return ErrPreviewSceneMismatch
 	}
 	if !cur.editable {
 		return ErrPreviewNotEditable
+	}
+	if (target == "program" && (sceneID == "" || writerID == "")) || (writerID != "" && cur.writerID != writerID) {
+		return ErrPreviewEditSequence
 	}
 	if path == "" || strings.HasPrefix(path, "__test.") {
 		return ErrPreviewEditPath

@@ -136,6 +136,7 @@ func run() error {
 	generationWires := nativeHub
 	show.SetMirrors(streamMirrors{MirrorRegistry: antenneWire, controller: streamControl})
 	previewSlot := runtime.NewPreviewSlot(ctx, registry, previewWire, logger)
+	previewSlot.SetEditableProgramWire(antenneWire)
 	previewSlot.SetEditableAirWire(generationWires)
 	defer previewSlot.Close()
 

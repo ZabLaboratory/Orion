@@ -69,8 +69,8 @@ type PublicDeps struct {
 	PreviewLSDP http.Handler
 	// EditablePreview is the local no-Blue authoring lane. It is deliberately
 	// separate from SceneIntent/Blue: a bounded LSML bundle is installed in
-	// the PreviewSlot and leaf edits are mirrored directly to the same Preview
-	// LSDP wire.
+	// the PreviewSlot and leaf edits target its active Preview/Program actor on
+	// the physical native resource. Target omission retains Preview compatibility.
 	EditablePreview    *runtime.PreviewSlot
 	LocalEditorToken   string
 	StaticAssetBaseURL string
@@ -184,6 +184,7 @@ func RegisterPublic(mux *http.ServeMux, deps PublicDeps) {
 	mux.HandleFunc("POST /api/v1/show/preview-active-scene", postPreviewActiveScene(deps))
 	mux.HandleFunc("GET /api/v1/show/preview-snapshot", getPreviewSnapshot(deps))
 	mux.HandleFunc("POST /api/v1/show/editable-preview", postEditablePreview(deps))
+	mux.HandleFunc("GET /api/v1/show/editable-preview/state", getEditableTargetState(deps))
 	mux.HandleFunc("POST /api/v1/show/editable-preview/activate", postEditablePreviewActivate(deps))
 	mux.HandleFunc("POST /api/v1/show/editable-preview/air", postEditablePreviewAir(deps))
 	mux.HandleFunc("PUT /api/v1/show/editable-preview", putEditablePreviewPatch(deps))

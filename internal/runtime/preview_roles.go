@@ -30,6 +30,7 @@ func (p *PreviewSlot) StageRoleSwap(sceneID string) (func(bool), error) {
 	}
 	return func(commit bool) {
 		if commit {
+			p.roleEpoch++
 			p.current, p.airCurrent = p.airCurrent, p.current
 			if p.current != nil {
 				p.current.airPromoted = false

@@ -104,6 +104,28 @@ source GET is unregistered; Solar does not fetch editable sources from Orion.
 This delivery does not grant Blue execution or publish a Canvas revision. Empty render mode
 retains compatibility compilation; unknown modes fail closed.
 
+Editable authoring accepts `target: preview|program` on POST, PUT and editor
+WebSocket packets; omission preserves the Preview contract. The two actors stay
+on the physical native resources transferred by Take. Program requires the
+active `scene_id` and `writer_id`; a structural POST also requires
+`base_edit_seq` and a non-decreasing `edit_seq`. Its replacement rotates the
+writer ID. A Take preserves writer ID and sequence. Compiled snapshots are fenced
+against concurrent edits and physical role changes before Host or mirror mutation.
+`GET /api/v1/show/editable-preview/state?scene_id=...&target=...` returns only the
+active editable identity, version, edit sequence and writer ID, with `no-store`.
+It never activates, compiles or retrieves an inactive actor. Embedded/operator
+guards remain mandatory. Service socket packets may explicitly bind the same
+target/scene/writer; omitted fields retain the warm Preview component contract.
+
+`editable_targets.go` owns target validation, active read-back and delivery;
+`runtime/editable_targets.go` owns actor selection and structural fencing under
+the role pin. Hot edits reuse the existing scene inbox, mirror and receiver
+application ACK. Solar feedback and optional socket observers are not required.
+Observers are scoped to their requested target. Tests in `editable_targets_test.go`
+cover a socket retained across Take, stale writers and concurrent compilation.
+`lane_commit_native_test.go` verifies active read-back, hot and structural Program
+edits, unchanged Preview and stale snapshot refusal on a private Rust receiver.
+
 ## Native lane authority handoff
 
 `lane_commit.go` consumes `/scene_control/defaults/lane_commit` on `orion/state`.

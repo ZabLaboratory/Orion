@@ -13,6 +13,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,6 +70,7 @@ func TestLaneCommitNative(t *testing.T) {
 	bridges := bluewire.NewRegistry()
 	defer bridges.StopAll()
 	previewSlot := runtime.NewPreviewSlot(ctx, runtime.NewComputeRegistry(), preview, slog.Default())
+	previewSlot.SetEditableProgramWire(program)
 	defer previewSlot.Close()
 	d := NewSceneControlDocument()
 	aSel := SceneSelection{"scene-a", "artifact-a", "live"}
@@ -179,6 +181,68 @@ func TestLaneCommitNative(t *testing.T) {
 	if _, err = host.Step(bluehost.SlotOnAir); !errors.Is(err, bluehost.ErrNotLoaded) {
 		t.Fatal("old Blue actor still executes on static Program", err)
 	}
+	// Continue the same author after Take on A, without a Solar feedback callback
+	// or sideband observer. Only the real Rust receiver's application ACK is used.
+	head, ok := previewSlot.EditableTargetHead("program")
+	if !ok || head.SceneID != "scene-c" {
+		t.Fatal("active author unavailable", head)
+	}
+	readRequest := httptest.NewRequest(http.MethodGet, "/api/v1/show/editable-preview/state?target=program&scene_id=scene-c", nil)
+	readRequest.Header.Set("X-Authenticated-User", "operator-1")
+	readRequest.Header.Set("X-Authenticated-Role", "operator")
+	readResponse := httptest.NewRecorder()
+	mux.ServeHTTP(readResponse, readRequest)
+	var readHead runtime.EditableHead
+	if readResponse.Code != http.StatusOK || json.Unmarshal(readResponse.Body.Bytes(), &readHead) != nil || readHead != head || readResponse.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("active read-back failed", readResponse.Body.String())
+	}
+	patch := map[string]any{"target": "program", "scene_id": "scene-c", "writer_id": head.WriterID, "base_edit_seq": 0, "edit_seq": 1, "patches": []map[string]any{{"path": "__editable.width", "value": 32}}}
+	patched := editableAPIRequest(t, mux, http.MethodPut, patch, "operator")
+	if patched.Code != http.StatusAccepted {
+		t.Fatal("Program hot edit failed", patched.Code, patched.Body.String())
+	}
+	aNow, _ := r.Read(ctx, "solar/lane-a")
+	bNow, _ := r.Read(ctx, "solar/lane-b")
+	if aNow.(map[string]any)["defaults"].(map[string]any)["__editable.width"] != float64(32) {
+		t.Fatal("Program patch did not reach native A", aNow)
+	}
+	bBaseline, _ := json.Marshal(bNow)
+	patch["target"] = "preview"
+	patch["base_edit_seq"] = 1
+	patch["edit_seq"] = 2
+	if refused := editableAPIRequest(t, mux, http.MethodPut, patch, "operator"); refused.Code != http.StatusConflict {
+		t.Fatal("old Preview writer accepted", refused.Body.String())
+	}
+	patch["target"] = "program"
+	patch["writer_id"] = "retired-writer"
+	if refused := editableAPIRequest(t, mux, http.MethodPut, patch, "operator"); refused.Code != http.StatusConflict {
+		t.Fatal("retired writer accepted", refused.Body.String())
+	}
+	// Structural replacement stays on current Program A and rotates the writer.
+	editable["defaults"].(map[string]any)["__editable.width"] = json.Number("64")
+	editable["scene_version"] = "sha256:" + strings.Repeat("0", 64)
+	newVersion, err := canonical.Digest(editable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	editable["scene_version"] = newVersion
+	structure := map[string]any{"target": "program", "scene_id": "scene-c", "scene_version": newVersion, "writer_id": head.WriterID, "base_edit_seq": 1, "edit_seq": 2, "render_mode": "source-only", "lsml_bundle": editable}
+	if replaced := editableAPIRequest(t, mux, http.MethodPost, structure, "operator"); replaced.Code != http.StatusOK {
+		t.Fatal("Program structural edit failed", replaced.Code, replaced.Body.String())
+	}
+	newHead, _ := previewSlot.EditableTargetHead("program")
+	if newHead.WriterID == head.WriterID || !host.Serving(bluehost.SlotOnAir, "scene-c", newVersion) || !host.Serving(bluehost.SlotPreview, "scene-b", "digest-b") {
+		t.Fatal("structural authority drift", newHead)
+	}
+	if refused := editableAPIRequest(t, mux, http.MethodPost, structure, "operator"); refused.Code != http.StatusConflict {
+		t.Fatal("old structural snapshot accepted", refused.Body.String())
+	}
+	aNow, _ = r.Read(ctx, "solar/lane-a")
+	bNow, _ = r.Read(ctx, "solar/lane-b")
+	bFinal, _ := json.Marshal(bNow)
+	if aNow.(map[string]any)["defaults"].(map[string]any)["__editable.width"] != float64(64) || string(bFinal) != string(bBaseline) {
+		t.Fatal("structural Program modified Preview", aNow, bNow)
+	}
 	commit.TakeCommandID = "take-foreign"
 	commit.RuntimeInstanceID = "foreign"
 	if err = r.WriteLeaf(ctx, "orion/state", "/scene_control/defaults/lane_commit", commit); err != nil {
@@ -187,7 +251,7 @@ func TestLaneCommitNative(t *testing.T) {
 	if receipt := await("take-foreign", "refused"); receipt.Reason != "LANE_COMMIT_FOREIGN_RUNTIME" {
 		t.Fatal(receipt)
 	}
-	proof, _ := json.Marshal(map[string]any{"first_receipt": firstReceipt, "mixed_receipt": receipt, "documents_identical_at_both_commits": true, "program_delta_isolated": true, "static_program_old_blue_stopped": true})
+	proof, _ := json.Marshal(map[string]any{"first_receipt": firstReceipt, "mixed_receipt": receipt, "documents_identical_at_both_commits": true, "program_delta_isolated": true, "static_program_old_blue_stopped": true, "active_author_readback": true, "program_hot_edit_native": true, "program_structural_edit_native": true, "stale_writers_refused": true, "preview_unchanged": true, "solar_feedback_or_sideband_required": false})
 	t.Log(string(proof))
 	t.Log("private native receipt, desired/current reconciliation, unchanged documents, retained Program deltas, real Blue-to-editable API/source receipt and foreign-runtime refusal passed")
 }

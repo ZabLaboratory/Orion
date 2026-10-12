@@ -31,7 +31,8 @@ shared Blue Host. Runtime and native publishers retain their existing owners.
 | Lost-receipt recovery without duplicated insertion; protocol/ambiguity refusal | `internal/lsdpreception/recovery_test.go`, `recovery_native_test.go`; native delivery diagnostics |
 | Program/Preview resources, exact generation writer leases and camera/overlay projection | `internal/lsdpreception/mirror.go` |
 | Isolated native test sessions, lease renewal, explicit close and expiry | `internal/lsdpreception/session.go`, `internal/runtime/test_session.go`, `show.go` |
-| Native ACK on editable inputs and camera projection | `native_delivery.go`, `editable_preview.go`, `camera_slots.go`; runtime scene inbox barrier |
+| Native ACK on editable inputs and camera projection | `native_delivery.go`, `editable_preview.go`, `editable_targets.go`, `camera_slots.go`; runtime scene inbox barrier |
+| Active editable Preview/Program author and structural fencing | `internal/api/editable_targets.go`, `editable_preview.go`; `internal/runtime/editable_targets.go`, `preview.go`, `preview_roles.go`; `cmd/orion/main.go` program wire; `editable_targets_test.go`, `lane_commit_native_test.go` |
 | Blue adapter discovery and configured availability | `host_surface.go`, `internal/providers/providers.go`; [Blue host](../../internal/bluehost/README.md) |
 | Scene-local atomic structural edits and animation command leaves | `internal/lsdpreception/mutation.go`, `internal/bluehost/effect_animation.go`; `bluewire.Registry.Mutate` |
 | Durable global rules, desired app intent and actual local process status | [stream control](../../internal/streamcontrol/README.md), `cmd/orion/stream_control.go`, `GET /api/v1/show/overlay-apps` |
