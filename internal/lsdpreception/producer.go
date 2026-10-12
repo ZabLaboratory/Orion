@@ -115,6 +115,10 @@ func (p *Producer) exchange(client *producerClient, request any) (json.RawMessag
 		if !errors.As(err, &transport) && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.DeadlineExceeded) && p.ctx.Err() == nil {
 			return nil, retried, err
 		}
+		// An idle peer may have closed an otherwise healthy connection. Replay
+		// the identical request once immediately; only a failed reconnect backs
+		// off. Never mint a new ID or assume the lost request was uncommitted.
+		immediate := !retried && *client != nil
 		if *client != nil {
 			(*client).Close()
 			*client = nil
@@ -124,6 +128,9 @@ func (p *Producer) exchange(client *producerClient, request any) (json.RawMessag
 		p.reconnects++
 		p.mu.Unlock()
 		retried = true
+		if immediate {
+			continue
+		}
 		timer := time.NewTimer(p.retryDelay)
 		select {
 		case <-p.ctx.Done():

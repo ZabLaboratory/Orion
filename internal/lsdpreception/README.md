@@ -14,7 +14,13 @@ unrecoverable delivery invalidates `/ready` instead of dropping an output.
 
 Transport interruptions retain queued outputs and replay the same transaction
 until the receiver responds or Orion shuts down. A verified success clears the
-transient readiness error. An uncertain commit followed by BASE_MISMATCH is
+transient readiness error. An established socket failure gets one immediate
+reconnect with the identical request; subsequent failures and initial dial
+failure use the bounded 250 ms backoff. Idle expiry therefore does not add a
+mandatory delay to the next edit. No scene/timer traffic is added to keep a socket
+alive. `idle_recovery_test.go` checks immediate replay and outage backoff;
+`idle_recovery_native_test.go` checks actual application after a private socket
+loss. An uncertain commit followed by BASE_MISMATCH is
 terminal: it is never rebased into a potentially duplicated insertion.
 The native router retains each full assignment and its replay payload until its
 owner releases the completed record. Both `Producer` and `Reception.Replace`

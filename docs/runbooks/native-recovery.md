@@ -8,9 +8,13 @@ reconnexion transitoire ; terminal demande une reprise explicite. Les compteurs
 portent sur les transactions natives, pas sur les images physiques ni les effets
 externes Blue.
 
-Lors d'une coupure, Orion conserve la requête et la queue. Il reconnecte toutes
-les 250 ms, avec une tentative bornée à cinq secondes, et rejoue exactement le
-même payload/identifiant. La readiness reste invalide pendant l'incident. Une
+Lors d'une coupure, Orion conserve la requête et la queue. Si une connexion établie
+est perdue, il tente une seule reconnexion immédiate : une expiration d'inactivité
+ne pénalise pas le premier delta de 250 ms. Si cette reprise échoue, les tentatives
+suivantes sont espacées de 250 ms. Un échec de connexion initiale utilise également
+ce délai. Chaque tentative est bornée à cinq secondes et rejoue exactement le
+même payload/identifiant. Aucun keepalive applicatif ni message de scène artificiel
+n'est ajouté. La readiness reste invalide pendant l'incident. Une
 réponse vérifiée efface l'erreur transitoire et permet le drainage dans l'ordre.
 L'arrêt annule la reprise. La déduplication Rust empêche une insertion déjà
 committée d'être exécutée deux fois quand sa première réponse a été perdue.
@@ -38,6 +42,14 @@ résultats Blue et les mutations LSML live ne sont pas persistés. Il n'existe a
 LSML de scène muté sauvegardé, outbox durable ou journal exactement-une-fois
 transverse. Une reconnexion TCP ne certifie pas une reprise complète de l'app.
 
-Preuves : recovery_test.go, TestRealNativeTransportRecovery, tests Solar de
+Preuves : recovery_test.go, idle_recovery_test.go (reprise immédiate avec identité
+inchangée, backoff après échec), TestIdleSocketRecoveryNative (socket privé fermé,
+récepteur vivant, application réelle) et TestEditableIdleDeltaNative (WS/auteur/ACK
+après une pause sur récepteur privé, document réel optionnel).
+Ces probes utilisent ORION_TEST_PRIVATE_LANE_ADDRESS d'un récepteur jetable.
+Le probe WS accepte ORION_TEST_IDLE_SCENE_PATH pour un snapshot natif local,
+ORION_TEST_IDLE_LEAF pour la feuille et ORION_TEST_IDLE_PAUSE_MS (maximum 180000).
+Il ne publie ni valeurs de scène ni credentials et ne doit jamais cibler le dev commun.
+Autres preuves : TestRealNativeTransportRecovery, tests Solar de
 packaging/cycle de vie et preuve CEF complète. Garder distincts le reçu serveur,
 la soumission d'image Solar et la capture physique Pulsar.

@@ -188,6 +188,15 @@ Tests: `program_release_native_test.go` (private Rust receiver),
 `program_admission_fence_test.go`, `lsdpreception/program_release_test.go` and
 `bluehost/program_release_test.go`. Native proof does not certify CEF presentation.
 
+`editable_idle_native_test.go` measures editor WS admission, author publication,
+native barrier and return ACK separately after explicit idle periods. Its opt-in
+private receiver can load an existing native authoring snapshot with assets;
+it verifies the actual accepted leaf without printing its document or credentials.
+The recovery contract and probe variables belong to
+[native recovery](../../docs/runbooks/native-recovery.md). Timings are observations,
+not wall-clock regression assertions; deterministic recovery tests check retry,
+identity and backoff behavior.
+
 Unit tests live beside these handlers; the opt-in native test requires
 ORION_TEST_PRIVATE_LANE_ADDRESS from an isolated synthetic receiver. It must
 never target the shared Prism runtime. This path covers native signed Blue and

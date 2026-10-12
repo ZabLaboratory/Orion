@@ -29,7 +29,7 @@ shared Blue Host. Runtime and native publishers retain their existing owners.
 | Generic operator execution receipts and public runtime errors | `operator_execution.go`, `operator.go`; `operator_execution_test.go` |
 | Read-only slot/projection status | `scene_intent_status.go` |
 | Ordered native full-state/leaf publication, retries and acknowledged hashes | `internal/lsdpreception/producer.go`, `tree.go` |
-| Lost-receipt recovery without duplicated insertion; protocol/ambiguity refusal | `internal/lsdpreception/recovery_test.go`, `recovery_native_test.go`; native delivery diagnostics |
+| Lost-receipt recovery without duplicated insertion; protocol/ambiguity refusal and immediate idle-socket recovery | `internal/lsdpreception/recovery_test.go`, `recovery_native_test.go`, `idle_recovery_test.go`, `idle_recovery_native_test.go`; `internal/api/editable_idle_native_test.go`; native delivery diagnostics |
 | Program/Preview resources, exact generation writer leases and camera/overlay projection | `internal/lsdpreception/mirror.go` |
 | Isolated native test sessions, lease renewal, explicit close and expiry | `internal/lsdpreception/session.go`, `internal/runtime/test_session.go`, `show.go` |
 | Native ACK on editable inputs and camera projection | `native_delivery.go`, `editable_preview.go`, `editable_targets.go`, `camera_slots.go`; runtime scene inbox barrier |
