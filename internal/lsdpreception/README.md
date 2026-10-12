@@ -20,7 +20,10 @@ failure use the bounded 250 ms backoff. Idle expiry therefore does not add a
 mandatory delay to the next edit. No scene/timer traffic is added to keep a socket
 alive. `idle_recovery_test.go` checks immediate replay and outage backoff;
 `idle_recovery_native_test.go` checks actual application after a private socket
-loss. An uncertain commit followed by BASE_MISMATCH is
+loss. Failed dials never replace the live client: the native binding may return
+a typed nil through its interface on cancellation; shutdown/retry must not call
+Close on that value. The same regression suite covers cancelled real dials.
+An uncertain commit followed by BASE_MISMATCH is
 terminal: it is never rebased into a potentially duplicated insertion.
 The native router retains each full assignment and its replay payload until its
 owner releases the completed record. Both `Producer` and `Reception.Replace`

@@ -97,7 +97,14 @@ func (p *Producer) exchange(client *producerClient, request any) (json.RawMessag
 		var result json.RawMessage
 		var err error
 		if *client == nil {
-			*client, err = p.dial(ctx)
+			// Dial may return (*native.Client)(nil) converted to this interface.
+			// Keep the live client nil on failure so shutdown/retry cannot Close
+			// a typed-nil value or mistake it for an established connection.
+			var connected producerClient
+			connected, err = p.dial(ctx)
+			if err == nil {
+				*client = connected
+			}
 		}
 		if err == nil {
 			result, err = (*client).Exchange(ctx, request)

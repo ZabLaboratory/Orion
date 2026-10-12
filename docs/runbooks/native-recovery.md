@@ -18,6 +18,9 @@ n'est ajouté. La readiness reste invalide pendant l'incident. Une
 réponse vérifiée efface l'erreur transitoire et permet le drainage dans l'ordre.
 L'arrêt annule la reprise. La déduplication Rust empêche une insertion déjà
 committée d'être exécutée deux fois quand sa première réponse a été perdue.
+Un Dial échoué ne remplace jamais le client actif : une valeur nil typée renvoyée
+par le binding ne doit pas être fermée ni considérée comme une connexion établie.
+Cela évite un panic lors de l'annulation ou de la reprise d'une connexion.
 
 Un BASE_MISMATCH après une issue de transport incertaine peut indiquer une perte
 de l'historique de réponses du nœud. Orion refuse NATIVE_TRANSACTION_OUTCOME_UNKNOWN,

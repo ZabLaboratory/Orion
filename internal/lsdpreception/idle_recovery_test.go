@@ -6,7 +6,26 @@ import (
 	"io"
 	"testing"
 	"time"
+
+	native "github.com/ZabLaboratory/Orion/third_party/lsdpnative"
 )
+
+func TestFailedDialDoesNotRetainTypedNilClient(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	p := NewProducer(ctx, &Reception{Address: "127.0.0.1:1"})
+	defer p.Close()
+	cancel()
+	// The production adapter returns a typed nil through producerClient on
+	// a cancelled real native Dial. No network mutation is performed.
+	p.dial = func(ctx context.Context) (producerClient, error) {
+		return native.Dial(ctx, p.reception.Address, "", nil)
+	}
+	var client producerClient
+	_, _, err := p.exchange(&client, map[string]any{"kind": "capabilities"})
+	if err == nil || client != nil {
+		t.Fatal("failed Dial retained an unusable client", err)
+	}
+}
 
 func TestRecoveryRetriesClosedConnectionImmediately(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
