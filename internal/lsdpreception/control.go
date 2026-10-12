@@ -37,8 +37,18 @@ func (r *Reception) WriteLeaf(ctx context.Context, target, path string, value an
 
 // WriteLeaves applies related absolute observations in one native transaction.
 func (r *Reception) WriteLeaves(ctx context.Context, target string, operations []any) error {
+	return r.WriteLeavesFromState(ctx, target, func(any) ([]any, error) { return operations, nil })
+}
+
+// WriteLeavesFromState rebases state-dependent operations only after a proven
+// BASE_MISMATCH refusal. The builder is pure and may be called again.
+func (r *Reception) WriteLeavesFromState(ctx context.Context, target string, build func(any) ([]any, error)) error {
 	for attempt := 0; attempt < 8; attempt++ {
 		before, err := r.Read(ctx, target)
+		if err != nil {
+			return err
+		}
+		operations, err := build(before)
 		if err != nil {
 			return err
 		}

@@ -157,6 +157,9 @@ type SceneIntentDeps struct {
 	PresentScene        ScenePresenter
 	BeginLaneTransition func(bluehost.Slot) func(bool)
 	CommitLaneRoles     func(context.Context, lsdpreception.LaneCommit) lsdpreception.LaneCommitReceipt
+	CheckProgramRelease func(lsdpreception.ProgramRelease) lsdpreception.ProgramReleaseReceipt
+	InspectProgram      func(context.Context, lsdpreception.ProgramInspect) lsdpreception.ProgramIdentityReceipt
+	ReleaseProgram      func(context.Context, lsdpreception.ProgramRelease) lsdpreception.ProgramReleaseReceipt
 	// Bridges tracks the running bridge per bluehost.Slot so a superseding
 	// Take (or a re-Prepare) stops the previous one instead of leaking a
 	// goroutine stepping an instance the Host has already released.
@@ -269,11 +272,16 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 		}
 
 		var action attestation.Action
+		programEpoch, programAllowed := deps.Host.ProgramAdmissionToken()
 		switch req.Action {
 		case string(attestation.ActionPreparePreview):
 			action = attestation.ActionPreparePreview
 		case string(attestation.ActionTakeOnAir):
 			action = attestation.ActionTakeOnAir
+			if !programAllowed {
+				writeJSON(w, http.StatusConflict, sceneIntentResponse{Status: "rejected", Reason: "PROGRAM_RELEASED", IntentID: req.IntentID})
+				return
+			}
 		default:
 			writeJSON(w, http.StatusBadRequest, sceneIntentResponse{Status: "rejected", IntentID: req.IntentID, Reason: "UNKNOWN_ACTION"})
 			return
@@ -448,6 +456,10 @@ func postSceneIntent(deps SceneIntentDeps) http.HandlerFunc {
 			return
 		}
 		defer releaseCommit()
+		if slot == bluehost.SlotOnAir && !deps.Host.ProgramAdmissionValid(programEpoch) {
+			writeJSON(w, http.StatusConflict, sceneIntentResponse{Status: "rejected", Reason: "PROGRAM_ADMISSION_SUPERSEDED", IntentID: req.IntentID})
+			return
+		}
 		if dedupKey != "" {
 			if cached, ok := deps.Idempotency.lookup(dedupKey); ok {
 				writeJSON(w, http.StatusOK, cached)

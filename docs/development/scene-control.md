@@ -80,3 +80,85 @@ An explicitly promoted on-air generation is a separate active consumer. At most
 one such editable clone is retained; its replacement stops the former Program
 runtime. Preview switches never stop that active Program generation. Shutdown
 stops both owners once. Tests: internal/runtime/preview_editable_test.go.
+
+## Libérer le Program après arrêt de diffusion
+
+Le contrôleur desktop confirme l'arrêt réel des sorties avant cette commande.
+Orion reçoit ce constat local, sans interroger lui-même Pulsar. Les deux moteurs
+Solar physiques persistent ; seul le document et son auteur Program sont retirés.
+Le Preview actif, ses écritures et son identité restent inchangés.
+
+Après règlement des écritures en cours, demander une identité coordonnée en
+appliquant à `/scene_control/defaults/inspect_program` sur `orion/state` :
+
+```json
+{
+  "schema": "orion.program-inspect.v1",
+  "command_id": "fresh-inspection-id",
+  "runtime_instance_id": "current-pulsar-runtime",
+  "take_command_id": "last-confirmed-take",
+  "expected_role_map": {"on_air": "B", "preview": "A"},
+  "expected_revisions": {"program": 1, "preview": 5, "role_map": 1}
+}
+```
+
+`/scene_control/defaults/observed/inspect_program` recopie exactement la requête
+et ajoute `status: active`, `target: solar/lane-b`, `scene_id`, `scene_version`,
+`artifact_set`, ainsi que `writer_id` et `edit_seq` si l'auteur est éditable.
+L'identité est lue sous le bail Program après drainage des inputs acceptés et
+acquittement natif. Elle n'active ni ne compile une scène. Un refus renvoie
+`status: refused` et `reason`, sans identité exploitable. La nouvelle inspection
+utilise un nouveau command_id ; aucun état supplémentaire n'est publié à chaque edit.
+
+Puis appliquer à `/scene_control/defaults/release_program` :
+
+```json
+{
+  "schema": "orion.program-release.v1",
+  "command_id": "fresh-release-id",
+  "stop_command_id": "confirmed-output-stop-id",
+  "output_state": "stopped",
+  "runtime_instance_id": "current-pulsar-runtime",
+  "take_command_id": "last-confirmed-take",
+  "expected_role_map": {"on_air": "B", "preview": "A"},
+  "expected_revisions": {"program": 1, "preview": 5, "role_map": 1},
+  "scene_id": "source-scene",
+  "scene_version": "sha256:source-address",
+  "artifact_set": "sha256:admitted-artifacts",
+  "writer_id": "current-editable-writer",
+  "edit_seq": 12
+}
+```
+
+Les identités source/artifact/writer viennent de l'inspection ; writer/seq sont
+omis pour une scène sans auteur éditable. Les révisions Program et role_map et
+le Take doivent égaler le dernier transfert Orion. La révision Preview peut être
+plus récente que ce transfert, car sa préparation est indépendante. Une révision
+Preview antérieure est refusée. Un edit intervenu depuis l'inspection refuse
+la libération : demander une nouvelle inspection après règlement des écritures.
+
+L'accusé `/scene_control/defaults/observed/release_program` recopie la requête et
+ajoute `status`, `reason` éventuelle, `target`, `retired` et `replayed` éventuel.
+`released` confirme le Drop et son ACK natif, le nettoyage desired/current/observed
+Program et la persistance de la sélection sans Program. `pending` indique la
+réconciliation en cours. `failed` distingue une erreur de livraison, d'arrêt ou
+de persistance ; `retired: true` annonce que l'autorité a déjà été retirée.
+Un refus périmé ne touche ni auteur ni document. Une release n'est pas un switch.
+
+Un `attempt` entier optionnel, initialement 0/omis, peut être augmenté pour
+redélivrer le même command_id après une réception absente. Seul attempt peut
+changer : les autres champs sont comparés pour l'idempotence. Une release déjà
+retirée attend seulement son ACK restant ; aucun nouveau Drop et aucune
+libération du prochain Program ne sont exécutés. Le cache de reçus RAM est borné
+à 64 commandes et ne conserve aucun document de scène inactive.
+
+Après libération, les admissions Program démarrées avant l'arrêt sont invalidées
+et les nouvelles admissions Program refusées jusqu'au prochain Take physique
+confirmé. Celui-ci promeut le Preview existant vers Program sans Load/Start ni
+réinstallation du document. Avec l'ancien Program vide, l'autre lane reste vide.
+Les commandes runtime et les documents mutés ne sont pas persistés.
+
+Preuves : `internal/api/program_release_native_test.go` utilise un récepteur Rust
+jetable. Les tests de publication tardive, runtime/epoch/identité périmés et
+d'admission concurrente vivent auprès des propriétaires API, Host et réception.
+Ce banc ne qualifie ni une vraie diffusion ni le rendu CEF de l'application.

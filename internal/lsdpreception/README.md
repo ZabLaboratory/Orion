@@ -72,7 +72,14 @@ framing for control subscriptions; the pinned file remains unchanged. No native
 server code is copied or modified.
 
 `control.go` owns fragmented native control reads, CAS leaf assignments and
-reconnecting subscriptions. Staged presentation uses idempotent full assignments
+reconnecting subscriptions. Its `WriteLeavesFromState` builder recomputes only
+state-dependent leaves after proven stale-base rejection, so Program retirement
+preserves concurrent Preview desired selections. `program_identity.go` reads a
+physical authority head; `program_release.go` pins its runtime/Take epoch, freezes
+late mirror publications, reuses `Lane.Drop` and keeps a bounded 64-command replay
+history. The native resource becomes null; the Lane identity and Preview document
+stay intact. `program_release_test.go` checks empty-Program start, stale authority
+refusal, retirement and late publication. Staged presentation uses idempotent full assignments
 with the same identity across transport retries. `Lane.BeginTransition` freezes
 Blue/camera projection until the coordinator restores or accepts the scene, then
 publishes the latest camera authority. Control/scene lifecycle contracts belong

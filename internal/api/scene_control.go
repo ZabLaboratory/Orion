@@ -29,9 +29,11 @@ type SceneControlDocument struct {
 	SceneID  string         `json:"scene_id"`
 	Layout   map[string]any `json:"layout"`
 	Defaults struct {
-		Desired    map[string]SceneSelection `json:"desired"`
-		Observed   map[string]any            `json:"observed"`
-		LaneCommit *lsdpreception.LaneCommit `json:"lane_commit,omitempty"`
+		Desired        map[string]SceneSelection     `json:"desired"`
+		Observed       map[string]any                `json:"observed"`
+		LaneCommit     *lsdpreception.LaneCommit     `json:"lane_commit,omitempty"`
+		ReleaseProgram *lsdpreception.ProgramRelease `json:"release_program,omitempty"`
+		InspectProgram *lsdpreception.ProgramInspect `json:"inspect_program,omitempty"`
 	} `json:"defaults"`
 }
 
@@ -43,22 +45,25 @@ func NewSceneControlDocument() SceneControlDocument {
 }
 
 type SceneControl struct {
-	deps       SceneIntentDeps
-	reception  *lsdpreception.Reception
-	path       string
-	headers    http.Header
-	mu         sync.Mutex
-	desired    map[string]SceneSelection
-	current    map[string]string
-	opMu       sync.Mutex
-	seenCommit string
+	deps        SceneIntentDeps
+	reception   *lsdpreception.Reception
+	path        string
+	headers     http.Header
+	mu          sync.Mutex
+	desired     map[string]SceneSelection
+	current     map[string]string
+	opMu        sync.Mutex
+	seenCommit  string
+	seenRelease string
+	seenInspect string
+	inFlight    map[string]context.CancelFunc
 }
 
 func OpenSceneControl(deps SceneIntentDeps, reception *lsdpreception.Reception, path string, headers http.Header) (*SceneControl, error) {
 	if deps.Catalog == nil || !deps.EmbeddedLocal || !filepath.IsAbs(path) {
 		return nil, errors.New("SCENE_CONTROL_CONFIG_INVALID")
 	}
-	c := &SceneControl{deps: deps, reception: reception, path: path, headers: headers.Clone(), desired: map[string]SceneSelection{}, current: map[string]string{}}
+	c := &SceneControl{deps: deps, reception: reception, path: path, headers: headers.Clone(), desired: map[string]SceneSelection{}, current: map[string]string{}, inFlight: map[string]context.CancelFunc{}}
 	raw, err := os.ReadFile(path)
 	if err == nil {
 		if len(raw) > 65536 {
@@ -137,6 +142,24 @@ func (c *SceneControl) Run(ctx context.Context) error {
 				}
 			}
 		}
+		if d.Defaults.InspectProgram != nil {
+			raw, _ := json.Marshal(d.Defaults.InspectProgram)
+			if string(raw) != c.seenInspect {
+				c.seenInspect = string(raw)
+				c.inspectProgram(ctx, *d.Defaults.InspectProgram)
+			}
+		}
+		if d.Defaults.ReleaseProgram != nil {
+			raw, _ := json.Marshal(d.Defaults.ReleaseProgram)
+			if string(raw) != c.seenRelease {
+				c.seenRelease = string(raw)
+				releaseCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+				if desired, changed := c.releaseProgram(releaseCtx, *d.Defaults.ReleaseProgram, d.Defaults.Desired); changed {
+					d.Defaults.Desired = desired
+				}
+				cancel()
+			}
+		}
 		for lane := range lastDesired {
 			if _, exists := d.Defaults.Desired[lane]; !exists {
 				delete(lastDesired, lane)
@@ -193,6 +216,12 @@ func (c *SceneControl) lane(ctx context.Context, lane string, queue chan SceneSe
 			}
 			attempt, stopAttempt := context.WithTimeout(ctx, 40*time.Second)
 			cancel = stopAttempt
+			c.mu.Lock()
+			if c.inFlight == nil {
+				c.inFlight = map[string]context.CancelFunc{}
+			}
+			c.inFlight[lane] = stopAttempt
+			c.mu.Unlock()
 			taskDone := make(chan struct{})
 			done = taskDone
 			go func() {

@@ -421,6 +421,9 @@ func run() error {
 			})
 			sceneIntent.Logger = logger
 			sceneIntent.CommitLaneRoles = api.NativeLaneCommitter(nativeHub, sceneIntent.Host, sceneIntent.Bridges, previewSlot)
+			sceneIntent.CheckProgramRelease = api.NativeProgramReleaseChecker(nativeHub, previewSlot)
+			sceneIntent.InspectProgram = api.NativeProgramInspector(nativeHub, sceneIntent.Host, previewSlot)
+			sceneIntent.ReleaseProgram = api.NativeProgramReleaser(nativeHub, sceneIntent.Host, sceneIntent.Bridges, previewSlot)
 		}
 		if sceneIntent.Host != nil {
 			inbox.SetPlatformEventSink(newStatelessPlatformEventSink(

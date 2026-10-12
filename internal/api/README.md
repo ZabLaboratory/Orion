@@ -160,6 +160,34 @@ Scene control serializes selection and role commit; a busy selection refuses the
 commit. `NativeScenePresenter` fixes the physical target per admission and marks
 all phase wrappers with their logical lane for Solar acknowledgments.
 
+## Program lifetime after confirmed output stop
+
+`program_identity.go` handles the one-shot LSDP `inspect_program` request under
+the Program lease. It returns the active physical source and editable writer/seq
+after draining accepted inputs; no per-edit identity publisher is introduced.
+`program_release.go` consumes `release_program` on the same control resource,
+fences runtime/take/Program-role revisions/source/artifact/writer identity,
+cancels and joins pending Program selection, then freezes its mirror, detaches
+the author, stops the bridge/Host and drops the physical document. Preview and
+its compilation epoch remain untouched; the two Solar engines keep their identity.
+
+`released` follows native application ACK, removal of only desired/current Program
+and owned selection persistence. State-dependent control writes rebase through
+`WriteLeavesFromState`, preserving concurrent Preview selections. Failed cleanup
+is visible, with `retired` distinguishing actual retirement from refusal. Exact
+replay never retires a subsequent actor; an increased delivery `attempt` permits
+retrying a pending native ACK without publishing another Drop. Only the next
+confirmed physical Take enables Program admission again. Work started before
+release or role transfer is fenced before Host publication.
+
+The desktop owner confirms output shutdown via `output_state: stopped` and
+`stop_command_id`; Orion does not independently query Pulsar output state.
+Wire envelopes and status fields are specified in
+[scene-control](../../docs/development/scene-control.md). No HTTP route added.
+Tests: `program_release_native_test.go` (private Rust receiver),
+`program_admission_fence_test.go`, `lsdpreception/program_release_test.go` and
+`bluehost/program_release_test.go`. Native proof does not certify CEF presentation.
+
 Unit tests live beside these handlers; the opt-in native test requires
 ORION_TEST_PRIVATE_LANE_ADDRESS from an isolated synthetic receiver. It must
 never target the shared Prism runtime. This path covers native signed Blue and

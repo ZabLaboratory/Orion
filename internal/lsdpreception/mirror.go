@@ -19,17 +19,19 @@ import (
 
 // Hub owns logical lanes/generations, never a native process or WS server.
 type Hub struct {
-	mu          sync.Mutex
-	producer    *Producer
-	logger      *slog.Logger
-	generations map[string]*Mirror
-	clock       uint64
-	lanes       map[string]*Lane
-	physical    bool
-	roles       RoleMap
-	lastCommit  *LaneCommitReceipt
-	commitCache map[string]LaneCommitReceipt
-	commitOrder []string
+	mu           sync.Mutex
+	producer     *Producer
+	logger       *slog.Logger
+	generations  map[string]*Mirror
+	clock        uint64
+	lanes        map[string]*Lane
+	physical     bool
+	roles        RoleMap
+	lastCommit   *LaneCommitReceipt
+	commitCache  map[string]LaneCommitReceipt
+	commitOrder  []string
+	releases     map[string]ProgramReleaseReceipt
+	releaseOrder []string
 }
 type Lane struct {
 	hub           *Hub
@@ -138,6 +140,9 @@ func (l *Lane) SetActive(sceneID string) {
 func (l *Lane) Drop(sceneID string) {
 	l.hub.mu.Lock()
 	defer l.hub.mu.Unlock()
+	l.dropLocked(sceneID)
+}
+func (l *Lane) dropLocked(sceneID string) {
 	m := l.scenes[sceneID]
 	delete(l.scenes, sceneID)
 	if l.active == m && m != nil {

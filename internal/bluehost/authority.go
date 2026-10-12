@@ -43,5 +43,7 @@ func (h *Host) SwapAuthority() error {
 	} else {
 		h.slots[SlotPreview] = p
 	}
+	h.programAdmissionEpoch++
+	h.programSuspended = v == nil
 	return nil
 }

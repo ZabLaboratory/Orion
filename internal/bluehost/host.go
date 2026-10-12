@@ -98,9 +98,11 @@ type entry struct {
 // Release first, keeping "no on-air effect before commit" structurally
 // true: there is never a moment with two live on-air instances.
 type Host struct {
-	mu           sync.Mutex
-	sceneCommits map[Slot]chan struct{}
-	transitions  map[Slot]bool
+	mu                    sync.Mutex
+	sceneCommits          map[Slot]chan struct{}
+	transitions           map[Slot]bool
+	programAdmissionEpoch uint64
+	programSuspended      bool
 
 	// runtimeMu serializes calls into Blue's stateful InstanceHandle. It is
 	// deliberately separate from mu: direct EffectHandlers may perform I/O,

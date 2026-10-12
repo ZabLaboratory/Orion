@@ -14,6 +14,7 @@ shared Blue Host. Runtime and native publishers retain their existing owners.
 | Immutable admitted catalog and Canvas Blue closure retention | `scene_catalog.go`, `scene_blue_manifest.go`; `scene_catalog_test.go` |
 | Renderer-confirmed staged replacement and exact-instance compensation | `scene_presentation.go`, `native_scene_presentation.go`, `internal/bluehost/replacement.go`; `scene_presentation_test.go` |
 | Native control watch and bounded phase assignments | `internal/lsdpreception/control.go`, `third_party/lsdpnative/subscription.go` |
+| Program identity read and coordinated release after output stop | `internal/api/program_identity.go`, `program_release.go`, `scene_control.go`; `internal/lsdpreception/program_identity.go`, `program_release.go`; `internal/runtime/program_release.go`; `internal/bluehost/scene_commit.go`; `program_release_native_test.go`, `program_admission_fence_test.go` |
 | Intent dependencies, request/response and admission orchestration | `scene_intent.go` |
 | Shared per-lane cancellable admission commit lease | `internal/bluehost/scene_commit.go`; `scene_intent_concurrency_test.go` |
 | Bounded existing digest verification cache | `scene_intent_verification_cache.go` |

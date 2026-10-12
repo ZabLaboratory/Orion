@@ -13,6 +13,13 @@ slot during presentation. Rollback restores the old instance, including its
 await/clock state; finalization releases it and opens the new execution gate.
 The API coordinator owns the Solar/bridge/mirror transaction around this object.
 
+`scene_commit.go` additionally fences Program admission work against an explicit
+native release and physical authority transfers. A released Program refuses
+scene-intent admissions until `SwapAuthority` promotes the existing Preview.
+The next Take neither loads nor starts a second copy. Preview leases and the
+global rule plane remain independent. `program_release_test.go` covers this gate;
+API/native cleanup is owned by `internal/api/program_release.go`.
+
 `effects.go` handles dedicated HTTP, DB, service and camera opcodes.
 `effect_http.go` admits generic invocations and completes them explicitly;
 `effect_local.go` reuses the same DB/service/camera operations and adds local
