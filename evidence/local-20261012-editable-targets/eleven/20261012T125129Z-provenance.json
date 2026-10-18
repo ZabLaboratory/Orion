@@ -1,0 +1,70 @@
+{
+  "worktree": "D:\\Documents\\Zab\\Orion\\.worktrees\\eleven-local-20261012-lane-role-routing",
+  "branch": "eleven/local-20261012-lane-role-routing",
+  "base": "11334610a68c0e9bf7dcf27dc6f2075c6b5b2104",
+  "source_parent": "419eedeb51991fa6e0ab37749ec8a6551c9923be",
+  "source_files": [
+    {
+      "path": "cmd/orion/main.go",
+      "sha256": "6a6686492c101047b59d50cc6fc124799ed4d60a5c73407670ed4142b12de9d4"
+    },
+    {
+      "path": "docs/development/scene-feature-map.md",
+      "sha256": "3a75f3728052d0b0abe545e3b616f8a509ed3f25a788aea2eb4e043c193d213a"
+    },
+    {
+      "path": "internal/api/README.md",
+      "sha256": "f697b5bbb0bd71cec29fb841844137df3000dda1143a8e338db78a3dc40ac17a"
+    },
+    {
+      "path": "internal/api/editable_preview.go",
+      "sha256": "abc1229ecca7dc71e014b5b19cb7dbbd8109195b138a62dd7a5086f6bb641b47"
+    },
+    {
+      "path": "internal/api/editable_targets.go",
+      "sha256": "d5ddbc2c69d88858a772309ec0e9d84f2a8a37837003169bcae9c4239de478a3"
+    },
+    {
+      "path": "internal/api/editable_targets_test.go",
+      "sha256": "90c6c1239c0234fda88bcff3be05fc2c59005320346eb3989af09c1e638fc3bb"
+    },
+    {
+      "path": "internal/api/lane_commit_native_test.go",
+      "sha256": "c4ffae8c35620714f92fe1085bb84b5786ff7fa67ea7774df8f0f786c42bf599"
+    },
+    {
+      "path": "internal/api/public.go",
+      "sha256": "f81d5df7d7b0150d6dfbe1a342e2773e7fb2bbd16b3158866a6a8f9fc16a875a"
+    },
+    {
+      "path": "internal/runtime/preview.go",
+      "sha256": "2840e52b7135149ef89f0e64709bc7034b51b79e7feddf62878947663b0c6d2d"
+    },
+    {
+      "path": "internal/runtime/preview_roles.go",
+      "sha256": "aedfb4f606bcf0052dd0c219e09d9187df2a275fc9fef5b0eba9714f85051213"
+    },
+    {
+      "path": "internal/runtime/editable_targets.go",
+      "sha256": "e9f7b3b537411a280827b04555cfd8b29ce76cfc54ef717fea1ea9c19a8612c6"
+    },
+    {
+      "path": "internal/runtime/editable_targets_test.go",
+      "sha256": "116d00215e4b1c906e3732f83d49c001e0e7c0fb3acd5e512dbec7b92140da2e"
+    }
+  ],
+  "binary": "D:\\Documents\\Zab\\Orion\\.worktrees\\eleven-local-20261012-lane-role-routing\\.cache\\orion-editable-targets-packaged.exe",
+  "binary_sha256": "c9d44059fcc14dbf4ebac34ba6186f7d863ce0ff666d0bdeddbc8b86c71287da",
+  "blue_revision": "ff8b1dde0bad4f53e876651a0e0748cca3e9f622",
+  "blue_manifest": "sha256:d377fa500620d9f9e1e4c725f97414a24e28dfff3fcda3b0f701fd5d89b25c41",
+  "validation": {
+    "go_test_all": "pass",
+    "go_vet_all": "pass",
+    "final_affected_tests": "pass",
+    "private_native_rust": "pass",
+    "private_packaged_descriptor": "pass",
+    "private_process_exit": 0
+  },
+  "common_runtime_restarted_by_this_unit": false,
+  "common_integration_owner": "Main 1"
+}

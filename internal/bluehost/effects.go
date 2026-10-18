@@ -50,8 +50,8 @@ type EffectDeps struct {
 	// StepResult.Variables. Host.SetOverlayMirror (not this struct) is
 	// what actually wires a Host to read it; this field only carries the
 	// dependency from cmd/orion/main.go through to that call. Normally
-	// antenneWire (*lsdp.Wire — it implements EmitOverlayApp directly, the
-	// SAME show-level wire Engine A's Show.mirrors drives). nil = every
+	// the Orion stream controller persists desired intent, owns configured
+	// local processes and forwards native overlay control. nil = every
 	// core.overlay-app.set@1 firing is dropped (bag write still happens),
 	// same unwired-seam-still-fires-then posture as every other field here.
 	OverlayMirror OverlayAppMirror
@@ -164,12 +164,14 @@ func NewEffectHandlers(deps EffectDeps, mode blueruntime.Mode) map[string]blueru
 		// Preview must use the same data path as on-air so Engine B can produce
 		// the real match-driven LSML delta instead of acknowledging a no-op
 		// against an invented empty result set.
+		started := time.Now()
 		result, err := doDBQuery(context.Background(), deps.DB, deps.DataSources, config, inputs)
 		if deps.Logger != nil {
 			if err != nil {
 				deps.Logger.Error("engine b db query failed", "datasource", strOf(config["datasource"]), "err", err)
 			} else {
-				deps.Logger.Info("engine b db query completed", "datasource", strOf(config["datasource"]), "count", result["count"], "rows_type", fmt.Sprintf("%T", result["rows"]))
+				deps.Logger.Info("engine b db query completed", "datasource", strOf(config["datasource"]), "count", result["count"], "rows_type", fmt.Sprintf("%T", result["rows"]),
+					"transport_ms", float64(time.Since(started).Microseconds())/1000)
 			}
 		}
 		return result, err

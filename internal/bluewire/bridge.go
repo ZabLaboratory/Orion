@@ -163,7 +163,14 @@ func (b *Bridge) cancelStartup() {
 // An empty projection (no wire-legal outputs this step) is a no-op —
 // mirrors the legacy path's zero-patch-delta drop (ADR 002 §6).
 func (b *Bridge) StepOnce() error {
-	return b.step(0)
+	if b.steps == nil {
+		return errors.New("bluewire: no step source")
+	}
+	result, err := b.steps.Step(b.slot)
+	if err != nil {
+		return err
+	}
+	return b.ForwardResult(result)
 }
 
 // TickOnce advances the production host clock by deltaSeconds and forwards
@@ -185,12 +192,12 @@ func (b *Bridge) step(deltaSeconds float64) error {
 // ForwardResult projects a result already produced by the hosted runtime
 // onto the same LSDP mirror as the bridge ticker. Operator calls are
 // synchronous in Engine B: waiting for the next Tick would let a successful
-// LEC trigger return 202 while leaving the scene unchanged until an unrelated
+// command return 202 while leaving the scene unchanged until an unrelated
 // clock step (or forever when the runtime emits no tick output).
 // Keeping this method on Bridge guarantees that immediate calls and periodic
 // ticks share sequence, deduplication, projection and metadata rules.
 func (b *Bridge) ForwardResult(result StepResult) error {
-	proj := blueproject.Project(
+	proj := blueproject.ProjectNative(
 		blueproject.StepOutputs{RuntimeSequence: result.RuntimeSequence, Outputs: result.Outputs},
 		b.sceneDigest, b.instanceID, b.renderRevision, b.correlationID, b.target,
 	)

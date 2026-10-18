@@ -76,12 +76,18 @@ func (p Profile) IsAntenne() bool { return p == ProfileAntenne }
 // Config is the typed view of Orion's environment. Every field maps to
 // a single env var; empty defaults are filled in by Load.
 type Config struct {
-	ListenAddr    string
-	InternalAddr  string
-	PublicBaseURL string
-	DatabaseURL   string
-	AssetRoot     string
-	SolarRoot     string
+	NativeLSDPAddress  string
+	NativeLSDPResource string
+	StreamIntentPath   string
+	SceneControlPath   string
+	SceneCachePath     string
+	OverlayAppsPath    string
+	ListenAddr         string
+	InternalAddr       string
+	PublicBaseURL      string
+	DatabaseURL        string
+	AssetRoot          string
+	SolarRoot          string
 	// CompilerCacheDir roots the compiler's content-addressed disk cache for
 	// immutable upstream fetches (Canvas layout + pinned Blue blueprint
 	// graph), ORION_COMPILER_CACHE_DIR. Empty disables the cache (every push
@@ -89,7 +95,6 @@ type Config struct {
 	// no eviction / TTL; a changed artefact carries a new key.
 	CompilerCacheDir   string
 	ZabAuthValidateURL string
-	AuthCacheTTL       time.Duration
 	ServiceToken       string
 	ServicePaths       []string
 	QuasarBaseURL      string
@@ -275,6 +280,12 @@ func Load() (Config, error) {
 	var problems []string
 
 	cfg := Config{
+		NativeLSDPAddress:     strings.TrimSpace(os.Getenv("ORION_LSDP_NATIVE_ADDRESS")),
+		NativeLSDPResource:    getenv("ORION_LSDP_NATIVE_RESOURCE", "orion/state"),
+		StreamIntentPath:      strings.TrimSpace(os.Getenv("ORION_STREAM_INTENT_PATH")),
+		SceneControlPath:      strings.TrimSpace(os.Getenv("ORION_SCENE_CONTROL_PATH")),
+		SceneCachePath:        strings.TrimSpace(os.Getenv("ORION_SCENE_CACHE_PATH")),
+		OverlayAppsPath:       strings.TrimSpace(os.Getenv("ORION_OVERLAY_APPS_PATH")),
 		ListenAddr:            getenv("ORION_LISTEN_ADDR", "127.0.0.1:4007"),
 		InternalAddr:          getenv("ORION_INTERNAL_ADDR", "127.0.0.1:4017"),
 		PublicBaseURL:         strings.TrimRight(getenv("ORION_PUBLIC_BASE_URL", ""), "/"),
@@ -378,14 +389,6 @@ func Load() (Config, error) {
 		problems = append(problems, "ORION_PUSH_TIMEOUT_S must be > 0")
 	} else {
 		cfg.PushTimeout = time.Duration(v) * time.Second
-	}
-
-	if v, err := getInt("ORION_AUTH_CACHE_TTL_S", 60); err != nil {
-		problems = append(problems, err.Error())
-	} else if v < 0 {
-		problems = append(problems, "ORION_AUTH_CACHE_TTL_S must be >= 0")
-	} else {
-		cfg.AuthCacheTTL = time.Duration(v) * time.Second
 	}
 
 	// Phase-3 async-effect config (issue #85). Parsed fail-closed: the

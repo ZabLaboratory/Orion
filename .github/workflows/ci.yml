@@ -42,15 +42,10 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          # Pinned to an exact patch (not "1.26.x") after govulncheck kept
-          # finding 6 stdlib CVEs (net/url, crypto/tls, net/http,
-          # encoding/xml, encoding/asn1) fixed upstream in go1.26.6 but
-          # still resolving to go1.26.5 here — the runner's local toolchain
-          # cache/image apparently pinned an older patch under the wildcard.
-          # Bastion clearance: CLEARED_WITH_CONDITIONS (Orion#336) — DoS-only
-          # CVEs, no RCE/confidentiality/integrity impact, no veto. Bump the
-          # pin again when a newer patch closes a future govulncheck finding.
-          go-version: "1.26.6"
+          # Pin the patch instead of a wildcard. govulncheck found reachable
+          # net/http and crypto/tls vulnerabilities with Go 1.26.6; the
+          # upstream fixes are in Go 1.26.9 (released 2026-10-08).
+          go-version: "1.26.9"
           # cache disabled on purpose (all 8 Go jobs). The setup-go cache
           # never helps on this self-hosted pool: runners are EPHEMERAL so
           # the on-disk Go cache never survives, and the GitHub Actions cache
@@ -288,7 +283,7 @@ jobs:
           fi
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
           cache: false
       - name: mint Blue-read App token for private Go module fetch
         id: blue-read-app-token
@@ -329,7 +324,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
           cache: false
       - name: mint Blue-read App token for private Go module fetch
         id: blue-read-app-token
@@ -370,7 +365,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
           cache: false
       - name: mint Blue-read App token for private Go module fetch
         id: blue-read-app-token
@@ -412,7 +407,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
           cache: false
       - name: mint Blue-read App token for private Go module fetch
         id: blue-read-app-token
@@ -451,7 +446,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
           cache: false
       - name: mint Blue-read App token for private Go module fetch
         id: blue-read-app-token
@@ -490,7 +485,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
           cache: false
       - name: mint Blue-read App token for private Go module fetch
         id: blue-read-app-token
@@ -529,7 +524,7 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.6"
+          go-version: "1.26.9"
           cache: false
       - name: mint Blue-read App token for private Go module fetch
         id: blue-read-app-token

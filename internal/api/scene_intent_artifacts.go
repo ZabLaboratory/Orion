@@ -19,11 +19,12 @@ import (
 // resolvedSceneEnvelope is the slice of `zabcanvas.resolved-scene.v1`
 // (§6.3) this handler consumes: the pinned blue.program.v1 bytes,
 // base64-encoded, plus the digest Canvas computed over them at
-// publication. Every other §6.3 field (LSML render-bundle, projection
-// resources, full attestation echo) is out of this handler's scope.
+// publication. It also carries the optional LSML source and current render capsule.
+// Projection resources and the full attestation echo remain outside this slice.
 type resolvedSceneEnvelope struct {
-	BlueProgram       string `json:"blue_program"`
-	BlueProgramDigest string `json:"blue_program_digest"`
+	BlueManifest      json.RawMessage `json:"blue_manifest,omitempty"`
+	BlueProgram       string          `json:"blue_program"`
+	BlueProgramDigest string          `json:"blue_program_digest"`
 	// LSMLBundle is OPTIONAL — an envelope with no bundle (e.g. an
 	// operator-only rule with nothing to render) is valid;
 	// decodeAndVerifyBundle returns (nil, nil) for it. LSMLBundleDigest is
@@ -32,9 +33,10 @@ type resolvedSceneEnvelope struct {
 	// carries a bundle with no digest, rather than skip verification.
 	LSMLBundle       string `json:"lsml_bundle,omitempty"`
 	LSMLBundleDigest string `json:"lsml_bundle_digest,omitempty"`
-	// RenderBundle is compiled during Canvas validation. Its digest is also
-	// signed in the Canvas ref claims; when present, scene-intent loads these
-	// bytes verbatim and skips StaticBundleCompiler.
+	// RenderBundle is an optional signed compatibility artifact. Solar's
+	// source-only Vision path omits it; scene-intent never compiles LSML to
+	// create one. When an older caller explicitly attaches it, verification
+	// keeps it separate from the LSML source and Blue program.
 	RenderBundle       string `json:"render_bundle,omitempty"`
 	RenderBundleDigest string `json:"render_bundle_digest,omitempty"`
 
@@ -46,9 +48,10 @@ type resolvedSceneEnvelope struct {
 }
 
 type localSceneIndex struct {
-	SceneID          string `json:"scene_id"`
-	RevisionID       string `json:"revision_id"`
-	LSMLBundleDigest string `json:"lsml_bundle_digest,omitempty"`
+	SceneID          string          `json:"scene_id"`
+	RevisionID       string          `json:"revision_id"`
+	LSMLBundleDigest string          `json:"lsml_bundle_digest,omitempty"`
+	BlueManifest     json.RawMessage `json:"blue_manifest,omitempty"`
 }
 
 const maxLocalSceneArtifactBytes = 1 << 30
@@ -69,7 +72,7 @@ func loadLocalSceneEnvelope(root string, claims *attestation.Claims) (resolvedSc
 	if err := json.Unmarshal(indexRaw, &index); err != nil || index.SceneID != claims.SceneID || index.RevisionID != claims.RevisionID {
 		return resolvedSceneEnvelope{}, errors.New("local scene index does not match the attested scene")
 	}
-	envelope := resolvedSceneEnvelope{}
+	envelope := resolvedSceneEnvelope{BlueManifest: append(json.RawMessage(nil), index.BlueManifest...)}
 	if claims.BlueProgramDigest != "" {
 		program, err := readLocalArtifact(root, claims.BlueProgramDigest)
 		if err != nil {
@@ -204,7 +207,7 @@ func blueProgramDigest(program []byte) (string, error) {
 	return computedDigest, nil
 }
 
-// decodeAndVerifyBundle extracts the OPTIONAL LSML render-bundle from
+// decodeAndVerifyBundle extracts the OPTIONAL LSML source from
 // the Canvas artifact envelope. Unlike decodeAndVerifyProgram, there is
 // no SIGNED claim to cross-check against (§6.2's claim set has no
 // lsml_bundle_digest) — only the envelope's own self-consistency
@@ -296,7 +299,7 @@ func decodeSceneArtifact(encoded string, localBytes []byte) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(encoded)
 }
 
-// getHostRenderBundle serves the LSML render-bundle bytes attached to a
+// getHostRenderBundle serves the LSML source bytes attached to a
 // slot by the most recent Prepare/Take (§15 read-route migration: the
 // new-path equivalent of legacy's GET /scenes/{id}/render-bundle,
 // content-addressed and immutably cacheable the same way — but keyed by

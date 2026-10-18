@@ -1,0 +1,40 @@
+{
+  "source_parent": "a052866",
+  "binary": "D:\\Documents\\Zab\\Orion\\.worktrees\\eleven-local-20261012-lane-role-routing\\.cache\\orion-editable-targets-packaged.exe",
+  "binary_sha256": "befcce6e95846d8ecf4b736a7889c69412c6584edcaf51ea7b12bf103beb837e",
+  "source_files": [
+    {
+      "path": "internal/api/editable_targets.go",
+      "sha256": "74199ef78b1b016eda119167e2795723205e48c8d2af57eb66953805b5b26a80"
+    },
+    {
+      "path": "internal/runtime/editable_targets.go",
+      "sha256": "58333ef4de520a5e53ae78f6f4d517590d45b64de26698e6d346ca4f9396541a"
+    },
+    {
+      "path": "internal/api/editable_targets_test.go",
+      "sha256": "b3ba6b5fe367fa2df75d2b09153567848414880c28883ae3f5629528869f6bf1"
+    },
+    {
+      "path": "internal/api/lane_commit_native_test.go",
+      "sha256": "7b9931a64d88f00a0ccd1cc5916be0e96c3f148d81fd9d91184b3b6ffdbb2aaa"
+    },
+    {
+      "path": "internal/api/README.md",
+      "sha256": "480f793a646fd5dd19b9138afb037769dcfc959a6392ebbbd39f956e9d1921d5"
+    }
+  ],
+  "active_defaults_after_native_put": {
+    "edit_seq": 1,
+    "width": 32,
+    "native_program_matches": true,
+    "preview_unchanged": true
+  },
+  "read_guards": {
+    "anonymous": 403,
+    "wrong_scene_or_role": 409,
+    "unknown_target": 400
+  },
+  "tests": "affected packages and all editable API guards pass; affected vet passes; private native proof passes",
+  "shared_runtime_modified": false
+}

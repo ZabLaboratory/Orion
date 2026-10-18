@@ -57,13 +57,22 @@ type StepOutputs struct {
 // Solar client never sees a divergent legality rule depending on which
 // path produced the frame.
 func Project(step StepOutputs, sceneDigest, instanceID, renderRevision, correlationID string, target Target) Projection {
+	return project(step, sceneDigest, instanceID, renderRevision, correlationID, target, false)
+}
+
+// ProjectNative preserves structured JSON bound by an LSML repeat/object.
+// The native document protocol has no LSDP/1 scalar-leaf restriction.
+func ProjectNative(step StepOutputs, sceneDigest, instanceID, renderRevision, correlationID string, target Target) Projection {
+	return project(step, sceneDigest, instanceID, renderRevision, correlationID, target, true)
+}
+func project(step StepOutputs, sceneDigest, instanceID, renderRevision, correlationID string, target Target, native bool) Projection {
 	patches := make(map[string]json.RawMessage, len(step.Outputs))
 	for path, val := range step.Outputs {
 		raw, err := json.Marshal(val)
 		if err != nil {
 			continue
 		}
-		if !isWireLegal(raw) {
+		if !native && !isWireLegal(raw) {
 			continue
 		}
 		patches[path] = raw

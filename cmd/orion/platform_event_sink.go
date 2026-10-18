@@ -25,14 +25,25 @@ func newStatelessPlatformEventSink(
 	write platformEventWriter,
 	forward platformEventForwarder,
 	logger *slog.Logger,
+	acquire ...func(bluehost.Slot) (func(), error),
 ) func(string, any) {
 	return func(path string, payload any) {
 		for _, slot := range []bluehost.Slot{bluehost.SlotPreview, bluehost.SlotOnAir} {
+			release := func() {}
+			if len(acquire) > 0 {
+				var err error
+				release, err = acquire[0](slot)
+				if err != nil {
+					logger.Warn("stateless platform role unavailable", "slot", slot, "error", err)
+					continue
+				}
+			}
 			result, err := write(slot, path, payload)
 			if err != nil {
 				if !errors.Is(err, bluehost.ErrNotLoaded) {
 					logger.Warn("stateless platform event delivery failed", "slot", slot, "path", path, "error", err)
 				}
+				release()
 				continue
 			}
 			if err := forward(slot, bluewire.StepResult{
@@ -41,6 +52,7 @@ func newStatelessPlatformEventSink(
 			}); err != nil {
 				logger.Warn("stateless platform event projection failed", "slot", slot, "path", path, "error", err)
 			}
+			release()
 		}
 	}
 }

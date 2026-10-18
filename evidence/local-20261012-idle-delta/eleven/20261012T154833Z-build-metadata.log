@@ -1,0 +1,29 @@
+D:\Documents\Zab\Orion\.worktrees\eleven-local-20261012-lane-role-routing\.cache\orion-idle-recovery-packaged.exe: go1.26.4
+	path	github.com/ZabLaboratory/Orion/cmd/orion
+	mod	github.com/ZabLaboratory/Orion	(devel)	
+	dep	github.com/Lumencast/lumencast-go	v0.3.2-0.20260816093300-0c7cfc65c694	h1:2y14teoPqAKlg8YsBPrYmkHQl6DNbY9MDhO9+QyIY34=
+	dep	github.com/ZabLaboratory/Blue/runtime/go	v0.1.1-0.20261012083435-ff8b1dde0bad	h1:OI43JUxSQrGAm2eCn0WYc+z8/1zb64MD0epIsTiwTDc=
+	dep	github.com/beorn7/perks	v1.0.1	h1:VlbKKnNfV8bJzeqoa4cOKqO6bYr3WgKZxO8Z16+hsOM=
+	dep	github.com/cespare/xxhash/v2	v2.3.0	h1:UL815xU9SqsFlibzuggzjXhog7bL6oX9BbNZnL2UFvs=
+	dep	github.com/coder/websocket	v1.8.14	h1:9L0p0iKiNOibykf283eHkKUHHrpG7f65OE3BhhO7v9g=
+	dep	github.com/google/uuid	v1.6.0	h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
+	dep	github.com/jackc/pgpassfile	v1.0.0	h1:/6Hmqy13Ss2zCq62VdNG8tM1wchn8zjSGOBJ6icpsIM=
+	dep	github.com/jackc/pgservicefile	v0.0.0-20240606120523-5a60cdf6a761	h1:iCEnooe7UlwOQYpKFhBabPMi4aNAfoODPEFNiAnClxo=
+	dep	github.com/jackc/pgx/v5	v5.9.2	h1:3ZhOzMWnR4yJ+RW1XImIPsD1aNSz4T4fyP7zlQb56hw=
+	dep	github.com/jackc/puddle/v2	v2.2.2	h1:PR8nw+E/1w0GLuRFSmiioY6UooMp6KJv0/61nB7icHo=
+	dep	github.com/munnerz/goautoneg	v0.0.0-20191010083416-a7dc8b61c822	h1:C3w9PqII01/Oq1c1nUAm88MOHcQC9l5mIlSMApZMrHA=
+	dep	github.com/prometheus/client_golang	v1.23.2	h1:Je96obch5RDVy3FDMndoUsjAhG5Edi49h0RJWRi/o0o=
+	dep	github.com/prometheus/client_model	v0.6.2	h1:oBsgwpGs7iVziMvrGhE53c/GrLUsZdHnqNwqPLxwZyk=
+	dep	github.com/prometheus/common	v0.66.1	h1:h5E0h5/Y8niHc5DlaLlWLArTQI7tMrsfQjHV+d9ZoGs=
+	dep	go.yaml.in/yaml/v2	v2.4.2	h1:DzmwEr2rDGHl7lsFgAHxmNz/1NlQ7xLIrlN2h5d1eGI=
+	dep	golang.org/x/sync	v0.22.0	h1:SZjpbeLmrCk4xhRSZFNZW5gFUeCeFgjekvI/+gfScek=
+	dep	golang.org/x/sys	v0.35.0	h1:vz1N37gP5bs89s7He8XuIYXpyY0+QlsKmzipCbUtyxI=
+	dep	golang.org/x/text	v0.41.0	h1:vz/seA0lnX87Othu2f/0L24RcgrXD9/YFTSuGjj3rH8=
+	dep	google.golang.org/protobuf	v1.36.8	h1:xHScyCOEuuwZEc6UtSOvPbAT4zRh0xcNRYekJwfqyMc=
+	build	-buildmode=exe
+	build	-compiler=gc
+	build	-trimpath=true
+	build	CGO_ENABLED=0
+	build	GOARCH=amd64
+	build	GOOS=windows
+	build	GOAMD64=v1

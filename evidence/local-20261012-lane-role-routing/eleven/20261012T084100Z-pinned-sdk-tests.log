@@ -1,0 +1,6 @@
+ok  	github.com/ZabLaboratory/Orion/internal/api	2.934s
+ok  	github.com/ZabLaboratory/Orion/internal/bluehost	3.655s
+ok  	github.com/ZabLaboratory/Orion/internal/bluewire	1.373s
+ok  	github.com/ZabLaboratory/Orion/internal/lsdpreception	1.691s
+ok  	github.com/ZabLaboratory/Orion/internal/runtime	6.542s
+ok  	github.com/ZabLaboratory/Orion/cmd/orion	1.790s

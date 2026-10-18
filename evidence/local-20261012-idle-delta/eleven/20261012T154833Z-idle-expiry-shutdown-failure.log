@@ -1,0 +1,40 @@
+=== RUN   TestEditableIdleDeltaNative
+2026/10/12 17:42:01 INFO HTTP action completed prism="map[code:ACTION_SUCCEEDED context:map[requestId:2ef85205-6f0b-48fa-968a-9248ce36d510] details:map[status:200] domain:service message:HTTP action completed requestId:2ef85205-6f0b-48fa-968a-9248ce36d510 schemaVersion:1 severity:info source:orion.http]"
+    editable_idle_native_test.go:141: IDLE_NATIVE_TIMING {"after":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":2},"before":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":0,"delivered":1},"idle_ms":122000,"native_barrier_ms":10.183,"native_to_ws_ack_ms":0,"native_value_verified":true,"seq":1,"ws_ack_ms":10.183,"ws_to_native_barrier_ms":0}
+    editable_idle_native_test.go:141: IDLE_NATIVE_TIMING {"after":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":3},"before":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":2},"idle_ms":100,"native_barrier_ms":4.729,"native_to_ws_ack_ms":0.531,"native_value_verified":true,"seq":2,"ws_ack_ms":5.26,"ws_to_native_barrier_ms":0}
+    editable_idle_native_test.go:141: IDLE_NATIVE_TIMING {"after":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":4},"before":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":3},"idle_ms":100,"native_barrier_ms":3.676,"native_to_ws_ack_ms":0,"native_value_verified":true,"seq":3,"ws_ack_ms":3.676,"ws_to_native_barrier_ms":0}
+    editable_idle_native_test.go:141: IDLE_NATIVE_TIMING {"after":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":5},"before":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":4},"idle_ms":2000,"native_barrier_ms":5.333,"native_to_ws_ack_ms":0,"native_value_verified":true,"seq":4,"ws_ack_ms":5.333,"ws_to_native_barrier_ms":0}
+    editable_idle_native_test.go:141: IDLE_NATIVE_TIMING {"after":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":6},"before":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":5},"idle_ms":100,"native_barrier_ms":5.33,"native_to_ws_ack_ms":0,"native_value_verified":true,"seq":5,"ws_ack_ms":5.33,"ws_to_native_barrier_ms":0}
+    editable_idle_native_test.go:141: IDLE_NATIVE_TIMING {"after":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":7},"before":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":6},"idle_ms":100,"native_barrier_ms":5.518,"native_to_ws_ack_ms":0,"native_value_verified":true,"seq":6,"ws_ack_ms":5.518,"ws_to_native_barrier_ms":0}
+    editable_idle_native_test.go:141: IDLE_NATIVE_TIMING {"after":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":8},"before":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":7},"idle_ms":6000,"native_barrier_ms":6.506,"native_to_ws_ack_ms":0,"native_value_verified":true,"seq":7,"ws_ack_ms":6.506,"ws_to_native_barrier_ms":0}
+    editable_idle_native_test.go:141: IDLE_NATIVE_TIMING {"after":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":9},"before":{"pending":0,"capacity":256,"recovering":false,"terminal":false,"reconnects":1,"delivered":8},"idle_ms":100,"native_barrier_ms":5.701,"native_to_ws_ack_ms":0.51,"native_value_verified":true,"seq":8,"ws_ack_ms":6.212,"ws_to_native_barrier_ms":0}
+--- PASS: TestEditableIdleDeltaNative (130.70s)
+panic: runtime error: invalid memory address or nil pointer dereference
+[signal 0xc0000005 code=0x0 addr=0x8 pc=0x7ff63581e3ce]
+
+goroutine 10 [running]:
+github.com/ZabLaboratory/Orion/third_party/lsdpnative.(*Client).Close(0x20318c888000?)
+	D:/Documents/Zab/Orion/.worktrees/eleven-local-20261012-lane-role-routing/third_party/lsdpnative/client.go:105 +0xe
+github.com/ZabLaboratory/Orion/internal/lsdpreception.(*Producer).run.func1()
+	D:/Documents/Zab/Orion/.worktrees/eleven-local-20261012-lane-role-routing/internal/lsdpreception/producer.go:208 +0x24
+panic({0x7ff635acbc60?, 0x7ff63622a0f0?})
+	C:/Program Files/Go/src/runtime/panic.go:860 +0x13a
+github.com/ZabLaboratory/Orion/third_party/lsdpnative.(*Client).Close(0x7ff635bfe820?)
+	D:/Documents/Zab/Orion/.worktrees/eleven-local-20261012-lane-role-routing/third_party/lsdpnative/client.go:105 +0xe
+github.com/ZabLaboratory/Orion/internal/lsdpreception.(*Producer).exchange(0x20318c8841c0, 0x20318c7f1d40, {0x7ff635adf380, 0x20318ca8a780})
+	D:/Documents/Zab/Orion/.worktrees/eleven-local-20261012-lane-role-routing/internal/lsdpreception/producer.go:123 +0x3d9
+github.com/ZabLaboratory/Orion/internal/lsdpreception.(*Producer).run(0x20318c8841c0)
+	D:/Documents/Zab/Orion/.worktrees/eleven-local-20261012-lane-role-routing/internal/lsdpreception/producer.go:263 +0xbb6
+created by github.com/ZabLaboratory/Orion/internal/lsdpreception.NewProducer in goroutine 9
+	D:/Documents/Zab/Orion/.worktrees/eleven-local-20261012-lane-role-routing/internal/lsdpreception/producer.go:64 +0x176
+FAIL	github.com/ZabLaboratory/Orion/internal/api	132.529s
+FAIL
+file:///D:/Documents/Zab/Orion/.worktrees/eleven-local-20261012-lane-role-routing/.cache/run-idle-delta-tests.mjs:12
+ if(code!==0) throw Error(`Private idle-delta test exit ${code}`);
+                    ^
+
+Error: Private idle-delta test exit 1
+    at file:///D:/Documents/Zab/Orion/.worktrees/eleven-local-20261012-lane-role-routing/.cache/run-idle-delta-tests.mjs:12:21
+    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+
+Node.js v24.16.0

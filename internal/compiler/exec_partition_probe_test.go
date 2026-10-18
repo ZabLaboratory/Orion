@@ -1,6 +1,6 @@
 package compiler
 
-// Probe tests for the exec-partition lift (ADR 006 §3.1/§3.2, issue #103).
+// Probe tests for the exec-partition lift (ADR 006 Â§3.1/Â§3.2, issue #103).
 // These complement Forge's exec_partition_test.go without rewriting it.
 // Each case is independently reproducible and asserts a real invariant.
 //
@@ -12,18 +12,15 @@ package compiler
 //  3. Pure byte-identical: a pure-dataflow scene produces no exec_programs key.
 //  4. Determinism: N compiles of a complex exec scene are byte-identical.
 //  5. EXEC_OP_UNMAPPED: compile-level fail-loud, not a crash.
-//  6. Multi-blueprint: 2 exec blueprints → 2 programs, key order deterministic.
-//  7. on-event config key contract: Blue uses "event_name" not "event" — defect.
-//  8. Dormant: scenes_push.go does not call InstallExec or LoadExec.
+//  6. Multi-blueprint: 2 exec blueprints â†’ 2 programs, key order deterministic.
+//  7. on-event config key contract: Blue uses "event_name" not "event" â€” defect.
+// Admission now belongs to api/scene_intent*.go. Signature, unattested program
+// and artifact digest refusals are exercised there, not by a retired push-file scan.
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -58,7 +55,7 @@ func compileExecScene(t *testing.T, bp *BlueprintGraph) (*Graph, error) {
 }
 
 // ---------------------------------------------------------------------------
-// 1. Silent-skip closed — is_pure:true exec-pin nodes leave the data graph
+// 1. Silent-skip closed â€” is_pure:true exec-pin nodes leave the data graph
 // ---------------------------------------------------------------------------
 
 // TestPartitionProbe_PureExecNodes_NotInDataGraph exercises each exec-pin
@@ -132,7 +129,7 @@ func TestPartitionProbe_PureExecNodes_NotInDataGraph(t *testing.T) {
 			}
 			// The exec node must NOT appear in the data graph.
 			if _, ok := graphNodeByID(g, "node"); ok {
-				t.Fatalf("%s: exec node leaked into data GraphNode list — silent-skip NOT closed", tc.name)
+				t.Fatalf("%s: exec node leaked into data GraphNode list â€” silent-skip NOT closed", tc.name)
 			}
 			// The entry (on-start) must NOT appear in data graph.
 			if _, ok := graphNodeByID(g, "start"); ok {
@@ -155,8 +152,8 @@ func TestPartitionProbe_PureExecNodes_NotInDataGraph(t *testing.T) {
 // 2a. Round-trip: sequence nested inside branch
 // ---------------------------------------------------------------------------
 
-// TestPartitionProbe_SequenceInBranch: on-start → branch → [true: sequence
-// → {then_0: set1, then_1: set2}]. Proves sequence ops with multiple then_N
+// TestPartitionProbe_SequenceInBranch: on-start â†’ branch â†’ [true: sequence
+// â†’ {then_0: set1, then_1: set2}]. Proves sequence ops with multiple then_N
 // pins and branch exec edges all route to the exec program, with correct Next.
 func TestPartitionProbe_SequenceInBranch(t *testing.T) {
 	bp := &BlueprintGraph{
@@ -209,7 +206,7 @@ func TestPartitionProbe_SequenceInBranch(t *testing.T) {
 
 	p := decodeProgram(t, g.ExecPrograms[0])
 
-	// branch wired: Next["true"] → seq.
+	// branch wired: Next["true"] â†’ seq.
 	br, ok := p.Nodes["br"]
 	if !ok {
 		t.Fatal("branch node missing from exec program")
@@ -217,7 +214,7 @@ func TestPartitionProbe_SequenceInBranch(t *testing.T) {
 	if tgt, ok := br.Next["true"]; !ok || tgt.Node != "seq" {
 		t.Fatalf("branch Next[true] = %+v, want seq", br.Next)
 	}
-	// sequence has Next[then_0] → set1, Next[then_1] → set2.
+	// sequence has Next[then_0] â†’ set1, Next[then_1] â†’ set2.
 	seq, ok := p.Nodes["seq"]
 	if !ok {
 		t.Fatal("sequence node missing from exec program")
@@ -234,7 +231,7 @@ func TestPartitionProbe_SequenceInBranch(t *testing.T) {
 // 2b. Round-trip: for-loop with exec-producer data out (index pin)
 // ---------------------------------------------------------------------------
 
-// TestPartitionProbe_ForLoopIndexPin: on-start → for-loop → body: print.
+// TestPartitionProbe_ForLoopIndexPin: on-start â†’ for-loop â†’ body: print.
 // The print node's value is fed from the loop's index pin (exec-producer data
 // out). Confirms ExecDataInput.FromPort is carried verbatim and the From is
 // NOT key-prefixed (exec-producer is within the program).
@@ -249,14 +246,14 @@ func TestPartitionProbe_ForLoopIndexPin(t *testing.T) {
 				Inputs:  []BlueprintPort{execIn("exec_in")},
 				Outputs: []BlueprintPort{execOut("body"), execOut("completed"), dataIn("index")}},
 			{ID: "pr", Compute: "core.print@1",
-				Config: map[string]json.RawMessage{"message": json.RawMessage(`"i"`)},
-				Inputs: []BlueprintPort{execIn("exec_in"), dataIn("value")},
+				Config:  map[string]json.RawMessage{"message": json.RawMessage(`"i"`)},
+				Inputs:  []BlueprintPort{execIn("exec_in"), dataIn("value")},
 				Outputs: []BlueprintPort{execOut("then")}},
 		},
 		Edges: []BlueprintEdge{
 			{FromNode: "start", FromPort: "then", ToNode: "loop", ToPort: "exec_in"},
 			{FromNode: "loop", FromPort: "body", ToNode: "pr", ToPort: "exec_in"},
-			// data edge: loop's "index" output (exec-producer data out) → print's "value" input.
+			// data edge: loop's "index" output (exec-producer data out) â†’ print's "value" input.
 			{FromNode: "loop", FromPort: "index", ToNode: "pr", ToPort: "value"},
 		},
 	}
@@ -302,9 +299,9 @@ func TestPartitionProbe_MultipleOnEvent(t *testing.T) {
 	bp := &BlueprintGraph{
 		ID: "bp-1",
 		Nodes: []BlueprintNode{
-			// on-event "goal" → set1.
+			// on-event "goal" â†’ set1.
 			// Use BOTH keys so the test passes regardless of which key
-			// the compiler currently reads (the correct key is "event_name" —
+			// the compiler currently reads (the correct key is "event_name" â€”
 			// see TestPartitionProbe_OnEvent_ConfigKeyContract).
 			{
 				ID:      "ev_goal",
@@ -319,7 +316,7 @@ func TestPartitionProbe_MultipleOnEvent(t *testing.T) {
 				Config:  map[string]json.RawMessage{"name": json.RawMessage(`"goals"`)},
 				Inputs:  []BlueprintPort{execIn("exec_in"), dataIn("value")},
 				Outputs: []BlueprintPort{execOut("then")}},
-			// on-event "assist" → set2.
+			// on-event "assist" â†’ set2.
 			{
 				ID:      "ev_assist",
 				Compute: "core.event.on-event@1",
@@ -384,7 +381,7 @@ func TestPartitionProbe_MultipleOnEvent(t *testing.T) {
 // 2d. Round-trip: delay node config verbatim
 // ---------------------------------------------------------------------------
 
-// TestPartitionProbe_DelayConfigVerbatim: on-start → delay (seconds=2.5) →
+// TestPartitionProbe_DelayConfigVerbatim: on-start â†’ delay (seconds=2.5) â†’
 // set. Confirms delay is routed to exec program, config carried verbatim,
 // and Next["then"] wires to set.
 func TestPartitionProbe_DelayConfigVerbatim(t *testing.T) {
@@ -558,17 +555,17 @@ func TestPartitionProbe_Determinism_Complex(t *testing.T) {
 			continue
 		}
 		if string(raw) != string(first) {
-			t.Fatalf("compile %d produced a different artefact — not byte-identical\ngot:  %s\nwant: %s", i, raw, first)
+			t.Fatalf("compile %d produced a different artefact â€” not byte-identical\ngot:  %s\nwant: %s", i, raw, first)
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// 5. EXEC_OP_UNMAPPED — fail-loud, not a crash
+// 5. EXEC_OP_UNMAPPED â€” fail-loud, not a crash
 // ---------------------------------------------------------------------------
 
 // TestPartitionProbe_ExecOpUnmapped_NotCrash: a node with exec pins whose
-// manifest entry maps to no op → compile returns EXEC_OP_UNMAPPED (not nil
+// manifest entry maps to no op â†’ compile returns EXEC_OP_UNMAPPED (not nil
 // err, not a panic, not a silent omission from the program).
 func TestPartitionProbe_ExecOpUnmapped_NotCrash(t *testing.T) {
 	bp := &BlueprintGraph{
@@ -600,13 +597,13 @@ func TestPartitionProbe_ExecOpUnmapped_NotCrash(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// 6. Multi-blueprint: 2 exec blueprints → 2 programs, deterministic key order
+// 6. Multi-blueprint: 2 exec blueprints â†’ 2 programs, deterministic key order
 // ---------------------------------------------------------------------------
 
 // TestPartitionProbe_MultiBlueprint_TwoExecPrograms: two blueprints both
 // carrying exec nodes produce exactly 2 ExecPrograms. Their order in
 // graph.ExecPrograms follows the stable blueprint-key sort order (ADR 001
-// §3.2), and each program's BlueprintKey is its scene-local key.
+// Â§3.2), and each program's BlueprintKey is its scene-local key.
 func TestPartitionProbe_MultiBlueprint_TwoExecPrograms(t *testing.T) {
 	bpAlpha := &BlueprintGraph{
 		ID: "bp-alpha",
@@ -614,8 +611,8 @@ func TestPartitionProbe_MultiBlueprint_TwoExecPrograms(t *testing.T) {
 			{ID: "start", Compute: "core.event.on-start@1",
 				Outputs: []BlueprintPort{execOut("then")}},
 			{ID: "pr", Compute: "core.print@1",
-				Config: map[string]json.RawMessage{"message": json.RawMessage(`"alpha"`)},
-				Inputs: []BlueprintPort{execIn("exec_in")},
+				Config:  map[string]json.RawMessage{"message": json.RawMessage(`"alpha"`)},
+				Inputs:  []BlueprintPort{execIn("exec_in")},
 				Outputs: []BlueprintPort{execOut("then")}},
 		},
 		Edges: []BlueprintEdge{
@@ -644,7 +641,7 @@ func TestPartitionProbe_MultiBlueprint_TwoExecPrograms(t *testing.T) {
 		},
 		manifest: fullExecManifest(),
 	}
-	// Push with keys "alpha" < "zeta" — authored out of order to exercise sorting.
+	// Push with keys "alpha" < "zeta" â€” authored out of order to exercise sorting.
 	g, _, _, err := Compile(context.Background(), "scene-1",
 		PushEnvelope{CanvasVersion: "v1", Blueprints: []BlueprintRef{
 			{Key: "zeta", ID: "bp-zeta"},   // authored out of sort order
@@ -688,7 +685,7 @@ func TestPartitionProbe_MultiBlueprint_TwoExecPrograms(t *testing.T) {
 }
 
 // TestPartitionProbe_MultiBlueprint_Deterministic: same 2-blueprint scene,
-// 5 compiles → byte-identical artefact each time.
+// 5 compiles â†’ byte-identical artefact each time.
 func TestPartitionProbe_MultiBlueprint_Deterministic(t *testing.T) {
 	bpAlpha := &BlueprintGraph{
 		ID: "bp-alpha",
@@ -735,13 +732,13 @@ func TestPartitionProbe_MultiBlueprint_Deterministic(t *testing.T) {
 			continue
 		}
 		if string(raw) != string(first) {
-			t.Fatalf("multi-blueprint compile %d diverged — not byte-identical", i)
+			t.Fatalf("multi-blueprint compile %d diverged â€” not byte-identical", i)
 		}
 	}
 }
 
 // ---------------------------------------------------------------------------
-// 7. on-event config key — DEFECT cross-repo contract divergence
+// 7. on-event config key â€” DEFECT cross-repo contract divergence
 // ---------------------------------------------------------------------------
 
 // TestPartitionProbe_OnEvent_ConfigKeyContract verifies the cross-repo contract
@@ -761,7 +758,7 @@ func TestPartitionProbe_OnEvent_ConfigKeyContract(t *testing.T) {
 			{
 				ID:      "ev",
 				Compute: "core.event.on-event@1",
-				// Only "event_name" — the Blue canonical key (stdlib_seeder.py:122).
+				// Only "event_name" â€” the Blue canonical key (stdlib_seeder.py:122).
 				Config:  map[string]json.RawMessage{"event_name": json.RawMessage(`"goal"`)},
 				Outputs: []BlueprintPort{execOut("then")},
 			},
@@ -777,7 +774,7 @@ func TestPartitionProbe_OnEvent_ConfigKeyContract(t *testing.T) {
 
 	g, err := compileExecScene(t, bp)
 	if err != nil {
-		t.Fatalf("compile error: %v — execEntryEventConfigKey must be \"event_name\" to match Blue contract (stdlib_seeder.py:122)", err)
+		t.Fatalf("compile error: %v â€” execEntryEventConfigKey must be \"event_name\" to match Blue contract (stdlib_seeder.py:122)", err)
 	}
 
 	p := decodeProgram(t, g.ExecPrograms[0])
@@ -790,54 +787,9 @@ func TestPartitionProbe_OnEvent_ConfigKeyContract(t *testing.T) {
 		t.Fatalf("entry.Kind = %q, want \"on-event\"", entry.Kind)
 	}
 	if entry.Event != "goal" {
-		t.Fatalf("entry.Event = %q, want \"goal\" — config.event_name not read correctly", entry.Event)
+		t.Fatalf("entry.Event = %q, want \"goal\" â€” config.event_name not read correctly", entry.Event)
 	}
 	if entry.Target.Node != "set" {
 		t.Fatalf("entry.Target.Node = %q, want \"set\"", entry.Target.Node)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// 8. R9 lift (issue #106): scenes_push.go installs exec ONLY via execForAir
-// ---------------------------------------------------------------------------
-
-// TestPartitionProbe_PushInstallsExecThroughGate: a structural source-level
-// check that, post-R9-lift (ADR 006 §3.4, issue #106), the production
-// scenes_push.go handler installs exec — but ONLY through the gated seam
-// execForAir, never by resolving programs itself (ExecProgramsFromGraph)
-// and never by handing programs to LoadExec down a path that skips the
-// validation gate. The invariant is: every install is keyed on the #87
-// validation record, which execForAir is the single composer of.
-//
-// This SUPERSEDES the pre-lift dormancy guard (exec was dormant until
-// #106): the lift's whole point is that a VALIDATED scene installs its
-// exec. The guard now protects the franchissement's safety property — no
-// bypass of the gate — rather than its dormancy.
-//
-// The source is read at test run time from the adjacent api/ package using
-// runtime.Caller to anchor the path correctly regardless of test working dir.
-func TestPartitionProbe_PushInstallsExecThroughGate(t *testing.T) {
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Skip("runtime.Caller failed — cannot locate scenes_push.go")
-	}
-	// thisFile is .../internal/compiler/exec_partition_probe_test.go
-	// scenes_push.go is at .../internal/api/scenes_push.go
-	pushPath := filepath.Join(filepath.Dir(thisFile), "..", "api", "scenes_push.go")
-	src, err := os.ReadFile(pushPath)
-	if err != nil {
-		t.Skipf("cannot read scenes_push.go (%v) — gate check skipped", err)
-	}
-	content := string(src)
-
-	// The lift requires the push path to install exec through execForAir.
-	if !strings.Contains(content, "execForAir") {
-		t.Error("scenes_push.go no longer calls execForAir — the R9 lift's gated install seam is missing (ADR 006 §3.4)")
-	}
-	// The push handler must NEVER resolve programs itself: that would be a
-	// path around the validation gate. ExecProgramsFromGraph is only legal
-	// INSIDE execForAir (gate.go), which gates it on the validation record.
-	if strings.Contains(content, "ExecProgramsFromGraph") {
-		t.Error("scenes_push.go calls ExecProgramsFromGraph directly — exec install must go through execForAir, never around the #87 gate")
 	}
 }

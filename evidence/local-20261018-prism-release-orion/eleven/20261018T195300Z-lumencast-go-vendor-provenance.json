@@ -1,0 +1,14 @@
+{
+  "source": "Lumencast/lumencast-go",
+  "revision": "0c7cfc65c694ce4ab943eb4e7711fd226c671180",
+  "packages": [
+    "lsml",
+    "protocol",
+    "server"
+  ],
+  "file_count": 45,
+  "source_bytes": 248915,
+  "aggregate_sha256": "43be509fc3efaab1e68047bf8cb72ffd39797d30db1790bca597554f0085ef44",
+  "comparison": "Every vendored file equals the source commit checkout byte-for-byte.",
+  "orion_validation": "go mod tidy and go test ./... passed locally."
+}

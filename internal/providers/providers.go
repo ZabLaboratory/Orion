@@ -2,9 +2,8 @@
 // descriptors (ADR-BLUE-012 §4.3/§6.6) — the "menu" bluehost.Host.Prepare/
 // Take pass to blueruntime.StartOptions.Providers so a program declaring
 // `requires` can be admitted by checkProviders. Blue defines the abstract
-// capability shape; this package is the Zab adaptation for the three
-// capabilities Orion currently serves: HTTP egress, stream-level output
-// emission, and overlay-app configuration (no store).
+// capability shape; this package adapts HTTP, DB, service calls, camera slots,
+// show events, overlay control, native LSML mutations and Vision animations.
 package providers
 
 import (
@@ -82,8 +81,8 @@ func showEmitProvider() map[string]any {
 }
 
 // overlayAppProvider is the `core.overlay-app` capability — invoking an
-// overlay-hosted app surface. Explicitly stateless: no store backs an
-// overlay-app instance, this provider is a pure invocation contract.
+// overlay-hosted app surface. The provider is an invocation contract;
+// Orion's stream controller owns its durable desired state and local process.
 // operation "set" mirrors the existing Blue node core.overlay-app.set@1
 // (verb-mirrors-action pattern) — NOT "invoke", so a future `requires`
 // emitted for that node matches this descriptor exactly.
@@ -124,5 +123,24 @@ func Registry() []map[string]any {
 		httpRequestProvider(),
 		showEmitProvider(),
 		overlayAppProvider(),
+		localProvider("core.db.query", "emulated", "query"),
+		localProvider("core.service.call", "emulated", "call"),
+		localProvider("zabcam.slots", "unsupported", "assign", "release"),
+		localProvider("core.lsml", "emulated", "mutate"),
+		localProvider("core.animation", "emulated", "play"),
 	}
+}
+
+func localProvider(capability, preview string, names ...string) map[string]any {
+	operations := make([]any, 0, len(names))
+	for _, name := range names {
+		operations = append(operations, map[string]any{
+			"name": name, "request_type": "core.json", "response_type": "core.json",
+			"preview": preview, "execute": "allowed", "idempotency": "unsupported",
+			"cancellation": "unsupported", "deadline": "unsupported",
+			"limits":       map[string]any{"max_in_flight": num(16), "max_payload_bytes": num(1 << 18), "max_deadline_ms": num(0)},
+			"backpressure": "reject", "error_codes": []any{"PROVIDER_FAILED"},
+		})
+	}
+	return map[string]any{"schema_version": "blue.capability-provider.v1", "capability": capability, "version": "1", "health": "healthy", "operations": operations}
 }

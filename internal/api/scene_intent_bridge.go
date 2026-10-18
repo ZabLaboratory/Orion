@@ -24,43 +24,39 @@ const defaultProjectionInterval = 10 * time.Millisecond
 // starting this one, so a Take superseding the on-air instance never
 // leaves a goroutine stepping an instance bluehost.Host has released.
 //
-// hasProgram=false (a static occupation, #398) still REGISTERS the scene
-// on the wire — Solar must learn (sceneID, scene_version) to know what to
-// fetch — but starts no bridge (there is no instance to step). Any bridge
+// hasProgram=false still REGISTERS the admitted artifact generation on the wire,
+// but starts no bridge (there is no instance to step). Any bridge
 // previously owning the slot is stopped: a static occupation superseding
 // a programmed one must not leave a goroutine stepping an instance the
-// Host has already released. The announced scene_version stays
-// claims.SceneDigest in both cases; for a no-program ref that value IS
-// the bundle hash (== artifact_set_digest, porteur's Decision A), so the
-// ?v= Solar derives matches both the resolver and the bundle's own
-// scene_version by construction.
-func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.Claims, intentID string, hasProgram bool, mirrorBundle []byte, staticState map[string]json.RawMessage) {
+// Host has already released. Roster/generation keys use ArtifactSetDigest;
+// the native mirror preserves source.scene_version for the renderer's exact
+// source fetch and includes x-orion-artifact-set. Blue execution and projection
+// provenance continue to use SceneDigest.
+func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.Claims, intentID string, hasProgram bool, mirrorBundle []byte, staticState map[string]json.RawMessage) func() {
 	if deps.MirrorFor == nil || deps.Bridges == nil {
-		return
+		return func() {}
 	}
-	if len(mirrorBundle) == 0 {
-		mirrorBundle = deps.Host.Bundle(slot)
-	}
-	mirror := deps.MirrorFor(claims.SceneID, claims.SceneDigest, slot, mirrorBundle)
+	sceneVersion := claims.ArtifactSetDigest
+	mirror := deps.MirrorFor(claims.SceneID, sceneVersion, slot, mirrorBundle)
 	if mirror == nil {
-		return
+		return func() {}
 	}
-	// The stateless scene-intent path has no Show roster to emit the
-	// scene_roster frame for it. Publish this one validated bundle to the
-	// wire that owns the slot before the keyframe/activation. Solar's runtime
-	// fetcher then warms its content-addressed cache in parallel; the later
+	// The scene-intent path has no Show roster to emit the
+	// scene_roster frame for it. Publish this one validated source to the
+	// wire that owns the slot before the keyframe/activation. Solar's source
+	// provider then warms its pinned-source cache in parallel; the later
 	// snapshot reuses the same in-flight request instead of paying the bundle
 	// fetch after scene_changed. Orion keeps no roster entry after this wire
-	// update and still remains stateless across restarts.
+	// update. On restart, the owned selection/catalog reconstruct the runtime.
 	if deps.EmitRoster != nil {
 		deps.EmitRoster(slot, []runtime.RosterEntry{{
 			SceneID:      claims.SceneID,
-			SceneVersion: claims.SceneDigest,
+			SceneVersion: sceneVersion,
 		}})
 	}
-	// A compiled LSML bundle can legitimately have no authored defaults while
-	// still containing a renderable static scene and dynamic bindings. Solar
-	// still needs one snapshot to mount that bundle before the first operator
+	// LSML source can legitimately have no authored defaults while still
+	// containing a renderable scene and dynamic bindings. Solar still needs a
+	// snapshot to mount that source before the first operator
 	// delta can be displayed. For programmed scenes the snapshot and first
 	// delta are sequenced behind a bridge startup gate so the HTTP response is
 	// not held by a large LSML seed, while Run cannot tick before the seed.
@@ -70,7 +66,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 		deps.Bridges.Stop(slot)
 		initialSnapshot = &protocol.Snapshot{
 			SceneID:      claims.SceneID,
-			SceneVersion: claims.SceneDigest,
+			SceneVersion: sceneVersion,
 			State:        staticState,
 		}
 	}
@@ -79,15 +75,18 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 			mirror.Forward(initialSnapshot)
 		}
 		if deps.Activate != nil {
-			deps.Activate(claims.SceneID, claims.SceneDigest, slot)
+			deps.Activate(claims.SceneID, sceneVersion, slot)
 		}
 		deps.Bridges.Stop(slot)
-		return
+		deps.Bridges.SetSceneMirror(slot, mirror)
+		return func() {}
 	}
 	target := blueproject.TargetPreview
 	if slot == bluehost.SlotOnAir {
 		target = blueproject.TargetProgram
 	}
+	// Bluewire's projection digest remains the runtime identity committed by
+	// Prepare/Take; the LSDP wire itself is pinned to ArtifactSetDigest above.
 	bridge := bluewire.NewBridge(deps.Host, slot, mirror, claims.SceneID, claims.SceneDigest, claims.RefID, target, claims.RevisionID, intentID)
 	logger := deps.Logger
 	bridge.SetLogger(logger)
@@ -98,7 +97,7 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 	var startupCtx context.Context
 	var startupCancel context.CancelFunc
 	var startupGate chan struct{}
-	if initialSnapshot != nil {
+	if hasProgram {
 		startupCtx, startupCancel = context.WithCancel(context.Background())
 		startupGate = make(chan struct{})
 		bridge.SetStartupGate(startupGate, startupCancel)
@@ -108,8 +107,8 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 			logger.Warn("bluewire bridge step failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
 		}
 	})
-	// The compiled render-bundle snapshot and wire activation are the visible
-	// scene switch. Dispatch them before answering the intent so a successful
+	// The source-pinned snapshot and wire activation are the visible scene
+	// switch. Dispatch them before answering the intent so a successful
 	// response cannot outrun Solar's first scene snapshot. The first Blue
 	// runtime projection remains outside the HTTP critical path; the startup
 	// gate keeps the periodic loop behind it and Registry can cancel the worker
@@ -119,20 +118,25 @@ func startBridge(deps SceneIntentDeps, slot bluehost.Slot, claims *attestation.C
 			mirror.Forward(initialSnapshot)
 		}
 		if deps.Activate != nil {
-			deps.Activate(claims.SceneID, claims.SceneDigest, slot)
+			deps.Activate(claims.SceneID, sceneVersion, slot)
 		}
 	}
-	go func() {
-		if startupCtx != nil && startupCtx.Err() != nil {
-			return
-		}
-		if err := bridge.TickOnce(0); err != nil && logger != nil {
-			logger.Warn("bluewire initial projection failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
-		}
-		if startupGate != nil {
-			close(startupGate)
-		}
-	}()
+	return func() {
+		go func() {
+			if startupCtx != nil && startupCtx.Err() != nil {
+				return
+			}
+			// Tick only advances tick entrypoints and timers; it does not consume
+			// the initial on-start transition. Run that transition once so scene
+			// automation and operator awaits are armed before periodic ticking.
+			if err := bridge.StepOnce(); err != nil && logger != nil {
+				logger.Warn("bluewire initial projection failed", "slot", slot, "scene_id", claims.SceneID, "err", err)
+			}
+			if startupGate != nil {
+				close(startupGate)
+			}
+		}()
+	}
 }
 
 // releaseSlot stops slot's bridge (if any) BEFORE releasing the

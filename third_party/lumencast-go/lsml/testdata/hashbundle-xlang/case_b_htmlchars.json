@@ -1,0 +1,7 @@
+{
+  "lsml": "1.1",
+  "scene_id": "s",
+  "scene_version": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "layout": { "kind": "stack" },
+  "metadata": { "title": "A & B <live>" }
+}

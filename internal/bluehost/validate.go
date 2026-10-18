@@ -38,6 +38,9 @@ const (
 	defaultValidateMaxWall  time.Duration = 5 * time.Second
 )
 
+// Historical name: Canvas requests these isolated execution diagnostics.
+// Canvas owns the scene/Blue validation decision; activation never calls this
+// probe, and no expected business result is interpreted here.
 // ValidateProgram reports whether Orion's Engine B can actually RUN program
 // — the C2 contre-validation surface (ADR-BLUE-012 R6 §6.3/§4.3, scope
 // widened per the porteur: "il faut qu'on puisse vraiment tout valider,

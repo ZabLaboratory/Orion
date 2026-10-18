@@ -1,0 +1,122 @@
+{
+  "worktree": "D:\\Documents\\Zab\\Orion\\.worktrees\\eleven-local-20261012-lane-role-routing",
+  "branch": "eleven/local-20261012-lane-role-routing",
+  "base": "f30707b9f979f127f940915d6669a4c0f8d08668",
+  "source_commit": "6d38b2aa2bd19d4f76c291ad991f7db826e89cb1",
+  "source_files": [
+    {
+      "path": "cmd/orion/main.go",
+      "sha256": "8db0ab5e45a51350db3a06f3f847edf6e493742495c28e669f501d77909f903c"
+    },
+    {
+      "path": "docs/development/scene-control.md",
+      "sha256": "215f2bb4abb3b1e6feb7717de7295f792535dcd1bdb7b9cd0dda2fcc284b18e3"
+    },
+    {
+      "path": "docs/development/scene-feature-map.md",
+      "sha256": "c850076c2d440812c53b16b23092d4c2226ccb55e9ce5712c29278d01bf8d11a"
+    },
+    {
+      "path": "internal/api/README.md",
+      "sha256": "c9694a57dda267fe3d41b4207255b276cdfd922c1bd8c132d4b62f838d4c22fe"
+    },
+    {
+      "path": "internal/api/program_admission_fence_test.go",
+      "sha256": "afa82b0301dd07369855b4cc2598a1ffcedee9858bed91b45e2c933ffb686844"
+    },
+    {
+      "path": "internal/api/program_identity.go",
+      "sha256": "064bad26fe6d216ffbd581fd54dd9dd9a47ca554f528e18994a8a63caefb1931"
+    },
+    {
+      "path": "internal/api/program_release.go",
+      "sha256": "36cffc129c633612d4aaf6e10a1bdacbe5a54a3218594b47b780d6d1fe532a4c"
+    },
+    {
+      "path": "internal/api/program_release_native_test.go",
+      "sha256": "c9591731a432e08a64e71521cb0f737f2aac539dc242b8c3629a2a3fb75428f1"
+    },
+    {
+      "path": "internal/api/scene_control.go",
+      "sha256": "938cc4a9b946b990ef9c6e39653c34f59d0a86222778881cf8646cc6fb2838bb"
+    },
+    {
+      "path": "internal/api/scene_intent.go",
+      "sha256": "a87b475a507200d0fdcde2ee9c51d215f19546f25404d2899864e40009ac67b7"
+    },
+    {
+      "path": "internal/bluehost/README.md",
+      "sha256": "829c4ed08875d542fe091cb1277b8c67eeccc966bd92f3f2333a0e1ab542a443"
+    },
+    {
+      "path": "internal/bluehost/authority.go",
+      "sha256": "2a5246209af07652ee356adbbb9a0bb3032af45ffc0b21fcb7e9fdb0787329e4"
+    },
+    {
+      "path": "internal/bluehost/host.go",
+      "sha256": "b3753db37829824c97a0c490eafc4bd623cc4c15e52accefdf4a0b272dcb1709"
+    },
+    {
+      "path": "internal/bluehost/program_release_test.go",
+      "sha256": "9d02dd123e38342e947f6410b4410ed16c4f67909be77b837db02b54a09d1891"
+    },
+    {
+      "path": "internal/bluehost/scene_commit.go",
+      "sha256": "04710c2c9afa3ff54b489f2dbe666091ce2a236e962e097d1b7ef8249ddad0f6"
+    },
+    {
+      "path": "internal/lsdpreception/README.md",
+      "sha256": "b4754ad57e3904279bc9b527fef68fea1d0258f75a573cf0655e6ecfe4513c97"
+    },
+    {
+      "path": "internal/lsdpreception/control.go",
+      "sha256": "9e76e39c8bef7fcba76d11b451c9591f7e87dd82800a3800dc1173d835f73fa3"
+    },
+    {
+      "path": "internal/lsdpreception/mirror.go",
+      "sha256": "92758d08fe96837bb7ebf25df51db75e66233a8fb1c25cd8c1442ee93f013f2d"
+    },
+    {
+      "path": "internal/lsdpreception/program_identity.go",
+      "sha256": "8eb8ddb1b5aeef94a193f7d9bdadb121081be9584102ff3d737c4b7e3e542da3"
+    },
+    {
+      "path": "internal/lsdpreception/program_release.go",
+      "sha256": "53f13979c2255fd92bb869c77811d4019a8f15a6cfbe94bdcfb62da567d86652"
+    },
+    {
+      "path": "internal/lsdpreception/program_release_test.go",
+      "sha256": "55bf2a459094cb3b0c233f139ab573b89a6aa762f17eb99f7e93e02af0a32ffa"
+    },
+    {
+      "path": "internal/runtime/program_release.go",
+      "sha256": "caf7873675507d3e17aa9c4a572afd219c7f00666cf4124af8ed149562ce4a2c"
+    },
+    {
+      "path": "go.mod",
+      "sha256": "a6ab8c922941c2b952f3e83b96f1a88fb7757145a93435886cb7c252d61e074a"
+    },
+    {
+      "path": "go.sum",
+      "sha256": "476e5d6e8d8f4c6674dc53f288615445f12ab175430d4bc159870ed89ae2d45d"
+    }
+  ],
+  "binary": "D:\\Documents\\Zab\\Orion\\.worktrees\\eleven-local-20261012-lane-role-routing\\.cache\\orion-program-release-packaged.exe",
+  "binary_sha256": "93ed5f1a14f5aba16aba1ce8bff75fea88d69daabae61ebd9ef72f7e77c07c99",
+  "blue_module": "v0.1.1-0.20261012083435-ff8b1dde0bad",
+  "blue_revision": "ff8b1dde0bad4f53e876651a0e0748cca3e9f622",
+  "blue_manifest": "sha256:d377fa500620d9f9e1e4c725f97414a24e28dfff3fcda3b0f701fd5d89b25c41",
+  "buildvcs": false,
+  "vcs_note": "Go stamped the canonical checkout HEAD; automatic VCS stamping disabled. This manifest records the actual signed worktree source commit and file hashes.",
+  "validation": {
+    "private_packaged_descriptor": "pass",
+    "go_vet_all": "pass",
+    "go_test_all": "pass",
+    "private_native_lane_commit_regression": "pass",
+    "graceful_private_exit": 0,
+    "private_native_release": "pass",
+    "private_native_blue_release": "pass"
+  },
+  "common_runtime_touched": false,
+  "common_integration_owner": "Main 1"
+}
