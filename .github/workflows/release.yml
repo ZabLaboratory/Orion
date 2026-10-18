@@ -13,6 +13,9 @@ on:
 permissions:
   contents: write
 
+env:
+  BLUE_RUNTIME_RELEASE_TAG: v4.4.0
+
 jobs:
   build-runtime:
     name: Build local Orion runtime (${{ matrix.target }})
@@ -60,8 +63,25 @@ jobs:
           set -euo pipefail
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
           export GOPRIVATE=github.com/ZabLaboratory/*
+          blue_asset_id="$(gh api "repos/ZabLaboratory/Blue/releases/tags/${BLUE_RUNTIME_RELEASE_TAG}" --jq '.assets[] | select(.name == "prism-blue-runtime-manifest.json") | .id')"
+          test -n "$blue_asset_id"
+          gh api -H 'Accept: application/octet-stream' "repos/ZabLaboratory/Blue/releases/assets/${blue_asset_id}" > blue-runtime-manifest.json
+          read -r blue_digest blue_revision < <(python3 - <<'PY'
+          import json
+          import pathlib
+          import re
+          manifest = json.loads(pathlib.Path('blue-runtime-manifest.json').read_text())['runtime_manifest']
+          digest, revision = manifest['source_digest'], manifest['source_revision']
+          if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest) or not re.fullmatch(r'[0-9a-f]{40}', revision):
+              raise SystemExit('Blue release has invalid runtime source identity')
+          print(digest, revision)
+          PY
+          )
+          echo "BLUE_RUNTIME_SOURCE_DIGEST=${blue_digest}" >> "$GITHUB_ENV"
+          echo "BLUE_RUNTIME_SOURCE_REVISION=${blue_revision}" >> "$GITHUB_ENV"
           rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
           rm -rf "$(go env GOMODCACHE)/cache/vcs"
+          go get "github.com/ZabLaboratory/Blue/runtime/go@${blue_revision}"
           go mod download
       - name: Build Orion binary
         env:
@@ -71,7 +91,14 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p release
-          go build -trimpath -ldflags="-s -w" -o "release/orion-${{ matrix.target }}${{ matrix.suffix }}" ./cmd/orion
+          go build -trimpath -ldflags="-s -w -X github.com/ZabLaboratory/Orion/internal/buildinfo.BlueRuntimeSourceDigest=${BLUE_RUNTIME_SOURCE_DIGEST} -X github.com/ZabLaboratory/Orion/internal/buildinfo.BlueRuntimeSourceRevision=${BLUE_RUNTIME_SOURCE_REVISION}" -o "release/orion-${{ matrix.target }}${{ matrix.suffix }}" ./cmd/orion
+          python3 - "release/orion-${{ matrix.target }}${{ matrix.suffix }}" "${BLUE_RUNTIME_SOURCE_DIGEST}" <<'PY'
+          import pathlib
+          import sys
+          binary = pathlib.Path(sys.argv[1]).read_bytes()
+          if sys.argv[2].encode('ascii') not in binary:
+              raise SystemExit('Orion binary does not embed the Blue source digest')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: orion-runtime-${{ matrix.target }}
@@ -130,7 +157,7 @@ jobs:
           GH_TOKEN: ${{ steps.blue-read.outputs.token }}
         run: |
           set -euo pipefail
-          blue_asset_id="$(gh api repos/ZabLaboratory/Blue/releases/latest --jq '.assets[] | select(.name == "prism-blue-runtime-manifest.json") | .id')"
+          blue_asset_id="$(gh api "repos/ZabLaboratory/Blue/releases/tags/${BLUE_RUNTIME_RELEASE_TAG}" --jq '.assets[] | select(.name == "prism-blue-runtime-manifest.json") | .id')"
           test -n "$blue_asset_id"
           gh api \
             -H 'Accept: application/octet-stream' \

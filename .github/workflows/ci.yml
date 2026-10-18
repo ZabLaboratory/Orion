@@ -554,7 +554,10 @@ jobs:
         # resolves to v2, which rejects that configuration before linting.
         run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
       - name: run
-        run: golangci-lint run --timeout=5m
+        # This runner builds with a cold, job-scoped Go cache while the other
+        # Orion gates execute concurrently. The previous five-minute bound
+        # expired without any lint finding on the v2.0.2 release candidate.
+        run: golangci-lint run --timeout=15m
 
   secret-scan:
     name: secret-scan

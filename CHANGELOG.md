@@ -9,6 +9,14 @@ Every release section is written *before* the tag is pushed — the
 it as the GitHub Release body. If a section is missing, the release
 publishes with empty notes.
 
+## [2.0.2] - 2026-10-19
+
+### Fixed
+
+- Build every Orion release binary from the same pinned Blue runtime source as
+  its published manifest, and embed that source digest and revision in the
+  runtime descriptor. Reject a binary that lacks the digest before publication.
+
 ## [2.0.1] - 2026-10-18
 
 ### Changed
