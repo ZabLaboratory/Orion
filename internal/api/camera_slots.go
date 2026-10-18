@@ -67,7 +67,7 @@ func optionalReleaseRouteUnavailable(err error) bool {
 // operator-gated and bounded: the payload contains no room token, URL, or
 // scene data, only the current logical slots plus explicit stale refs resolved
 // by Prism. Program/Pulsar are not involved in this path.
-func postCameraSlots(assigner CameraSlotAssigner) http.HandlerFunc {
+func postCameraSlots(assigner CameraSlotAssigner, flush ...func(context.Context) error) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
 		if assigner == nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
@@ -217,6 +217,12 @@ func postCameraSlots(assigner CameraSlotAssigner) http.HandlerFunc {
 					"assigned": index,
 					"error":    err.Error(),
 				})
+				return
+			}
+		}
+		if len(flush) > 0 {
+			if err := flushNativeDelivery(r.Context(), PublicDeps{NativeLSDPFlush: flush[0]}, false); err != nil {
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "unavailable", "reason": "NATIVE_LSDP_DELIVERY_FAILED"})
 				return
 			}
 		}

@@ -1,28 +1,17 @@
-// effect_overlay.go wires `core.overlay-app.set@1` to the real stream-level
-// overlay-app wire effector (internal/lsdp.Wire.EmitOverlayApp) — the ENGINE-
-// B-PARITY-ORION host mirror walker.go's fireLocalSideEffect defers to this
-// package for. Its doc comment is explicit: "This portable core has no host
-// mirror/effector to write into ... the write lands in a reserved namespaced
-// ctx.variables bag instead". Unlike the 4 opcodes of full right (effects.go,
-// NewEffectHandlers), the portable core NEVER calls back into a host-injected
-// StartOptions.EffectHandlers entry for this opcode — walker.go's dispatch
-// (`case "core.animation.play@1", "core.show.emit@1", "core.overlay-app.set@1":
-// return w.fireLocalSideEffect(...)`) is unconditional, so an EffectHandlers
-// map entry keyed "core.overlay-app.set@1" would simply never be called. The
-// only surfaced signal is the reserved bag riding StepResult.Variables
-// (runtime.go); dispatchOverlayAppSet reads it after every
-// Step/Tick/Call/WritePlatformEvent/Resolve.
-//
-// `core.animation.play@1` and `core.show.emit@1` share the exact same bag
-// mechanism but are deliberately OUT of scope here: no production stream-rule
-// consumes them through Engine B yet, and wiring an effector nobody calls
-// would be unverifiable dead code (ORION-OVERLAY-EFFECTOR-STREAM-RULE-PROOF).
+// effect_overlay.go projects the portable runtime's cumulative
+// core.overlay-app.set@1 bag after every Step/Tick/Call/event/Resolve. The
+// dedicated opcode writes that bag rather than calling an EffectHandler.
+// Generic invocations use the same mirror through effect_local.go. Production
+// wiring sends both paths to streamcontrol.Controller for durable intent,
+// local process ownership and native LSDP publication. Animation and show bags
+// have their own effect_animation.go and show_emit.go dispatchers.
 package bluehost
 
 import (
 	"sort"
 
 	blueruntime "github.com/ZabLaboratory/Blue/runtime/go"
+	"github.com/ZabLaboratory/Orion/internal/canonical"
 )
 
 // overlayAppSetBag is the reserved ctx.variables key walker.go's
@@ -44,14 +33,9 @@ type OverlayAppMirror interface {
 	EmitOverlayApp(appID string, running, onAir *bool)
 }
 
-// SetOverlayMirror wires the real stream-level overlay-app wire effector
-// core.overlay-app.set@1 forwards to. Normally antenneWire
-// (cmd/orion/main.go), the SAME lsdp.Wire Engine A's Show.mirrors drives.
-// nil (unset, or the antenne LSDP wire never built — bespoke mode) drops
-// every core.overlay-app.set@1 firing: the reserved ctx.variables bag
-// walker.go still writes stays the only observable trace, the same
-// fail-closed posture SetHTTPEffects' unconfigured egress/runner already
-// applies.
+// SetOverlayMirror installs the controller shared with legacy Show and global
+// stream rules. An unset mirror leaves the dedicated opcode's bag observable
+// but produces no host action; generic invocation reports it as unavailable.
 func (h *Host) SetOverlayMirror(m OverlayAppMirror) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -72,15 +56,13 @@ func (h *Host) SetOverlayMirror(m OverlayAppMirror) {
 // cumulative across the instance's whole lifetime, not a per-step delta
 // (runtime.go's `Variables: cloneMap(instance.variables)` on every
 // Step/Tick/Call/WritePlatformEvent/Resolve) — so every previously-fired
-// node's record reappears on every subsequent call. lumencast-go's
-// server.Server.SetOverlayApps has no dedup of its own (it unconditionally
-// fans out the full show-level overlay_apps snapshot to every live
-// subscriber on every call), so re-dispatching an unchanged record here would
-// re-broadcast forever on every Tick. entry.overlaySeen (host.go, one map per
+// node's record reappears on every subsequent call. Re-dispatching an unchanged
+// record would repeat persistence/process reconciliation on every Tick.
+// entry.overlaySeen (host.go, one map per
 // Host slot ENTRY — replaced wholesale on Prepare/Take, never explicitly
 // invalidated) is the edge-detector: a node id is only (re-)dispatched when
 // its resolved (app_id, running, on_air) digest changed since the last
-// dispatch this same instance produced.
+// dispatch this same instance produced, including the firing's causation.
 //
 // instance identifies which entry produced variables, so a result racing a
 // concurrent Take/Release that has already superseded slot's entry is
@@ -114,7 +96,12 @@ func (h *Host) dispatchOverlayAppSet(slot Slot, instance *blueruntime.InstanceHa
 		if !ok {
 			continue
 		}
-		digest := overlayAppSetDigest(appID, running, onAir)
+		// The same value is a new command when fired by a different call or
+		// event. Value-only dedup breaks ON/OFF/ON across two authored nodes.
+		digest, err := canonical.Digest(record)
+		if err != nil {
+			continue
+		}
 
 		h.mu.Lock()
 		e, live := h.slots[slot]
@@ -188,22 +175,4 @@ func boolPtrField(m map[string]any, key string) *bool {
 		return nil
 	}
 	return &v
-}
-
-// overlayAppSetDigest encodes (appID, running, onAir) into a short
-// comparable string: "?" per dimension = unset (untouched), "T"/"F" = the
-// resolved value. Cheap deliberately — this runs once per overlay-app.set
-// node per Step/Tick, not a hot allocation-sensitive path.
-func overlayAppSetDigest(appID string, running, onAir *bool) string {
-	return appID + "|" + boolPtrDigest(running) + boolPtrDigest(onAir)
-}
-
-func boolPtrDigest(v *bool) string {
-	if v == nil {
-		return "?"
-	}
-	if *v {
-		return "T"
-	}
-	return "F"
 }

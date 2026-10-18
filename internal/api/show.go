@@ -1,8 +1,10 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
@@ -70,7 +72,18 @@ func postTestSession(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"code": "INTERNAL"})
 			return
 		}
-		sessionID, _ := deps.Test.Open(r.Context(), body.SceneID, scene.Graph(), scene.Bundle(), progs...)
+		sessionID, clone := deps.Test.Open(context.Background(), body.SceneID, scene.Graph(), scene.Bundle(), progs...)
+		if deps.NativeLSDPFlush != nil {
+			err := clone.Flush(r.Context())
+			if err == nil {
+				err = flushNativeDelivery(r.Context(), deps, false)
+			}
+			if err != nil {
+				deps.Test.CloseSession(sessionID)
+				writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
+				return
+			}
+		}
 		resp := map[string]string{
 			"session_id": sessionID,
 			"ws_url":     "/orion/api/v1/scenes/" + body.SceneID + "/test?session=" + sessionID,
@@ -78,10 +91,40 @@ func postTestSession(deps PublicDeps) http.HandlerFunc {
 		// In dual/lsdp mode the session also exposes an isolated LSDP wire
 		// (the preview Solar runtime is LSDP-only). It follows ONLY this
 		// session's clone, never the antenne's active scene.
-		if deps.LSDPHandler != nil {
+		if deps.NativeLSDPCheck != nil {
+			resp["native_resource"] = "solar/sessions"
+			resp["native_selector"] = sessionID
+			resp["lease_renew_url"] = "/orion/api/v1/show/test-sessions/" + sessionID + "/lease"
+			resp["lease_close_url"] = "/orion/api/v1/show/test-sessions/" + sessionID
+			if expires, err := deps.Test.Renew(sessionID); err == nil {
+				resp["lease_expires_at"] = expires.UTC().Format(time.RFC3339Nano)
+			}
+		} else if deps.LSDPHandler != nil {
 			resp["lsdp_ws_url"] = "/orion/api/v1/scenes/" + body.SceneID + "/test.lsdp?session=" + sessionID
 		}
 		writeJSON(w, http.StatusCreated, resp)
+	})
+}
+
+func renewNativeTestSession(deps PublicDeps) http.HandlerFunc {
+	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
+		expires, err := deps.Test.Renew(r.PathValue("session"))
+		if err != nil {
+			writeJSON(w, http.StatusGone, map[string]string{"code": "TEST_SESSION_EXPIRED"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"expires_at": expires.UTC().Format(time.RFC3339Nano)})
+	})
+}
+
+func closeNativeTestSession(deps PublicDeps) http.HandlerFunc {
+	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
+		deps.Test.CloseSession(r.PathValue("session"))
+		if err := flushNativeDelivery(r.Context(), deps, false); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	})
 }
 
@@ -147,6 +190,10 @@ func postPreviewActiveScene(deps PublicDeps) http.HandlerFunc {
 			return
 		}
 		deps.Preview.Activate(body.SceneID, scene.Graph(), scene.Bundle(), progs...)
+		if err := flushNativeDelivery(r.Context(), deps, true); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]string{"scene_id": body.SceneID})
 	})
 }

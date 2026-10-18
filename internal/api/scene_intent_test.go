@@ -22,6 +22,7 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/blueproject"
 	"github.com/ZabLaboratory/Orion/internal/bluewire"
 	"github.com/ZabLaboratory/Orion/internal/canonical"
+	"github.com/ZabLaboratory/Orion/internal/protocol"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/ZabLaboratory/Orion/internal/workload"
 )
@@ -45,9 +46,9 @@ func (f *fakeIdempotencyMetrics) IdempotencyEvicted(reason string) {
 }
 
 // TestIdempotencyCache_TTLWindowExpiresAndIsCounted is the nominal
-// replay/dedup-window proof (ADR-BLUE-012 §6.4/§12, B3-R6-OPS-ORION): a
+// replay/dedup-window proof (ADR-BLUE-012 Â§6.4/Â§12, B3-R6-OPS-ORION): a
 // tuple stored at t0 is served from cache within the TTL, and treated as a
-// fresh miss (not returned stale) once the TTL has elapsed — the eviction
+// fresh miss (not returned stale) once the TTL has elapsed â€” the eviction
 // is counted with reason "ttl".
 func TestIdempotencyCache_TTLWindowExpiresAndIsCounted(t *testing.T) {
 	metrics := &fakeIdempotencyMetrics{}
@@ -66,7 +67,7 @@ func TestIdempotencyCache_TTLWindowExpiresAndIsCounted(t *testing.T) {
 		t.Fatal("expected a hit at 9s into a 10s TTL window")
 	}
 
-	// Past the window: a miss, counted as a "ttl" eviction — never a stale
+	// Past the window: a miss, counted as a "ttl" eviction â€” never a stale
 	// replay returned past its window.
 	now = now.Add(2 * time.Second) // t0+11s > 10s TTL
 	if _, ok := c.lookup("k1"); ok {
@@ -80,17 +81,17 @@ func TestIdempotencyCache_TTLWindowExpiresAndIsCounted(t *testing.T) {
 }
 
 // TestIdempotencyCache_SaturationBoundsMemoryAndIsCounted is the
-// saturation proof for the cache's OTHER axis (ADR-BLUE-012 §12/B8 —
-// "surcharge non bornée" is the principal named risk): storing far more
+// saturation proof for the cache's OTHER axis (ADR-BLUE-012 Â§12/B8 â€”
+// "surcharge non bornÃ©e" is the principal named risk): storing far more
 // distinct tuples than maxEntries never grows the map past the cap, and
 // the eviction that keeps it bounded is counted with reason "capacity".
 // Fail-closed behavior: an evicted tuple's replay is processed FRESH
-// (a miss), never denied outright — bounding memory never blocks traffic.
+// (a miss), never denied outright â€” bounding memory never blocks traffic.
 func TestIdempotencyCache_SaturationBoundsMemoryAndIsCounted(t *testing.T) {
 	metrics := &fakeIdempotencyMetrics{}
 	const maxEntries = 8
 	// A TTL long enough that capacity, not staleness, is what triggers
-	// eviction — isolates the axis under test from TestIdempotencyCache_
+	// eviction â€” isolates the axis under test from TestIdempotencyCache_
 	// TTLWindowExpiresAndIsCounted above.
 	c := NewIdempotencyCacheWithLimits(time.Hour, maxEntries, metrics)
 	now := time.Unix(1_700_000_000, 0)
@@ -106,7 +107,7 @@ func TestIdempotencyCache_SaturationBoundsMemoryAndIsCounted(t *testing.T) {
 	size := len(c.cache)
 	c.mu.Unlock()
 	if size > maxEntries {
-		t.Fatalf("cache grew to %d entries, want <= %d (maxEntries bound violated — unbounded memory)", size, maxEntries)
+		t.Fatalf("cache grew to %d entries, want <= %d (maxEntries bound violated â€” unbounded memory)", size, maxEntries)
 	}
 
 	metrics.mu.Lock()
@@ -117,7 +118,7 @@ func TestIdempotencyCache_SaturationBoundsMemoryAndIsCounted(t *testing.T) {
 	}
 
 	// Fail-closed-but-not-fail-shut: an evicted (oldest) tuple is a MISS on
-	// replay, never an error — the caller re-executes fresh.
+	// replay, never an error â€” the caller re-executes fresh.
 	if _, ok := c.lookup("k0"); ok {
 		t.Fatal("expected the oldest key to have been evicted under capacity pressure")
 	}
@@ -175,7 +176,7 @@ func minimalProgram(t *testing.T) json.RawMessage {
 	return data
 }
 
-// sha256Digest formats the `sha256:<hex>` digest string §6.2 requires.
+// sha256Digest formats the `sha256:<hex>` digest string Â§6.2 requires.
 func sha256Digest(data []byte) string {
 	sum := sha256.Sum256(data)
 	return "sha256:" + hex.EncodeToString(sum[:])
@@ -301,11 +302,11 @@ func TestPostSceneIntent_PreparePreview_Success(t *testing.T) {
 }
 
 // TestPostSceneIntent_PreparePreview_SameSceneSameDigestIsIdempotent is the
-// "must still short-circuit" direction of the ADR-BLUE-012 §4.4 slot-identity
-// fix: a genuine repeat — same scene_id, same digest — must keep succeeding.
+// "must still short-circuit" direction of the ADR-BLUE-012 Â§4.4 slot-identity
+// fix: a genuine repeat â€” same scene_id, same digest â€” must keep succeeding.
 // Host.Prepare unconditionally refuses (ErrAlreadyLoaded) any second call on
 // an occupied slot BEFORE it ever touches the runtime (host.go's existence
-// check is the first statement in Prepare, ahead of runtime.Load/Start) — so
+// check is the first statement in Prepare, ahead of runtime.Load/Start) â€” so
 // a second response of "prepared" here is only reachable via the caller's
 // Host.Serving short-circuit swallowing that refusal, which is itself proof
 // no re-Load happened for the repeat.
@@ -388,7 +389,7 @@ func TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestReplaces(t *test
 
 	send := func(sceneID, intentID string) *httptest.ResponseRecorder {
 		// signedRef's scene_digest claim is a fixed "sha256:aaa...a" for
-		// every call regardless of sceneID/blueProgramDigest — exactly the
+		// every call regardless of sceneID/blueProgramDigest â€” exactly the
 		// pre-C3 shape this test targets: two scenes sharing one digest.
 		ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, sceneID, digest)
 		body, _ := json.Marshal(sceneIntentRequest{
@@ -424,7 +425,7 @@ func TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestReplaces(t *test
 		t.Fatalf("expected scene B to be prepared, got %+v", resp)
 	}
 	// signedRef's scene_digest claim (distinct from blueProgramDigest/digest
-	// above) is the fixed "sha256:aaa...a" both scene A and scene B carry —
+	// above) is the fixed "sha256:aaa...a" both scene A and scene B carry â€”
 	// exactly the collision this test forces.
 	sceneDigest := "sha256:" + strings.Repeat("a", 64)
 	if !deps.Host.Serving(bluehost.SlotPreview, "scene-B", sceneDigest) {
@@ -435,7 +436,7 @@ func TestPostSceneIntent_PreparePreview_DifferentSceneSameDigestReplaces(t *test
 	}
 }
 
-func TestPostSceneIntent_TakeOnAirOwnsBundleAndBridgeOnAir(t *testing.T) {
+func TestPostSceneIntent_TakeOnAirKeepsSourceOutsideLegacyBundleAndBridgesOnAir(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	program := minimalProgram(t)
 	bundle := []byte(`{"scene":"on-air"}`)
@@ -481,8 +482,8 @@ func TestPostSceneIntent_TakeOnAirOwnsBundleAndBridgeOnAir(t *testing.T) {
 	if rec := send(attestation.ActionPreparePreview, "preview"); rec.Code != http.StatusOK {
 		t.Fatalf("prepare-preview: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := host.Bundle(bluehost.SlotPreview); string(got) != string(bundle) {
-		t.Fatalf("prepare-preview bundle attached to wrong value: %q", got)
+	if got := host.Bundle(bluehost.SlotPreview); len(got) != 0 {
+		t.Fatalf("source-only prepare-preview populated the legacy bundle slot: %q", got)
 	}
 	if host.Bundle(bluehost.SlotOnAir) != nil {
 		t.Fatal("prepare-preview must not attach a bundle to on-air")
@@ -494,8 +495,8 @@ func TestPostSceneIntent_TakeOnAirOwnsBundleAndBridgeOnAir(t *testing.T) {
 	if rec := send(attestation.ActionTakeOnAir, "on-air"); rec.Code != http.StatusOK {
 		t.Fatalf("take-on-air: expected 200, got %d: %s", rec.Code, rec.Body.String())
 	}
-	if got := host.Bundle(bluehost.SlotOnAir); string(got) != string(bundle) {
-		t.Fatalf("take-on-air bundle was not attached to on-air: %q", got)
+	if got := host.Bundle(bluehost.SlotOnAir); len(got) != 0 {
+		t.Fatalf("source-only take-on-air populated the legacy bundle slot: %q", got)
 	}
 	if !bridges.Running(bluehost.SlotOnAir) {
 		t.Fatal("take-on-air should run the on-air bridge")
@@ -636,7 +637,7 @@ func TestPostSceneIntent_WorkloadRefusalPropagates(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
 	}
-	// The reason must be the BARE §4.7 code — Prism's failure vocabulary
+	// The reason must be the BARE Â§4.7 code â€” Prism's failure vocabulary
 	// matches on it exactly; the old err.Error() spelling ("workload:
 	// CODE (http n)") collapsed every typed refusal into
 	// UNKNOWN_RESPONSE on the operator's screen.
@@ -651,7 +652,7 @@ func TestPostSceneIntent_WorkloadRefusalPropagates(t *testing.T) {
 
 // TestPostSceneIntent_RelaysTicketAndRawIntentVerbatim is the M3
 // point of vigilance: the intent must travel BYTE-FOR-BYTE from the
-// request body into MintDelegation — Gate binds its values (deadline
+// request body into MintDelegation â€” Gate binds its values (deadline
 // among them) into the ticket, so any reconstruction or
 // re-serialization on Orion's side is an AUTH_CONTEXT_MISMATCH. The
 // posted body carries fields Orion's own sceneIntentRequest does not
@@ -709,7 +710,7 @@ func TestPostSceneIntent_RelaysTicketAndRawIntentVerbatim(t *testing.T) {
 	}
 	// The fetch leg (WORKLOAD-FETCH-CANVAS-ALIGN) rides the SAME ticket
 	// and the SAME raw intent bytes, plus the delegation the mint just
-	// returned — Gate re-validates all of it on the proxy call too.
+	// returned â€” Gate re-validates all of it on the proxy call too.
 	if wl.fetchCalls != 1 {
 		t.Fatalf("expected exactly one canvas fetch, got %d", wl.fetchCalls)
 	}
@@ -797,14 +798,18 @@ func TestPostSceneIntent_InlineValidatedCapsuleSkipsCanvasFetch(t *testing.T) {
 }
 
 type recordingMirror struct {
-	mu        sync.Mutex
-	forwarded int
+	mu              sync.Mutex
+	forwarded       int
+	snapshotVersion string
 }
 
-func (m *recordingMirror) Forward(any) {
+func (m *recordingMirror) Forward(message any) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.forwarded++
+	if snapshot, ok := message.(*protocol.Snapshot); ok {
+		m.snapshotVersion = snapshot.SceneVersion
+	}
 }
 
 func (m *recordingMirror) count() int {
@@ -859,7 +864,7 @@ func TestPostSceneIntent_BridgeFullLifecycle(t *testing.T) {
 	// The minimal fixture's on-start entrypoint produces no leaf output,
 	// so Bridge.StepOnce's empty-projection no-op (mirroring the legacy
 	// zero-patch-delta drop) means mirror.Forward is never actually
-	// called here — this lifecycle test asserts the START/STOP wiring
+	// called here â€” this lifecycle test asserts the START/STOP wiring
 	// itself (Running before, not Running after), not payload delivery,
 	// which internal/bluewire's own tests already cover with a
 	// non-empty-output fake.
@@ -876,77 +881,6 @@ func TestPostSceneIntent_BridgeFullLifecycle(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	if mirror.count() != countAtRelease {
 		t.Fatalf("expected no further forwards after release, count went from %d to %d", countAtRelease, mirror.count())
-	}
-}
-
-// TestPostSceneIntent_MirrorForReceivesRealSceneDigest is the sceneVersion
-// coherence half of ORION-TAKE-SLOT-IDENTITY (Blue#345): startBridge must
-// pass claims.SceneDigest — the SAME digest Prepare/Take committed on the
-// slot — as MirrorFor's sceneVersion argument, never a hardcoded "".
-// Before this fix, cmd/orion/main.go's MirrorFor closure hardcoded "" for
-// every call, so whatever value the LSDP kit told Solar its scene_version
-// was, Solar could never echo back a ?v= that resolveHostBundle (#401)
-// would accept — Take's own sceneID fix alone is not sufficient for a real
-// client to ever reach the resolver with a matching pair.
-func TestPostSceneIntent_MirrorForReceivesRealSceneDigest(t *testing.T) {
-	pub, priv, _ := ed25519.GenerateKey(nil)
-	program := minimalProgram(t)
-	envelope, digest := canvasEnvelope(program)
-	now := time.Now()
-	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
-
-	var gotSceneID, gotSceneVersion string
-	var calls int
-	deps := SceneIntentDeps{
-		Trust:         attestation.TrustSet{"canvas-key-1": pub},
-		LocatorPrefix: "scenes/",
-		OwnerID:       "owner-1",
-		TenantID:      "tenant-1",
-		Workload:      &fakeWorkload{body: envelope},
-		Host:          bluehost.NewHost(),
-		MirrorFor: func(sceneID, sceneVersion string, _ bluehost.Slot, _ []byte) runtime.SceneMirror {
-			gotSceneID = sceneID
-			gotSceneVersion = sceneVersion
-			calls++
-			return &recordingMirror{}
-		},
-		Bridges:            bluewire.NewRegistry(),
-		ProjectionInterval: time.Hour,
-	}
-
-	body, _ := json.Marshal(sceneIntentRequest{
-		IntentID: "intent-1", StreamID: "stream-1", Target: "preview",
-		Action: string(attestation.ActionPreparePreview), ResolvedSceneRef: ref,
-	})
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader(body))
-	req.Header.Set("X-Authenticated-User", "operator-1")
-	req.Header.Set("X-Authenticated-Role", "operator")
-	req.Header.Set(authContextHeader, "opaque-ticket")
-
-	rec := httptest.NewRecorder()
-	postSceneIntent(deps)(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-
-	if calls != 1 {
-		t.Fatalf("expected MirrorFor called exactly once, got %d", calls)
-	}
-	if gotSceneID != "scene-1" {
-		t.Fatalf("expected sceneID %q, got %q", "scene-1", gotSceneID)
-	}
-	if gotSceneVersion == "" {
-		t.Fatal("MirrorFor received an empty sceneVersion — the #398-class defect: a client can never learn a ?v= that resolveHostBundle would accept")
-	}
-	// scene_digest (claims.SceneDigest) is the fixture's fixed "aaa..."
-	// literal in signedRef — distinct from blue_program_digest (the
-	// canvasEnvelope-returned `digest` used for the program cross-check).
-	// It is the SAME value deps.Host.Prepare/Take are already called with —
-	// the value host.Digest(slot) will hold, so it is what a matching ?v=
-	// must equal.
-	wantSceneVersion := "sha256:" + strings.Repeat("a", 64)
-	if gotSceneVersion != wantSceneVersion {
-		t.Fatalf("expected sceneVersion to equal claims.SceneDigest %q, got %q", wantSceneVersion, gotSceneVersion)
 	}
 }
 
@@ -1045,7 +979,7 @@ func TestPostSceneIntent_NoIdempotencyKeyNeverDedupes(t *testing.T) {
 func TestPostSceneIntent_RequiresOperatorRole(t *testing.T) {
 	deps := SceneIntentDeps{Host: bluehost.NewHost()}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/host/scene-intent", bytes.NewReader([]byte(`{}`)))
-	// No X-Authenticated-* headers ⇒ anonymous.
+	// No X-Authenticated-* headers â‡’ anonymous.
 	rec := httptest.NewRecorder()
 	postSceneIntent(deps)(rec, req)
 	if rec.Code != http.StatusForbidden {
@@ -1107,7 +1041,7 @@ func TestGetHostStatus_ReflectsPreparedSlot(t *testing.T) {
 // extension end to end: once a slot's bridge has forwarded at least one
 // projection, GET /api/v1/host/status surfaces the SAME correlation_id/
 // render_revision that rode the LSDP delta (bluewire.Bridge.LastForwarded),
-// as a stateless polling convenience — never anything Orion waited on to
+// as a stateless polling convenience â€” never anything Orion waited on to
 // answer this request (Refs B3-R6-16-ORION-PGM).
 func TestGetHostStatus_ReflectsLastForwardedProjection(t *testing.T) {
 	host := bluehost.NewHost()
@@ -1115,7 +1049,7 @@ func TestGetHostStatus_ReflectsLastForwardedProjection(t *testing.T) {
 	// entrypoint output) is the same fixture
 	// TestChatDrivenScene_InjectionOrderingIdempotenceProjection already
 	// proves emits a real baseline projection on the very first tick, with
-	// zero events injected — exactly the deterministic, non-empty forward
+	// zero events injected â€” exactly the deterministic, non-empty forward
 	// this test needs.
 	program := chatOverlayProgramFixture(t)
 	if err := host.Prepare(bluehost.SlotOnAir, "instance-1", "scene-1", "sha256:abc", program, nil, nil, nil); err != nil {
@@ -1155,7 +1089,7 @@ func TestGetHostStatus_ReflectsLastForwardedProjection(t *testing.T) {
 }
 
 // TestGetHostStatus_NilBridgesOmitsProjection proves the field degrades to
-// absent (never a zero-value/invented identity) when deps.Bridges is nil —
+// absent (never a zero-value/invented identity) when deps.Bridges is nil â€”
 // the same dark-by-default posture MirrorFor/Idempotency already have
 // (scene_intent.go's SceneIntentDeps doc comments).
 func TestGetHostStatus_NilBridgesOmitsProjection(t *testing.T) {
@@ -1219,7 +1153,7 @@ func TestDecodeAndVerifyBundle_DigestMismatchRejected(t *testing.T) {
 	}
 }
 
-// TestDecodeAndVerifyBundle_MissingDigestRejected — Bastion C4 (PR #346):
+// TestDecodeAndVerifyBundle_MissingDigestRejected â€” Bastion C4 (PR #346):
 // a bundle present without its digest must fail closed, never ride
 // unverified through to GET /host/render-bundle.
 func TestDecodeAndVerifyBundle_MissingDigestRejected(t *testing.T) {

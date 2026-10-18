@@ -195,13 +195,9 @@ type ServiceTokenManager struct {
 	wg        sync.WaitGroup
 }
 
-func NewServiceTokenManager(ctx context.Context, databaseURL, refreshURL, seed, encryptionKey, staticToken string, logger *slog.Logger) (*ServiceTokenManager, error) {
-	return NewServiceTokenManagerWithStatePath(ctx, databaseURL, refreshURL, seed, encryptionKey, staticToken, "", logger)
-}
-
 // NewServiceTokenManagerWithStatePath adds encrypted file-backed state for
-// Prism's embedded-local profile. Antenne callers retain the original
-// constructor and remain Postgres-backed.
+// Prism's embedded-local profile. The optional Postgres store remains available
+// through this same constructor for explicit integration consumers.
 func NewServiceTokenManagerWithStatePath(ctx context.Context, databaseURL, refreshURL, seed, encryptionKey, staticToken, statePath string, logger *slog.Logger) (*ServiceTokenManager, error) {
 	m := &ServiceTokenManager{
 		refreshURL:  strings.TrimRight(refreshURL, "/"),

@@ -408,7 +408,7 @@ func TestCockpit_EngineBDeclaredAwaitNeverArmedIsExcluded(t *testing.T) {
 // TestCockpit_EngineBPreviewArmedAwaitDoesNotLeakToAntenna proves slot
 // isolation: an await armed on bluehost.Host's PREVIEW slot must not appear
 // in the antenna's cockpit contract, which reads SlotOnAir exclusively
-// (appendEngineBScene's only call site, getCockpitContracts).
+// (getCockpitContracts maps an absent target to SlotOnAir).
 func TestCockpit_EngineBPreviewArmedAwaitDoesNotLeakToAntenna(t *testing.T) {
 	previewProgram := buildEngineBOperatorProgram(t, "call", "called", "hidden", "core.primitive.integer", "picked")
 	onAirProgram := buildEngineBOperatorProgram(t, "call", "called", "", "", "")
@@ -446,28 +446,10 @@ func TestCockpit_EngineBPreviewArmedAwaitDoesNotLeakToAntenna(t *testing.T) {
 	}
 }
 
-// TestCockpit_AntennaContractIsolatesArmedAwaitsPerSlot restores a proof the
-// bail owner had removed to avoid an early collision with this work unit's
-// unification (Prism#740 addendum, ORION-UNKNOWN-TARGET-CONTRACT): the
-// antenna leg of GET /cockpit/contracts must report only the on-air
-// program's armed await when BOTH slots are populated and armed
-// simultaneously with DIFFERENTLY NAMED awaits — the same "a distinct name,
-// not just non-empty vs. empty" shape as
-// TestOperator_PendingIsolatesArmedAwaitsPerSlot
-// (operator_dual_slot_isolation_test.go, PR#393), applied to the fourth
-// route that reads ?target=.
-//
-// Before this unification, isolation on this leg rested on a hardcoded
-// argument at the appendEngineBScene call site (cockpit.go), never on a
-// branch reachable through ?target= — a mutation swapping that literal from
-// SlotOnAir to SlotPreview would leak the preview await's exact name into
-// the antenna contract, and an ambiguous mutation (empty-list-only
-// assertions elsewhere) would not have caught it. This test re-proves that
-// isolation against the now-unified resolveTargetKind/targetKind
-// vocabulary — the antenna/preview split for THIS route is still that same
-// SlotOnAir literal (the preview leg stays on Engine A, deliberately out of
-// scope — see getCockpitContracts's doc), reached through the shared
-// decision point rather than a private re-parse of the query string.
+// TestCockpit_AntennaContractIsolatesArmedAwaitsPerSlot proves that the
+// Program facet contains only its own live await when both native slots
+// have differently named armed awaits. The Preview facet has the symmetric
+// proof in cockpit_source_test.go.
 func TestCockpit_AntennaContractIsolatesArmedAwaitsPerSlot(t *testing.T) {
 	onAirProgram := buildEngineBOperatorProgram(t, "call-onair", "called-onair",
 		"pick-onair", "core.primitive.integer", "picked-onair")

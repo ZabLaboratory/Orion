@@ -1,0 +1,84 @@
+{
+  "worktree": "D:\\Documents\\Zab\\Orion\\.worktrees\\eleven-local-20261012-lane-role-routing",
+  "branch": "eleven/local-20261012-lane-role-routing",
+  "base": "ab3d9f5668a69f0f578fc8da3f339081ae1e0700",
+  "source_commit": "2899262027ad3f57a2701fedbf5c288aaa5cf041",
+  "source_files": [
+    {
+      "path": "docs/development/scene-feature-map.md",
+      "sha256": "85133a2ba6f5eb1b60da8b7ceb95d77db77c94b151dc48887d22ef7580266ad6"
+    },
+    {
+      "path": "docs/runbooks/native-recovery.md",
+      "sha256": "1c41b358795e04be528baa2181390af1cb22c5c66b6c3194e1b505c0af4faab8"
+    },
+    {
+      "path": "internal/api/README.md",
+      "sha256": "3e209bc0996136558f042b0a4a566d4fa7abceeeaef2c9c407121680ba597401"
+    },
+    {
+      "path": "internal/api/editable_idle_native_test.go",
+      "sha256": "8fc60066506a4c16472ba0dc134f25c04a5a90478c0a2c7b1f5901184318c848"
+    },
+    {
+      "path": "internal/lsdpreception/README.md",
+      "sha256": "ecebee2d6cd9ac7ab40cbf26213c6de76d5da8c10fafddc28177655eb51dd4dc"
+    },
+    {
+      "path": "internal/lsdpreception/idle_recovery_native_test.go",
+      "sha256": "4ff9ee8e6dd87b0a08b830eae99df16f92ccf6642f6b3d577aab50747b55989c"
+    },
+    {
+      "path": "internal/lsdpreception/idle_recovery_test.go",
+      "sha256": "6fbc550a1e05e895486876f327adcb045bc06c50cd7cad89e2c35badbe638e83"
+    },
+    {
+      "path": "internal/lsdpreception/producer.go",
+      "sha256": "b7523b4a8d00a0ed42a74b9c570afba07265aa7e92d6d450b6a3fa75b1d57d5c"
+    },
+    {
+      "path": "go.mod",
+      "sha256": "a6ab8c922941c2b952f3e83b96f1a88fb7757145a93435886cb7c252d61e074a"
+    },
+    {
+      "path": "go.sum",
+      "sha256": "476e5d6e8d8f4c6674dc53f288615445f12ab175430d4bc159870ed89ae2d45d"
+    },
+    {
+      "path": "third_party/lsdpnative/client.go",
+      "sha256": "4dcfc00acaeeed321e6cfcabf241abdee72c18680089e29dc7f5dddfbac44366"
+    }
+  ],
+  "binary": "D:\\Documents\\Zab\\Orion\\.worktrees\\eleven-local-20261012-lane-role-routing\\.cache\\orion-idle-recovery-packaged.exe",
+  "binary_sha256": "a016dc627dbb6115362fca7c07a7295ce9287c5aac1016878058de59dac8e512",
+  "blue_module": "v0.1.1-0.20261012083435-ff8b1dde0bad",
+  "blue_revision": "ff8b1dde0bad4f53e876651a0e0748cca3e9f622",
+  "blue_manifest": "sha256:d377fa500620d9f9e1e4c725f97414a24e28dfff3fcda3b0f701fd5d89b25c41",
+  "buildvcs": false,
+  "fixture_path": "D:/Documents/Zab/Prism/.worktrees/eleven-local-20261008-scene-sync/.cache/live-edit/current-preview-lsml.json",
+  "fixture_sha256": "30d9caec89e00632e0da8bb77db5702eead00f27487f41d764604e83f47a30e1",
+  "native_server_source": "e695e14f9f664f430ffc2e0e75d083fab88abc7f",
+  "native_server_sha256": "7bd059c56b0daa56b3da24f0ccdb3b6a888709feff9618cd3b8cd2a045bdce60",
+  "common_runtime_touched": false,
+  "common_integration_owner": "Main 1",
+  "validation": {
+    "native_program_release": "pass",
+    "native_lane_commit": "pass",
+    "deterministic_recovery_and_shutdown_tests": "pass",
+    "natural_idle_122s_native": "pass",
+    "go_test_all": "pass",
+    "private_descriptor": "pass",
+    "natural_idle_probe_exit": 0,
+    "go_vet_all": "pass",
+    "private_descriptor_exit": 0,
+    "forced_socket_native": "pass"
+  },
+  "results": {
+    "natural_expiry_reconnects_after": 1,
+    "closed_socket_final_ms": 1.058,
+    "closed_socket_before_ms": 250.863,
+    "natural_expiry_native_barrier_ms": 6.879,
+    "natural_expiry_ws_ack_ms": 7.438,
+    "natural_expiry_reconnects_before": 0
+  }
+}

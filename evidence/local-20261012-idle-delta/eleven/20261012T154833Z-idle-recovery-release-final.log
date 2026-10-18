@@ -1,0 +1,11 @@
+=== RUN   TestProgramReleaseNative
+2026/10/12 17:46:55 INFO HTTP action completed prism="map[code:ACTION_SUCCEEDED context:map[requestId:7f2fcd58-096f-42a0-aaef-6b1143dc216b] details:map[status:200] domain:service message:HTTP action completed requestId:7f2fcd58-096f-42a0-aaef-6b1143dc216b schemaVersion:1 severity:info source:orion.http]"
+2026/10/12 17:46:55 INFO HTTP action completed prism="map[code:ACTION_SUCCEEDED context:map[requestId:f820ddf2-6f66-4c8f-a287-fdbaef4c416c] details:map[status:200] domain:service message:HTTP action completed requestId:f820ddf2-6f66-4c8f-a287-fdbaef4c416c schemaVersion:1 severity:info source:orion.http]"
+2026/10/12 17:46:55 INFO HTTP action completed prism="map[code:ACTION_SUCCEEDED context:map[requestId:ca9e12e0-f7ec-47ca-b875-825de0998ab9] details:map[status:202] domain:service message:HTTP action completed requestId:ca9e12e0-f7ec-47ca-b875-825de0998ab9 schemaVersion:1 severity:info source:orion.http]"
+    program_release_native_test.go:255: REAL_NATIVE_PROGRAM_RELEASE_PROOF first-start-empty=true retired=solar/lane-b preview_unchanged=true late_publication_refused=true next-start-no-reload=true receipt={"artifact_set":"sha256:f78211d4f36aef7d25d280899b900e03ca0c6784c8282edeb65abbd0a1ec1e6a","command_id":"release-1","edit_seq":1,"expected_revisions":{"preview":1,"program":1,"role_map":1},"expected_role_map":{"on_air":"B","preview":"A"},"output_state":"stopped","retired":true,"runtime_instance_id":"release-native-runtime","scene_id":"release-live","scene_version":"sha256:f78211d4f36aef7d25d280899b900e03ca0c6784c8282edeb65abbd0a1ec1e6a","schema":"orion.program-release.v1","status":"released","stop_command_id":"confirmed-stop-1","take_command_id":"first-take","target":"solar/lane-b","writer_id":"C7IMBXRCUMNN6XZJLDDKAA2KPB"}
+--- PASS: TestProgramReleaseNative (0.84s)
+=== RUN   TestProgramReleaseBlueNative
+    program_release_native_test.go:312: REAL_NATIVE_BLUE_RELEASE_PROOF SDK instance stopped, physical Program null, next steps refused
+--- PASS: TestProgramReleaseBlueNative (0.00s)
+PASS
+ok  	github.com/ZabLaboratory/Orion/internal/api	2.189s

@@ -1,0 +1,48 @@
+{
+  "role": "Eleven",
+  "thread": "01a116c8-c342-7e62-b783-59953e085982",
+  "workUnit": "local-20261007-vision-integration",
+  "scope": "Source-only addressed editable Preview with embedded assets; exact authenticated source retrieval; complete native bound-leaf groups",
+  "validation": "go test ./..., go vet ./..., Windows and Linux golangci-lint PASS",
+  "integrationProof": {
+    "result": "PASS",
+    "scene": "local-authoring-proof",
+    "sceneVersion": "sha256:3acec2f28b594702bdd81f15d17a54c7ee9de08e08624f3bb16cd8f67d20eec1",
+    "source": "actual Prism sceneToEditableLsml; isolated authored shape/text fixture",
+    "orion": "actual rebuilt embedded Orion; source-only open and sequenced HTTP patch",
+    "native": "actual packaged Rust receiver",
+    "renderer": "actual Solar host and Vision WASM; headless Chromium SwiftShader",
+    "sourceReads": 1,
+    "programUntouched": true,
+    "immutableSourcePreserved": true,
+    "errors": [],
+    "limits": "Isolated authored fixture; no real saved Canvas scene, Blue admission, CEF, Live, recording or active Prism restart.",
+    "pixelOracle": {
+      "result": "PASS",
+      "beforeShapeBounds": [
+        160,
+        160,
+        360,
+        260
+      ],
+      "afterColourBounds": [
+        160,
+        160,
+        360,
+        260
+      ],
+      "afterMoveResizeBounds": [
+        220,
+        160,
+        480,
+        260
+      ],
+      "blackTextPixels": 334,
+      "textPositionUnchanged": true
+    }
+  },
+  "aggregateProof": "Prism/evidence/local-20261007-vision-integration/eleven/20261007T200000Z-authoring.json",
+  "aggregateSha256": "5580a33431fde07e2ea480c70a067297efda3bf7b32b8ce82f28e4243d830a90",
+  "authority": "Push existing candidate branch; no merge, production activation or Live",
+  "rollback": "Revert this scoped candidate increment; Prism old running dev remains preserved"
+}

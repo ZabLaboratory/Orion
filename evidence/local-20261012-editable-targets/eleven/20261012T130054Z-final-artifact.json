@@ -1,0 +1,33 @@
+{
+  "source_parent": "a2fa3c98a1bc5eea37912e5958f54ec2e7031f7a",
+  "binary": "D:\\Documents\\Zab\\Orion\\.worktrees\\eleven-local-20261012-lane-role-routing\\.cache\\orion-editable-targets-packaged.exe",
+  "binary_sha256": "7f723c35750a3ee350a20c0998482aac0354c8fee73eba3eb1431af5e96c7b24",
+  "source_files": [
+    {
+      "path": "internal/runtime/preview.go",
+      "sha256": "ec6d9112a02e3b701b0031531c1674051e3542f554ec940a8bbb6f6203443077"
+    },
+    {
+      "path": "internal/runtime/preview_roles.go",
+      "sha256": "a82e447a06778cd06a191cb1638a8a4825f6e6545b440d8663aab0efa42ed3bf"
+    },
+    {
+      "path": "internal/runtime/editable_targets.go",
+      "sha256": "a530efb6f78c5186687cd946509893b11dc11f4d5956c79128641fa2a4bb43da"
+    },
+    {
+      "path": "internal/runtime/editable_targets_test.go",
+      "sha256": "a77179a230a46eaf7858c85dcc927efb017ed8168b9dcdf592f29c0da7514942"
+    },
+    {
+      "path": "internal/api/README.md",
+      "sha256": "87ebcf7e00c286891e964bb6356fb51947f2cce4e8b9a03399450adc82d91e58"
+    }
+  ],
+  "legacy_generation_exposed_as_program": false,
+  "native_actor_api_runtime_tests": "pass",
+  "private_native_program_patch_structure_and_active_defaults": "pass",
+  "packaged_descriptor_and_shutdown_zero": "pass",
+  "affected_go_vet": "pass",
+  "shared_runtime_changed": false
+}

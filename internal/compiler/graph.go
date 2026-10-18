@@ -103,6 +103,9 @@ type GraphInput struct {
 
 // RenderBundle is the Solar-facing artefact. Same shape as ADR 003 § 3.
 type RenderBundle struct {
+	// SourceLSML retains original authored bytes for native reception. It never
+	// enters the compatibility render bundle or its content hash.
+	SourceLSML       []byte            `json:"-"`
 	SceneVersion     string            `json:"scene_version"`
 	Root             LayoutNode        `json:"root"`
 	OperatorInputs   []OperatorInput   `json:"operator_inputs"`

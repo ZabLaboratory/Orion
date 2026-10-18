@@ -94,8 +94,9 @@ func (b boundLeafSet) bootstrapState() map[string]any {
 // decode where one field's type mismatch fails the whole node and silently
 // drops its entire subtree:
 //
-//   - `bind` (map[string]LeafPath, cf. lsml/validate.go's `node["bind"]`)
-//     — the node's own leaf-path bindings.
+//   - `bind`, `bindStyle`, `bindUniversal`, `bindAnimate` (leaf-path maps)
+//     — authored scalar, style and editable wrapper bindings; decode each
+//     independently so a malformed group cannot suppress another group.
 //   - `children` ([]Node) — stack/grid/frame's ordered child list.
 //   - `template` (Node, singular — NOT an array) — a `repeat` node's item
 //     template (lsml/capture.go's CheckZabCaptureNodes walks the exact
@@ -113,7 +114,11 @@ func collectBoundLeavesLSML(raw json.RawMessage, dst map[string]struct{}) {
 		return
 	}
 
-	if bindRaw, ok := fields["bind"]; ok {
+	for _, field := range []string{"bind", "bindStyle", "bindUniversal", "bindAnimate"} {
+		bindRaw, ok := fields[field]
+		if !ok {
+			continue
+		}
 		var bind map[string]json.RawMessage
 		if err := json.Unmarshal(bindRaw, &bind); err == nil {
 			for _, v := range bind {

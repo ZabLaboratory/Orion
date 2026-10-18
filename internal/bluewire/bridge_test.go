@@ -221,6 +221,25 @@ func TestBridge_StepOnce_ForwardsDelta(t *testing.T) {
 	}
 }
 
+func TestBridge_InitialStepIsDistinctFromPeriodicTick(t *testing.T) {
+	steps := &fakeSteps{results: []StepResult{{Outputs: map[string]any{"a": "start"}}}}
+	ticks := &fakeSteps{results: []StepResult{{Outputs: map[string]any{"a": "tick"}}}}
+	mirror := &fakeMirror{}
+	bridge := &Bridge{steps: steps, ticks: ticks, slot: bluehost.SlotOnAir, mirror: mirror, sceneID: "scene-1", target: blueproject.TargetProgram}
+	if err := bridge.StepOnce(); err != nil {
+		t.Fatal(err)
+	}
+	if steps.callCount() != 1 || ticks.callCount() != 0 || mirror.count() != 1 {
+		t.Fatal("initial on-start transition was replaced by a tick")
+	}
+	if err := bridge.TickOnce(0.1); err != nil {
+		t.Fatal(err)
+	}
+	if steps.callCount() != 1 || ticks.callCount() != 1 || mirror.count() != 2 {
+		t.Fatal("periodic tick reran the initial step")
+	}
+}
+
 func TestBridge_ForwardResult_ForwardsImmediateOperatorMutation(t *testing.T) {
 	mirror := &fakeMirror{}
 	b := &Bridge{

@@ -10,22 +10,32 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 	"github.com/coder/websocket"
 )
 
-const maxEditablePreviewBody = 4 << 20
+// Includes base64 font/media assets; four standard Cambria faces alone exceed
+// 4 MiB. Keep a bounded envelope compatible with Prism's 8 MiB font budget.
+const maxEditablePreviewBody = 16 << 20
 const maxEditablePreviewPatches = 256
 
 type editablePreviewOpenRequest struct {
-	SceneID      string          `json:"scene_id"`
-	SceneVersion string          `json:"scene_version"`
-	EditSeq      uint64          `json:"edit_seq"`
-	LSMLBundle   json.RawMessage `json:"lsml_bundle"`
+	Target       string            `json:"target,omitempty"`
+	WriterID     string            `json:"writer_id,omitempty"`
+	BaseEditSeq  *uint64           `json:"base_edit_seq,omitempty"`
+	SceneID      string            `json:"scene_id"`
+	SceneVersion string            `json:"scene_version"`
+	EditSeq      uint64            `json:"edit_seq"`
+	LSMLBundle   json.RawMessage   `json:"lsml_bundle"`
+	Assets       map[string][]byte `json:"assets,omitempty"`
+	RenderMode   string            `json:"render_mode,omitempty"`
 }
 
 type editablePreviewPatchRequest struct {
+	Target      string `json:"target,omitempty"`
+	WriterID    string `json:"writer_id,omitempty"`
 	SceneID     string `json:"scene_id"`
 	BaseEditSeq uint64 `json:"base_edit_seq"`
 	EditSeq     uint64 `json:"edit_seq"`
@@ -36,10 +46,13 @@ type editablePreviewPatchRequest struct {
 }
 
 type editablePreviewInputRequest struct {
-	Type   string          `json:"type"`
-	Path   string          `json:"path"`
-	Value  json.RawMessage `json:"value"`
-	Source string          `json:"source"`
+	Target   string          `json:"target,omitempty"`
+	SceneID  string          `json:"scene_id,omitempty"`
+	WriterID string          `json:"writer_id,omitempty"`
+	Type     string          `json:"type"`
+	Path     string          `json:"path"`
+	Value    json.RawMessage `json:"value"`
+	Source   string          `json:"source"`
 }
 
 type editablePreviewActivateRequest struct {
@@ -47,7 +60,11 @@ type editablePreviewActivateRequest struct {
 	EditSeq uint64 `json:"edit_seq"`
 }
 
-func applyEditablePreviewPatch(deps PublicDeps, body editablePreviewPatchRequest) (int, string, error) {
+func applyEditablePreviewPatch(ctx context.Context, deps PublicDeps, body editablePreviewPatchRequest) (int, string, error) {
+	target, valid := editableTarget(body.Target)
+	if !valid {
+		return http.StatusBadRequest, "INVALID_TARGET", errors.New("invalid editable target")
+	}
 	if body.SceneID == "" || len(body.Patches) == 0 || len(body.Patches) > maxEditablePreviewPatches {
 		return http.StatusBadRequest, "INVALID_BODY", errors.New("invalid editable preview patch body")
 	}
@@ -58,7 +75,12 @@ func applyEditablePreviewPatch(deps PublicDeps, body editablePreviewPatchRequest
 		}
 		patches = append(patches, runtime.EditablePatch{Path: patch.Path, Value: patch.Value})
 	}
-	if err := deps.Preview.ApplyEditablePatches(body.SceneID, body.BaseEditSeq, body.EditSeq, patches); err != nil {
+	release, err := acquireEditableCommit(ctx, deps, target)
+	if err != nil {
+		return http.StatusConflict, "SCENE_CHANGING", err
+	}
+	defer release()
+	if err := deps.Preview.ApplyEditableTargetPatches(target, body.SceneID, body.WriterID, body.BaseEditSeq, body.EditSeq, patches); err != nil {
 		status, code := http.StatusConflict, "EDITABLE_PREVIEW_CONFLICT"
 		if errors.Is(err, runtime.ErrPreviewEditPath) {
 			status, code = http.StatusUnprocessableEntity, "EDITABLE_PATH_UNKNOWN"
@@ -67,12 +89,15 @@ func applyEditablePreviewPatch(deps PublicDeps, body editablePreviewPatchRequest
 		}
 		return status, code, err
 	}
+	if err := flushEditableTarget(ctx, deps, target); err != nil {
+		return http.StatusServiceUnavailable, "NATIVE_LSDP_DELIVERY_FAILED", err
+	}
 	return http.StatusAccepted, "", nil
 }
 
 func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 	return requireOperator(func(w http.ResponseWriter, r *http.Request) {
-		if !deps.Config.Profile.IsEmbeddedLocal() || deps.Preview == nil || deps.SceneIntent == nil || (deps.SceneIntent.StaticBundleCompiler == nil && deps.SceneIntent.StaticRenderBundleCompiler == nil) {
+		if !deps.Config.Profile.IsEmbeddedLocal() || deps.Preview == nil || deps.SceneIntent == nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"code": "NOT_FOUND"})
 			return
 		}
@@ -84,6 +109,16 @@ func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 		var body editablePreviewOpenRequest
 		if err != nil || json.Unmarshal(raw, &body) != nil || body.SceneID == "" || body.SceneVersion == "" || len(body.LSMLBundle) == 0 {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_BODY"})
+			return
+		}
+		target, valid := editableTarget(body.Target)
+		if !valid {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_TARGET"})
+			return
+		}
+		expected, editable := deps.Preview.EditableTargetSnapshot(target)
+		if target == "program" && (!editable || expected.Head.SceneID != body.SceneID) {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "EDITABLE_PREVIEW_CONFLICT"})
 			return
 		}
 		bundle, defaults, err := compileEditablePreview(deps.SceneIntent, body)
@@ -100,23 +135,84 @@ func postEditablePreview(deps PublicDeps) http.HandlerFunc {
 			SceneVersion: body.SceneVersion,
 			Defaults:     defaults,
 		}
-		deps.Preview.ActivateEditableWithBundle(body.SceneID, graph, bundle, body.EditSeq, rawBundleCopy(body.LSMLBundle))
+		nativeSource, err := editableNativeSource(body)
+		if err != nil {
+			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"code": "EDITABLE_SOURCE_INVALID"})
+			return
+		}
+		slot := bluehost.SlotPreview
+		if target == "program" {
+			slot = bluehost.SlotOnAir
+		}
+		host := deps.SceneIntent.Host
+		if host != nil {
+			release, err := host.AcquireSceneCommit(r.Context(), slot)
+			if err != nil {
+				writeJSON(w, http.StatusConflict, map[string]string{"code": "SCENE_CHANGING"})
+				return
+			}
+			defer release()
+		}
+		err = deps.Preview.ReplaceEditableTarget(target, body.SceneID, body.WriterID, body.BaseEditSeq, expected, graph, bundle, body.EditSeq, nativeSource, func() error {
+			if host == nil {
+				return nil
+			}
+			if deps.SceneIntent.Bridges != nil {
+				deps.SceneIntent.Bridges.Stop(slot)
+			}
+			if target == "program" {
+				err = host.TakeStatic(body.SceneID, body.SceneVersion)
+			} else {
+				err = host.PreparePreviewStatic(body.SceneID, body.SceneVersion)
+			}
+			if err != nil && !errors.Is(err, bluehost.ErrAlreadyLoaded) {
+				return err
+			}
+			bytes, _ := json.Marshal(bundle)
+			host.SetBundle(slot, bytes)
+			host.SetSceneInterface(slot, nativeSource)
+			host.SetArtifactSetDigest(slot, body.SceneVersion)
+			return nil
+		})
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"code": "EDITABLE_PREVIEW_CONFLICT", "message": err.Error()})
+			return
+		}
+		if deps.SceneIntent.Bridges != nil {
+			deps.SceneIntent.Bridges.SetSceneMirror(slot, deps.Preview.EditableTargetMirror(target))
+		}
+		if err := flushEditableTarget(r.Context(), deps, target); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
+			return
+		}
+		head, _ := deps.Preview.EditableTargetHead(target)
 		writeJSON(w, http.StatusOK, map[string]any{
 			"scene_id":      body.SceneID,
 			"scene_version": body.SceneVersion,
 			"edit_seq":      body.EditSeq,
 			"paths":         len(defaults),
+			"target":        target,
+			"writer_id":     head.WriterID,
 		})
 	})
 }
 
 func compileEditablePreview(deps *SceneIntentDeps, body editablePreviewOpenRequest) (*compiler.RenderBundle, map[string]json.RawMessage, error) {
+	if body.RenderMode == "source-only" {
+		return editableSourceBundle(body)
+	}
+	if body.RenderMode != "" {
+		return nil, nil, errors.New("unsupported editable render mode")
+	}
 	if deps.StaticRenderBundleCompiler != nil {
 		bundle, defaults, err := deps.StaticRenderBundleCompiler(body.LSMLBundle, body.SceneID, body.SceneVersion)
 		if err == nil && bundle == nil {
 			err = compiler.ErrInvalidStaticRenderBundle
 		}
 		return bundle, defaults, err
+	}
+	if deps.StaticBundleCompiler == nil {
+		return nil, nil, errors.New("editable compatibility compiler unavailable")
 	}
 	compiled, defaults, err := deps.StaticBundleCompiler(body.LSMLBundle, body.SceneID, body.SceneVersion)
 	if err != nil {
@@ -168,6 +264,10 @@ func postEditablePreviewAir(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, status, map[string]string{"code": code, "message": err.Error()})
 			return
 		}
+		if err := flushNativeDelivery(r.Context(), deps, true); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"scene_id":      body.SceneID,
 			"scene_version": version,
@@ -199,6 +299,10 @@ func postEditablePreviewActivate(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusConflict, map[string]string{"code": code, "message": err.Error()})
 			return
 		}
+		if err := flushNativeDelivery(r.Context(), deps, true); err != nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"code": "NATIVE_LSDP_DELIVERY_FAILED"})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"scene_id": body.SceneID, "edit_seq": body.EditSeq, "reused": true})
 	})
 }
@@ -214,7 +318,7 @@ func putEditablePreviewPatch(deps PublicDeps) http.HandlerFunc {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"code": "INVALID_BODY"})
 			return
 		}
-		status, code, err := applyEditablePreviewPatch(deps, body)
+		status, code, err := applyEditablePreviewPatch(r.Context(), deps, body)
 		if err != nil {
 			writeJSON(w, status, map[string]string{"code": code, "message": err.Error()})
 			return
@@ -226,10 +330,11 @@ func putEditablePreviewPatch(deps PublicDeps) http.HandlerFunc {
 // editablePreviewSocket is Prism's prewarmed hot-edit lane. Its random
 // capability is separate from both the operator handshake and Solar's viewer
 // token, and the handler exists only in embedded-local. Every accepted frame
-// still enters PreviewSlot.ApplyEditablePatches, preserving sequence checks,
-// bounded paths and the Preview/Program isolation invariant.
+// still enters PreviewSlot.ApplyEditableTargetPatches, preserving author/sequence
+// checks, bounded paths and explicit active Preview/Program isolation.
 func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 	type editableObserver struct {
+		target  string
 		conn    *websocket.Conn
 		writeMu sync.Mutex
 		done    chan struct{}
@@ -258,6 +363,10 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 		observers.mu.Lock()
 		connections := make([]*editableObserver, 0, len(observers.conns))
 		for observer := range observers.conns {
+			target, _ := editableTarget(body.Target)
+			if observer.target != target {
+				continue
+			}
 			connections = append(connections, observer)
 		}
 		observers.mu.Unlock()
@@ -266,7 +375,7 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 		}
 		payload, err := json.Marshal(map[string]any{
 			"type": "accepted_patch", "scene_id": body.SceneID,
-			"edit_seq": body.EditSeq, "patches": body.Patches,
+			"edit_seq": body.EditSeq, "patches": body.Patches, "target": body.Target,
 		})
 		if err != nil {
 			return
@@ -310,9 +419,14 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 		defer conn.Close(websocket.StatusNormalClosure, "")
 		conn.SetReadLimit(maxEditablePreviewBody)
 		if r.URL.Query().Get("role") == "solar" {
+			target, valid := editableTarget(r.URL.Query().Get("target"))
+			if !valid {
+				return
+			}
 			observer := &editableObserver{
-				conn: conn,
-				done: make(chan struct{}),
+				target: target,
+				conn:   conn,
+				done:   make(chan struct{}),
 			}
 			observers.mu.Lock()
 			observers.conns[observer] = struct{}{}
@@ -362,8 +476,28 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 					}
 					continue
 				}
-				applyErr := deps.Preview.ApplyPreviewInput(input.Path, input.Value, "service:prism-local-quasar")
+				target, valid := editableTarget(input.Target)
+				if !valid {
+					if writeEditableSocketJSON(r.Context(), conn, map[string]any{"type": "input_ack", "accepted": false, "code": "INVALID_TARGET"}) != nil {
+						return
+					}
+					continue
+				}
+				release, applyErr := acquireEditableCommit(r.Context(), deps, target)
 				code := ""
+				if applyErr != nil {
+					code = "SCENE_CHANGING"
+				}
+				if applyErr == nil {
+					applyErr = deps.Preview.ApplyEditableTargetInput(target, input.SceneID, input.WriterID, input.Path, input.Value, "service:prism-local-quasar")
+					if applyErr == nil {
+						applyErr = flushEditableTarget(r.Context(), deps, target)
+					}
+					release()
+					if applyErr != nil {
+						code = "NATIVE_LSDP_DELIVERY_FAILED"
+					}
+				}
 				switch {
 				case errors.Is(applyErr, runtime.ErrPreviewEditPath):
 					code = "PREVIEW_PATH_UNKNOWN"
@@ -373,9 +507,12 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 					code = "PREVIEW_SCENE_UNAVAILABLE"
 				case errors.Is(applyErr, runtime.ErrPreviewBusy):
 					code = "PREVIEW_BUSY"
+				case errors.Is(applyErr, runtime.ErrPreviewEditSequence):
+					code = "EDITABLE_PREVIEW_CONFLICT"
 				}
 				if writeEditableSocketJSON(r.Context(), conn, map[string]any{
 					"type": "input_ack", "v": 1, "path": input.Path,
+					"target":   target,
 					"accepted": applyErr == nil, "code": code,
 				}) != nil {
 					return
@@ -392,14 +529,14 @@ func editablePreviewSocket(deps PublicDeps) http.HandlerFunc {
 				_ = writeEditableSocketJSON(r.Context(), conn, map[string]any{"type": "error", "code": "INVALID_BODY"})
 				return
 			}
-			_, code, applyErr := applyEditablePreviewPatch(deps, body)
+			_, code, applyErr := applyEditablePreviewPatch(r.Context(), deps, body)
 			if applyErr != nil {
 				_ = writeEditableSocketJSON(r.Context(), conn, map[string]any{"type": "error", "code": code, "message": applyErr.Error()})
 				return
 			}
 			broadcastAccepted(body)
 			if writeEditableSocketJSON(r.Context(), conn, map[string]any{
-				"type": "ack", "scene_id": body.SceneID, "edit_seq": body.EditSeq,
+				"type": "ack", "scene_id": body.SceneID, "edit_seq": body.EditSeq, "target": body.Target,
 				"observer_count": observerCount(),
 			}) != nil {
 				return

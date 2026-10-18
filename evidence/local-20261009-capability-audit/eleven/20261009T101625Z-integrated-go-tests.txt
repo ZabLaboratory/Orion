@@ -1,0 +1,26 @@
+?   	github.com/ZabLaboratory/Orion/cmd/healthcheck	[no test files]
+ok  	github.com/ZabLaboratory/Orion/cmd/orion	1.575s
+ok  	github.com/ZabLaboratory/Orion/internal/adapters	2.107s
+ok  	github.com/ZabLaboratory/Orion/internal/api	3.627s
+ok  	github.com/ZabLaboratory/Orion/internal/attestation	(cached)
+ok  	github.com/ZabLaboratory/Orion/internal/auth	(cached)
+ok  	github.com/ZabLaboratory/Orion/internal/bluehost	4.449s
+ok  	github.com/ZabLaboratory/Orion/internal/blueproject	(cached)
+ok  	github.com/ZabLaboratory/Orion/internal/bluespike	0.379s
+ok  	github.com/ZabLaboratory/Orion/internal/bluewire	1.553s
+?   	github.com/ZabLaboratory/Orion/internal/buildinfo	[no test files]
+?   	github.com/ZabLaboratory/Orion/internal/canonical	[no test files]
+ok  	github.com/ZabLaboratory/Orion/internal/compiler	(cached)
+ok  	github.com/ZabLaboratory/Orion/internal/config	(cached)
+ok  	github.com/ZabLaboratory/Orion/internal/conformance	1.223s
+ok  	github.com/ZabLaboratory/Orion/internal/effects	(cached)
+ok  	github.com/ZabLaboratory/Orion/internal/lsdp	8.055s
+ok  	github.com/ZabLaboratory/Orion/internal/lsdpreception	2.223s
+ok  	github.com/ZabLaboratory/Orion/internal/obs	(cached)
+ok  	github.com/ZabLaboratory/Orion/internal/protocol	(cached)
+ok  	github.com/ZabLaboratory/Orion/internal/providers	1.309s
+ok  	github.com/ZabLaboratory/Orion/internal/runtime	8.302s
+ok  	github.com/ZabLaboratory/Orion/internal/streamcontrol	(cached)
+ok  	github.com/ZabLaboratory/Orion/internal/workload	(cached)
+ok  	github.com/ZabLaboratory/Orion/internal/ws	2.341s
+?   	github.com/ZabLaboratory/Orion/third_party/lsdpnative	[no test files]

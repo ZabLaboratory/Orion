@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/protocol"
 	"log/slog"
@@ -789,6 +790,27 @@ func (s *Scene) Input(msg InputMsg) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// Flush publishes inputs already queued on this scene before returning. It is
+// an inbox barrier, not a promise that future asynchronous Blue work has ended.
+func (s *Scene) Flush(ctx context.Context) error {
+	done := make(chan struct{})
+	if !s.Input(InputMsg{Control: func(scene *Scene) {
+		scene.recompute(false)
+		scene.emit(nil)
+		close(done)
+	}}) {
+		return errors.New("SCENE_INBOX_FULL")
+	}
+	select {
+	case <-done:
+		return nil
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

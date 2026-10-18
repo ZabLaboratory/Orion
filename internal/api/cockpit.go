@@ -32,22 +32,15 @@ import (
 // frozen contract) but Orion has no multi-stream partition — the current show
 // IS the stream. An absent stream_id is a 400; any value resolves to the show.
 //
-// ENGINE B ANTENNA (ORION-OPERATOR-RAIL-ENGINE-B, #335): the antenna's
-// scene-scope facet now derives from bluehost.Host's on-air instance
-// (appendEngineBScene), not Show.Active() — Show's roster is structurally
-// empty in production since #331. ?target=preview is unchanged (still
-// Engine A, operatorTarget). The antenna's awaits facet now joins
-// blueruntime's live armed-await registry (Host.PendingAwaitNames, #344)
-// against bluehost's declared metadata (AwaitDecl) — see appendEngineBScene's
-// doc for the join and its one accepted gap (an armed await absent from the
-// declared set — never producible via the compiler on a single program, see
-// that doc — is omitted, not fabricated).
+// ENGINE B: both scene facets derive from the Host's independent slots,
+// exactly like call/resolve/pending. Canonical LSML supplies operator inputs;
+// the Blue program supplies triggers and metadata joined with live awaits.
+// Legacy Preview is consulted only when no native Host is configured.
 //
 // UNKNOWN TARGET (Prism#740, ORION-UNKNOWN-TARGET-CONTRACT): ?target= is now
 // validated by operator.go's resolveTargetKind before either branch below
 // runs — an unrecognized value is 400 UNKNOWN_TARGET, not a silent fall
-// through to the antenna branch. See getCockpitContracts's inline comment
-// for why the preview leg stays on Engine A regardless.
+// through to the antenna branch.
 
 // cockpitContractItem<T> is a facet item wrapped with its scope. Because Go
 // has no generics-in-JSON-shape ergonomics here, each facet has its own typed
@@ -117,31 +110,17 @@ func getCockpitContracts(deps PublicDeps) http.HandlerFunc {
 			Awaits:   []cockpitAwait{},
 		}
 
-		// Scene-scope contract → the operator surface the rail drives. Mode-aware
-		// (preview/antenne split), validated by the same single point every
-		// ?target=-reading route shares (resolveTargetKind, operator.go —
-		// Prism#740, ORION-UNKNOWN-TARGET-CONTRACT): an unrecognized value is now
-		// 400 UNKNOWN_TARGET rather than silently falling open to the antenna.
-		// ``target=preview`` derives it from the PREVIEW slot's live clone
-		// (Engine A, unchanged — operatorTarget); ``target`` absent derives from
-		// the ANTENNA's Engine B on-air instance (ORION-OPERATOR-RAIL-ENGINE-B,
-		// #335) — Show.Active() has had no production populator since #331 and is
-		// structurally empty. Vanishes on a flip/take of whichever side it reads.
-		//
-		// The preview leg here is STILL Engine A (deps.Preview), unlike
-		// call/resolve/pending's engineBSlot — deliberately not re-routed by this
-		// work unit (its only populator, POST /show/preview-active-scene, was
-		// retired the same way Show's was, so this leg is dead in production
-		// today; re-pointing it at Engine B's SlotPreview is a real fix but a
-		// different, undecided chantier, not a side effect of hardening the
-		// unknown-target reject).
+		// Use the same target validation and Blue slots as operator gestures.
+		// Empty native Preview stays empty; legacy fallback requires no Host.
 		kind, ok := resolveTargetKind(w, r)
 		if !ok {
 			return
 		}
 		switch kind {
 		case targetPreview:
-			if active := operatorTarget(deps, r); active != nil {
+			if host := engineBHost(deps); host != nil {
+				appendEngineBScene(&out, host, bluehost.SlotPreview, deps.Logger)
+			} else if active := operatorTarget(deps, r); active != nil {
 				appendScene(&out, active, scopeScene, "")
 			}
 		case targetAntenna:
@@ -154,7 +133,7 @@ func getCockpitContracts(deps PublicDeps) http.HandlerFunc {
 		// appended for antenna and preview targets and survive every slot flip.
 		if deps.StreamRules != nil && deps.StreamRules.Plane != nil {
 			appendRulePlane(&out, deps.StreamRules.Plane, deps.Logger)
-		} else {
+		} else if deps.Show != nil {
 			// Compatibility seam for isolated Engine A fixtures and callers that
 			// intentionally construct PublicDeps without the production plane.
 			for _, rule := range deps.Show.StreamRuleScenes() {
@@ -255,16 +234,14 @@ func addressBlueprintKey(key string) string {
 	return key
 }
 
-// appendEngineBScene derives the antenna's Engine B contract (scope `scene`)
+// appendEngineBScene derives a slot's Engine B contract (scope `scene`)
 // and appends it to out — the Engine B analogue of appendScene(active, ...)
 // for the one instance bluehost.Host hosts per slot (ORION-OPERATOR-RAIL-
 // ENGINE-B, #335). No-op when slot holds no instance.
 //
-// Params come from the LSML render-bundle's `operator_inputs` field (same
-// generic, best-effort decode getOperatorInputs already uses for this same
-// field — ZabCanvas's lsml_bundle schema for it is NOT a confirmed-matching
-// contract against Orion's own compiler shape, so a field that doesn't
-// decode just stays zero-valued, never an error).
+// Params come from admitted LSML operator_inputs. Compatibility bundles
+// are consulted only when no canonical source interface was attached.
+// Malformed declarations contribute no typed controls.
 //
 // Triggers come from the loaded program's declared on-call entrypoints
 // (bluehost.Host.DeclaredContracts), addressed under defaultBlueprintToken
@@ -281,7 +258,11 @@ func appendEngineBScene(out *cockpitContracts, host *bluehost.Host, slot bluehos
 	if host.Digest(slot) == "" {
 		return
 	}
-	for _, p := range bundleOperatorInputs(host.Bundle(slot)) {
+	var params []runtime.ContractParam
+	if json.Unmarshal(host.OperatorInputs(slot), &params) != nil {
+		params = nil
+	}
+	for _, p := range params {
 		out.Params = append(out.Params, cockpitParam{ContractParam: p, Scope: scopeScene})
 	}
 	triggers, _ := host.DeclaredContracts(slot)
@@ -309,22 +290,4 @@ func appendEngineBScene(out *cockpitContracts, host *bluehost.Host, slot bluehos
 			Scope: scopeScene,
 		})
 	}
-}
-
-// bundleOperatorInputs extracts an LSML render-bundle's `operator_inputs`
-// field into the shared ContractParam shape. Best-effort, generic top-level
-// key decode (mirrors getOperatorInputs, scenes_get.go) rather than a typed
-// contract Orion owns end-to-end: nil/malformed bundle or an unrecognised
-// field shape yields nil (never an error) rather than a broken response.
-func bundleOperatorInputs(bundle []byte) []runtime.ContractParam {
-	if len(bundle) == 0 {
-		return nil
-	}
-	var envelope struct {
-		OperatorInputs []runtime.ContractParam `json:"operator_inputs"`
-	}
-	if json.Unmarshal(bundle, &envelope) != nil {
-		return nil
-	}
-	return envelope.OperatorInputs
 }

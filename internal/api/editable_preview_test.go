@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ZabLaboratory/Orion/internal/bluehost"
+	"github.com/ZabLaboratory/Orion/internal/bluewire"
 	"github.com/ZabLaboratory/Orion/internal/compiler"
 	"github.com/ZabLaboratory/Orion/internal/config"
 	"github.com/ZabLaboratory/Orion/internal/runtime"
@@ -23,9 +25,29 @@ type editableAPIMirror struct{}
 
 func (editableAPIMirror) Forward(runtime.SubscriberMsg) {}
 
-type editableAPIWire struct{ active string }
+type editableAPIWire struct {
+	active string
+	source []byte
+}
 
-func (w *editableAPIWire) MirrorFor(string, string, *compiler.RenderBundle) runtime.SceneMirror {
+func TestEditablePreviewReplacesOldBlueAuthorityButKeepsProgram(t *testing.T) {
+	host := bluehost.NewHost()
+	_ = host.PreparePreviewStatic("old-blue", "old-v")
+	_ = host.TakeStatic("live", "live-v")
+	bridges := bluewire.NewRegistry()
+	defer bridges.StopAll()
+	mux, _ := editableAPIFixture(t, config.ProfileEmbeddedLocal, func(deps *SceneIntentDeps) { deps.Host = host; deps.Bridges = bridges })
+	opened := editableAPIRequest(t, mux, http.MethodPost, map[string]any{"scene_id": "editable-chat", "scene_version": "sha256:chat", "edit_seq": 0, "lsml_bundle": map[string]any{"lsml": "1.1"}}, "operator")
+	if opened.Code != http.StatusOK || !host.Serving(bluehost.SlotPreview, "editable-chat", "sha256:chat") || !host.Serving(bluehost.SlotOnAir, "live", "live-v") {
+		t.Fatal("editable authority did not replace only Preview", opened.Code, opened.Body.String())
+	}
+	if err := host.SwapAuthority(); err != nil || !host.Serving(bluehost.SlotOnAir, "editable-chat", "sha256:chat") {
+		t.Fatal("stale Blue actor promoted", err)
+	}
+}
+
+func (w *editableAPIWire) MirrorFor(_ string, _ string, bundle *compiler.RenderBundle) runtime.SceneMirror {
+	w.source = append([]byte(nil), bundle.SourceLSML...)
 	return editableAPIMirror{}
 }
 func (w *editableAPIWire) SetActive(sceneID string) { w.active = sceneID }

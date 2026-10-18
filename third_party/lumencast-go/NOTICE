@@ -1,0 +1,9 @@
+Lumencast Go SDK and CLI
+Copyright 2026 The Lumencast Authors
+
+This product includes software developed by the Lumencast project
+(https://github.com/Lumencast/lumencast-go).
+
+Portions of the protocol package and WebSocket server kit derive from
+prior art in the Orion server (ZabLaboratory/Orion), released under the
+Apache 2.0 License.

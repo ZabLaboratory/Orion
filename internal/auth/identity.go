@@ -10,11 +10,9 @@
 //     and injects the same headers, so Orion's WS handler reads the
 //     same surface regardless of how the client authed.
 //
-// The Validator wired in this package is for an extra defence in
-// depth: when Orion is *handed* a show-token (e.g., received via
-// query string at the ZabGate boundary), it re-checks revocation
-// against ZabAuth's /tokens/{jti}/validate endpoint. Cache TTL is
-// short (default 60 s) so a revoke propagates quickly.
+// Embedded-local startup instead uses a loopback handshake. Native Solar
+// authentication belongs to the shared receiver; Orion does not instantiate
+// a separate, unused token validator.
 package auth
 
 import (

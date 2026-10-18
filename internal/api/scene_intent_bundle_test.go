@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,36 +16,10 @@ import (
 	"github.com/ZabLaboratory/Orion/internal/runtime"
 )
 
-// recordingBundleMirror is a bare runtime.SceneMirror stand-in — the
-// bytes/sceneID/call-count assertions this test cares about are captured
-// directly by the MirrorFor closure below, not by the mirror itself.
-type recordingBundleMirror struct{}
-
-func (m *recordingBundleMirror) Forward(any) {}
-
-// TestStartBridge_ThreadsHostBundleIntoMirrorFor is the plumbing proof for
-// #396: an envelope carrying an lsml_bundle is verified and attached to
-// the slot via Host.SetBundle (scenes_intent.go's existing behaviour,
-// unchanged), and startBridge must now pass exactly those bytes to
-// deps.MirrorFor — the wiring that was missing before this fix, where
-// cmd/orion/main.go's closure ignored whatever the slot held and always
-// forwarded nil to lsdp.Wire.MirrorFor's bundle argument.
-//
-// It also covers half of #398's plumbing proof: a prepare-preview must
-// reach MirrorFor with slot == bluehost.SlotPreview. The symmetric case
-// (a take reaching MirrorFor with SlotOnAir) is
-// TestStartBridge_ThreadsOnAirSlotIntoMirrorFor below — a test proving
-// only one side would be worthless (#398's own point dur), since a
-// closure that ignores its slot argument entirely could still pass a
-// preview-only assertion.
-//
-// Mutation proof: reverting scene_intent.go's `deps.MirrorFor(claims.SceneID,
-// claims.SceneDigest, slot, deps.Host.Bundle(slot))` back to a call site
-// that drops the bundle or slot argument does not even compile against the
-// widened MirrorFor field — and reverting the field type too (to make it
-// compile again) makes gotBundle/gotSlot below unreachable, failing this
-// test's assertions.
-func TestStartBridge_ThreadsHostBundleIntoMirrorFor(t *testing.T) {
+// TestSceneIntent_PassesLSMLSourceDirectlyToMirrorFor proves source bytes
+// reach the LSDP leaf gate and snapshot without compiling or storing a
+// Solar RenderBundle during the scene switch.
+func TestSceneIntent_PassesLSMLSourceDirectlyToMirrorFor(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(nil)
 	program := minimalProgram(t)
 	lsmlBundle := []byte(`{"kind":"text","bind":{"value":"board.display"}}`)
@@ -52,11 +27,13 @@ func TestStartBridge_ThreadsHostBundleIntoMirrorFor(t *testing.T) {
 	now := time.Now()
 	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionPreparePreview, now, "scene-1", digest)
 
-	mirror := &recordingBundleMirror{}
+	mirror := &recordingMirror{}
 	var gotSceneID string
+	var gotSceneVersion string
 	var gotSlot bluehost.Slot
-	var gotBundle []byte
+	var gotSource []byte
 	var calls int
+	compilerCalls := 0
 
 	deps := SceneIntentDeps{
 		Trust:         attestation.TrustSet{"canvas-key-1": pub},
@@ -65,10 +42,16 @@ func TestStartBridge_ThreadsHostBundleIntoMirrorFor(t *testing.T) {
 		TenantID:      "tenant-1",
 		Workload:      &fakeWorkload{body: envelope},
 		Host:          bluehost.NewHost(),
-		MirrorFor: func(sceneID, _ string, slot bluehost.Slot, bundle []byte) runtime.SceneMirror {
+		StaticBundleCompiler: func([]byte, string, string) ([]byte, map[string]json.RawMessage, error) {
+			compilerCalls++
+			t.Fatal("scene-intent must not compile source")
+			return nil, nil, nil
+		},
+		MirrorFor: func(sceneID, sceneVersion string, slot bluehost.Slot, source []byte) runtime.SceneMirror {
 			gotSceneID = sceneID
+			gotSceneVersion = sceneVersion
 			gotSlot = slot
-			gotBundle = bundle
+			gotSource = append([]byte(nil), source...)
 			calls++
 			return mirror
 		},
@@ -100,18 +83,21 @@ func TestStartBridge_ThreadsHostBundleIntoMirrorFor(t *testing.T) {
 	if gotSlot != bluehost.SlotPreview {
 		t.Fatalf("a prepare-preview must reach MirrorFor with slot=preview (#398) — got %q", gotSlot)
 	}
-	if gotBundle == nil {
-		t.Fatalf("MirrorFor received a nil bundle — the #396 defect: SetBundle stored real LSML bytes but startBridge never forwarded them")
+	if gotSource == nil {
+		t.Fatal("MirrorFor received no LSML source")
 	}
-	if string(gotBundle) != string(lsmlBundle) {
-		t.Fatalf("MirrorFor bundle mismatch: got %q, want %q", gotBundle, lsmlBundle)
+	if string(gotSource) != string(lsmlBundle) {
+		t.Fatalf("MirrorFor source mismatch: got %q, want %q", gotSource, lsmlBundle)
 	}
-
-	// Cross-check against the slot directly: what startBridge forwarded
-	// must be exactly what SetBundle attached (deps.Host.Bundle(slot)),
-	// never a copy or a different artefact.
-	if got := deps.Host.Bundle(bluehost.SlotPreview); string(got) != string(lsmlBundle) {
-		t.Fatalf("Host.Bundle(preview) = %q, want %q", got, lsmlBundle)
+	wantVersion := "sha256:" + strings.Repeat("b", 64)
+	if gotSceneVersion != wantVersion || mirror.snapshotVersion != wantVersion {
+		t.Fatalf("LSDP source/snapshot version = %q/%q, want artifact_set_digest %q", gotSceneVersion, mirror.snapshotVersion, wantVersion)
+	}
+	if got := deps.Host.Bundle(bluehost.SlotPreview); len(got) != 0 {
+		t.Fatalf("LSML source must not be stored as a legacy RenderBundle: %q", got)
+	}
+	if compilerCalls != 0 {
+		t.Fatalf("scene switch invoked static compiler %d times", compilerCalls)
 	}
 }
 
@@ -129,7 +115,7 @@ func TestStartBridge_ThreadsOnAirSlotIntoMirrorFor(t *testing.T) {
 	now := time.Now()
 	ref := signedRef(t, priv, "canvas-key-1", attestation.ActionTakeOnAir, now, "scene-1", digest)
 
-	mirror := &recordingBundleMirror{}
+	mirror := &recordingMirror{}
 	var gotSlot bluehost.Slot
 	var calls int
 
