@@ -9,6 +9,17 @@ Every release section is written *before* the tag is pushed — the
 it as the GitHub Release body. If a section is missing, the release
 publishes with empty notes.
 
+## [2.0.1] - 2026-10-18
+
+### Changed
+
+- Bundle the pinned Lumencast Go protocol source with Orion so the local
+  Preview/Live runtime builds reproducibly without private module access.
+- Carry the merged Blue runtime snapshot and authority contracts into the
+  local sidecar used by Prism.
+- Publish platform executables and a release manifest bound to the current
+  Blue runtime artifact.
+
 ## [2.0.0] - 2026-08-25
 
 ### Changed
