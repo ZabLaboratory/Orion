@@ -100,7 +100,10 @@ func TestEditableIdleDeltaNative(t *testing.T) {
 	head, _ := preview.EditableTargetHead("preview")
 	server := httptest.NewServer(mux)
 	defer server.Close()
-	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/show/editable-preview.ws?local_editor_token=idle-test-capability", nil)
+	conn, response, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/show/editable-preview.ws?local_editor_token=idle-test-capability", nil)
+	if response != nil && response.Body != nil {
+		defer response.Body.Close()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

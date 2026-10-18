@@ -25,7 +25,7 @@ func TestEditableSocketContinuesSameWriterOnProgramAfterTake(t *testing.T) {
 	p.SetEditableProgramWire(&editableAPIWire{})
 	defer p.Close()
 	host := bluehost.NewHost()
-	intent := &SceneIntentDeps{Host: host, StaticRenderBundleCompiler: func(_ []byte, id, version string) (*compiler.RenderBundle, map[string]json.RawMessage, error) {
+	intent := &SceneIntentDeps{Host: host, StaticRenderBundleCompiler: func(_ []byte, _ string, version string) (*compiler.RenderBundle, map[string]json.RawMessage, error) {
 		return &compiler.RenderBundle{SceneVersion: version}, map[string]json.RawMessage{"__editable.x": json.RawMessage(`10`)}, nil
 	}}
 	mux := http.NewServeMux()
@@ -38,7 +38,10 @@ func TestEditableSocketContinuesSameWriterOnProgramAfterTake(t *testing.T) {
 	actor := p.Current()
 	server := httptest.NewServer(mux)
 	defer server.Close()
-	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/show/editable-preview.ws?local_editor_token=editor-capability", nil)
+	conn, response, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http")+"/api/v1/show/editable-preview.ws?local_editor_token=editor-capability", nil)
+	if response != nil && response.Body != nil {
+		defer response.Body.Close()
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +120,7 @@ func TestEditableCompilationCannotOverwriteConcurrentHotEdit(t *testing.T) {
 	defer p.Close()
 	host := bluehost.NewHost()
 	calls := 0
-	intent := &SceneIntentDeps{Host: host, StaticRenderBundleCompiler: func(_ []byte, id, version string) (*compiler.RenderBundle, map[string]json.RawMessage, error) {
+	intent := &SceneIntentDeps{Host: host, StaticRenderBundleCompiler: func(_ []byte, _ string, version string) (*compiler.RenderBundle, map[string]json.RawMessage, error) {
 		calls++
 		if calls == 2 {
 			if err := p.ApplyEditablePatches("a", 0, 1, []runtime.EditablePatch{{Path: "__editable.x", Value: json.RawMessage(`42`)}}); err != nil {
