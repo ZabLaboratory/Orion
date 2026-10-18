@@ -15,6 +15,7 @@ permissions:
 
 env:
   BLUE_RUNTIME_RELEASE_TAG: v4.4.0
+  BLUE_RUNTIME_SOURCE_REVISION: ddc32cbd6f7692564e1b25df29e11b3b0904cbcd
 
 jobs:
   build-runtime:
@@ -63,25 +64,27 @@ jobs:
           set -euo pipefail
           git config --global url."https://x-access-token:${GH_TOKEN}@github.com/ZabLaboratory/".insteadOf "https://github.com/ZabLaboratory/"
           export GOPRIVATE=github.com/ZabLaboratory/*
+          blue_tag_object="$(gh api "repos/ZabLaboratory/Blue/git/ref/tags/${BLUE_RUNTIME_RELEASE_TAG}" --jq '.object.sha')"
+          blue_tag_revision="$(gh api "repos/ZabLaboratory/Blue/git/tags/${blue_tag_object}" --jq '.object.sha')"
+          test "$blue_tag_revision" = "$BLUE_RUNTIME_SOURCE_REVISION"
           blue_asset_id="$(gh api "repos/ZabLaboratory/Blue/releases/tags/${BLUE_RUNTIME_RELEASE_TAG}" --jq '.assets[] | select(.name == "prism-blue-runtime-manifest.json") | .id')"
           test -n "$blue_asset_id"
           gh api -H 'Accept: application/octet-stream' "repos/ZabLaboratory/Blue/releases/assets/${blue_asset_id}" > blue-runtime-manifest.json
-          read -r blue_digest blue_revision < <(python3 - <<'PY'
+          blue_digest="$(python3 - <<'PY'
           import json
           import pathlib
           import re
           manifest = json.loads(pathlib.Path('blue-runtime-manifest.json').read_text())['runtime_manifest']
-          digest, revision = manifest['source_digest'], manifest['source_revision']
-          if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest) or not re.fullmatch(r'[0-9a-f]{40}', revision):
-              raise SystemExit('Blue release has invalid runtime source identity')
-          print(digest, revision)
+          digest = manifest['source_digest']
+          if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+              raise SystemExit('Blue release has invalid runtime source digest')
+          print(digest)
           PY
-          )
+          )"
           echo "BLUE_RUNTIME_SOURCE_DIGEST=${blue_digest}" >> "$GITHUB_ENV"
-          echo "BLUE_RUNTIME_SOURCE_REVISION=${blue_revision}" >> "$GITHUB_ENV"
           rm -rf "$(go env GOMODCACHE)/cache/download/github.com/!zab!laboratory"
           rm -rf "$(go env GOMODCACHE)/cache/vcs"
-          go get "github.com/ZabLaboratory/Blue/runtime/go@${blue_revision}"
+          go get "github.com/ZabLaboratory/Blue/runtime/go@${BLUE_RUNTIME_SOURCE_REVISION}"
           go mod download
       - name: Build Orion binary
         env:
