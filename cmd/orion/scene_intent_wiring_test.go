@@ -90,6 +90,22 @@ func TestWireSceneIntent_DarkByDefault(t *testing.T) {
 	}
 }
 
+func TestWireSceneIntent_EmbeddedLocalClockSkewIsBounded(t *testing.T) {
+	trustPath := writeCanvasTrust(t, t.TempDir())
+	deps, err := wireSceneIntent(config.Config{
+		Profile:         config.ProfileEmbeddedLocal,
+		CanvasTrustPath: trustPath,
+		OwnerID:         "owner-1",
+		TenantID:        "tenant-1",
+	}, slog.Default(), bluehost.EffectDeps{})
+	if err != nil {
+		t.Fatalf("wire embedded-local scene intent: %v", err)
+	}
+	if deps == nil || deps.AttestationClockSkew != 30*time.Second {
+		t.Fatalf("embedded-local not-before tolerance = %v, want 30s", deps)
+	}
+}
+
 func TestWireSceneIntent_FullyConfigured(t *testing.T) {
 	dir := t.TempDir()
 	certPath, keyPath, caPath := writeSelfSignedCert(t, dir)

@@ -22,8 +22,9 @@ import (
 )
 
 // Remote Canvas and an embedded Windows runtime have independent wall clocks.
-// Bound only not-before tolerance; expired refs and readiness remain strict.
-const embeddedLocalAttestationClockSkew = 10 * time.Second
+// Bound only not-before tolerance to 30s for local clocks behind Canvas;
+// expired refs and readiness remain strict. Remote callers retain zero skew.
+const embeddedLocalAttestationClockSkew = 30 * time.Second
 
 // wireSceneIntent builds the additive stateless-cutover surface (#331,
 // ADR-BLUE-012). It returns (nil, nil) only when NONE of the workload
