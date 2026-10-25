@@ -22,9 +22,13 @@ applications ; le contrÃ´leur de processus maintient leur Ã©tat rÃ©el, don
 | RÃ¨gles et processus locaux | internal/streamcontrol | Intention atomique durable, PID possÃ©dÃ©, rÃ©conciliation et OFF |
 | Affichage et mÃ©dias | Solar, Vision, Pulsar | RÃ©vision source exacte, textures camÃ©ra, composition CEF |
 
-L'adresse source est artifact_set_digest ; Blue et l'interface opÃ©rateur utilisent
-scene_digest. Ces valeurs peuvent diffÃ©rer. L'hÃ´te applicatif lance le nÅ“ud natif
-avec le serveur packagÃ© Solar ; Orion le vÃ©rifie et l'utilise sans second daemon.
+Dans le document de scène complet, scene_version est l'adresse source LSML ;
+artifact_set_digest identifie l'ensemble admis ; Blue et l'interface opérateur
+utilisent scene_digest. Le champ scene_version de desired/observed désigne la clé
+du catalogue artifact_set_digest. Ces identités peuvent différer : voir le
+[contrat de sélection](docs/development/scene-control.md). L'hôte applicatif lance
+le nœud natif avec le serveur packagé Solar ; Orion le vérifie et l'utilise sans
+second daemon.
 
 ## Surface opÃ©rateur et diagnostic
 
@@ -67,10 +71,12 @@ un skip ne compte jamais comme preuve d'exÃ©cution complÃ¨te.
 - [Ajouter une capacitÃ©](docs/development/extending-orion.md)
 - [Reprise native](docs/runbooks/native-recovery.md)
 - [Maturite locale et preuves](docs/development/maturity.md)
+- [Repères Codex](docs/development/codex-project-context.md)
 - [Publication native](internal/lsdpreception/README.md)
 - [ContrÃ´le durable](internal/streamcontrol/README.md)
 
-Cette migration est qualifiÃ©e localement, sans publication ni dÃ©ploiement.
-Un petit LSML dÃ©clarant une scÃ¨ne dÃ©sirÃ©e ne dÃ©clenche pas encore l'admission
-coordonnÃ©e Blue/contrats/Solar. La synchronisation et le transfert d'autoritÃ© Prism
-restent hors de ce pÃ©rimÃ¨tre. Les limites courantes sont dans la frontiÃ¨re source.
+Le contrat orion.scene-control.v1 dans orion/state coordonne la sélection de scène
+Blue/contrats/Solar. L'intégration d'un émetteur Prism reste hors de ce changement.
+Les limites de qualification et d'intégration sont décrites dans la
+[frontière source et rendu](docs/development/source-render-boundary.md) et la
+[maturité locale](docs/development/maturity.md).
